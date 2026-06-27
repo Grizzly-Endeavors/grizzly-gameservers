@@ -54,33 +54,41 @@ pub(crate) enum RemoveOutcome {
     NotManaged,
 }
 
+/// Result of the provisioning phase of `/create`: everything up to — but not
+/// including — waiting for the server to report Ready. Split from readiness so
+/// the caller can surface the connection address the moment it is leased and
+/// then poll with [`wait_for_instance_ready`], giving the friend live progress
+/// instead of one silent multi-minute wait.
+pub(crate) enum ProvisionOutcome {
+    Provisioned { address: String },
+    AlreadyExists,
+    PortsExhausted,
+}
+
 /// Provision a new per-world instance: lease a port, create its Service, PVC and
-/// `GameServer`, then wait for it to come up. The `lock` serializes the
+/// `GameServer`, and return its address. Does **not** wait for readiness — call
+/// [`wait_for_instance_ready`] for that. The `lock` serializes the
 /// port-lease→Service-create critical section so concurrent creates can't claim
-/// the same `NodePort`; readiness polling happens after the lock is released.
+/// the same `NodePort`.
 ///
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached or an object create fails
 /// for a reason other than a recoverable port clash.
-pub(crate) async fn create_instance(
+pub(crate) async fn provision_instance(
     client: &Client,
     namespace: &str,
     domain: &str,
     lock: &Mutex<()>,
     entry: &GameCatalogEntry,
     instance_name: &str,
-) -> Result<CreateOutcome> {
-    let address = {
-        let _guard = lock.lock().await;
-        match provision_under_lock(client, namespace, domain, entry, instance_name).await? {
-            Provisioned::Created(address) => address,
-            Provisioned::AlreadyExists => return Ok(CreateOutcome::AlreadyExists),
-            Provisioned::PortsExhausted => return Ok(CreateOutcome::PortsExhausted),
-        }
-    };
-    let ready = wait_for_ready(client, namespace, instance_name).await?;
-    Ok(CreateOutcome::Created { address, ready })
+) -> Result<ProvisionOutcome> {
+    let _guard = lock.lock().await;
+    match provision_under_lock(client, namespace, domain, entry, instance_name).await? {
+        Provisioned::Created(address) => Ok(ProvisionOutcome::Provisioned { address }),
+        Provisioned::AlreadyExists => Ok(ProvisionOutcome::AlreadyExists),
+        Provisioned::PortsExhausted => Ok(ProvisionOutcome::PortsExhausted),
+    }
 }
 
 enum Provisioned {
@@ -192,31 +200,44 @@ pub(crate) async fn stop_instance(
     Ok(StopOutcome::Stopped)
 }
 
-/// Start a previously stopped instance: recreate its `GameServer` bound to the
-/// existing PVC, reusing the retained Service and its port.
+/// Result of the start-up phase of `/start`: the `GameServer` has been recreated
+/// (or the instance can't be started), but readiness is not yet awaited. As with
+/// [`ProvisionOutcome`], the caller surfaces the address right away and then
+/// polls [`wait_for_instance_ready`].
+pub(crate) enum StartBegin {
+    Starting { address: String },
+    AlreadyRunning,
+    NotFound,
+    NotManaged,
+    UnknownGame(String),
+}
+
+/// Recreate a previously stopped instance's `GameServer`, bound to the existing
+/// PVC and reusing the retained Service and its port. Does **not** wait for
+/// readiness — call [`wait_for_instance_ready`] for that.
 ///
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached, the retained Service is
 /// malformed, or the `GameServer` create fails for a reason other than the server
 /// already running.
-pub(crate) async fn start_instance(
+pub(crate) async fn begin_start(
     client: &Client,
     namespace: &str,
     domain: &str,
     catalog: &GameCatalog,
     name: &str,
-) -> Result<StartOutcome> {
+) -> Result<StartBegin> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
         .get_opt(name)
         .await
         .with_context(|| format!("failed to read service {name}"))?
     else {
-        return Ok(StartOutcome::NotFound);
+        return Ok(StartBegin::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
-        return Ok(StartOutcome::NotManaged);
+        return Ok(StartBegin::NotManaged);
     }
 
     let game = service
@@ -227,7 +248,7 @@ pub(crate) async fn start_instance(
         .cloned()
         .with_context(|| format!("managed service {name} is missing its game label"))?;
     let Some(entry) = catalog.get(&game) else {
-        return Ok(StartOutcome::UnknownGame(game));
+        return Ok(StartBegin::UnknownGame(game));
     };
     let node_port = service_node_port(&service)
         .with_context(|| format!("managed service {name} has no nodeport"))?;
@@ -244,15 +265,13 @@ pub(crate) async fn start_instance(
         .await
     {
         Ok(_) => {}
-        Err(err) if is_already_exists(&err) => return Ok(StartOutcome::AlreadyRunning),
+        Err(err) if is_already_exists(&err) => return Ok(StartBegin::AlreadyRunning),
         Err(err) => {
             return Err(err).with_context(|| format!("failed to start gameserver {name}"));
         }
     }
-    let ready = wait_for_ready(client, namespace, name).await?;
-    Ok(StartOutcome::Started {
+    Ok(StartBegin::Starting {
         address: server_address(name, domain, node_port),
-        ready,
     })
 }
 
@@ -359,7 +378,18 @@ fn service_node_port(service: &Service) -> Option<i32> {
         .find_map(|port| port.node_port)
 }
 
-async fn wait_for_ready(client: &Client, namespace: &str, name: &str) -> Result<bool> {
+/// Poll a `GameServer` until it reports Ready/Allocated, returning `false` if it
+/// hasn't come up within [`READY_TIMEOUT`] (e.g. first-boot world generation is
+/// still running). Called after [`provision_instance`] / [`begin_start`].
+///
+/// # Errors
+///
+/// Returns an error if the gameserver cannot be polled from the Kubernetes API.
+pub(crate) async fn wait_for_instance_ready(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> Result<bool> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     let mut ticker = tokio::time::interval(POLL_INTERVAL);

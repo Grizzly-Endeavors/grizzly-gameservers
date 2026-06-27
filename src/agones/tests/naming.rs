@@ -12,9 +12,9 @@ fn pvc_name_appends_data_suffix() {
 }
 
 #[test]
-fn supplied_name_is_sanitized_and_prefixed_with_game() {
+fn supplied_name_is_sanitized_and_used_without_game_prefix() {
     let name = build_instance_name("minecraft", Some("Bob's World!"), 0).unwrap();
-    assert_eq!(name, "minecraft-bob-s-world");
+    assert_eq!(name, "bob-s-world");
 }
 
 #[test]

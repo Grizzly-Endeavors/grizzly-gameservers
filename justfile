@@ -12,6 +12,22 @@ default: ci-local
 run *args:
     cargo run -- {{args}}
 
+# Start the bot locally (detached), reading secrets from .env.
+bot-start:
+    ./scripts/local-bot.sh start
+
+# Stop the locally-running bot.
+bot-stop:
+    ./scripts/local-bot.sh stop
+
+# Restart the local bot (pick up .env changes).
+bot-restart:
+    ./scripts/local-bot.sh restart
+
+# Follow the local bot's logs.
+bot-logs:
+    ./scripts/local-bot.sh logs
+
 # Run the full test suite (quiet format).
 test:
     cargo test --quiet
