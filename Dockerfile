@@ -11,7 +11,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release --locked --bin grizzly-gameservers
+# `-p` (package scope), not `--bin`: at a virtual workspace root `--bin` selects
+# every member for feature resolution, which would needlessly build the
+# supervisor's deps into this image. `-p` confines the build to the bot.
+RUN cargo build --release --locked -p grizzly-gameservers
 
 FROM debian:trixie-slim
 RUN apt-get update \

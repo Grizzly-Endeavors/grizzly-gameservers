@@ -15,12 +15,18 @@ FROM rust:1-slim-trixie AS builder
 # build-essential covers the C toolchain a few transitive build scripts want; the
 # supervisor itself pulls no OpenSSL (reqwest is built without a TLS backend — it
 # only talks to the loopback Agones SDK).
+#
+# `-p grizzly-supervisor` (package scope) — NOT `--bin` — is load-bearing: at a
+# virtual workspace root `--bin` selects every member for feature resolution, so
+# the bot's native-tls reqwest would unify in and drag openssl-sys into this
+# build (which this slim image deliberately can't satisfy). `-p` confines feature
+# unification to the supervisor's own graph.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release --locked --bin grizzly-supervisor
+RUN cargo build --release --locked -p grizzly-supervisor
 
 FROM itzg/minecraft-server:java25-jdk
 COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
