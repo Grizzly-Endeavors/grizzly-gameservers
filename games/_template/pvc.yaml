@@ -1,0 +1,16 @@
+# Per-instance world/state. The ops agent mutates files here live; it is friend
+# state, not infra, and never committed to git. iscsi-zfs (default, RWO) is
+# network block storage, so it reattaches across nodes and the pod can still
+# land anywhere. Use iscsi-zfs-retain if a world must survive PVC deletion.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: REPLACE_GAME-data
+  namespace: game-servers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-zfs
+  resources:
+    requests:
+      storage: 5Gi             # REPLACE — size to the game

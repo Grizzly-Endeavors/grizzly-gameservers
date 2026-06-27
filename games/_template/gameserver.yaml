@@ -1,0 +1,107 @@
+# Skeleton for a new game. Copy this directory to games/<game>/ and replace the
+# REPLACE_* placeholders. The security baseline below is deliberate: it passes
+# the gate's k8s semgrep rules and is PodSecurity "restricted"-compatible, so a
+# new game is gate-clean by default and ready for when the namespace is gated.
+# Adjust only what a specific game genuinely needs (and say why in a comment).
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: REPLACE_GAME            # e.g. minecraft, valheim
+  namespace: game-servers
+spec:
+  # Required when the pod has multiple containers (game + readiness sidecar):
+  # names which container owns the game port.
+  container: REPLACE_GAME
+  ports:
+    - name: REPLACE_GAME
+      # None: Agones doesn't manage a hostPort; reachability is the NodePort
+      # Service (service.yaml). kube-proxy routes to the pod on any node, so no
+      # node-pinning — see docs/decisions/002-nodeport-no-node-pin.md.
+      portPolicy: None
+      containerPort: 0          # REPLACE with the game's listen port
+      protocol: TCP             # REPLACE (UDP for many games; see note in README)
+  health:
+    # Give the server time to boot before Agones starts health-gating it.
+    initialDelaySeconds: 180
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: REPLACE_GAME
+    spec:
+      # Pod-level security baseline. runAsNonRoot + a non-root UID; fsGroup so
+      # the mounted data volume is writable by that user. seccompProfile keeps
+      # the pod in PodSecurity "restricted". Adjust runAsUser to the UID the
+      # game image actually runs as (e.g. itzg/minecraft-server uses 1000).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: REPLACE_GAME
+          image: REPLACE_IMAGE          # pin a tag/digest — no floating :latest
+          env: []                       # REPLACE with the game's config env
+          ports:
+            - name: REPLACE_GAME
+              containerPort: 0          # REPLACE (match spec.ports.containerPort)
+              protocol: TCP
+          # Container hardening. readOnlyRootFilesystem means the game may only
+          # write to mounted volumes — give it a writable /tmp (emptyDir) and a
+          # data volume (PVC) for state. Add more emptyDir mounts for any other
+          # path the image writes to.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data          # REPLACE with the game's data dir
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              # Whole-CPU limit — fractional limits cause throttling and the gate
+              # flags them. Size to the game; omit the limit entirely if bursting
+              # is preferable to a hard cap.
+              cpu: "2"
+              memory: 4Gi
+        - name: agones-ready
+          # Bridges non-instrumented games to the Agones lifecycle: waits for the
+          # game port, marks the GameServer Ready via the auto-injected SDK
+          # sidecar's REST API (localhost:9358), then keeps health pinged.
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until nc -z 127.0.0.1 REPLACE_PORT; do sleep 5; done
+              wget -q -O- --post-data='{}' http://127.0.0.1:9358/ready
+              while true; do
+                wget -q -O- --post-data='{}' http://127.0.0.1:9358/health >/dev/null 2>&1 || true
+                sleep 10
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: "1"
+              memory: 32Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: REPLACE_GAME-data
+        - name: tmp
+          emptyDir: {}

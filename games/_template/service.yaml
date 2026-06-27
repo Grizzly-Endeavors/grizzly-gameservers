@@ -1,0 +1,22 @@
+# NodePort exposure. kube-proxy opens the nodePort on every node and routes to
+# the GameServer pod wherever it's scheduled, so the static edge reaches it
+# without node-pinning. nodePort must be in 7000-7010 (the edge-forwarded band;
+# apiserver --service-node-port-range was widened to allow it). externalTraffic
+# Policy: Cluster is required so a node without the pod still forwards (it SNATs,
+# so the pod sees a node IP, not the player's).
+apiVersion: v1
+kind: Service
+metadata:
+  name: REPLACE_GAME
+  namespace: game-servers
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: REPLACE_GAME
+  ports:
+    - name: REPLACE_GAME
+      port: 0                 # REPLACE with the game's listen port
+      targetPort: 0           # REPLACE (match the container port)
+      nodePort: 0             # REPLACE with a free port in 7000-7010
+      protocol: TCP
