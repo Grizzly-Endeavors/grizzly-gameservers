@@ -50,6 +50,14 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: GAMESERVERS_DOMAIN
               value: {{ .Values.bot.domain | quote }}
+            {{- if .Values.bot.adminRoleId }}
+            - name: GAMESERVERS_ADMIN_ROLE_ID
+              value: {{ .Values.bot.adminRoleId | quote }}
+            {{- end }}
+            {{- if .Values.bot.adminUserIds }}
+            - name: GAMESERVERS_ADMIN_USER_IDS
+              value: {{ .Values.bot.adminUserIds | quote }}
+            {{- end }}
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:

@@ -37,6 +37,12 @@ pub(crate) struct ServerSummary {
     pub(crate) address: Option<String>,
 }
 
+/// Compose the friend-facing connection address `<name>.<domain>:<node_port>`.
+/// Single definition shared by the lister and the provisioner.
+pub(crate) fn server_address(name: &str, domain: &str, node_port: i32) -> String {
+    format!("{name}.{domain}:{node_port}")
+}
+
 /// Build a [`ServerSummary`], composing the connection address as
 /// `<name>.<domain>:<node_port>` when a `NodePort` was resolved for the server.
 pub(crate) fn summarize(
@@ -48,7 +54,7 @@ pub(crate) fn summarize(
     ServerSummary {
         name: name.to_owned(),
         state: state.unwrap_or("Unknown").to_owned(),
-        address: node_port.map(|port| format!("{name}.{domain}:{port}")),
+        address: node_port.map(|port| server_address(name, domain, port)),
     }
 }
 

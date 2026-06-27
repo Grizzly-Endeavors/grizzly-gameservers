@@ -19,5 +19,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home --shell /usr/sbin/nologin appuser
 COPY --from=builder /app/target/release/grizzly-gameservers /usr/local/bin/grizzly-gameservers
+# The per-game catalog the shim renders per instance. Read-only at runtime;
+# GAMESERVERS_CATALOG_DIR defaults to this path.
+COPY --from=builder /app/games /usr/local/share/grizzly-gameservers/games
 USER 1000
 ENTRYPOINT ["/usr/local/bin/grizzly-gameservers"]

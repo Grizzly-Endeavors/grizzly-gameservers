@@ -1,0 +1,442 @@
+use std::collections::BTreeSet;
+use std::ops::RangeInclusive;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Service};
+use kube::api::{Api, DeleteParams, ListParams, PostParams};
+use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
+use kube::{Client, Error as KubeError};
+use tokio::sync::Mutex;
+use tracing::{debug, error, warn};
+
+use super::catalog::{GameCatalog, GameCatalogEntry};
+use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
+use super::labels::{GAME_KEY, is_managed};
+use super::naming::{pvc_name, select_free_port};
+use super::types::{GameServer, server_address};
+
+/// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
+/// Services lease a port from here; the range bounds how many servers can run.
+const PORT_RANGE: RangeInclusive<i32> = 7000..=7010;
+
+/// How long `/create` and `/start` wait for a server to report Ready before
+/// telling the friend it is "still starting". Generous because first-boot world
+/// generation plus the readiness sidecar's SDK call can take minutes.
+const READY_TIMEOUT: Duration = Duration::from_secs(300);
+const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Outcome of a `/create`. Expected friend-visible results (name clash, no free
+/// ports) are values, not errors; `Err` is reserved for cluster/internal faults.
+pub(crate) enum CreateOutcome {
+    Created { address: String, ready: bool },
+    AlreadyExists,
+    PortsExhausted,
+}
+
+pub(crate) enum StopOutcome {
+    Stopped,
+    NotFound,
+    NotManaged,
+}
+
+pub(crate) enum StartOutcome {
+    Started { address: String, ready: bool },
+    AlreadyRunning,
+    NotFound,
+    NotManaged,
+    UnknownGame(String),
+}
+
+pub(crate) enum RemoveOutcome {
+    Removed,
+    NotFound,
+    NotManaged,
+}
+
+/// Provision a new per-world instance: lease a port, create its Service, PVC and
+/// `GameServer`, then wait for it to come up. The `lock` serializes the
+/// port-lease→Service-create critical section so concurrent creates can't claim
+/// the same `NodePort`; readiness polling happens after the lock is released.
+///
+/// # Errors
+///
+/// Returns an error if the cluster cannot be reached or an object create fails
+/// for a reason other than a recoverable port clash.
+pub(crate) async fn create_instance(
+    client: &Client,
+    namespace: &str,
+    domain: &str,
+    lock: &Mutex<()>,
+    entry: &GameCatalogEntry,
+    instance_name: &str,
+) -> Result<CreateOutcome> {
+    let address = {
+        let _guard = lock.lock().await;
+        match provision_under_lock(client, namespace, domain, entry, instance_name).await? {
+            Provisioned::Created(address) => address,
+            Provisioned::AlreadyExists => return Ok(CreateOutcome::AlreadyExists),
+            Provisioned::PortsExhausted => return Ok(CreateOutcome::PortsExhausted),
+        }
+    };
+    let ready = wait_for_ready(client, namespace, instance_name).await?;
+    Ok(CreateOutcome::Created { address, ready })
+}
+
+enum Provisioned {
+    Created(String),
+    AlreadyExists,
+    PortsExhausted,
+}
+
+async fn provision_under_lock(
+    client: &Client,
+    namespace: &str,
+    domain: &str,
+    entry: &GameCatalogEntry,
+    instance_name: &str,
+) -> Result<Provisioned> {
+    if instance_exists(client, namespace, instance_name).await? {
+        return Ok(Provisioned::AlreadyExists);
+    }
+
+    let used = used_ports(client, namespace).await?;
+    let mut excluded = BTreeSet::new();
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+
+    loop {
+        let Some(port) = select_free_port(&used, &excluded, PORT_RANGE) else {
+            return Ok(Provisioned::PortsExhausted);
+        };
+        let identity = InstanceIdentity {
+            name: instance_name.to_owned(),
+            game: entry.id.clone(),
+            namespace: namespace.to_owned(),
+            node_port: port,
+        };
+        let service = render_service(entry, &identity)?;
+        match services.create(&PostParams::default(), &service).await {
+            Ok(_) => {}
+            Err(err) if is_port_conflict(&err) => {
+                warn!(
+                    port,
+                    instance = instance_name,
+                    "nodeport already taken, retrying with next free port"
+                );
+                excluded.insert(port);
+                continue;
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to create service for {instance_name}"));
+            }
+        }
+
+        if let Err(err) = create_storage_and_server(client, namespace, entry, &identity).await {
+            error!(error = ?err, instance = instance_name, "create failed after service; rolling back");
+            best_effort_remove(client, namespace, instance_name).await;
+            return Err(err);
+        }
+        return Ok(Provisioned::Created(server_address(
+            instance_name,
+            domain,
+            port,
+        )));
+    }
+}
+
+async fn create_storage_and_server(
+    client: &Client,
+    namespace: &str,
+    entry: &GameCatalogEntry,
+    identity: &InstanceIdentity,
+) -> Result<()> {
+    let pvc = render_pvc(entry, identity)?;
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    pvcs.create(&PostParams::default(), &pvc)
+        .await
+        .with_context(|| format!("failed to create pvc for {}", identity.name))?;
+
+    let gameserver = render_gameserver(entry, identity)?;
+    gameserver_api(client, namespace)
+        .create(&PostParams::default(), &gameserver)
+        .await
+        .with_context(|| format!("failed to create gameserver for {}", identity.name))?;
+    Ok(())
+}
+
+/// Stop a running instance: delete only its `GameServer`, leaving the Service
+/// (and its leased port) and the PVC in place so `/start` resumes the same
+/// address with the same world.
+///
+/// # Errors
+///
+/// Returns an error if the cluster cannot be reached.
+pub(crate) async fn stop_instance(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> Result<StopOutcome> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let Some(service) = services
+        .get_opt(name)
+        .await
+        .with_context(|| format!("failed to read service {name}"))?
+    else {
+        return Ok(StopOutcome::NotFound);
+    };
+    if !is_managed(service.metadata.labels.as_ref()) {
+        return Ok(StopOutcome::NotManaged);
+    }
+    delete_if_present(&gameserver_api(client, namespace), name).await?;
+    Ok(StopOutcome::Stopped)
+}
+
+/// Start a previously stopped instance: recreate its `GameServer` bound to the
+/// existing PVC, reusing the retained Service and its port.
+///
+/// # Errors
+///
+/// Returns an error if the cluster cannot be reached, the retained Service is
+/// malformed, or the `GameServer` create fails for a reason other than the server
+/// already running.
+pub(crate) async fn start_instance(
+    client: &Client,
+    namespace: &str,
+    domain: &str,
+    catalog: &GameCatalog,
+    name: &str,
+) -> Result<StartOutcome> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let Some(service) = services
+        .get_opt(name)
+        .await
+        .with_context(|| format!("failed to read service {name}"))?
+    else {
+        return Ok(StartOutcome::NotFound);
+    };
+    if !is_managed(service.metadata.labels.as_ref()) {
+        return Ok(StartOutcome::NotManaged);
+    }
+
+    let game = service
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(GAME_KEY))
+        .cloned()
+        .with_context(|| format!("managed service {name} is missing its game label"))?;
+    let Some(entry) = catalog.get(&game) else {
+        return Ok(StartOutcome::UnknownGame(game));
+    };
+    let node_port = service_node_port(&service)
+        .with_context(|| format!("managed service {name} has no nodeport"))?;
+
+    let identity = InstanceIdentity {
+        name: name.to_owned(),
+        game,
+        namespace: namespace.to_owned(),
+        node_port,
+    };
+    let gameserver = render_gameserver(entry, &identity)?;
+    match gameserver_api(client, namespace)
+        .create(&PostParams::default(), &gameserver)
+        .await
+    {
+        Ok(_) => {}
+        Err(err) if is_already_exists(&err) => return Ok(StartOutcome::AlreadyRunning),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to start gameserver {name}"));
+        }
+    }
+    let ready = wait_for_ready(client, namespace, name).await?;
+    Ok(StartOutcome::Started {
+        address: server_address(name, domain, node_port),
+        ready,
+    })
+}
+
+/// Tear an instance down completely: delete its `GameServer`, Service and PVC.
+/// This destroys the world.
+///
+/// # Errors
+///
+/// Returns an error if the cluster cannot be reached or a delete fails for a
+/// reason other than the object already being gone.
+pub(crate) async fn remove_instance(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> Result<RemoveOutcome> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let Some(service) = services
+        .get_opt(name)
+        .await
+        .with_context(|| format!("failed to read service {name}"))?
+    else {
+        return Ok(RemoveOutcome::NotFound);
+    };
+    if !is_managed(service.metadata.labels.as_ref()) {
+        return Ok(RemoveOutcome::NotManaged);
+    }
+    delete_if_present(&gameserver_api(client, namespace), name).await?;
+    delete_if_present(&services, name).await?;
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    delete_if_present(&pvcs, &pvc_name(name)).await?;
+    Ok(RemoveOutcome::Removed)
+}
+
+/// Names of every shim-managed instance (running or stopped), for autocomplete.
+///
+/// # Errors
+///
+/// Returns an error if services cannot be listed.
+pub(crate) async fn list_instance_names(client: &Client, namespace: &str) -> Result<Vec<String>> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let list = services
+        .list(&ListParams::default())
+        .await
+        .with_context(|| format!("failed to list services in namespace {namespace}"))?;
+    let mut names: Vec<String> = list
+        .items
+        .iter()
+        .filter(|service| is_managed(service.metadata.labels.as_ref()))
+        .filter_map(|service| service.metadata.name.clone())
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObject> {
+    let gvk = GroupVersionKind::gvk("agones.dev", "v1", "GameServer");
+    let resource = ApiResource::from_gvk(&gvk);
+    Api::namespaced_with(client.clone(), namespace, &resource)
+}
+
+async fn instance_exists(client: &Client, namespace: &str, name: &str) -> Result<bool> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    if services
+        .get_opt(name)
+        .await
+        .with_context(|| format!("failed to check for existing service {name}"))?
+        .is_some()
+    {
+        return Ok(true);
+    }
+    let exists = gameserver_api(client, namespace)
+        .get_opt(name)
+        .await
+        .with_context(|| format!("failed to check for existing gameserver {name}"))?
+        .is_some();
+    Ok(exists)
+}
+
+async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let list = services
+        .list(&ListParams::default())
+        .await
+        .with_context(|| format!("failed to list services in namespace {namespace}"))?;
+
+    let mut ports = BTreeSet::new();
+    for service in &list.items {
+        if let Some(port) = service_node_port(service)
+            && PORT_RANGE.contains(&port)
+        {
+            ports.insert(port);
+        }
+    }
+    Ok(ports)
+}
+
+fn service_node_port(service: &Service) -> Option<i32> {
+    service
+        .spec
+        .as_ref()?
+        .ports
+        .as_ref()?
+        .iter()
+        .find_map(|port| port.node_port)
+}
+
+async fn wait_for_ready(client: &Client, namespace: &str, name: &str) -> Result<bool> {
+    let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
+    let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+    let mut ticker = tokio::time::interval(POLL_INTERVAL);
+
+    loop {
+        ticker.tick().await;
+        match gameservers.get_opt(name).await {
+            Ok(Some(gameserver)) => {
+                if is_ready(&gameserver) {
+                    return Ok(true);
+                }
+            }
+            Ok(None) => debug!(name, "gameserver not yet visible to the api"),
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to poll readiness of {name}"));
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+    }
+}
+
+fn is_ready(gameserver: &GameServer) -> bool {
+    matches!(
+        gameserver
+            .status
+            .as_ref()
+            .and_then(|status| status.state.as_deref()),
+        Some("Ready" | "Allocated")
+    )
+}
+
+async fn best_effort_remove(client: &Client, namespace: &str, name: &str) {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    for outcome in [
+        delete_if_present(&gameserver_api(client, namespace), name).await,
+        delete_if_present(&services, name).await,
+        delete_if_present(&pvcs, &pvc_name(name)).await,
+    ] {
+        if let Err(err) = outcome {
+            warn!(error = ?err, instance = name, "rollback delete failed; manual cleanup may be needed");
+        }
+    }
+}
+
+async fn delete_if_present<K>(api: &Api<K>, name: &str) -> Result<()>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    match api.delete(name, &DeleteParams::default()).await {
+        Ok(_) => Ok(()),
+        Err(err) if is_not_found(&err) => {
+            debug!(name, "object already absent");
+            Ok(())
+        }
+        Err(err) => Err(err).with_context(|| format!("failed to delete {name}")),
+    }
+}
+
+fn api_status_code(err: &KubeError) -> Option<u16> {
+    if let KubeError::Api(response) = err {
+        Some(response.code)
+    } else {
+        None
+    }
+}
+
+fn is_not_found(err: &KubeError) -> bool {
+    api_status_code(err) == Some(404)
+}
+
+fn is_already_exists(err: &KubeError) -> bool {
+    api_status_code(err) == Some(409)
+}
+
+fn is_port_conflict(err: &KubeError) -> bool {
+    api_status_code(err) == Some(422)
+}

@@ -57,3 +57,18 @@ fn server_without_address_shows_placeholder() {
         "missing address should render a placeholder, got: {rendered}"
     );
 }
+
+#[test]
+fn stopped_server_keeps_its_state_and_retained_address() {
+    let servers = [summary(
+        "minecraft-ab12",
+        "Stopped",
+        Some("minecraft-ab12.gameservers.bearflinn.com:7003"),
+    )];
+    let rendered = format_server_list(&servers);
+    assert!(
+        rendered.contains("Stopped")
+            && rendered.contains("minecraft-ab12.gameservers.bearflinn.com:7003"),
+        "stopped instance should still show its retained address, got: {rendered}"
+    );
+}

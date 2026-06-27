@@ -1,0 +1,5 @@
+# Skeleton skipped by the loader because the directory name starts with '_'.
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: REPLACE_GAME

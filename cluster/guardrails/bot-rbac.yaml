@@ -1,7 +1,8 @@
-# The Discord bot's identity and permissions. Strictly read-only and separate
-# from the ops-agent (which can patch gameservers and exec into pods) — the bot
-# only lists what is running and resolves connection addresses, so it gets
-# nothing it does not need. Namespace-scoped, never cluster-wide.
+# The Discord bot's identity and permissions. The bot provisions per-world
+# instances on command (create/stop/start/remove), so it can create and delete
+# GameServers, their NodePort Services and their PVCs — but nothing more. It is
+# separate from the ops-agent (which patches gameservers and execs into pods),
+# never patches or execs, and is namespace-scoped, never cluster-wide.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -14,14 +15,22 @@ metadata:
   name: discord-bot
   namespace: game-servers
 rules:
-  # List gameservers and read their lifecycle state.
+  # List gameservers and read lifecycle state; create/delete them for
+  # create/stop/start/remove. No patch/update — every lifecycle path replaces
+  # objects rather than mutating in place.
   - apiGroups: ["agones.dev"]
     resources: ["gameservers"]
-    verbs: ["get", "list", "watch"]
-  # Resolve each gameserver's NodePort to build the friend-facing address.
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Resolve NodePorts for addresses, and create/delete the per-instance Service
+  # that exposes each world. /stop deliberately retains the Service.
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "create", "delete"]
+  # Per-world persistent storage: created on /create, retained across /stop,
+  # deleted only on /remove.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

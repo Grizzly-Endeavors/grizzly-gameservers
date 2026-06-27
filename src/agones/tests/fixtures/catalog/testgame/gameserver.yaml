@@ -1,0 +1,7 @@
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: testgame
+  namespace: game-servers
+spec:
+  container: testgame

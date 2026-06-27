@@ -22,13 +22,33 @@ pub async fn run(config: BotConfig) -> Result<()> {
         .await
         .context("failed to initialize kubernetes client")?;
 
+    let catalog = std::sync::Arc::new(
+        agones::load_catalog(&config.catalog_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to load game catalog from {}",
+                    config.catalog_dir.display()
+                )
+            })?,
+    );
+
     let namespace = config.namespace;
     let domain = config.domain;
+    let admin_role_id = config.admin_role_id;
+    let admin_user_ids: std::sync::Arc<[u64]> = config.admin_user_ids.into();
+    let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let guild_id = serenity::GuildId::new(config.guild_id);
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![commands::servers()],
+            commands: vec![
+                commands::servers(),
+                commands::create(),
+                commands::stop(),
+                commands::start(),
+                commands::remove(),
+            ],
             ..Default::default()
         })
         .setup(move |ctx, _ready, framework| {
@@ -43,6 +63,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
                     kube_client,
                     namespace,
                     domain,
+                    catalog,
+                    provision_lock,
+                    admin_role_id,
+                    admin_user_ids,
                 })
             })
         })

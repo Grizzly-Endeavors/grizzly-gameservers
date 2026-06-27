@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
@@ -6,9 +6,12 @@ use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::warn;
 
+use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::{GameServer, ServerSummary, summarize};
 
-const GAMESERVER_SELECTOR_KEY: &str = "agones.dev/gameserver";
+/// State label shown for a managed instance whose Service (and leased port)
+/// still exist but whose `GameServer` has been torn down by `/stop`.
+const STOPPED_STATE: &str = "Stopped";
 
 /// List every Agones `GameServer` in `namespace`, joining each to its
 /// `NodePort` Service to resolve a connection address under `domain`.
@@ -37,8 +40,10 @@ pub(crate) async fn list_active_servers(
     let node_port_by_server = node_ports_by_gameserver(&svc_list.items);
 
     let mut summaries = Vec::with_capacity(gs_list.items.len());
+    let mut live: HashSet<&str> = HashSet::new();
     for gameserver in &gs_list.items {
         let name = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
+        live.insert(name);
         let state = gameserver
             .status
             .as_ref()
@@ -53,7 +58,42 @@ pub(crate) async fn list_active_servers(
         summaries.push(summarize(name, state, node_port, domain));
     }
 
+    append_stopped_instances(&svc_list.items, &live, domain, &mut summaries);
     Ok(summaries)
+}
+
+/// A `/stop` deletes the `GameServer` but keeps its Service, so a managed Service
+/// with no live `GameServer` behind it is a stopped instance. Surface those so a
+/// friend can see — and `/start` — a world that is currently down.
+fn append_stopped_instances(
+    services: &[Service],
+    live: &HashSet<&str>,
+    domain: &str,
+    summaries: &mut Vec<ServerSummary>,
+) {
+    for service in services {
+        if !is_managed(service.metadata.labels.as_ref()) {
+            continue;
+        }
+        let Some(spec) = service.spec.as_ref() else {
+            continue;
+        };
+        let Some(target) = spec
+            .selector
+            .as_ref()
+            .and_then(|selector| selector.get(GAMESERVER_SELECTOR_KEY))
+        else {
+            continue;
+        };
+        if live.contains(target.as_str()) {
+            continue;
+        }
+        let node_port = spec
+            .ports
+            .as_ref()
+            .and_then(|ports| ports.iter().find_map(|port| port.node_port));
+        summaries.push(summarize(target, Some(STOPPED_STATE), node_port, domain));
+    }
 }
 
 /// Map each `NodePort` Service's targeted gameserver (via its

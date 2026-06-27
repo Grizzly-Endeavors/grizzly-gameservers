@@ -24,6 +24,61 @@ fn parses_required_fields_and_applies_defaults() {
         config.domain, "gameservers.bearflinn.com",
         "domain should default"
     );
+    assert_eq!(config.admin_role_id, None, "admin role is optional");
+    assert!(config.admin_user_ids.is_empty(), "allowlist defaults empty");
+    assert_eq!(
+        config.catalog_dir,
+        std::path::PathBuf::from("/usr/local/share/grizzly-gameservers/games"),
+        "catalog dir should default to the baked path"
+    );
+}
+
+#[test]
+fn parses_admin_role_and_user_allowlist() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("GAMESERVERS_ADMIN_ROLE_ID", "555"),
+        ("GAMESERVERS_ADMIN_USER_IDS", "10, 20 ,30,"),
+        ("GAMESERVERS_CATALOG_DIR", "/srv/games"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(config.admin_role_id, Some(555));
+    assert_eq!(
+        config.admin_user_ids,
+        vec![10, 20, 30],
+        "allowlist should split on commas and tolerate spaces and a trailing comma"
+    );
+    assert_eq!(config.catalog_dir, std::path::PathBuf::from("/srv/games"));
+}
+
+#[test]
+fn non_numeric_admin_role_is_an_error() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("GAMESERVERS_ADMIN_ROLE_ID", "not-a-number"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("GAMESERVERS_ADMIN_ROLE_ID"),
+        "error should name the offending variable, got: {err}"
+    );
+}
+
+#[test]
+fn non_numeric_user_in_allowlist_is_an_error() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("GAMESERVERS_ADMIN_USER_IDS", "10,nope,30"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("GAMESERVERS_ADMIN_USER_IDS"),
+        "error should name the offending variable, got: {err}"
+    );
 }
 
 #[test]

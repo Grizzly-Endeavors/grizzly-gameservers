@@ -1,0 +1,4 @@
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: brokengame

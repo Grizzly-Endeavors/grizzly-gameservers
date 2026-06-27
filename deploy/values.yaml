@@ -18,7 +18,13 @@ bot:
   replicas: 1
   guildId: "" # Discord guild (server) id for guild-scoped slash command registration
   domain: gameservers.bearflinn.com # base domain for friend-facing connection addresses
+  # Authorization for the mutating commands (create/stop/start/remove). Set at
+  # least one; a friend needs the role or to be on the user-id allowlist.
+  adminRoleId: "" # Discord role id allowed to manage servers
+  adminUserIds: "" # comma-separated Discord user ids allowed to manage servers
   logLevel: info # RUST_LOG value
+  # Per-game catalog path baked into the image; override only if relocated.
+  # catalogDir: /usr/local/share/grizzly-gameservers/games
   resources:
     requests:
       cpu: 50m
