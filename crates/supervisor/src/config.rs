@@ -1,0 +1,133 @@
+use std::ffi::OsString;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow};
+
+/// Closure that resolves an environment variable to its raw value, mirroring
+/// `std::env::var_os`. Injected so config parsing is testable without the
+/// `unsafe` `set_var`/`remove_var` of Rust 2024.
+pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
+
+/// The itzg entrypoint the supervisor wraps as its child process.
+const DEFAULT_CHILD_CMD: &str = "/start";
+const DEFAULT_GAME_PORT: u16 = 25565;
+/// Not in the 7000–7010 `NodePort` band and not 9358 (the Agones SDK).
+const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Where the auto-injected Agones SDK sidecar serves its REST API.
+const DEFAULT_SDK_BASE_URL: &str = "http://127.0.0.1:9358";
+/// 5s gives a 3× margin against the catalog health budget
+/// (periodSeconds 15 × failureThreshold 5 = 75s).
+const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 5;
+/// Generous relative to a Minecraft world-save before we SIGKILL.
+const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+/// Sliding window over which repeated crashes count toward escalation.
+const DEFAULT_CRASH_WINDOW_SECS: u64 = 300;
+/// Crashes within the window before the supervisor stops the heartbeat and lets
+/// Agones recreate the pod.
+const DEFAULT_CRASH_THRESHOLD: u32 = 5;
+
+/// Runtime configuration for the supervisor, sourced from the process
+/// environment. Every knob has a default so the container can run with no env.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupervisorConfig {
+    /// Command launched as the supervised child (the game server entrypoint).
+    pub child_command: String,
+    /// TCP port the game accepts connections on, probed for readiness.
+    pub game_port: u16,
+    /// Port the HTTP control API binds (pod-internal; never NodePort-exposed).
+    pub control_port: u16,
+    /// Base URL of the Agones SDK sidecar's REST API.
+    pub sdk_base_url: String,
+    /// How often to ping the SDK `/health` endpoint.
+    pub health_interval: Duration,
+    /// How long to wait for a graceful child exit before SIGKILL.
+    pub graceful_timeout: Duration,
+    /// Sliding window for crash-rate escalation.
+    pub crash_window: Duration,
+    /// Crash count within `crash_window` that triggers escalation.
+    pub crash_threshold: u32,
+}
+
+impl SupervisorConfig {
+    /// Build configuration from the real process environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a set variable is non-UTF-8 or fails to parse as its
+    /// expected numeric type.
+    pub fn from_env() -> Result<Self> {
+        Self::from_env_with(&|key| std::env::var_os(key))
+    }
+
+    /// Build configuration from an injected environment lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a set variable is non-UTF-8 or fails to parse as its
+    /// expected numeric type.
+    pub fn from_env_with(lookup: EnvLookup) -> Result<Self> {
+        let child_command = optional(lookup, "SUPERVISOR_CHILD_CMD")
+            .unwrap_or_else(|| DEFAULT_CHILD_CMD.to_owned());
+        let game_port =
+            optional_parse(lookup, "SUPERVISOR_GAME_PORT")?.unwrap_or(DEFAULT_GAME_PORT);
+        let control_port =
+            optional_parse(lookup, "SUPERVISOR_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
+        let sdk_base_url =
+            optional(lookup, "AGONES_SDK_HTTP").unwrap_or_else(|| DEFAULT_SDK_BASE_URL.to_owned());
+        let health_interval = Duration::from_secs(
+            optional_parse(lookup, "SUPERVISOR_HEALTH_INTERVAL_SECS")?
+                .unwrap_or(DEFAULT_HEALTH_INTERVAL_SECS),
+        );
+        let graceful_timeout = Duration::from_secs(
+            optional_parse(lookup, "SUPERVISOR_GRACEFUL_TIMEOUT_SECS")?
+                .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
+        );
+        let crash_window = Duration::from_secs(
+            optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
+                .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
+        );
+        let crash_threshold = optional_parse(lookup, "SUPERVISOR_CRASH_THRESHOLD")?
+            .unwrap_or(DEFAULT_CRASH_THRESHOLD);
+
+        Ok(Self {
+            child_command,
+            game_port,
+            control_port,
+            sdk_base_url,
+            health_interval,
+            graceful_timeout,
+            crash_window,
+            crash_threshold,
+        })
+    }
+}
+
+fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
+    lookup(key).and_then(|raw| raw.into_string().ok())
+}
+
+/// Parse an optional variable into any `FromStr` numeric type, surfacing both
+/// non-UTF-8 and parse failures with the offending key and value.
+fn optional_parse<T>(lookup: EnvLookup, key: &str) -> Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match lookup(key) {
+        Some(raw) => {
+            let text = raw
+                .into_string()
+                .map_err(|bad| anyhow!("{key} is not valid UTF-8: {}", bad.display()))?;
+            let value = text
+                .parse::<T>()
+                .map_err(|err| anyhow!("{key} is invalid ({err}), got {text:?}"))
+                .with_context(|| format!("failed to parse {key}"))?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/config.rs"]
+mod tests;

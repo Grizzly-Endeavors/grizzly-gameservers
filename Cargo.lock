@@ -733,6 +733,10 @@ dependencies = [
 [[package]]
 name = "grizzly-supervisor"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grizzly-control-api",
+]
 
 [[package]]
 name = "hashbrown"
