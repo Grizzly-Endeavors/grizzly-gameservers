@@ -8,8 +8,8 @@ Snapshot as of the initial scaffold + edge deploy. Delete this file once the ser
 
 ## Pending pushes (required to activate)
 
-1. **This repo** — `feat/scaffold-service-structure` is committed locally but unpushed. Merge to `main` and push so the scaffold/design lands on the remote.
-2. **grizzly-platform** — `feat/game-server-edge-forwarding` is committed locally but unpushed. Merge to **`master`** and push. Flux watches `master` and auto-applies, so this is what registers the app (`kubernetes/apps/grizzly-gameservers/`). Until then the Flux source/release does not exist in the cluster.
+1. ~~**This repo** — merge to `main` and push.~~ **Done** — the scaffold/design is on `main`.
+2. **grizzly-platform** — `feat/game-server-edge-forwarding` is committed locally but **intentionally held** (unpushed). Merge to **`master`** and push to register the app with Flux (`kubernetes/apps/grizzly-gameservers/`); Flux watches `master` and auto-applies. Held on purpose: until the real `deploy/` chart exists, this only creates an empty placeholder HelmRelease, and it would churn (failing source/release retries) if `master` lands before this repo's `main` is reachable by the Flux GitHub App or before the chart resolves. Push it together with the first real chart.
 
 ## Still not live even after those pushes (needs implementation)
 
