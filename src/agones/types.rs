@@ -28,11 +28,13 @@ pub(crate) struct GameServerStatus {
     pub(crate) state: Option<String>,
 }
 
-/// Friend-facing summary of one game server: its name, current Agones state,
-/// and the address to connect to (absent when no `NodePort` is exposed yet).
+/// Friend-facing summary of one game server: its name, the catalog game it runs
+/// (absent only if the label is somehow missing), current Agones state, and the
+/// address to connect to (absent when no `NodePort` is exposed yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServerSummary {
     pub(crate) name: String,
+    pub(crate) game: Option<String>,
     pub(crate) state: String,
     pub(crate) address: Option<String>,
 }
@@ -47,12 +49,14 @@ pub(crate) fn server_address(name: &str, domain: &str, node_port: i32) -> String
 /// `<name>.<domain>:<node_port>` when a `NodePort` was resolved for the server.
 pub(crate) fn summarize(
     name: &str,
+    game: Option<&str>,
     state: Option<&str>,
     node_port: Option<i32>,
     domain: &str,
 ) -> ServerSummary {
     ServerSummary {
         name: name.to_owned(),
+        game: game.map(str::to_owned),
         state: state.unwrap_or("Unknown").to_owned(),
         address: node_port.map(|port| server_address(name, domain, port)),
     }

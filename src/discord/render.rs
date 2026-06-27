@@ -47,7 +47,15 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
         .iter()
         .map(|server| {
             let address = server.address.as_deref().unwrap_or(NO_ADDRESS);
-            format!("• **{}** — {} — `{}`", server.name, server.state, address)
+            let game = server
+                .game
+                .as_deref()
+                .map(|game| format!(" · {game}"))
+                .unwrap_or_default();
+            format!(
+                "• **{}**{} — {} — `{}`",
+                server.name, game, server.state, address
+            )
         })
         .collect();
     EmbedSpec {
@@ -181,6 +189,17 @@ pub(crate) fn error_embed(message: &str) -> CreateEmbed {
         title: "Something went wrong".to_owned(),
         colour: COLOUR_ERROR,
         body: message.to_owned(),
+    }
+    .into_embed()
+}
+
+/// Amber "in progress" embed shown while a long operation runs, so the friend
+/// sees the bot is working rather than staring at a silent multi-minute wait.
+pub(crate) fn working_embed(title: &str, body: &str) -> CreateEmbed {
+    EmbedSpec {
+        title: format!("⏳ {title}"),
+        colour: COLOUR_PENDING,
+        body: body.to_owned(),
     }
     .into_embed()
 }

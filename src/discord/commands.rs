@@ -10,12 +10,13 @@ use tracing::error;
 use super::auth::require_admin;
 use super::render::{
     create_result_embed, error_embed, neutral_embed, remove_confirm_embed, remove_result_embed,
-    server_list_embed, start_result_embed, stop_result_embed,
+    server_list_embed, start_result_embed, stop_result_embed, working_embed,
 };
 use super::{Context, Error};
 use crate::agones::{
-    build_instance_name, create_instance, list_active_servers, list_instance_names,
-    remove_instance, start_instance, stop_instance,
+    CreateOutcome, ProvisionOutcome, StartBegin, StartOutcome, begin_start, build_instance_name,
+    list_active_servers, list_instance_names, provision_instance, remove_instance, stop_instance,
+    wait_for_instance_ready,
 };
 
 /// How long the dropdown / confirm components stay live before we give up
@@ -155,7 +156,17 @@ async fn finish_create(
         }
     };
 
-    match create_instance(
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Launching {game}"),
+                &format!("Setting up **{instance}**…"),
+            )),
+        )
+        .await?;
+
+    match provision_instance(
         &data.kube_client,
         &data.namespace,
         &data.domain,
@@ -165,9 +176,32 @@ async fn finish_create(
     )
     .await
     {
-        Ok(outcome) => {
+        Ok(ProvisionOutcome::Provisioned { address }) => {
+            await_ready(ctx, reply, &instance, address, |address, ready| {
+                create_result_embed(&CreateOutcome::Created { address, ready }, &instance)
+            })
+            .await?;
+        }
+        Ok(ProvisionOutcome::AlreadyExists) => {
             reply
-                .edit(ctx, cleared(create_result_embed(&outcome, &instance)))
+                .edit(
+                    ctx,
+                    cleared(create_result_embed(
+                        &CreateOutcome::AlreadyExists,
+                        &instance,
+                    )),
+                )
+                .await?;
+        }
+        Ok(ProvisionOutcome::PortsExhausted) => {
+            reply
+                .edit(
+                    ctx,
+                    cleared(create_result_embed(
+                        &CreateOutcome::PortsExhausted,
+                        &instance,
+                    )),
+                )
                 .await?;
         }
         Err(err) => {
@@ -185,6 +219,50 @@ async fn finish_create(
     Ok(())
 }
 
+/// Show the connection address immediately, then poll until the server reports
+/// Ready and write the final embed. Shared by `/create` and `/start`, whose
+/// readiness wait can run for minutes — `finalize` builds the done-embed from the
+/// resolved address and readiness so each caller keeps its own wording.
+async fn await_ready(
+    ctx: Context<'_>,
+    reply: &poise::ReplyHandle<'_>,
+    name: &str,
+    address: String,
+    finalize: impl FnOnce(String, bool) -> serenity::CreateEmbed,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("{name} is booting"),
+                &format!(
+                    "Address: `{address}` — it'll be playable in a minute or two. Hang tight."
+                ),
+            )),
+        )
+        .await?;
+
+    match wait_for_instance_ready(&data.kube_client, &data.namespace, name).await {
+        Ok(ready) => {
+            reply.edit(ctx, cleared(finalize(address, ready))).await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %name, "failed to wait for readiness");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "The server was created, but I lost track of whether it came online. \
+                         Check `/servers` in a minute.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Stop a running server, keeping its world so it can be started again later.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn stop(
@@ -194,18 +272,28 @@ pub(crate) async fn stop(
     server: String,
 ) -> Result<(), Error> {
     let data = ctx.data();
-    ctx.defer().await?;
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Stopping {server}"),
+            "Shutting it down and saving the world…",
+        )))
+        .await?;
     match stop_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
-            ctx.send(reply_with(stop_result_embed(&outcome, &server)))
+            reply
+                .edit(ctx, cleared(stop_result_embed(&outcome, &server)))
                 .await?;
         }
         Err(err) => {
             error!(error = ?err, server = %server, "failed to stop game server");
-            ctx.send(reply_with(error_embed(
-                "Couldn't stop the server right now. Try again in a moment.",
-            )))
-            .await?;
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't stop the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
         }
     }
     Ok(())
@@ -220,8 +308,13 @@ pub(crate) async fn start(
     server: String,
 ) -> Result<(), Error> {
     let data = ctx.data();
-    ctx.defer().await?;
-    match start_instance(
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Starting {server}"),
+            "Waking it up…",
+        )))
+        .await?;
+    let begin = match begin_start(
         &data.kube_client,
         &data.namespace,
         &data.domain,
@@ -230,19 +323,51 @@ pub(crate) async fn start(
     )
     .await
     {
-        Ok(outcome) => {
-            ctx.send(reply_with(start_result_embed(&outcome, &server)))
-                .await?;
-        }
+        Ok(begin) => begin,
         Err(err) => {
             error!(error = ?err, server = %server, "failed to start game server");
-            ctx.send(reply_with(error_embed(
-                "Couldn't start the server right now. Try again in a moment.",
-            )))
-            .await?;
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't start the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+            return Ok(());
         }
+    };
+
+    if let StartBegin::Starting { address } = begin {
+        await_ready(ctx, &reply, &server, address, |address, ready| {
+            start_result_embed(&StartOutcome::Started { address, ready }, &server)
+        })
+        .await?;
+    } else {
+        reply
+            .edit(
+                ctx,
+                cleared(start_result_embed(&begin_to_outcome(begin), &server)),
+            )
+            .await?;
     }
     Ok(())
+}
+
+/// Map the non-`Starting` start outcomes onto their [`StartOutcome`] for
+/// rendering. `Starting` is excluded — it carries an address and is finalized via
+/// [`await_ready`] only after readiness is known.
+fn begin_to_outcome(begin: StartBegin) -> StartOutcome {
+    match begin {
+        StartBegin::Starting { address } => StartOutcome::Started {
+            address,
+            ready: false,
+        },
+        StartBegin::AlreadyRunning => StartOutcome::AlreadyRunning,
+        StartBegin::NotFound => StartOutcome::NotFound,
+        StartBegin::NotManaged => StartOutcome::NotManaged,
+        StartBegin::UnknownGame(game) => StartOutcome::UnknownGame(game),
+    }
 }
 
 /// Permanently remove a server and delete its world.
@@ -307,6 +432,16 @@ pub(crate) async fn remove(
             .await?;
         return Ok(());
     }
+
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Deleting {server}"),
+                "Removing the server and its world…",
+            )),
+        )
+        .await?;
 
     match remove_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {

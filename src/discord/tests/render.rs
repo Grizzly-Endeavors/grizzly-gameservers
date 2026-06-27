@@ -2,9 +2,10 @@
 
 use super::*;
 
-fn summary(name: &str, state: &str, address: Option<&str>) -> ServerSummary {
+fn summary(name: &str, game: Option<&str>, state: &str, address: Option<&str>) -> ServerSummary {
     ServerSummary {
         name: name.to_owned(),
+        game: game.map(str::to_owned),
         state: state.to_owned(),
         address: address.map(str::to_owned),
     }
@@ -27,12 +28,14 @@ fn empty_list_renders_friendly_message_and_neutral_colour() {
 fn populated_list_renders_one_line_per_server_with_address() {
     let servers = [
         summary(
-            "minecraft",
+            "survival",
+            Some("minecraft"),
             "Ready",
-            Some("minecraft.gameservers.bearflinn.com:7000"),
+            Some("survival.gameservers.bearflinn.com:7000"),
         ),
         summary(
             "valheim",
+            Some("valheim"),
             "Allocated",
             Some("valheim.gameservers.bearflinn.com:7001"),
         ),
@@ -43,16 +46,22 @@ fn populated_list_renders_one_line_per_server_with_address() {
     assert_eq!(lines.len(), 2, "one line per server expected");
     let first = lines.first().copied().unwrap();
     assert!(
-        first.contains("minecraft")
+        first.contains("survival")
+            && first.contains("minecraft")
             && first.contains("Ready")
-            && first.contains("minecraft.gameservers.bearflinn.com:7000"),
-        "first line should describe minecraft with its address, got: {first}"
+            && first.contains("survival.gameservers.bearflinn.com:7000"),
+        "first line should show the world name, its game, state, and address, got: {first}"
     );
 }
 
 #[test]
 fn list_with_a_ready_server_is_green() {
-    let servers = [summary("minecraft", "Ready", Some("mc:7000"))];
+    let servers = [summary(
+        "survival",
+        Some("minecraft"),
+        "Ready",
+        Some("mc:7000"),
+    )];
     assert_eq!(
         server_list_spec(&servers).colour,
         COLOUR_UP,
@@ -62,7 +71,7 @@ fn list_with_a_ready_server_is_green() {
 
 #[test]
 fn list_with_no_ready_servers_stays_neutral() {
-    let servers = [summary("minecraft", "Scheduled", None)];
+    let servers = [summary("survival", Some("minecraft"), "Scheduled", None)];
     let spec = server_list_spec(&servers);
     assert_eq!(
         spec.colour, COLOUR_NEUTRAL,
@@ -71,6 +80,17 @@ fn list_with_no_ready_servers_stays_neutral() {
     assert!(
         spec.body.contains(NO_ADDRESS),
         "missing address should render a placeholder, got: {}",
+        spec.body
+    );
+}
+
+#[test]
+fn server_without_a_game_label_still_lists() {
+    let servers = [summary("orphan", None, "Ready", Some("orphan:7000"))];
+    let spec = server_list_spec(&servers);
+    assert!(
+        spec.body.contains("orphan") && !spec.body.contains(" · "),
+        "a server with no game label should render without the game separator, got: {}",
         spec.body
     );
 }

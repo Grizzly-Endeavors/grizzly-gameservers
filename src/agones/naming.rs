@@ -21,21 +21,22 @@ pub(crate) fn pvc_name(instance: &str) -> String {
     format!("{instance}{PVC_SUFFIX}")
 }
 
-/// Build the full instance name `<game>-<id>` for a `/create`. When `raw` is
-/// `Some`, it is a friend-supplied world name that gets sanitized to an RFC1123
-/// label segment; when `None`, a short id is generated from `entropy` (injected
-/// so the function stays pure and testable — callers pass a clock-derived value).
+/// Build the instance name for a `/create`. When `raw` is `Some`, the
+/// friend-supplied world name is used verbatim (sanitized to an RFC1123 label
+/// segment) — no game prefix, since the game is tracked as a label and read
+/// back from there. When `None`, a `<game>-<id>` name is generated from
+/// `entropy` (injected so the function stays pure and testable) so unnamed
+/// worlds are still identifiable at a glance.
 ///
 /// # Errors
 ///
 /// Returns an error if a supplied name has no usable alphanumeric characters,
-/// or if the resulting `<game>-<id>` would exceed the length budget.
+/// or if the resulting name would exceed the length budget.
 pub(crate) fn build_instance_name(game: &str, raw: Option<&str>, entropy: u64) -> Result<String> {
-    let id = match raw {
+    let name = match raw {
         Some(supplied) => sanitize_label_segment(supplied)?,
-        None => base36_suffix(entropy, GENERATED_ID_LEN),
+        None => format!("{game}-{}", base36_suffix(entropy, GENERATED_ID_LEN)),
     };
-    let name = format!("{game}-{id}");
     if name.len() > MAX_INSTANCE_LEN {
         bail!("name '{name}' is too long (max {MAX_INSTANCE_LEN} characters)");
     }

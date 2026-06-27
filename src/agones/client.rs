@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
@@ -6,7 +6,7 @@ use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::warn;
 
-use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
+use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::{GameServer, ServerSummary, summarize};
 
 /// State label shown for a managed instance whose Service (and leased port)
@@ -55,7 +55,8 @@ pub(crate) async fn list_active_servers(
                 "no NodePort service matched gameserver; address omitted"
             );
         }
-        summaries.push(summarize(name, state, node_port, domain));
+        let game = label_value(gameserver.metadata.labels.as_ref(), GAME_KEY);
+        summaries.push(summarize(name, game, state, node_port, domain));
     }
 
     append_stopped_instances(&svc_list.items, &live, domain, &mut summaries);
@@ -92,8 +93,20 @@ fn append_stopped_instances(
             .ports
             .as_ref()
             .and_then(|ports| ports.iter().find_map(|port| port.node_port));
-        summaries.push(summarize(target, Some(STOPPED_STATE), node_port, domain));
+        let game = label_value(service.metadata.labels.as_ref(), GAME_KEY);
+        summaries.push(summarize(
+            target,
+            game,
+            Some(STOPPED_STATE),
+            node_port,
+            domain,
+        ));
     }
+}
+
+/// Read a single label value off an object's label map, if present.
+fn label_value<'a>(labels: Option<&'a BTreeMap<String, String>>, key: &str) -> Option<&'a str> {
+    labels.and_then(|map| map.get(key)).map(String::as_str)
 }
 
 /// Map each `NodePort` Service's targeted gameserver (via its
