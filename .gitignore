@@ -4,3 +4,6 @@
 .env
 .vscode/
 .claude/settings.local.json
+
+# grizzly-gate local run output
+grizzly-gate-report/
