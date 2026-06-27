@@ -12,6 +12,29 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.103"
 grizzly-control-api = { path = "../control-api" }
+dotenvy = "0.15.7"
+# axum drives the in-pod control API; hyper/tower are already in the workspace
+# tree (via the bot's serenity), so this unifies rather than adds a new stack.
+axum = "0.8.7"
+# Plaintext HTTP only — the SDK is on loopback (127.0.0.1:9358), so no TLS
+# backend is pulled in.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.52.3", features = [
+    "macros",
+    "rt-multi-thread",
+    "process",
+    "net",
+    "signal",
+    "time",
+    "sync",
+] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# libc::kill delivers SIGTERM to the child for a graceful world-save; the only
+# unsafe in the crate, scoped at the FFI boundary.
+libc = "0.2"
 
 [lints]
 workspace = true

@@ -10,4 +10,9 @@
 //! state machine is unit-testable without spawning processes or opening sockets.
 
 pub mod config;
+pub mod control;
+pub mod process;
+pub mod readiness;
+pub mod runner;
+pub mod sdk;
 pub mod state;

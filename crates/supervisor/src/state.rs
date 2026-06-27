@@ -75,6 +75,13 @@ impl SupervisorState {
         self.pid
     }
 
+    /// Whether the Agones SDK `/ready` has been signalled at least once, so the
+    /// runner calls it only on first boot and not on warm relaunches.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.readied
+    }
+
     /// Record that a child process has been launched.
     pub fn on_started(&mut self, pid: u32, now: Instant) {
         self.pid = Some(pid);

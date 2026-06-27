@@ -8,6 +8,22 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Suffix the supervisor passes to the Agones SDK `SetLabel` call to publish its
+/// process state. Agones prefixes SDK-set labels with `agones.dev/sdk-`, so the
+/// label lands on the `GameServer` as [`PROCESS_LABEL_KEY`].
+pub const PROCESS_LABEL_SUFFIX: &str = "grizzly-process";
+
+/// The full label key the bot reads off a `GameServer` to tell a paused server
+/// (process down, pod up) from a running one. Kept beside the suffix the
+/// supervisor writes so the two never drift.
+pub const PROCESS_LABEL_KEY: &str = "agones.dev/sdk-grizzly-process";
+
+/// Value of [`PROCESS_LABEL_KEY`] while the game process is running.
+pub const PROCESS_LABEL_RUNNING: &str = "running";
+
+/// Value of [`PROCESS_LABEL_KEY`] while the game process is intentionally stopped.
+pub const PROCESS_LABEL_STOPPED: &str = "stopped";
+
 /// A control action the bot can ask the supervisor to perform, identified by the
 /// HTTP method + path it arrives on. Not a wire *body* — it is the routing key,
 /// shared so the client builds the same paths the server matches.
