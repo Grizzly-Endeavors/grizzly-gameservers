@@ -1,0 +1,12 @@
+[package]
+name = "grizzly-control-api"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+
+[lints]
+workspace = true

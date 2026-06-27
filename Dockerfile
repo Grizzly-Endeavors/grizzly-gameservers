@@ -11,7 +11,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY . .
-RUN cargo build --release --locked
+RUN cargo build --release --locked --bin grizzly-gameservers
 
 FROM debian:trixie-slim
 RUN apt-get update \
