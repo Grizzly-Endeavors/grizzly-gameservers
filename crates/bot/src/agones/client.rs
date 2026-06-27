@@ -78,7 +78,7 @@ pub(crate) async fn list_active_servers(
     Ok(summaries)
 }
 
-/// A `/stop` deletes the `GameServer` but keeps its Service, so a managed Service
+/// A `/kill` deletes the `GameServer` but keeps its Service, so a managed Service
 /// with no live `GameServer` behind it is a stopped instance. Surface those so a
 /// friend can see — and `/start` — a world that is currently down.
 fn append_stopped_instances(
