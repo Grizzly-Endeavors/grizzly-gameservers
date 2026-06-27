@@ -1,0 +1,42 @@
+# The egress leash — the guardrail that matters most (docs/design/00-overview.md
+# → "Ops-agent guardrails"). Both game-server pods and the ops-agent workload
+# run in this namespace driven by friends' arbitrary free text, so a confused or
+# prompt-injected pod must not be able to pivot into the rest of the platform.
+#
+# This restricts EGRESS only. Ingress is intentionally left open: these are
+# internet-facing game servers reached through the NodePort edge, and with
+# externalTrafficPolicy: Cluster the source IP is SNAT'd to a node anyway, so
+# locking ingress buys little. Per-game ingress tightening can come later.
+#
+# Allowed egress: DNS, the Kubernetes API server (the Agones SDK sidecar updates
+# GameServer status through it, and the agent execs/patches/allocates through
+# it), and the public internet — but NOT private RFC1918 space, so OpenBao
+# (10.0.0.200), other namespaces, and LAN hosts are unreachable.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: game-servers-egress-leash
+  namespace: game-servers
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+            - 169.254.0.0/16
+            - 100.64.0.0/10

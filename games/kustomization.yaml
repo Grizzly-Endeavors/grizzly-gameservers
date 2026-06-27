@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Rendered by the grizzly-gameservers-games Flux Kustomization (path ./games),
+# which dependsOn grizzly-gameservers-cluster so Agones CRDs exist before these
+# GameServer CRs apply. _template/ is a doc skeleton, not a kustomize resource.
+resources:
+  - minecraft

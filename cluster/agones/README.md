@@ -1,12 +1,7 @@
 # cluster/agones
 
-**Placeholder — no implementation yet.**
+Agones operator standup, gated here on purpose — the gate vets external repos before deploy, so security-sensitive standup belongs where the gate sees it, not in `grizzly-platform`. See `docs/design/00-overview.md` → "Gate + Flux integration".
 
-Agones operator standup, gated here on purpose (the gate vets external repos before deploy, so security-sensitive standup belongs where the gate sees it — not in `grizzly-platform`). See `docs/design/00-overview.md` → "Gate + Flux integration".
-
-What will live here:
-
-- Agones install (Helm values / HelmRelease — packaging decision is open: dependency of the `deploy/` chart vs. separate gated release; see Open Decisions in the design doc).
-- The configured dynamic port range, which must match the edge range (**7000–7010**) forwarded by `grizzly-platform` ansible.
-
-CRD-before-CR ordering must be expressed however this gets packaged so a cold sync doesn't apply GameServer/Fleet CRs against missing CRDs.
+- `helmrepository.yaml` / `helmrelease.yaml` — Agones (pinned `1.58.0`) installed into `agones-system` as its own Flux `HelmRelease`, independent of the app `deploy/` chart. CRDs install with the chart (`crds: CreateReplace`), so a cold sync applies CRDs before any GameServer CR. The `./games` Flux Kustomization `dependsOn` this one for CRD-before-CR ordering.
+- Watches the `game-servers` namespace (`gameservers.namespaces`); that namespace ships in `cluster/guardrails` and must exist before this release provisions its per-namespace SDK RBAC — both render under the same `./cluster` Kustomization.
+- Agones' own dynamic hostPort range is pinned to `8000–8100`, clear of the `7000–7010` NodePort band the edge forwards. Game servers are exposed via NodePort Services (see `games/`), not hostPort, so this range should stay unused; the offset just prevents an accidental `Dynamic` GameServer from grabbing an edge port.

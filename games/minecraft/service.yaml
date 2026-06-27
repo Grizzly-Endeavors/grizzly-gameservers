@@ -1,0 +1,24 @@
+# NodePort exposure. kube-proxy opens nodePort 7000 on every node and routes to
+# the GameServer pod wherever it's scheduled, so the static edge (which DNATs
+# 7000-7010 to a single node) reaches the pod without node-pinning.
+#
+# nodePort 7000 requires the apiserver --service-node-port-range to include 7000
+# (extended in grizzly-platform); until that lands this Service fails to admit.
+# externalTrafficPolicy: Cluster is required so a node without the pod still
+# forwards — it SNATs, so the pod sees a node IP rather than the real client.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minecraft
+  namespace: game-servers
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: minecraft
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565
+      nodePort: 7000
+      protocol: TCP

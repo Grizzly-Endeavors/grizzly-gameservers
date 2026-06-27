@@ -1,0 +1,17 @@
+# Per-instance world state. The ops agent mutates files here live (server.properties,
+# mods); it is friend state, not infra, and is never committed to git. Single
+# standalone server → a single named PVC the GameServer pod reattaches across
+# restarts. iscsi-zfs (default, RWO) reattaches across nodes since it's network
+# block storage, so the pod can still land anywhere.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minecraft-data
+  namespace: game-servers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-zfs
+  resources:
+    requests:
+      storage: 5Gi
