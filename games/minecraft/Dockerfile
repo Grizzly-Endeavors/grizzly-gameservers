@@ -10,21 +10,30 @@
 #
 # CI gate-signs the resulting image (ADR-020); the upstream itzg base is the only
 # unsigned layer and rides the same Kyverno carve-out as the Agones SDK sidecar.
-
-FROM rust:1-slim-trixie AS builder
-# build-essential covers the C toolchain a few transitive build scripts want; the
-# supervisor itself pulls no OpenSSL (reqwest is built without a TLS backend — it
-# only talks to the loopback Agones SDK).
 #
-# `-p grizzly-supervisor` (package scope) — NOT `--bin` — is load-bearing: at a
-# virtual workspace root `--bin` selects every member for feature resolution, so
-# the bot's native-tls reqwest would unify in and drag openssl-sys into this
-# build (which this slim image deliberately can't satisfy). `-p` confines feature
-# unification to the supervisor's own graph.
+# Built in cargo-chef stages so a source-only change reuses the cached dependency
+# build instead of recompiling the whole tree: `prepare` distills the workspace
+# into a dependency recipe, `cook` builds just the deps (a layer that stays cached
+# until Cargo.toml/Cargo.lock change), then the final build recompiles only the
+# workspace crates. `-p grizzly-supervisor` (package scope, NOT --bin) is
+# load-bearing: at a virtual workspace root --bin selects every member for
+# feature resolution, dragging the bot's native-tls reqwest (and openssl-sys)
+# into this image, which the slim builder deliberately can't satisfy.
+
+FROM rust:1-slim-trixie AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked
 WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-supervisor
 COPY . .
 RUN cargo build --release --locked -p grizzly-supervisor
 

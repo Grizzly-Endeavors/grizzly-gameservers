@@ -44,6 +44,10 @@ spec:
           # Composite image: grizzly supervisor (PID 1) wrapping itzg's server.
           # CI replaces the tag with the gate-signed digest (ADR-020).
           image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-minecraft:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          # Superseded once CI pins a gate-signed digest (digests are immutable).
+          imagePullPolicy: Always
           env:
             - name: EULA
               value: "TRUE"

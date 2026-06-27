@@ -1,9 +1,12 @@
+# target/ MUST stay excluded — otherwise COPY . . overlays the host build dir
+# onto the cargo-chef-cooked deps and defeats the dependency cache.
 target/
 .git/
 .github/
 docs/
 deploy/
 cluster/
-games/
+# games/ is intentionally NOT excluded: the bot image bakes the per-game catalog
+# in (COPY /app/games). The game images don't need it but it's tiny.
 *.md
 .env

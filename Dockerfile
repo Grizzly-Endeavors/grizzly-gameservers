@@ -4,16 +4,27 @@
 # stage needs the OpenSSL headers and a C toolchain (also required by ring), and
 # the runtime stage needs the OpenSSL runtime + CA certificates. That rules out a
 # fully static distroless image; debian-slim is the smallest sane runtime here.
+#
+# cargo-chef stages cache the dependency build so a source-only change rebuilds
+# only the workspace crates. `-p grizzly-gameservers` (package scope, not --bin)
+# confines feature resolution and the build to the bot; see games/minecraft/
+# Dockerfile for why that distinction matters at a virtual workspace root.
 
-FROM rust:1-slim-trixie AS builder
+FROM rust:1-slim-trixie AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked
 WORKDIR /app
+
+FROM chef AS planner
 COPY . .
-# `-p` (package scope), not `--bin`: at a virtual workspace root `--bin` selects
-# every member for feature resolution, which would needlessly build the
-# supervisor's deps into this image. `-p` confines the build to the bot.
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-gameservers
+COPY . .
 RUN cargo build --release --locked -p grizzly-gameservers
 
 FROM debian:trixie-slim
