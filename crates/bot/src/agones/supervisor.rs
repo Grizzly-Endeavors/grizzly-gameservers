@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use grizzly_control_api::{ControlCommand, ControlOk, ResultKind};
 use k8s_openapi::api::core::v1::{Pod, Service};
@@ -7,6 +9,14 @@ use tracing::warn;
 
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::GameServer;
+
+/// Per-request timeout for the mutating supervisor calls. `/stop` and `/restart`
+/// reply only after the in-pod graceful stop finishes (Minecraft's SIGTERM
+/// world-save), so this must exceed the supervisor's `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`
+/// (90s default) plus respawn margin — otherwise the bot times out and reports a
+/// failure while the restart actually succeeds. The client's short default still
+/// applies to cheap calls; this overrides it only where the work is genuinely slow.
+const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Where an instance is in the warm/cold spectrum, used to route `/start`:
 /// a live pod takes the fast supervisor path; a killed one needs a reschedule.
@@ -169,7 +179,12 @@ async fn supervisor_action(
     };
 
     let url = format!("http://{pod_ip}:{control_port}{}", command.path());
-    match http.post(&url).send().await {
+    match http
+        .post(&url)
+        .timeout(CONTROL_MUTATION_TIMEOUT)
+        .send()
+        .await
+    {
         Ok(response) if response.status().is_success() => {
             let ok: ControlOk = response
                 .json()

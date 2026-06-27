@@ -33,8 +33,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
             })?,
     );
 
-    // Short timeout: the supervisor control API is one in-cluster hop away, so a
-    // slow response means a stuck pod, not a far server.
+    // Short default: the supervisor control API is one in-cluster hop away, so a
+    // slow response usually means a stuck pod, not a far server. The mutating
+    // stop/restart calls override this per-request (they block on the in-pod
+    // graceful stop) — see CONTROL_MUTATION_TIMEOUT in agones::supervisor.
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
