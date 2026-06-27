@@ -23,6 +23,10 @@ This is a gated first-party app under the ADR-020 delivery model: root `gate-con
 - `games/` — per-game base GameServer/Fleet templates.
 - `docs/design/` — design of record; `docs/decisions/` — ADRs as decisions resolve.
 
+## Running the bot locally
+
+Use `scripts/local-bot.sh {start|stop|restart|status|logs}` (or `just bot-start` / `bot-stop` / `bot-logs`) to run the Discord bot against the cluster in your current kubeconfig context. Secrets come from the repo-root `.env` (loaded by the binary via dotenvy): `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`, and `GAMESERVERS_ADMIN_USER_IDS` (comma-separated Discord user ids) / `GAMESERVERS_ADMIN_ROLE_ID` to authorize the mutating commands. The script overrides `GAMESERVERS_CATALOG_DIR` to the in-repo `games/` because the compiled default is the in-container path. It builds, launches the binary detached, writes the pid to `target/local-bot.pid`, and streams output to `target/local-bot.log`. After editing `.env` you must `restart` for changes to take effect.
+
 ## Naming
 
 - **Domain-specific names**: prefer descriptive names that match the domain (`send_chat_completion` over generic `run`, `spawn_widget_window` over `handle`).
