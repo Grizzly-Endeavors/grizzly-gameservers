@@ -17,6 +17,9 @@ metadata:
   name: minecraft
   namespace: game-servers
 spec:
+  # The pod runs two containers (minecraft + the readiness sidecar), so Agones
+  # requires naming which one owns the game port.
+  container: minecraft
   ports:
     - name: minecraft
       portPolicy: None
