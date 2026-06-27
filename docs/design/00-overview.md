@@ -87,10 +87,10 @@ Only two things — everything else is here:
 
 ## Open decisions
 
-- **Node-pin vs. NodePort** for reaching game-server pods from the edge (see Edge forwarding).
-- **Agones packaging** — install as a Helm dependency of the `deploy/` chart vs. a separate gated HelmRelease in the repo. Affects CRD-before-CR ordering.
+- ~~**Node-pin vs. NodePort**~~ — resolved: NodePort, no node-pinning ([ADR-002](../decisions/002-nodeport-no-node-pin.md)).
+- ~~**Agones packaging**~~ — resolved: standalone gated HelmRelease ([ADR-001](../decisions/001-agones-packaging.md)).
 - **NL front door** — whether/when to add an LLM intent-parser so friends can describe servers in plain English (slash commands cover v1 deterministically; the parser is a bolt-on that must emit *validated* params, never construct k8s objects directly).
-- **Per-game catalog format** — how `games/<game>/` expresses image + defaults + port shape + persistence.
+- **Per-game catalog format** — how `games/<game>/` expresses image + defaults + port shape + persistence. Seeded by `games/minecraft/`; not yet generalized.
 
 ## Rejected alternatives (brief)
 
