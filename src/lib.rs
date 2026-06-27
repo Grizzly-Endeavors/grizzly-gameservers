@@ -1,0 +1,95 @@
+mod agones;
+mod config;
+mod discord;
+
+pub use config::BotConfig;
+
+use anyhow::{Context as _, Result};
+use poise::serenity_prelude as serenity;
+use tracing::{error, info};
+
+use discord::{Data, commands};
+
+/// Start the Discord bot: connect to Kubernetes, register the guild-scoped
+/// slash commands, and run the gateway loop until a shutdown signal arrives.
+///
+/// # Errors
+///
+/// Returns an error if the Kubernetes client cannot be initialized, the Discord
+/// client cannot be built, or the gateway loop terminates abnormally.
+pub async fn run(config: BotConfig) -> Result<()> {
+    let kube_client = kube::Client::try_default()
+        .await
+        .context("failed to initialize kubernetes client")?;
+
+    let namespace = config.namespace;
+    let domain = config.domain;
+    let guild_id = serenity::GuildId::new(config.guild_id);
+
+    let framework = poise::Framework::builder()
+        .options(poise::FrameworkOptions {
+            commands: vec![commands::servers()],
+            ..Default::default()
+        })
+        .setup(move |ctx, _ready, framework| {
+            Box::pin(async move {
+                poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id)
+                    .await?;
+                info!(
+                    guild = guild_id.get(),
+                    "registered guild-scoped slash commands"
+                );
+                Ok(Data {
+                    kube_client,
+                    namespace,
+                    domain,
+                })
+            })
+        })
+        .build();
+
+    let intents = serenity::GatewayIntents::non_privileged();
+    let mut client = serenity::ClientBuilder::new(config.token, intents)
+        .framework(framework)
+        .await
+        .context("failed to build discord client")?;
+
+    let shard_manager = std::sync::Arc::clone(&client.shard_manager);
+    tokio::spawn(async move {
+        wait_for_shutdown().await;
+        info!("shutdown signal received, stopping discord client");
+        shard_manager.shutdown_all().await;
+    });
+
+    client
+        .start()
+        .await
+        .context("discord gateway loop failed")?;
+    Ok(())
+}
+
+/// Resolve once SIGINT (Ctrl-C) or SIGTERM is received. SIGTERM is what
+/// Kubernetes sends on pod termination, so both must drain the gateway.
+async fn wait_for_shutdown() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(stream) => stream,
+        Err(err) => {
+            error!(error = %err, "failed to install SIGTERM handler; relying on SIGINT only");
+            if let Err(ctrl_c_err) = tokio::signal::ctrl_c().await {
+                error!(error = %ctrl_c_err, "failed to listen for SIGINT");
+            }
+            return;
+        }
+    };
+
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(err) = result {
+                error!(error = %err, "failed to listen for SIGINT");
+            }
+        }
+        _ = sigterm.recv() => {}
+    }
+}

@@ -4,7 +4,14 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+ignore = [
+    # `derivative` is unmaintained — an informational notice, not a
+    # vulnerability. It is pulled transitively by poise 0.6.2 (our Discord
+    # command framework) with no upstream fix available while we are on poise.
+    # Scoped to this one ID: vulnerabilities and every other advisory still
+    # fail closed. Revisit and remove when poise drops the dependency.
+    "RUSTSEC-2024-0388",
+]
 
 [licenses]
 # Don't fail when the allow list includes a license no dependency actually uses.

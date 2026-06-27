@@ -1,0 +1,57 @@
+use kube::CustomResource;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Minimal typed view of the Agones `GameServer` custom resource. Only the
+/// fields the bot reads are modelled; serde ignores the rest of the spec and
+/// status, so this stays decoupled from Agones' full schema.
+#[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[kube(
+    group = "agones.dev",
+    version = "v1",
+    kind = "GameServer",
+    namespaced,
+    status = "GameServerStatus"
+)]
+pub(crate) struct GameServerSpec {
+    /// Name of the container that owns the game port. Unused by the listing,
+    /// present so the spec type is non-empty and round-trips cleanly.
+    #[serde(default)]
+    pub(crate) container: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GameServerStatus {
+    /// Agones lifecycle state (`Scheduled`, `Ready`, `Allocated`, ...).
+    #[serde(default)]
+    pub(crate) state: Option<String>,
+}
+
+/// Friend-facing summary of one game server: its name, current Agones state,
+/// and the address to connect to (absent when no `NodePort` is exposed yet).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServerSummary {
+    pub(crate) name: String,
+    pub(crate) state: String,
+    pub(crate) address: Option<String>,
+}
+
+/// Build a [`ServerSummary`], composing the connection address as
+/// `<name>.<domain>:<node_port>` when a `NodePort` was resolved for the server.
+pub(crate) fn summarize(
+    name: &str,
+    state: Option<&str>,
+    node_port: Option<i32>,
+    domain: &str,
+) -> ServerSummary {
+    ServerSummary {
+        name: name.to_owned(),
+        state: state.unwrap_or("Unknown").to_owned(),
+        address: node_port.map(|port| format!("{name}.{domain}:{port}")),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/types.rs"]
+mod tests;
