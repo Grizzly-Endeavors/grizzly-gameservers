@@ -1,6 +1,21 @@
 # Sidecar Agent Interface — Exploration
 
-**Status:** Exploration / pre-implementation. No decisions finalized.
+**Status:** Partially implemented. The **process-supervision + lifecycle control** portion has shipped (`crates/supervisor/`, `crates/control-api/`, and the bot's `crates/bot/src/agones/supervisor.rs`); see "What shipped" below. The agent-facing **dock / file-mutation / console-bridge / in-game-trigger** surface remains exploratory.
+
+## What shipped
+
+A thin Rust supervisor (`grizzly-supervisor`) is **baked into the game image as its entrypoint** (`games/minecraft/Dockerfile`), launching the game server as a child process. It owns the Agones SDK lifecycle (calls `/ready` once the game accepts connections, then keeps `/health` pinged — including while the game is intentionally paused, so the pod survives) and serves an HTTP control API on `:9359`. The Discord bot drives it for in-place lifecycle:
+
+- `/stop` → pause the game process; pod stays up (fast resume) → **Paused**.
+- `/kill` → delete the `GameServer` (pod gone), keep Service+PVC → **Stopped** (cold resume).
+- `/restart` → bounce the process in place.
+- `/start` → state-aware: warm (pod up) resumes via the supervisor; cold (killed) reschedules.
+
+This resolved two of the open questions below in the *opposite* direction from the original lean — see there.
+
+---
+
+**Original exploration follows.**
 
 ## The question
 
@@ -62,7 +77,8 @@ Friends watching the Discord server won't see in-game queries unless we explicit
 
 ## Open questions
 
-- Should the sidecar be a sidecar container (separate container, shared pod network) or baked into the game server image? Sidecar container is preferred — avoids touching game server base images and keeps the binary separate from the game process.
-- Process supervisor model (sidecar owns game server stdin/stdout as a child process) vs. log-file + RCON model: the latter is simpler and sufficient for the games likely in scope. Revisit if a game needs stdin and has no RCON.
+- ~~Should the sidecar be a sidecar container or baked into the game server image?~~ **Resolved: baked into the game image as the entrypoint.** A separate sidecar container can signal the game process but can't relaunch it — once the game (the container's PID 1) exits, the container exits and the pod reschedules (the slow cluster path). Making the supervisor PID 1, with the game as its child, is what enables in-place stop/start/restart while the pod, PVC and Agones allocation all survive. The cost is a custom image per game (`FROM <upstream>` + the binary), gate-signed in CI.
+- ~~Process supervisor model vs. log-file + RCON model?~~ **Resolved: process supervisor.** RCON can issue in-game commands but can't restart the server *process* — a Minecraft `/stop` just exits the process, which (without a supervisor) bounces the pod. The supervisor owns the child's lifecycle directly; graceful stop rides itzg's existing SIGTERM→world-save, so no RCON dependency for lifecycle. RCON remains the likely channel for the *agent's* in-game `send_command`, separately.
 - In-game trigger prefix is TBD — `!agent` is a reasonable default but may conflict with game commands or other bots.
 - Response length and formatting: game chat has line-length limits. The agent prompt will need instructions to keep in-game responses short and plain-text.
+- Control-port authn is NetworkPolicy-only for now; a shared bearer token is tracked in issue #2.
