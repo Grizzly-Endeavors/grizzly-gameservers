@@ -1,6 +1,8 @@
 # grizzly-gameservers
 
-A Rust project.
+A Discord-driven service for spinning up and managing game servers on Grizzly Endeavors hardware. Friends issue commands in Discord; servers run as containers in the homelab Kubernetes cluster (via Agones) and are exposed through the Hetzner proxy VPS. An LLM ops agent handles per-game config tweaks and break-fixing so day-to-day operation doesn't need a human.
+
+See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architecture and [`CLAUDE.md`](CLAUDE.md) for working conventions. **Status: scaffold — design + structure only, no implementation yet.**
 
 ## Build
 

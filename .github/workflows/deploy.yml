@@ -1,0 +1,18 @@
+# Build → GATE → deploy. PLACEHOLDER: build/deploy steps are stubbed until the
+# bot/agent and deploy chart exist. The gate caller below is the real contract
+# (see grizzly-platform .github/templates/ci/deploy-with-gate.yaml.example and
+# the root gate-config.json honest map).
+#
+# Intentionally gated behind `if: false` so it doesn't run red CI while the repo
+# is a scaffold. Flip on once there's an image to build and sign.
+name: Build and Deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  todo:
+    if: false # remove when build/gate/deploy is wired
+    runs-on: lab-runners
+    steps:
+      - run: echo "TODO: docker build → call grizzly-gate gate.yaml → bump deploy/values.yaml digest [skip ci]"

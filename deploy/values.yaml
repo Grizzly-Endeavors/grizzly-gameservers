@@ -1,0 +1,6 @@
+# Placeholder values for the grizzly-gameservers chart.
+# Real values (image, agones wiring, agent config) land with the chart templates.
+# CI bumps the image tag to the gate-signed digest per ADR-020.
+image:
+  repository: registry.registry.svc.cluster.local:5000/grizzly-gameservers
+  tag: "" # set by CI to the signed digest

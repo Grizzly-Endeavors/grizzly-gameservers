@@ -2,6 +2,27 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+## Project Overview
+
+A Discord-driven service that lets non-technical friends spin up and manage game servers on Grizzly Endeavors hardware. Game servers run as containers in the homelab Kubernetes cluster (via **Agones**); the Hetzner proxy VPS is the public edge. A friend issues a command in Discord and gets back a server address; when something needs tuning or breaks, they ping the bot. The audience is non-technical, so the bot owns the whole experience.
+
+**Read `docs/design/00-overview.md` first** — it's the architecture of record. The short version:
+
+- **Discord shim** — thin: auth the friend, map a command to an Agones allocation/teardown, return `IP:port`. No quotas/billing (friends-scale).
+- **Ops agent** — the center of gravity. An LLM loop that operates running servers (read config+logs via Agones/k8s exec, mutate the right file, restart, verify, roll back). It exists to absorb each game's idiosyncratic config layout *generically* instead of hand-rolling a per-game adapter for every game. Hard guardrails: namespace-scoped blast radius, snapshot→apply→verify→auto-rollback, and an escalation exit.
+- **Agones** — underneath, for lifecycle, dynamic port allocation, health, and the exec substrate. Not hand-rolled.
+- **Two config tiers** — *per-game* (catalog in `games/`, version-controlled, gated, Flux-deployed) vs. *per-instance* (on the server's PVC, mutated live by the agent, never in git).
+
+This is a gated first-party app under the ADR-020 delivery model: root `gate-config.json` honest map, gate-signed images, Flux renders `deploy/`. Agones standup and the agent's guardrails live in `cluster/` **here** (so the gate vets them), not in `grizzly-platform`. `grizzly-platform` keeps only the Flux registration and the edge port-range forwarding (**7000–7010**, UDP+TCP, over the `wg0` tunnel).
+
+### Repo layout
+
+- `src/` — Rust: Discord shim + ops agent + Agones client + config loader.
+- `deploy/` — Helm chart Flux renders (the bot/agent workload).
+- `cluster/` — Agones standup, agent guardrails (namespace/RBAC/NetworkPolicy), Kyverno image carve-out.
+- `games/` — per-game base GameServer/Fleet templates.
+- `docs/design/` — design of record; `docs/decisions/` — ADRs as decisions resolve.
+
 ## Naming
 
 - **Domain-specific names**: prefer descriptive names that match the domain (`send_chat_completion` over generic `run`, `spawn_widget_window` over `handle`).
