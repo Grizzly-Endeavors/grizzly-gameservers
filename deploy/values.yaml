@@ -3,7 +3,10 @@
 # CI bumps the image tag to the gate-signed digest per ADR-020.
 image:
   repository: registry.registry.svc.cluster.local:5000/grizzly-gameservers
-  tag: "" # set by CI to the signed digest
+  # Dev: a mutable tag pushed by hand (scripts: docker push localhost:5000/...).
+  # CI overwrites this with the gate-signed digest per ADR-020.
+  tag: "dev"
+  pullPolicy: Always # dev: re-pull the mutable :dev tag on each rollout
 
 # Credentials synced from OpenBao via External Secrets Operator.
 # Renders discord-bot + ollama-api Secrets into the release namespace.
@@ -16,12 +19,15 @@ externalSecrets:
 bot:
   enabled: true
   replicas: 1
-  guildId: "" # Discord guild (server) id for guild-scoped slash command registration
+  # guildId (guild-scoped slash registration) and adminUserIds (the mutating-command
+  # allowlist) are NOT set here: the repo is public, and although they are not
+  # credentials they tie a personal Discord identity to the project. Both are synced
+  # from OpenBao (grizzly-platform/gameservers/discord → guild_id, admin_user_ids)
+  # and injected via secretKeyRef in templates/deployment.yaml.
   domain: gameservers.bearflinn.com # base domain for friend-facing connection addresses
-  # Authorization for the mutating commands (create/stop/start/remove). Set at
-  # least one; a friend needs the role or to be on the user-id allowlist.
+  # Optional role-based authorization (a role id is not personally identifying, so it
+  # may stay in git). A friend needs this role or to be on the OpenBao user-id allowlist.
   adminRoleId: "" # Discord role id allowed to manage servers
-  adminUserIds: "" # comma-separated Discord user ids allowed to manage servers
   logLevel: info # RUST_LOG value
   # Per-game catalog path baked into the image; override only if relocated.
   # catalogDir: /usr/local/share/grizzly-gameservers/games

@@ -33,6 +33,7 @@ spec:
       containers:
         - name: bot
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -45,7 +46,10 @@ spec:
                   name: discord-bot
                   key: bot_token
             - name: DISCORD_GUILD_ID
-              value: {{ .Values.bot.guildId | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot
+                  key: guild_id
             - name: GAMESERVERS_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: GAMESERVERS_DOMAIN
@@ -54,10 +58,11 @@ spec:
             - name: GAMESERVERS_ADMIN_ROLE_ID
               value: {{ .Values.bot.adminRoleId | quote }}
             {{- end }}
-            {{- if .Values.bot.adminUserIds }}
             - name: GAMESERVERS_ADMIN_USER_IDS
-              value: {{ .Values.bot.adminUserIds | quote }}
-            {{- end }}
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot
+                  key: admin_user_ids
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:

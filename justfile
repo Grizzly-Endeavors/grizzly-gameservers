@@ -10,7 +10,7 @@ default: ci-local
 
 # Run the binary (if applicable).
 run *args:
-    cargo run -- {{args}}
+    cargo run --bin grizzly-gameservers -- {{args}}
 
 # Start the bot locally (detached), reading secrets from .env.
 bot-start:
@@ -27,6 +27,10 @@ bot-restart:
 # Follow the local bot's logs.
 bot-logs:
     ./scripts/local-bot.sh logs
+
+# Build a game's composite image and push it to the in-cluster registry (dev).
+game-push game="minecraft" tag="dev":
+    ./scripts/push-game-image.sh {{game}} {{tag}}
 
 # Run the full test suite (quiet format).
 test:

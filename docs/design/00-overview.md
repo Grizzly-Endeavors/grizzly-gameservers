@@ -43,6 +43,8 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 
 **Agones** — purpose-built CNCF project for running dedicated game servers on Kubernetes. Provides GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a pod to exec into, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting.
 
+**Per-pod supervisor** — a thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the bot drives to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. `/stop` pauses the process (pod stays up); `/kill` is the heavier teardown that deletes the GameServer. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md). This is also the substrate the ops agent's future file/console tools will dock into.
+
 **Edge** — a static UDP+TCP port range (**7000–7010**) forwarded once from the VPS over the existing `wg0` tunnel to the cluster. Lives in `grizzly-platform`, not here. See "Edge forwarding" below.
 
 ## Config: two tiers

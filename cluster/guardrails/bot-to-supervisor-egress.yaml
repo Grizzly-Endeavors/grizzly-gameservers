@@ -1,0 +1,34 @@
+# Bot → in-pod supervisor control API.
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) puts every pod in
+# this namespace — the bot included — into default-deny egress, with the only
+# allowed peers being kube-dns and the kube-apiserver. That deliberately blocks
+# lateral game-pod → game-pod traffic, but it also blocks the bot from reaching a
+# game pod's supervisor control port (9359) for /stop, warm /start and /restart.
+#
+# Cilium policies are additive, so this widens the bot's egress by exactly one
+# path: the bot identity → game-server pods, TCP 9359 only. Nothing else gains
+# reach to the control port — game pods still can't reach each other's, and 9359
+# is never exposed through the NodePort edge.
+#
+# NOTE: this relies on network identity alone for authn. A shared bearer token on
+# the control port is tracked as a follow-up (issue #2) for defense-in-depth
+# against an in-namespace foothold.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-to-supervisor-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            agones.dev/role: gameserver
+      toPorts:
+        - ports:
+            - port: "9359"
+              protocol: TCP

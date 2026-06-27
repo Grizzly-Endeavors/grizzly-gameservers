@@ -3,10 +3,12 @@
 # than a Fleet — promoting to Fleet + shim-managed per-instance Services is a
 # follow-up once the shim exists (docs/design/00-overview.md open decisions).
 #
-# Minecraft has no native Agones SDK integration, so a tiny readiness sidecar
-# bridges the lifecycle: it waits for the server to accept connections on 25565,
-# calls the auto-injected Agones SDK's REST /ready, then keeps /health pinged.
-# This avoids the stale (2021) agones-mc wrapper and tracks the stable SDK API.
+# The image bakes in the grizzly supervisor as its entrypoint (games/minecraft/
+# Dockerfile): it launches itzg's server as a child, owns the Agones SDK
+# lifecycle (calls /ready once the game accepts connections on 25565, then keeps
+# /health pinged — including while the game is paused), and serves an in-pod
+# control API on 9359 that the bot drives for in-place stop/start/restart. This
+# replaces the old busybox readiness sidecar.
 #
 # portPolicy: None — Agones does not manage a hostPort; reachability is via the
 # NodePort Service in service.yaml (kube-proxy routes to the pod on whatever
@@ -17,8 +19,8 @@ metadata:
   name: minecraft
   namespace: game-servers
 spec:
-  # The pod runs two containers (minecraft + the readiness sidecar), so Agones
-  # requires naming which one owns the game port.
+  # Agones injects its SDK sidecar, so the pod is multi-container; name the one
+  # that owns the game port.
   container: minecraft
   ports:
     - name: minecraft
@@ -27,8 +29,8 @@ spec:
       protocol: TCP
   health:
     # Minecraft world generation can take a while on first boot; don't let
-    # Agones mark the server Unhealthy before the readiness sidecar starts
-    # pinging.
+    # Agones mark the server Unhealthy before the supervisor starts pinging
+    # /health (it does so only once the game is accepting connections).
     initialDelaySeconds: 180
     periodSeconds: 15
     failureThreshold: 5
@@ -39,7 +41,13 @@ spec:
     spec:
       containers:
         - name: minecraft
-          image: itzg/minecraft-server:java25-jdk
+          # Composite image: grizzly supervisor (PID 1) wrapping itzg's server.
+          # CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-minecraft:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          # Superseded once CI pins a gate-signed digest (digests are immutable).
+          imagePullPolicy: Always
           env:
             - name: EULA
               value: "TRUE"
@@ -48,6 +56,11 @@ spec:
           ports:
             - name: minecraft
               containerPort: 25565
+              protocol: TCP
+            # Pod-internal control API the bot reaches over the cluster network.
+            # Deliberately not exposed via the NodePort Service.
+            - name: control
+              containerPort: 9359
               protocol: TCP
           volumeMounts:
             - name: world
@@ -59,27 +72,6 @@ spec:
             limits:
               cpu: "2"
               memory: 4Gi
-        - name: agones-ready
-          # Pinned busybox; waits for the server port, marks the GameServer
-          # Ready via the Agones SDK sidecar REST API (localhost:9358), then
-          # keeps health pinged.
-          image: busybox:1.37
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              until nc -z 127.0.0.1 25565; do sleep 5; done
-              wget -q -O- --post-data='{}' http://127.0.0.1:9358/ready
-              while true; do
-                wget -q -O- --post-data='{}' http://127.0.0.1:9358/health >/dev/null 2>&1 || true
-                sleep 10
-              done
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 50m
-              memory: 32Mi
       volumes:
         - name: world
           persistentVolumeClaim:

@@ -12,6 +12,9 @@ const DEFAULT_NAMESPACE: &str = "game-servers";
 const DEFAULT_DOMAIN: &str = "gameservers.bearflinn.com";
 /// Where the per-game catalog is baked into the container image (see Dockerfile).
 const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
+/// Port the in-pod supervisor serves its control API on; must match the catalog
+/// (`games/<game>/gameserver.yaml`) and the supervisor's own default.
+const DEFAULT_CONTROL_PORT: u16 = 9359;
 
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
@@ -21,6 +24,8 @@ pub struct BotConfig {
     pub(crate) namespace: String,
     pub(crate) domain: String,
     pub(crate) catalog_dir: PathBuf,
+    /// Port the in-pod supervisor's control API listens on.
+    pub(crate) control_port: u16,
     /// Discord role whose members may run the mutating commands.
     pub(crate) admin_role_id: Option<u64>,
     /// Explicit user-id allowlist for the mutating commands.
@@ -54,6 +59,8 @@ impl BotConfig {
             optional(lookup, "GAMESERVERS_DOMAIN").unwrap_or_else(|| DEFAULT_DOMAIN.to_owned());
         let catalog_dir = optional(lookup, "GAMESERVERS_CATALOG_DIR")
             .map_or_else(|| PathBuf::from(DEFAULT_CATALOG_DIR), PathBuf::from);
+        let control_port =
+            optional_u16(lookup, "GAMESERVERS_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
         let admin_role_id = optional_u64(lookup, "GAMESERVERS_ADMIN_ROLE_ID")?;
         let admin_user_ids =
             parse_user_ids(optional(lookup, "GAMESERVERS_ADMIN_USER_IDS").as_deref())?;
@@ -64,6 +71,7 @@ impl BotConfig {
             namespace,
             domain,
             catalog_dir,
+            control_port,
             admin_role_id,
             admin_user_ids,
         })
@@ -76,6 +84,18 @@ fn optional_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
             let value = raw
                 .parse::<u64>()
                 .with_context(|| format!("{key} must be a positive integer, got {raw:?}"))?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn optional_u16(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
+    match optional(lookup, key) {
+        Some(raw) => {
+            let value = raw
+                .parse::<u16>()
+                .with_context(|| format!("{key} must be a port number (1-65535), got {raw:?}"))?;
             Ok(Some(value))
         }
         None => Ok(None),

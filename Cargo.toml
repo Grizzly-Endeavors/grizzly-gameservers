@@ -1,48 +1,8 @@
-[package]
-name = "grizzly-gameservers"
-version = "0.1.0"
-edition = "2024"
-license = "MIT"
-publish = false
+[workspace]
+resolver = "2"
+members = ["crates/bot", "crates/control-api", "crates/supervisor"]
 
-[dependencies]
-anyhow = "1.0.103"
-dotenvy = "0.15.7"
-k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
-# `ring` explicitly selects rustls' crypto provider so rustls 0.23 can install a
-# process default; without it kube's rustls-tls enables no provider and the
-# client panics at startup ("could not automatically determine the CryptoProvider").
-kube = { version = "4.0.0", default-features = false, features = ["client", "derive", "rustls-tls", "ring"] }
-poise = { version = "0.6.2", default-features = false, features = [
-    "cache",
-    "chrono",
-    "handle_panics",
-] }
-# poise pulls serenity with no TLS backend (its default added rustls_backend,
-# which we dropped above). Select native_tls_backend directly so serenity stays
-# off the unmaintained rustls 0.22 -> rustls-webpki 0.102 chain
-# (RUSTSEC-2026-0104, no published serenity yet bumps it). kube keeps its own
-# current rustls 0.23 via its rustls-tls feature. Feature unification merges
-# this with poise's serenity feature set.
-serenity = { version = "0.12.5", default-features = false, features = ["native_tls_backend"] }
-schemars = "1.2.1"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
-tokio = { version = "1.52.3", features = [
-    "macros",
-    "rt-multi-thread",
-    "signal",
-    "fs",
-    "time",
-    "sync",
-] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-# Maintained drop-in fork of serde_yaml (which is unmaintained, RUSTSEC-2024-0370).
-# Parses the per-game catalog templates in games/ into kube/k8s-openapi types.
-serde_yaml_ng = "0.10.0"
-
-# Lint configuration
+# Lint configuration — shared across every workspace member.
 #
 # These rules are intentionally strict. This project is primarily developed
 # and maintained by AI coding agents, and agents will take every shortcut
@@ -52,13 +12,15 @@ serde_yaml_ng = "0.10.0"
 #
 # Human contributors: the pre-commit hooks enforce everything, so you'll
 # know immediately if something needs fixing.
+#
+# Each crate opts in with `[lints]\nworkspace = true`.
 
-[lints.rust]
+[workspace.lints.rust]
 # deny rather than forbid so FFI boundaries can use a targeted
 # #[expect(unsafe_code, reason = "...")] — forbid cannot be overridden at the item level.
 unsafe_code = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 # Pedantic baseline. Kept at warn (not deny) because new clippy versions
 # add lints to this group — deny would break builds on toolchain upgrades
 # with no code changes. Individual lints below override where needed.

@@ -147,9 +147,9 @@ fn unknown_game_on_start_is_an_error_naming_the_game() {
 #[test]
 fn not_found_outcomes_are_errors() {
     assert_eq!(
-        stop_spec(&StopOutcome::NotFound, "ghost").colour,
+        kill_spec(&KillOutcome::NotFound, "ghost").colour,
         COLOUR_ERROR,
-        "stopping a nonexistent server is an error"
+        "killing a nonexistent server is an error"
     );
     assert_eq!(
         remove_spec(&RemoveOutcome::NotFound, "ghost").colour,
@@ -159,11 +159,11 @@ fn not_found_outcomes_are_errors() {
 }
 
 #[test]
-fn stop_and_remove_success_stay_neutral() {
+fn kill_and_remove_success_stay_neutral() {
     assert_eq!(
-        stop_spec(&StopOutcome::Stopped, "minecraft").colour,
+        kill_spec(&KillOutcome::Killed, "minecraft").colour,
         COLOUR_NEUTRAL,
-        "a clean stop is a no-drama neutral state"
+        "a clean shutdown is a no-drama neutral state"
     );
     assert_eq!(
         remove_spec(&RemoveOutcome::Removed, "minecraft").colour,
@@ -174,11 +174,53 @@ fn stop_and_remove_success_stay_neutral() {
 
 #[test]
 fn not_managed_outcomes_explain_the_boundary() {
-    let spec = stop_spec(&StopOutcome::NotManaged, "platform-thing");
+    let spec = kill_spec(&KillOutcome::NotManaged, "platform-thing");
     assert_eq!(spec.colour, COLOUR_ERROR, "a refused op is an error");
     assert!(
         spec.body.contains("platform-thing"),
         "the message should name the server, got: {}",
         spec.body
+    );
+}
+
+#[test]
+fn paused_is_neutral_and_names_the_server() {
+    let spec = supervisor_spec(&SupervisorOutcome::Paused, "survival");
+    assert_eq!(
+        spec.colour, COLOUR_NEUTRAL,
+        "a pause is a calm, reversible state"
+    );
+    assert!(
+        spec.body.contains("survival"),
+        "the message should name the paused server, got: {}",
+        spec.body
+    );
+}
+
+#[test]
+fn resume_and_restart_are_pending() {
+    assert_eq!(
+        supervisor_spec(&SupervisorOutcome::Resumed, "survival").colour,
+        COLOUR_PENDING,
+        "a resuming server is still coming up"
+    );
+    assert_eq!(
+        supervisor_spec(&SupervisorOutcome::Restarted, "survival").colour,
+        COLOUR_PENDING,
+        "a restarting server is still coming up"
+    );
+}
+
+#[test]
+fn supervisor_failures_are_errors() {
+    assert_eq!(
+        supervisor_spec(&SupervisorOutcome::Unreachable, "survival").colour,
+        COLOUR_ERROR,
+        "an unreachable control api is an actionable error"
+    );
+    assert_eq!(
+        supervisor_spec(&SupervisorOutcome::PodNotReady, "survival").colour,
+        COLOUR_ERROR,
+        "a not-ready pod is surfaced as a retryable error"
     );
 }

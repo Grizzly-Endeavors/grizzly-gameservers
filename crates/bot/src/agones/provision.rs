@@ -34,8 +34,8 @@ pub(crate) enum CreateOutcome {
     PortsExhausted,
 }
 
-pub(crate) enum StopOutcome {
-    Stopped,
+pub(crate) enum KillOutcome {
+    Killed,
     NotFound,
     NotManaged,
 }
@@ -173,31 +173,33 @@ async fn create_storage_and_server(
     Ok(())
 }
 
-/// Stop a running instance: delete only its `GameServer`, leaving the Service
-/// (and its leased port) and the PVC in place so `/start` resumes the same
-/// address with the same world.
+/// Kill a running instance: delete only its `GameServer`, leaving the Service
+/// (and its leased port) and the PVC in place so `/start` can recreate it. This
+/// is the heavier teardown — the pod is gone and a cold `/start` reschedules it.
+/// The lighter `/stop` (pause the process, keep the pod) goes through the
+/// supervisor, not here.
 ///
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached.
-pub(crate) async fn stop_instance(
+pub(crate) async fn kill_instance(
     client: &Client,
     namespace: &str,
     name: &str,
-) -> Result<StopOutcome> {
+) -> Result<KillOutcome> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
         .get_opt(name)
         .await
         .with_context(|| format!("failed to read service {name}"))?
     else {
-        return Ok(StopOutcome::NotFound);
+        return Ok(KillOutcome::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
-        return Ok(StopOutcome::NotManaged);
+        return Ok(KillOutcome::NotManaged);
     }
     delete_if_present(&gameserver_api(client, namespace), name).await?;
-    Ok(StopOutcome::Stopped)
+    Ok(KillOutcome::Killed)
 }
 
 /// Result of the start-up phase of `/start`: the `GameServer` has been recreated
