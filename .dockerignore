@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+docs/
+deploy/
+cluster/
+games/
+*.md
+.env

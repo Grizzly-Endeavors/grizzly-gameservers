@@ -11,3 +11,18 @@ externalSecrets:
   enabled: true
   secretStore: openbao # ClusterSecretStore provisioned in grizzly-platform
   refreshInterval: 1h
+
+# Discord bot / ops-agent workload.
+bot:
+  enabled: true
+  replicas: 1
+  guildId: "" # Discord guild (server) id for guild-scoped slash command registration
+  domain: gameservers.bearflinn.com # base domain for friend-facing connection addresses
+  logLevel: info # RUST_LOG value
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 256Mi
