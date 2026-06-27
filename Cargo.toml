@@ -9,7 +9,10 @@ publish = false
 anyhow = "1.0.103"
 dotenvy = "0.15.7"
 k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
-kube = { version = "4.0.0", default-features = false, features = ["client", "derive", "rustls-tls"] }
+# `ring` explicitly selects rustls' crypto provider so rustls 0.23 can install a
+# process default; without it kube's rustls-tls enables no provider and the
+# client panics at startup ("could not automatically determine the CryptoProvider").
+kube = { version = "4.0.0", default-features = false, features = ["client", "derive", "rustls-tls", "ring"] }
 poise = { version = "0.6.2", default-features = false, features = [
     "cache",
     "chrono",
