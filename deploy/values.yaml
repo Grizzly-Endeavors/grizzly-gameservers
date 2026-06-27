@@ -4,3 +4,10 @@
 image:
   repository: registry.registry.svc.cluster.local:5000/grizzly-gameservers
   tag: "" # set by CI to the signed digest
+
+# Credentials synced from OpenBao via External Secrets Operator.
+# Renders discord-bot + ollama-api Secrets into the release namespace.
+externalSecrets:
+  enabled: true
+  secretStore: openbao # ClusterSecretStore provisioned in grizzly-platform
+  refreshInterval: 1h
