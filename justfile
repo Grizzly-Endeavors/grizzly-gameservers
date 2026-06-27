@@ -10,7 +10,7 @@ default: ci-local
 
 # Run the binary (if applicable).
 run *args:
-    cargo run -- {{args}}
+    cargo run --bin grizzly-gameservers -- {{args}}
 
 # Start the bot locally (detached), reading secrets from .env.
 bot-start:
