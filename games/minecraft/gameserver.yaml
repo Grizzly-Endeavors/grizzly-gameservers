@@ -1,0 +1,83 @@
+# First catalog entry + the bring-up validation server. A single standalone
+# GameServer (fixed name so the NodePort Service selector can target it) rather
+# than a Fleet — promoting to Fleet + shim-managed per-instance Services is a
+# follow-up once the shim exists (docs/design/00-overview.md open decisions).
+#
+# Minecraft has no native Agones SDK integration, so a tiny readiness sidecar
+# bridges the lifecycle: it waits for the server to accept connections on 25565,
+# calls the auto-injected Agones SDK's REST /ready, then keeps /health pinged.
+# This avoids the stale (2021) agones-mc wrapper and tracks the stable SDK API.
+#
+# portPolicy: None — Agones does not manage a hostPort; reachability is via the
+# NodePort Service in service.yaml (kube-proxy routes to the pod on whatever
+# node it lands, so no node-pinning is needed).
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: minecraft
+  namespace: game-servers
+spec:
+  ports:
+    - name: minecraft
+      portPolicy: None
+      containerPort: 25565
+      protocol: TCP
+  health:
+    # Minecraft world generation can take a while on first boot; don't let
+    # Agones mark the server Unhealthy before the readiness sidecar starts
+    # pinging.
+    initialDelaySeconds: 180
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minecraft
+    spec:
+      containers:
+        - name: minecraft
+          image: itzg/minecraft-server:java21
+          env:
+            - name: EULA
+              value: "TRUE"
+            - name: MEMORY
+              value: "2G"
+          ports:
+            - name: minecraft
+              containerPort: 25565
+              protocol: TCP
+          volumeMounts:
+            - name: world
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+        - name: agones-ready
+          # Pinned busybox; waits for the server port, marks the GameServer
+          # Ready via the Agones SDK sidecar REST API (localhost:9358), then
+          # keeps health pinged.
+          image: busybox:1.37
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until nc -z 127.0.0.1 25565; do sleep 5; done
+              wget -q -O- --post-data='{}' http://127.0.0.1:9358/ready
+              while true; do
+                wget -q -O- --post-data='{}' http://127.0.0.1:9358/health >/dev/null 2>&1 || true
+                sleep 10
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+      volumes:
+        - name: world
+          persistentVolumeClaim:
+            claimName: minecraft-data
