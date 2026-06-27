@@ -33,8 +33,16 @@ pub async fn run(config: BotConfig) -> Result<()> {
             })?,
     );
 
+    // Short timeout: the supervisor control API is one in-cluster hop away, so a
+    // slow response means a stuck pod, not a far server.
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .context("failed to build supervisor control http client")?;
+
     let namespace = config.namespace;
     let domain = config.domain;
+    let control_port = config.control_port;
     let admin_role_id = config.admin_role_id;
     let admin_user_ids: std::sync::Arc<[u64]> = config.admin_user_ids.into();
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
@@ -45,8 +53,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
             commands: vec![
                 commands::servers(),
                 commands::create(),
+                commands::kill(),
                 commands::stop(),
                 commands::start(),
+                commands::restart(),
                 commands::remove(),
             ],
             ..Default::default()
@@ -61,8 +71,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
                 );
                 Ok(Data {
                     kube_client,
+                    http,
                     namespace,
                     domain,
+                    control_port,
                     catalog,
                     provision_lock,
                     admin_role_id,

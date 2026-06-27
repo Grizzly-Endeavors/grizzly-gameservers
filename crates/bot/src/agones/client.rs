@@ -6,12 +6,18 @@ use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::warn;
 
+use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
+
 use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::{GameServer, ServerSummary, summarize};
 
 /// State label shown for a managed instance whose Service (and leased port)
-/// still exist but whose `GameServer` has been torn down by `/stop`.
+/// still exist but whose `GameServer` has been torn down by `/kill`.
 const STOPPED_STATE: &str = "Stopped";
+
+/// State shown for a server whose pod is up but whose game process the
+/// supervisor has paused (`/stop`). Distinct from `Stopped` (= killed).
+const PAUSED_STATE: &str = "Paused";
 
 /// List every Agones `GameServer` in `namespace`, joining each to its
 /// `NodePort` Service to resolve a connection address under `domain`.
@@ -44,10 +50,19 @@ pub(crate) async fn list_active_servers(
     for gameserver in &gs_list.items {
         let name = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
         live.insert(name);
-        let state = gameserver
+        let agones_state = gameserver
             .status
             .as_ref()
             .and_then(|status| status.state.as_deref());
+        // The supervisor publishes a paused process as a GameServer label, which
+        // takes precedence over the (still Ready/Allocated) Agones state.
+        let paused = label_value(gameserver.metadata.labels.as_ref(), PROCESS_LABEL_KEY)
+            == Some(PROCESS_LABEL_STOPPED);
+        let state = if paused {
+            Some(PAUSED_STATE)
+        } else {
+            agones_state
+        };
         let node_port = node_port_by_server.get(name).copied();
         if node_port.is_none() {
             warn!(

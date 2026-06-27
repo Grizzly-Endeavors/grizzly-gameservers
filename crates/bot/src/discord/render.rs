@@ -1,7 +1,9 @@
 use poise::serenity_prelude as serenity;
 use serenity::{Colour, CreateEmbed};
 
-use crate::agones::{CreateOutcome, RemoveOutcome, ServerSummary, StartOutcome, StopOutcome};
+use crate::agones::{
+    CreateOutcome, KillOutcome, RemoveOutcome, ServerSummary, StartOutcome, SupervisorOutcome,
+};
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
@@ -104,15 +106,69 @@ fn start_spec(outcome: &StartOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-fn stop_spec(outcome: &StopOutcome, server: &str) -> EmbedSpec {
+fn kill_spec(outcome: &KillOutcome, server: &str) -> EmbedSpec {
     match outcome {
-        StopOutcome::Stopped => EmbedSpec {
+        KillOutcome::Killed => EmbedSpec {
             title: format!("Stopped {server}"),
             colour: COLOUR_NEUTRAL,
-            body: format!("Its world is saved. Use `/start` to bring **{server}** back later."),
+            body: format!(
+                "**{server}** is fully shut down and its world is saved. `/start` brings it back \
+                 (a little slower than `/stop`'s pause, since the pod has to come back up)."
+            ),
         },
-        StopOutcome::NotFound => not_found_spec(server),
-        StopOutcome::NotManaged => not_managed_spec(server),
+        KillOutcome::NotFound => not_found_spec(server),
+        KillOutcome::NotManaged => not_managed_spec(server),
+    }
+}
+
+/// Outcomes of the in-pod supervisor actions (`/stop`, `/start`, `/restart`).
+/// Each carries the action in the variant, so one spec covers all three.
+fn supervisor_spec(outcome: &SupervisorOutcome, server: &str) -> EmbedSpec {
+    match outcome {
+        SupervisorOutcome::Paused => EmbedSpec {
+            title: format!("Paused {server}"),
+            colour: COLOUR_NEUTRAL,
+            body: format!(
+                "**{server}** is paused — the world is saved and the server is kept warm, so \
+                 `/start` brings it back in seconds."
+            ),
+        },
+        SupervisorOutcome::Resumed => EmbedSpec {
+            title: format!("🟡 {server} is waking up"),
+            colour: COLOUR_PENDING,
+            body: format!("**{server}** is loading its world back up — give it a few seconds."),
+        },
+        SupervisorOutcome::Restarted => EmbedSpec {
+            title: format!("🔄 Restarted {server}"),
+            colour: COLOUR_PENDING,
+            body: format!("**{server}** is coming back up — give it a few seconds."),
+        },
+        SupervisorOutcome::AlreadyStopped => EmbedSpec {
+            title: "Already paused".to_owned(),
+            colour: COLOUR_NEUTRAL,
+            body: format!("**{server}** is already paused. Use `/start` to bring it back."),
+        },
+        SupervisorOutcome::AlreadyRunning => EmbedSpec {
+            title: "Already running".to_owned(),
+            colour: COLOUR_NEUTRAL,
+            body: format!("**{server}** is already running."),
+        },
+        SupervisorOutcome::PodNotReady => EmbedSpec {
+            title: "Not ready yet".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "**{server}** isn't far enough along to control yet. Give it a moment and try again."
+            ),
+        },
+        SupervisorOutcome::Unreachable => EmbedSpec {
+            title: "Couldn't reach the server".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "I couldn't reach **{server}**'s controls right now. Try again in a moment."
+            ),
+        },
+        SupervisorOutcome::NotFound => not_found_spec(server),
+        SupervisorOutcome::NotManaged => not_managed_spec(server),
     }
 }
 
@@ -174,8 +230,12 @@ pub(crate) fn start_result_embed(outcome: &StartOutcome, server: &str) -> Create
     start_spec(outcome, server).into_embed()
 }
 
-pub(crate) fn stop_result_embed(outcome: &StopOutcome, server: &str) -> CreateEmbed {
-    stop_spec(outcome, server).into_embed()
+pub(crate) fn kill_result_embed(outcome: &KillOutcome, server: &str) -> CreateEmbed {
+    kill_spec(outcome, server).into_embed()
+}
+
+pub(crate) fn supervisor_result_embed(outcome: &SupervisorOutcome, server: &str) -> CreateEmbed {
+    supervisor_spec(outcome, server).into_embed()
 }
 
 pub(crate) fn remove_result_embed(outcome: &RemoveOutcome, server: &str) -> CreateEmbed {

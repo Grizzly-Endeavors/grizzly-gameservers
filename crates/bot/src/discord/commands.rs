@@ -9,14 +9,16 @@ use tracing::error;
 
 use super::auth::require_admin;
 use super::render::{
-    create_result_embed, error_embed, neutral_embed, remove_confirm_embed, remove_result_embed,
-    server_list_embed, start_result_embed, stop_result_embed, working_embed,
+    create_result_embed, error_embed, kill_result_embed, neutral_embed, remove_confirm_embed,
+    remove_result_embed, server_list_embed, start_result_embed, supervisor_result_embed,
+    working_embed,
 };
 use super::{Context, Error};
 use crate::agones::{
-    CreateOutcome, ProvisionOutcome, StartBegin, StartOutcome, begin_start, build_instance_name,
-    list_active_servers, list_instance_names, provision_instance, remove_instance, stop_instance,
-    wait_for_instance_ready,
+    CreateOutcome, ProvisionOutcome, RuntimeState, StartBegin, StartOutcome, begin_start,
+    build_instance_name, instance_runtime_state, kill_instance, list_active_servers,
+    list_instance_names, provision_instance, remove_instance, supervisor_restart, supervisor_start,
+    supervisor_stop, wait_for_instance_ready,
 };
 
 /// How long the dropdown / confirm components stay live before we give up
@@ -263,11 +265,55 @@ async fn await_ready(
     Ok(())
 }
 
-/// Stop a running server, keeping its world so it can be started again later.
+/// Pause a server — keep it warm so /start resumes in seconds. World is saved.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn stop(
     ctx: Context<'_>,
-    #[description = "Which server to stop"]
+    #[description = "Which server to pause"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Pausing {server}"),
+            "Saving the world and pausing…",
+        )))
+        .await?;
+    match supervisor_stop(
+        &data.kube_client,
+        &data.http,
+        &data.namespace,
+        &server,
+        data.control_port,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            reply
+                .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to pause game server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't pause the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Fully shut a server down to free the slot, keeping the world so /start can bring it back.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn kill(
+    ctx: Context<'_>,
+    #[description = "Which server to shut down"]
     #[autocomplete = "autocomplete_server"]
     server: String,
 ) -> Result<(), Error> {
@@ -278,19 +324,19 @@ pub(crate) async fn stop(
             "Shutting it down and saving the world…",
         )))
         .await?;
-    match stop_instance(&data.kube_client, &data.namespace, &server).await {
+    match kill_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
             reply
-                .edit(ctx, cleared(stop_result_embed(&outcome, &server)))
+                .edit(ctx, cleared(kill_result_embed(&outcome, &server)))
                 .await?;
         }
         Err(err) => {
-            error!(error = ?err, server = %server, "failed to stop game server");
+            error!(error = ?err, server = %server, "failed to kill game server");
             reply
                 .edit(
                     ctx,
                     cleared(error_embed(
-                        "Couldn't stop the server right now. Try again in a moment.",
+                        "Couldn't shut the server down right now. Try again in a moment.",
                     )),
                 )
                 .await?;
@@ -299,7 +345,51 @@ pub(crate) async fn stop(
     Ok(())
 }
 
-/// Start a previously stopped server, resuming its saved world.
+/// Restart a running server in place — a quick reboot that keeps the world and address.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn restart(
+    ctx: Context<'_>,
+    #[description = "Which server to restart"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Restarting {server}"),
+            "Bouncing it…",
+        )))
+        .await?;
+    match supervisor_restart(
+        &data.kube_client,
+        &data.http,
+        &data.namespace,
+        &server,
+        data.control_port,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            reply
+                .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to restart game server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't restart the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Start a server: a paused one resumes in seconds, a killed one is rescheduled (slower).
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn start(
     ctx: Context<'_>,
@@ -314,12 +404,75 @@ pub(crate) async fn start(
             "Waking it up…",
         )))
         .await?;
+
+    match instance_runtime_state(&data.kube_client, &data.namespace, &server).await {
+        Ok(RuntimeState::PodUp) => {
+            // Warm path: the pod is alive, just resume the process in place.
+            match supervisor_start(
+                &data.kube_client,
+                &data.http,
+                &data.namespace,
+                &server,
+                data.control_port,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    reply
+                        .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
+                        .await?;
+                }
+                Err(err) => {
+                    error!(error = ?err, server = %server, "failed to resume game server");
+                    reply
+                        .edit(
+                            ctx,
+                            cleared(error_embed(
+                                "Couldn't resume the server right now. Try again in a moment.",
+                            )),
+                        )
+                        .await?;
+                }
+            }
+        }
+        Ok(RuntimeState::Killed) => start_cold(ctx, &reply, &server).await?,
+        Ok(RuntimeState::Absent) => {
+            reply
+                .edit(
+                    ctx,
+                    cleared(start_result_embed(&StartOutcome::NotFound, &server)),
+                )
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to resolve server state");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't reach the cluster right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Cold start: recreate a killed instance's `GameServer` and wait for it to come
+/// up. Split out of [`start`] so the command body stays under the line cap.
+async fn start_cold(
+    ctx: Context<'_>,
+    reply: &poise::ReplyHandle<'_>,
+    server: &str,
+) -> Result<(), Error> {
+    let data = ctx.data();
     let begin = match begin_start(
         &data.kube_client,
         &data.namespace,
         &data.domain,
         &data.catalog,
-        &server,
+        server,
     )
     .await
     {
@@ -339,15 +492,15 @@ pub(crate) async fn start(
     };
 
     if let StartBegin::Starting { address } = begin {
-        await_ready(ctx, &reply, &server, address, |address, ready| {
-            start_result_embed(&StartOutcome::Started { address, ready }, &server)
+        await_ready(ctx, reply, server, address, |address, ready| {
+            start_result_embed(&StartOutcome::Started { address, ready }, server)
         })
         .await?;
     } else {
         reply
             .edit(
                 ctx,
-                cleared(start_result_embed(&begin_to_outcome(begin), &server)),
+                cleared(start_result_embed(&begin_to_outcome(begin), server)),
             )
             .await?;
     }

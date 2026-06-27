@@ -12,8 +12,12 @@ use crate::agones::GameCatalog;
 /// Per-command state shared with every poise command handler.
 pub(crate) struct Data {
     pub(crate) kube_client: Client,
+    /// Client for the in-pod supervisor control API (`/stop`, `/start`, `/restart`).
+    pub(crate) http: reqwest::Client,
     pub(crate) namespace: String,
     pub(crate) domain: String,
+    /// Port the supervisor's control API listens on inside each game pod.
+    pub(crate) control_port: u16,
     pub(crate) catalog: Arc<GameCatalog>,
     /// Serializes the port-lease→Service-create critical section across
     /// concurrent `/create`s so two friends can't claim the same `NodePort`.

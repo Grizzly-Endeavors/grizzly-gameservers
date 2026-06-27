@@ -26,6 +26,7 @@ fn parses_required_fields_and_applies_defaults() {
     );
     assert_eq!(config.admin_role_id, None, "admin role is optional");
     assert!(config.admin_user_ids.is_empty(), "allowlist defaults empty");
+    assert_eq!(config.control_port, 9359, "control port should default");
     assert_eq!(
         config.catalog_dir,
         std::path::PathBuf::from("/usr/local/share/grizzly-gameservers/games"),
@@ -115,6 +116,31 @@ fn non_numeric_guild_id_is_an_error() {
     assert!(
         err.to_string().contains("DISCORD_GUILD_ID"),
         "error should name the offending variable, got: {err}"
+    );
+}
+
+#[test]
+fn control_port_override_and_validation() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("GAMESERVERS_CONTROL_PORT", "9400"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.control_port, 9400,
+        "control port override should apply"
+    );
+
+    let bad = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("GAMESERVERS_CONTROL_PORT", "70000"),
+    ]);
+    let err = BotConfig::from_env_with(&bad).unwrap_err();
+    assert!(
+        err.to_string().contains("GAMESERVERS_CONTROL_PORT"),
+        "an out-of-range port should name the variable, got: {err}"
     );
 }
 
