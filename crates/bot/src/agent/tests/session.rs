@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,9 +46,11 @@ fn canned(turns: Vec<ChatMessage>) -> Mutex<VecDeque<ChatMessage>> {
     Mutex::new(VecDeque::from(turns))
 }
 
+type ProgressFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
 /// A progress sink that discards every event.
-fn ignore_progress() -> impl Fn(SessionEvent) + Sync {
-    |_| {}
+fn ignore_progress() -> impl Fn(SessionEvent) -> ProgressFuture + Sync {
+    |_| Box::pin(async {})
 }
 
 #[tokio::test]
@@ -141,7 +145,10 @@ async fn emits_interim_text_only_when_the_model_narrates() {
         Box::pin(async move { Ok(next) })
     };
     let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
-    let progress = |event: SessionEvent| events.lock().unwrap().push(event);
+    let progress = |event: SessionEvent| {
+        events.lock().unwrap().push(event);
+        Box::pin(async {}) as ProgressFuture
+    };
 
     let mut messages = seed("list servers");
     run_session(
@@ -161,6 +168,48 @@ async fn emits_interim_text_only_when_the_model_narrates() {
         [SessionEvent::AssistantText(
             "let me check on that".to_owned()
         )]
+    );
+}
+
+#[tokio::test]
+async fn interim_text_is_delivered_before_the_tool_runs() {
+    // The bug this guards: narration that races its own tool's side effects (a
+    // confirm card) and loses. The loop must await the progress send first.
+    let turns = canned(vec![
+        tool_turn("c1", "remove_server", "{}", Some("deleting minecraft now")),
+        text_turn("done"),
+    ]);
+    let order: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+
+    let complete: &CompleteFn = &|_, _| {
+        let next = turns.lock().unwrap().pop_front().unwrap();
+        Box::pin(async move { Ok(next) })
+    };
+    let dispatch: &DispatchFn = &|_| {
+        order.lock().unwrap().push("dispatch");
+        Box::pin(async { "ok".to_owned() })
+    };
+    let progress = |_: SessionEvent| {
+        order.lock().unwrap().push("progress");
+        Box::pin(async {}) as ProgressFuture
+    };
+
+    let mut messages = seed("delete minecraft");
+    run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        complete,
+        dispatch,
+        &progress,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        order.lock().unwrap().as_slice(),
+        ["progress", "dispatch"],
+        "narration must be delivered before the tool it precedes runs"
     );
 }
 
