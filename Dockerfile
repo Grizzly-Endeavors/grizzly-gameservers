@@ -20,8 +20,8 @@ RUN apt-get update \
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# nosemgrep: dockerfile.best-practice.missing-image-version -- `chef` is an
-# internal build stage, not a registry image; it can't carry a version tag.
+# `chef` is an internal build stage, not a registry image; no version tag exists.
+# nosemgrep: dockerfile.best-practice.missing-image-version
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json

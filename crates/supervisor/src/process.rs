@@ -126,9 +126,9 @@ fn request_terminate(pid: u32) -> Result<()> {
     reason = "FFI boundary: libc::kill signals a known pid, touches no memory"
 )]
 fn raw_kill(pid: i32, signal: i32) -> i32 {
-    // nosemgrep: rust.lang.security.unsafe-usage -- audited FFI: delivers a signal
-    // to a known child pid, touches no memory; the scoped #[expect] above is the
-    // reviewed boundary.
+    // Audited FFI: delivers a signal to a known child pid, touches no memory; the
+    // scoped #[expect(unsafe_code)] above is the reviewed boundary.
+    // nosemgrep: rust.lang.security.unsafe-usage
     unsafe { libc::kill(pid, signal) }
 }
 

@@ -48,8 +48,7 @@ spec:
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
       containers:
-        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext
-        # nosemgrep: yaml.kubernetes.security.writable-filesystem-container
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: minecraft
           # Composite image: grizzly supervisor (PID 1) wrapping itzg's server.
           # CI replaces the tag with the gate-signed digest (ADR-020).

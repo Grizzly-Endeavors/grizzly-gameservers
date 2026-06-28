@@ -45,10 +45,12 @@ RUN cargo build --release --locked -p grizzly-supervisor
 # PID 1 and must fork/signal itzg's setup (chown /data, server bootstrap), which
 # itzg performs as root — so no USER is set here. Rootless game-pod hardening is
 # a deferred follow-up (tracked with game-image CI signing + the Agones carve-out).
-# nosemgrep: dockerfile.security.missing-user-entrypoint
 FROM itzg/minecraft-server:java25-jdk@sha256:7e570b40bb7cabff1567d19903e9ba0c4f8cc6547dcc9fe5ac62c484e84c5734
 COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
 # The supervisor launches itzg's /start as its child; itzg still reads EULA,
 # MEMORY and friends from the pod environment exactly as before.
 ENV SUPERVISOR_CHILD_CMD=/start
+# No USER: the supervisor (PID 1) needs root to bootstrap itzg (chown /data, server
+# setup); rootless game-pod hardening is deferred (see the FROM note above, ADR-003).
+# nosemgrep: dockerfile.security.missing-user-entrypoint
 ENTRYPOINT ["/usr/local/bin/grizzly-supervisor"]
