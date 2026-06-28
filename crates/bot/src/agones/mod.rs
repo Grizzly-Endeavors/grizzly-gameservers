@@ -5,6 +5,7 @@ mod labels;
 mod naming;
 mod provision;
 mod supervisor;
+mod supervisor_fs;
 mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
@@ -18,5 +19,9 @@ pub(crate) use provision::{
 pub(crate) use supervisor::{
     RuntimeState, SupervisorOutcome, instance_runtime_state, supervisor_restart, supervisor_start,
     supervisor_stop,
+};
+pub(crate) use supervisor_fs::{
+    FsOutcome, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
+    supervisor_restore_file, supervisor_write_file,
 };
 pub(crate) use types::ServerSummary;

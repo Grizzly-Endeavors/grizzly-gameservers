@@ -154,6 +154,47 @@ pub(crate) async fn instance_runtime_state(
     Ok(RuntimeState::Absent)
 }
 
+/// Where a managed instance's in-pod control API is, or why it can't be reached.
+/// Shared by the lifecycle actions here and the filesystem client so both run the
+/// same existence/managed/pod-IP gate before issuing an HTTP request.
+pub(super) enum PodTarget {
+    /// The pod is up with an IP; its control API is at this address.
+    Ready(String),
+    /// No `GameServer` by that name.
+    NotFound,
+    /// The instance exists but isn't shim-managed.
+    NotManaged,
+    /// The pod isn't far enough along to have a reachable control API.
+    PodNotReady,
+}
+
+/// Validate that `instance` is a shim-managed `GameServer` and resolve its pod IP.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried for the gameserver or pod.
+pub(super) async fn resolve_managed_pod(
+    client: &Client,
+    namespace: &str,
+    instance: &str,
+) -> Result<PodTarget> {
+    let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
+    let Some(gameserver) = gameservers
+        .get_opt(instance)
+        .await
+        .with_context(|| format!("failed to read gameserver {instance}"))?
+    else {
+        return Ok(PodTarget::NotFound);
+    };
+    if !is_managed(gameserver.metadata.labels.as_ref()) {
+        return Ok(PodTarget::NotManaged);
+    }
+    match gameserver_pod_ip(client, namespace, instance).await? {
+        Some(pod_ip) => Ok(PodTarget::Ready(pod_ip)),
+        None => Ok(PodTarget::PodNotReady),
+    }
+}
+
 async fn supervisor_action(
     client: &Client,
     http: &reqwest::Client,
@@ -162,20 +203,11 @@ async fn supervisor_action(
     control_port: u16,
     command: ControlCommand,
 ) -> Result<SupervisorOutcome> {
-    let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
-    let Some(gameserver) = gameservers
-        .get_opt(instance)
-        .await
-        .with_context(|| format!("failed to read gameserver {instance}"))?
-    else {
-        return Ok(SupervisorOutcome::NotFound);
-    };
-    if !is_managed(gameserver.metadata.labels.as_ref()) {
-        return Ok(SupervisorOutcome::NotManaged);
-    }
-
-    let Some(pod_ip) = gameserver_pod_ip(client, namespace, instance).await? else {
-        return Ok(SupervisorOutcome::PodNotReady);
+    let pod_ip = match resolve_managed_pod(client, namespace, instance).await? {
+        PodTarget::Ready(pod_ip) => pod_ip,
+        PodTarget::NotFound => return Ok(SupervisorOutcome::NotFound),
+        PodTarget::NotManaged => return Ok(SupervisorOutcome::NotManaged),
+        PodTarget::PodNotReady => return Ok(SupervisorOutcome::PodNotReady),
     };
 
     let url = format!("http://{pod_ip}:{control_port}{}", command.path());

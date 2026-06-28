@@ -1,6 +1,6 @@
 #![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 
-use crate::agones::{RemoveOutcome, ServerSummary, SupervisorOutcome};
+use crate::agones::{FsOutcome, RemoveOutcome, ServerSummary, SupervisorOutcome};
 
 use super::*;
 
@@ -24,7 +24,7 @@ fn non_admins_get_only_read_only_tools() {
 }
 
 #[test]
-fn admins_get_the_full_lifecycle_set() {
+fn admins_get_the_full_lifecycle_and_filesystem_set() {
     let names = tool_names(true);
     for expected in [
         LIST_SERVERS,
@@ -35,13 +35,33 @@ fn admins_get_the_full_lifecycle_set() {
         RESTART_SERVER,
         KILL_SERVER,
         REMOVE_SERVER,
+        BROWSE_FILES,
+        READ_FILE,
+        READ_LOGS,
+        WRITE_FILE,
+        RESTORE_FILE,
     ] {
         assert!(
             names.iter().any(|name| name == expected),
             "missing {expected}"
         );
     }
-    assert_eq!(names.len(), 8, "exactly the eight lifecycle tools");
+    assert_eq!(
+        names.len(),
+        13,
+        "eight lifecycle tools plus five filesystem tools"
+    );
+}
+
+#[test]
+fn filesystem_tools_are_admin_only() {
+    let names = tool_names(false);
+    for tool in [BROWSE_FILES, READ_FILE, READ_LOGS, WRITE_FILE, RESTORE_FILE] {
+        assert!(
+            !names.iter().any(|name| name == tool),
+            "{tool} must not be offered to non-admins"
+        );
+    }
 }
 
 #[test]
@@ -102,4 +122,104 @@ fn remove_outcomes_report_deletion_or_absence() {
         "deleted mc and its world"
     );
     assert!(format_remove("mc", &RemoveOutcome::NotManaged).contains("managed by the platform"));
+}
+
+#[test]
+fn fs_result_passes_payload_through_and_maps_problems() {
+    assert_eq!(fs_result("mc", FsOutcome::Ok(42)), Ok(42));
+    assert_eq!(
+        fs_result::<()>("mc", FsOutcome::NotFound),
+        Err("there's no server named mc".to_owned())
+    );
+    assert!(
+        fs_result::<()>("mc", FsOutcome::NotManaged)
+            .unwrap_err()
+            .contains("managed by the platform")
+    );
+    assert!(
+        fs_result::<()>("mc", FsOutcome::PodNotReady)
+            .unwrap_err()
+            .contains("isn't ready")
+    );
+    assert!(
+        fs_result::<()>("mc", FsOutcome::Unreachable)
+            .unwrap_err()
+            .contains("couldn't reach")
+    );
+    assert_eq!(
+        fs_result::<()>(
+            "mc",
+            FsOutcome::Rejected("path is outside the server's data directory".to_owned())
+        ),
+        Err("that didn't work: path is outside the server's data directory".to_owned()),
+        "a supervisor rejection should be relayed verbatim after the lead-in"
+    );
+}
+
+#[test]
+fn browse_listing_describes_files_and_folders() {
+    let entries = vec![
+        DirEntry {
+            name: "logs".to_owned(),
+            kind: EntryKind::Dir,
+            size: 0,
+        },
+        DirEntry {
+            name: "server.properties".to_owned(),
+            kind: EntryKind::File,
+            size: 1024,
+        },
+    ];
+    let rendered = format_entries("", &entries);
+    assert!(rendered.contains("the data directory"));
+    assert!(rendered.contains("logs/ (folder)"));
+    assert!(rendered.contains("server.properties (1024 bytes)"));
+}
+
+#[test]
+fn empty_directory_is_reported() {
+    assert_eq!(format_entries("config", &[]), "config is empty");
+}
+
+#[test]
+fn read_file_notes_truncation() {
+    let whole = ReadResponse {
+        path: "server.properties".to_owned(),
+        content: "difficulty=hard".to_owned(),
+        truncated: false,
+    };
+    assert!(!format_file(&whole).contains("truncated"));
+    let cut = ReadResponse {
+        path: "logs/latest.log".to_owned(),
+        content: "...".to_owned(),
+        truncated: true,
+    };
+    assert!(format_file(&cut).contains("truncated"));
+}
+
+#[test]
+fn write_result_flags_whether_a_revert_is_possible() {
+    let overwrite = WriteResponse {
+        path: "server.properties".to_owned(),
+        backed_up: true,
+    };
+    let rendered = format_write(&overwrite);
+    assert!(rendered.contains("restore_file"));
+    assert!(rendered.contains("restart"));
+    let fresh = WriteResponse {
+        path: "ops.json".to_owned(),
+        backed_up: false,
+    };
+    assert!(format_write(&fresh).contains("nothing to restore"));
+}
+
+#[test]
+fn logs_render_or_report_absence() {
+    assert!(format_logs("mc", &[]).contains("hasn't produced any output"));
+    let rendered = format_logs(
+        "mc",
+        &["[12:00] starting".to_owned(), "[12:01] ready".to_owned()],
+    );
+    assert!(rendered.contains("[12:00] starting"));
+    assert!(rendered.contains("[12:01] ready"));
 }

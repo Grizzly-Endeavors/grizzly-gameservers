@@ -15,14 +15,17 @@ use serenity::{
 };
 use tracing::{error, warn};
 
+use grizzly_control_api::{DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse};
+
 use super::super::Data;
 use super::super::render::{neutral_embed, remove_confirm_embed, remove_result_embed};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
-    KillOutcome, ProvisionOutcome, RemoveOutcome, RuntimeState, ServerSummary, StartBegin,
-    SupervisorOutcome, begin_start, build_instance_name, instance_runtime_state, kill_instance,
-    list_active_servers, now_entropy, provision_instance, remove_instance, supervisor_restart,
-    supervisor_start, supervisor_stop,
+    FsOutcome, KillOutcome, ProvisionOutcome, RemoveOutcome, RuntimeState, ServerSummary,
+    StartBegin, SupervisorOutcome, begin_start, build_instance_name, instance_runtime_state,
+    kill_instance, list_active_servers, now_entropy, provision_instance, remove_instance,
+    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
+    supervisor_restore_file, supervisor_start, supervisor_stop, supervisor_write_file,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -33,6 +36,11 @@ const START_SERVER: &str = "start_server";
 const RESTART_SERVER: &str = "restart_server";
 const KILL_SERVER: &str = "kill_server";
 const REMOVE_SERVER: &str = "remove_server";
+const BROWSE_FILES: &str = "browse_files";
+const READ_FILE: &str = "read_file";
+const READ_LOGS: &str = "read_logs";
+const WRITE_FILE: &str = "write_file";
+const RESTORE_FILE: &str = "restore_file";
 
 /// Returned to the model when a non-admin caller reaches a mutating tool. The
 /// model is only offered mutating tools for admins, so this is defense in depth.
@@ -67,6 +75,37 @@ struct CreateParams {
     /// Optional world name. A name is generated when omitted.
     #[serde(default)]
     name: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct PathParams {
+    /// Exact server name, as shown by `list_servers`.
+    name: String,
+    /// Path within the server's data directory, e.g. `server.properties` or
+    /// `logs/latest.log`. Use `""` for the top of the data directory. Must stay
+    /// inside the data directory — absolute paths and `..` are refused.
+    path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct WriteParams {
+    /// Exact server name, as shown by `list_servers`.
+    name: String,
+    /// Path within the server's data directory to overwrite. The previous
+    /// version is saved first so `restore_file` can undo the change.
+    path: String,
+    /// The full new contents of the file.
+    content: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct LogsParams {
+    /// Exact server name, as shown by `list_servers`.
+    name: String,
+    /// How many trailing lines to return. Defaults to a recent window when
+    /// omitted.
+    #[serde(default)]
+    lines: Option<usize>,
 }
 
 /// The tools advertised to the model for a given caller. Everyone gets the
@@ -116,6 +155,31 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
                 "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
                 params_schema::<NameParams>(),
             ),
+            ToolDef::function(
+                BROWSE_FILES,
+                "List the files and folders in a running server's data directory. Use \"\" for the top level, then descend. Start here to find which file holds a setting.",
+                params_schema::<PathParams>(),
+            ),
+            ToolDef::function(
+                READ_FILE,
+                "Read a config or text file from a running server's data directory.",
+                params_schema::<PathParams>(),
+            ),
+            ToolDef::function(
+                READ_LOGS,
+                "Read the most recent output from a running server — the first place to look when something is wrong or to confirm a change took effect.",
+                params_schema::<LogsParams>(),
+            ),
+            ToolDef::function(
+                WRITE_FILE,
+                "Overwrite a config file in a running server's data directory with new contents. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
+                params_schema::<WriteParams>(),
+            ),
+            ToolDef::function(
+                RESTORE_FILE,
+                "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
+                params_schema::<PathParams>(),
+            ),
         ]);
     }
     tools
@@ -156,8 +220,30 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_remove(ctx, &params.name).await,
             Err(message) => message,
         },
+        BROWSE_FILES if ctx.is_admin => match parse::<PathParams>(args) {
+            Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
+        READ_FILE if ctx.is_admin => match parse::<PathParams>(args) {
+            Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
+        READ_LOGS if ctx.is_admin => match parse::<LogsParams>(args) {
+            Ok(params) => exec_read_logs(ctx, &params.name, params.lines).await,
+            Err(message) => message,
+        },
+        WRITE_FILE if ctx.is_admin => match parse::<WriteParams>(args) {
+            Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
+            Err(message) => message,
+        },
+        RESTORE_FILE if ctx.is_admin => match parse::<PathParams>(args) {
+            Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | KILL_SERVER
-        | REMOVE_SERVER => NON_ADMIN_REFUSAL.to_owned(),
+        | REMOVE_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE => {
+            NON_ADMIN_REFUSAL.to_owned()
+        }
         other => format!("'{other}' isn't a tool I have."),
     }
 }
@@ -461,6 +547,190 @@ async fn edit_prompt(
     {
         warn!(error = ?err, "agent: failed to clear remove confirmation prompt");
     }
+}
+
+async fn exec_browse_files(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+    match supervisor_list_files(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        path,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(entries) => format_entries(path, &entries),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: browse_files failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_read_file(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+    match supervisor_read_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        path,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(file) => format_file(&file),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: read_file failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_read_logs(ctx: &ToolCtx<'_>, name: &str, lines: Option<usize>) -> String {
+    match supervisor_read_logs(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        lines,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(log_lines) => format_logs(name, &log_lines),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: read_logs failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_write_file(ctx: &ToolCtx<'_>, name: &str, path: &str, content: &str) -> String {
+    match supervisor_write_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        path,
+        content,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(result) => format_write(&result),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: write_file failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_restore_file(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+    match supervisor_restore_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        path,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(result) => format_restore(&result),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: restore_file failed");
+            cluster_error()
+        }
+    }
+}
+
+/// Collapse a filesystem outcome into either its payload or a plain-language
+/// explanation of why the operation couldn't be served, for the model to relay.
+fn fs_result<T>(name: &str, outcome: FsOutcome<T>) -> Result<T, String> {
+    match outcome {
+        FsOutcome::Ok(value) => Ok(value),
+        FsOutcome::NotFound => Err(no_such(name)),
+        FsOutcome::NotManaged => Err(not_managed(name)),
+        FsOutcome::PodNotReady => Err(format!(
+            "{name} isn't ready to work with yet — try again shortly"
+        )),
+        FsOutcome::Unreachable => Err(format!(
+            "I couldn't reach {name} just now — worth trying again in a moment"
+        )),
+        FsOutcome::Rejected(message) => Err(format!("that didn't work: {message}")),
+    }
+}
+
+fn format_entries(path: &str, entries: &[DirEntry]) -> String {
+    let location = if path.is_empty() {
+        "the data directory".to_owned()
+    } else {
+        path.to_owned()
+    };
+    if entries.is_empty() {
+        return format!("{location} is empty");
+    }
+    let listing = entries
+        .iter()
+        .map(|entry| match entry.kind {
+            EntryKind::Dir => format!("{}/ (folder)", entry.name),
+            EntryKind::File => format!("{} ({} bytes)", entry.name, entry.size),
+            EntryKind::Other => format!("{} (other)", entry.name),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{location} contains:\n{listing}")
+}
+
+fn format_file(file: &ReadResponse) -> String {
+    let note = if file.truncated {
+        " (showing the first part; the file is larger and was truncated)"
+    } else {
+        ""
+    };
+    format!("contents of {}{note}:\n{}", file.path, file.content)
+}
+
+fn format_logs(name: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        return format!("{name} hasn't produced any output yet");
+    }
+    format!("recent output from {name}:\n{}", lines.join("\n"))
+}
+
+fn format_write(result: &WriteResponse) -> String {
+    let saved = if result.backed_up {
+        "saved the previous version first, so restore_file can undo this"
+    } else {
+        "this is a new file, so there's nothing to restore it to"
+    };
+    format!(
+        "wrote {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
+        result.path
+    )
+}
+
+fn format_restore(result: &RestoreResponse) -> String {
+    format!(
+        "restored {} to its previous version; restart the server to apply it",
+        result.path
+    )
 }
 
 fn format_server_list(servers: &[ServerSummary]) -> String {
