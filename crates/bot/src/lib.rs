@@ -1,3 +1,4 @@
+mod agent;
 mod agones;
 mod config;
 mod discord;
@@ -6,8 +7,9 @@ pub use config::BotConfig;
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
+use agent::OllamaConfig;
 use discord::{Data, commands};
 
 /// Start the Discord bot: connect to Kubernetes, register the guild-scoped
@@ -50,6 +52,17 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let guild_id = serenity::GuildId::new(config.guild_id);
 
+    let ollama = config.ollama_api_key.map(|api_key| OllamaConfig {
+        api_key,
+        base_url: config.ollama_base_url,
+        model: config.ollama_model,
+    });
+    if let Some(cfg) = &ollama {
+        info!(model = %cfg.model, "agent (Gary) enabled");
+    } else {
+        warn!("OLLAMA_API_KEY not set; agent (Gary) disabled — mentions will be declined");
+    }
+
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![
@@ -61,6 +74,9 @@ pub async fn run(config: BotConfig) -> Result<()> {
                 commands::restart(),
                 commands::remove(),
             ],
+            event_handler: |ctx, event, framework, data| {
+                Box::pin(discord::gary::on_event(ctx, event, framework, data))
+            },
             ..Default::default()
         })
         .setup(move |ctx, _ready, framework| {
@@ -81,6 +97,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                     provision_lock,
                     admin_role_id,
                     admin_user_ids,
+                    ollama,
                 })
             })
         })

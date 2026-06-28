@@ -145,6 +145,38 @@ fn control_port_override_and_validation() {
 }
 
 #[test]
+fn ollama_defaults_when_unset_and_key_is_absent() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "42")]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(config.ollama_api_key, None, "agent key is optional");
+    assert_eq!(
+        config.ollama_base_url, "https://ollama.com/v1",
+        "base url should default to ollama cloud"
+    );
+    assert_eq!(config.ollama_model, "glm-5.2", "model should default");
+}
+
+#[test]
+fn ollama_overrides_apply_and_blank_key_reads_as_absent() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("OLLAMA_API_KEY", ""),
+        ("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        ("OLLAMA_MODEL", "qwen3"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(
+        config.ollama_api_key, None,
+        "a blank key should be treated as unset, not an empty bearer token"
+    );
+    assert_eq!(config.ollama_base_url, "http://localhost:11434/v1");
+    assert_eq!(config.ollama_model, "qwen3");
+}
+
+#[test]
 fn zero_guild_id_is_rejected() {
     let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "0")]);
     let err = BotConfig::from_env_with(&env).unwrap_err();

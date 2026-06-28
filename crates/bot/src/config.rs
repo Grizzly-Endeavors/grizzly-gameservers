@@ -15,6 +15,11 @@ const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
 /// Port the in-pod supervisor serves its control API on; must match the catalog
 /// (`games/<game>/gameserver.yaml`) and the supervisor's own default.
 const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Ollama Cloud's `OpenAI`-compatible chat-completions base. The agent ("Gary")
+/// posts to `{base}/chat/completions`. Overridable for self-hosted Ollama.
+const DEFAULT_OLLAMA_BASE_URL: &str = "https://ollama.com/v1";
+/// Default model tag the agent drives — GLM 5.2 via Ollama Cloud unless overridden.
+const DEFAULT_OLLAMA_MODEL: &str = "glm-5.2";
 
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
@@ -30,6 +35,14 @@ pub struct BotConfig {
     pub(crate) admin_role_id: Option<u64>,
     /// Explicit user-id allowlist for the mutating commands.
     pub(crate) admin_user_ids: Vec<u64>,
+    /// Ollama Cloud API key for the agent ("Gary"). Absent disables the agent —
+    /// mentions are answered with a "not configured" reply, slash commands still
+    /// work. Sourced from the `ollama-api` Secret's `api_key` in-cluster.
+    pub(crate) ollama_api_key: Option<String>,
+    /// Base URL for the agent's `OpenAI`-compatible chat-completions endpoint.
+    pub(crate) ollama_base_url: String,
+    /// Model tag the agent drives.
+    pub(crate) ollama_model: String,
 }
 
 impl BotConfig {
@@ -65,6 +78,12 @@ impl BotConfig {
         let admin_user_ids =
             parse_user_ids(optional(lookup, "GAMESERVERS_ADMIN_USER_IDS").as_deref())?;
 
+        let ollama_api_key = optional(lookup, "OLLAMA_API_KEY").filter(|key| !key.is_empty());
+        let ollama_base_url = optional(lookup, "OLLAMA_BASE_URL")
+            .unwrap_or_else(|| DEFAULT_OLLAMA_BASE_URL.to_owned());
+        let ollama_model =
+            optional(lookup, "OLLAMA_MODEL").unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_owned());
+
         Ok(Self {
             token,
             guild_id,
@@ -74,6 +93,9 @@ impl BotConfig {
             control_port,
             admin_role_id,
             admin_user_ids,
+            ollama_api_key,
+            ollama_base_url,
+            ollama_model,
         })
     }
 }

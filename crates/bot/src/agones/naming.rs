@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, bail};
 
@@ -80,6 +81,15 @@ fn base36_suffix(mut value: u64, len: usize) -> String {
         value /= 36;
     }
     out
+}
+
+/// Clock-derived entropy for generated instance ids. Not security-sensitive —
+/// uniqueness is ultimately enforced by the API rejecting a duplicate name.
+pub(crate) fn now_entropy() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// Pick the lowest port in `range` that is neither in `used` nor `excluded`.
