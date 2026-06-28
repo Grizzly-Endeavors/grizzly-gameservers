@@ -57,8 +57,15 @@ jobs:
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
-          docker run --rm -e DIGEST -v "$PWD":/w -w /w mikefarah/yq:4 \
-            -i '.image.digest = strenv(DIGEST)' deploy/values.yaml
+          # Pipe through yq via stdin/stdout rather than mounting the workspace
+          # and writing in place: the yq image runs as uid 1000 and can't write
+          # the runner-owned file (permission denied). Here yq only transforms a
+          # stream — the shell (as the runner user) owns the redirect, so there's
+          # no mount and no uid coupling. set -e leaves values.yaml untouched if
+          # yq fails (the temp is discarded before the mv).
+          docker run --rm -i -e DIGEST mikefarah/yq:4 \
+            '.image.digest = strenv(DIGEST)' < deploy/values.yaml > deploy/values.yaml.tmp
+          mv deploy/values.yaml.tmp deploy/values.yaml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add deploy/values.yaml
