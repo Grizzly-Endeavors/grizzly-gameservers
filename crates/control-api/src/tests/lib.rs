@@ -105,3 +105,117 @@ fn process_phase_serializes_snake_case() {
     let json = serde_json::to_string(&ProcessPhase::Crashed).unwrap();
     assert_eq!(json, r#""crashed""#, "phase should be a snake_case string");
 }
+
+#[test]
+fn entry_kind_serializes_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&EntryKind::File).unwrap(),
+        r#""file""#
+    );
+    assert_eq!(serde_json::to_string(&EntryKind::Dir).unwrap(), r#""dir""#);
+    assert_eq!(
+        serde_json::to_string(&EntryKind::Other).unwrap(),
+        r#""other""#
+    );
+}
+
+#[test]
+fn list_response_round_trips() {
+    let response = ListResponse {
+        path: "logs".to_owned(),
+        entries: vec![
+            DirEntry {
+                name: "latest.log".to_owned(),
+                kind: EntryKind::File,
+                size: 4096,
+            },
+            DirEntry {
+                name: "archive".to_owned(),
+                kind: EntryKind::Dir,
+                size: 0,
+            },
+        ],
+    };
+    let json = serde_json::to_string(&response).unwrap();
+    let parsed: ListResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, response, "ListResponse should survive a round-trip");
+}
+
+#[test]
+fn read_response_round_trips() {
+    let response = ReadResponse {
+        path: "server.properties".to_owned(),
+        content: "difficulty=hard\n".to_owned(),
+        truncated: false,
+    };
+    let json = serde_json::to_string(&response).unwrap();
+    let parsed: ReadResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, response, "ReadResponse should survive a round-trip");
+}
+
+#[test]
+fn write_request_and_response_round_trip() {
+    let request = WriteRequest {
+        path: "server.properties".to_owned(),
+        content: "difficulty=peaceful\n".to_owned(),
+    };
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        serde_json::from_str::<WriteRequest>(&request_json).unwrap(),
+        request
+    );
+
+    let response = WriteResponse {
+        path: "server.properties".to_owned(),
+        backed_up: true,
+    };
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        serde_json::from_str::<WriteResponse>(&response_json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn restore_request_and_response_round_trip() {
+    let request = RestoreRequest {
+        path: "server.properties".to_owned(),
+    };
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RestoreRequest>(&request_json).unwrap(),
+        request
+    );
+
+    let response = RestoreResponse {
+        path: "server.properties".to_owned(),
+    };
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RestoreResponse>(&response_json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn logs_query_defaults_lines_to_none() {
+    let parsed: LogsQuery = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        parsed,
+        LogsQuery { lines: None },
+        "an absent lines field should default to None"
+    );
+}
+
+#[test]
+fn logs_response_round_trips() {
+    let response = LogsResponse {
+        lines: vec![
+            "[12:00:00] starting".to_owned(),
+            "[12:00:05] ready".to_owned(),
+        ],
+    };
+    let json = serde_json::to_string(&response).unwrap();
+    let parsed: LogsResponse = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, response, "LogsResponse should survive a round-trip");
+}

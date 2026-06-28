@@ -11,6 +11,8 @@
 
 pub mod config;
 pub mod control;
+pub mod fs;
+pub mod logs;
 pub mod process;
 pub mod readiness;
 pub mod runner;

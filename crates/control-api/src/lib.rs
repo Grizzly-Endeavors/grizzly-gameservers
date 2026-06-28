@@ -163,6 +163,96 @@ impl ControlError {
     }
 }
 
+/// Query for the read-only filesystem routes (`GET /fs/list`, `GET /fs/read`).
+/// `path` is relative to the supervisor's data root; the supervisor rejects any
+/// value that escapes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathQuery {
+    pub path: String,
+}
+
+/// What a directory entry is, so the agent can tell a file it can read from a
+/// directory it should descend into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    File,
+    Dir,
+    /// A symlink, socket, device, or anything else the agent shouldn't touch.
+    Other,
+}
+
+/// One entry in a [`ListResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub kind: EntryKind,
+    /// Size in bytes for files; `0` for directories.
+    pub size: u64,
+}
+
+/// Body of `GET /fs/list`: the directory's entries, sorted by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListResponse {
+    /// The data-root-relative path that was listed.
+    pub path: String,
+    pub entries: Vec<DirEntry>,
+}
+
+/// Body of `GET /fs/read`. `content` is UTF-8 (the supervisor refuses binary);
+/// `truncated` is set when the file exceeded the read cap and was cut short.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadResponse {
+    pub path: String,
+    pub content: String,
+    pub truncated: bool,
+}
+
+/// Body of `POST /fs/write`: overwrite `path` with `content`. The supervisor
+/// snapshots the existing file first so the change can be reverted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteRequest {
+    pub path: String,
+    pub content: String,
+}
+
+/// Body of the `POST /fs/write` response. `backed_up` is `true` when a prior
+/// version was snapshotted (i.e. the file already existed), `false` for a
+/// freshly created file that has nothing to revert to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteResponse {
+    pub path: String,
+    pub backed_up: bool,
+}
+
+/// Body of `POST /fs/restore`: restore `path` from the snapshot the last write
+/// took.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreRequest {
+    pub path: String,
+}
+
+/// Body of the `POST /fs/restore` response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreResponse {
+    pub path: String,
+}
+
+/// Query for `GET /logs`: how many trailing lines of captured output to return.
+/// Absent means the supervisor's default tail length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogsQuery {
+    #[serde(default)]
+    pub lines: Option<usize>,
+}
+
+/// Body of `GET /logs`: the most recent captured stdout/stderr lines, oldest
+/// first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogsResponse {
+    pub lines: Vec<String>,
+}
+
 #[cfg(test)]
 #[path = "tests/lib.rs"]
 mod tests;

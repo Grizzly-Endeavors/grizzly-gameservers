@@ -270,6 +270,17 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
              always asks them to confirm with a button first — describe what you're about to \
              delete before you call it, and respect their answer.",
         );
+        prompt.push_str(
+            "\n\nYou can also reach inside a running server to inspect and tune it. Every game \
+             stores its settings differently, so explore rather than guess: browse_files from the \
+             top of the data directory to find the file that holds a setting, read_file to see it, \
+             and read_logs when something's wrong or to confirm a change took hold. To change a \
+             setting, write_file the whole updated file (it saves the previous version first), then \
+             restart the server and read_logs to confirm it came back healthy. If it didn't, \
+             restore_file and restart to put it back the way it was. Make one change at a time so \
+             you can tell what worked. If you can't get it healthy, say so plainly and stop rather \
+             than thrashing.",
+        );
     } else {
         prompt.push_str(
             "\n\nThis person is not an admin: you can look up servers and their status for them, \

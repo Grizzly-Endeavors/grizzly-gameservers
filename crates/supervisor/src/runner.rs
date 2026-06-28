@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
+use crate::logs::LogBuffer;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
 use crate::{process, readiness};
@@ -42,9 +44,12 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     let sdk = SdkClient::new(http, cfg.sdk_base_url.clone());
 
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
+    let logs = Arc::new(LogBuffer::new());
     let control_port = cfg.control_port;
+    let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
+    let serve_logs = Arc::clone(&logs);
     tokio::spawn(async move {
-        if let Err(err) = control::serve(control_port, control_tx).await {
+        if let Err(err) = control::serve(control_port, control_tx, data_root, serve_logs).await {
             error!(error = ?err, "control api terminated");
         }
     });
@@ -56,7 +61,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         Arc::clone(&health_stop),
     ));
 
-    supervise(cfg, sdk, control_rx, health_stop).await
+    supervise(cfg, sdk, control_rx, health_stop, logs).await
 }
 
 /// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
@@ -80,14 +85,28 @@ async fn health_loop(sdk: SdkClient, interval: Duration, stop: Arc<Notify>) {
     }
 }
 
+/// The long-lived dependencies the supervision handlers share, bundled so each
+/// handler takes one context argument instead of threading four through every
+/// call (and tripping the argument-count lint).
+struct RunDeps<'a> {
+    cfg: &'a SupervisorConfig,
+    sdk: &'a SdkClient,
+    ready_tx: &'a mpsc::Sender<()>,
+    logs: &'a Arc<LogBuffer>,
+}
+
 async fn supervise(
     cfg: SupervisorConfig,
     sdk: SdkClient,
     mut control_rx: mpsc::Receiver<ControlRequest>,
     health_stop: Arc<Notify>,
+    logs: Arc<LogBuffer>,
 ) -> Result<()> {
     let mut state = SupervisorState::new();
     let mut child = Some(process::spawn(&cfg).context("failed to spawn initial child")?);
+    if let Some(running) = child.as_mut() {
+        process::capture_output(running, &logs);
+    }
     note_started(&mut state, child.as_ref())?;
     let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
     spawn_readiness_probe(cfg.game_port, ready_tx.clone());
@@ -98,16 +117,20 @@ async fn supervise(
 
     info!(control_port = cfg.control_port, "supervisor running");
 
+    let deps = RunDeps {
+        cfg: &cfg,
+        sdk: &sdk,
+        ready_tx: &ready_tx,
+        logs: &logs,
+    };
+
     loop {
         tokio::select! {
             Some(request) = control_rx.recv() => {
-                handle_request(&cfg, &sdk, &mut state, &mut child, &ready_tx, request).await;
+                handle_request(&deps, &mut state, &mut child, request).await;
             }
             exit = process::wait_optional(&mut child) => {
-                handle_unexpected_exit(
-                    &cfg, &sdk, &mut state, &mut child, &ready_tx, &health_stop, exit,
-                )
-                .await;
+                handle_unexpected_exit(&deps, &mut state, &mut child, &health_stop, exit).await;
             }
             Some(()) = ready_rx.recv() => {
                 settle_ready(&sdk, &mut state).await;
@@ -176,18 +199,16 @@ async fn publish_label(sdk: &SdkClient, value: &str) {
 }
 
 async fn handle_request(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    ready_tx: &mpsc::Sender<()>,
     request: ControlRequest,
 ) {
     let ControlRequest { command, reply } = request;
     let response = match command {
-        ControlCommand::Stop => do_stop(cfg, sdk, state, child).await,
-        ControlCommand::Start => do_start(cfg, sdk, state, child, ready_tx).await,
-        ControlCommand::Restart => do_restart(cfg, sdk, state, child, ready_tx).await,
+        ControlCommand::Stop => do_stop(deps, state, child).await,
+        ControlCommand::Start => do_start(deps, state, child).await,
+        ControlCommand::Restart => do_restart(deps, state, child).await,
         ControlCommand::Status => ControlReply::Status(state.status(Instant::now())),
     };
     if reply.send(response).is_err() {
@@ -198,8 +219,7 @@ async fn handle_request(
 /// Stop the game process in place, reaping the child inline so the loop's
 /// child-exit arm doesn't treat the intentional exit as a crash.
 async fn do_stop(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
 ) -> ControlReply {
@@ -207,9 +227,9 @@ async fn do_stop(
         return ControlReply::Acted(ResultKind::AlreadyStopped);
     };
     state.on_stop_requested();
-    let stop_result = process::graceful_stop(&mut running, cfg.graceful_timeout).await;
+    let stop_result = process::graceful_stop(&mut running, deps.cfg.graceful_timeout).await;
     state.on_stopped();
-    publish_label(sdk, PROCESS_LABEL_STOPPED).await;
+    publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
     if let Err(err) = stop_result {
         error!(error = ?err, "failed to stop child cleanly");
         return ControlReply::Failed("failed to stop the server cleanly".to_owned());
@@ -218,17 +238,15 @@ async fn do_stop(
 }
 
 async fn do_start(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    ready_tx: &mpsc::Sender<()>,
 ) -> ControlReply {
     if child.is_some() {
         return ControlReply::Acted(ResultKind::AlreadyRunning);
     }
     state.on_start_requested();
-    relaunch(cfg, sdk, state, child, ready_tx, "start").await;
+    relaunch(deps, state, child, "start").await;
     if child.is_some() {
         ControlReply::Acted(ResultKind::Starting)
     } else {
@@ -237,19 +255,17 @@ async fn do_start(
 }
 
 async fn do_restart(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    ready_tx: &mpsc::Sender<()>,
 ) -> ControlReply {
     state.on_restart_requested();
     if let Some(mut running) = child.take()
-        && let Err(err) = process::graceful_stop(&mut running, cfg.graceful_timeout).await
+        && let Err(err) = process::graceful_stop(&mut running, deps.cfg.graceful_timeout).await
     {
         error!(error = ?err, "failed to stop child during restart");
     }
-    relaunch(cfg, sdk, state, child, ready_tx, "restart").await;
+    relaunch(deps, state, child, "restart").await;
     if child.is_some() {
         ControlReply::Acted(ResultKind::Restarting)
     } else {
@@ -261,21 +277,22 @@ async fn do_restart(
 /// running label. `action` names the operation in logs. On spawn failure `child`
 /// is left empty so the caller reports the failure.
 async fn relaunch(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    ready_tx: &mpsc::Sender<()>,
     action: &str,
 ) {
-    match process::spawn(cfg) {
+    match process::spawn(deps.cfg) {
         Ok(spawned) => {
             *child = Some(spawned);
+            if let Some(running) = child.as_mut() {
+                process::capture_output(running, deps.logs);
+            }
             if let Err(err) = note_started(state, child.as_ref()) {
                 error!(error = ?err, action, "failed to record (re)launch");
             }
-            spawn_readiness_probe(cfg.game_port, ready_tx.clone());
-            publish_label(sdk, PROCESS_LABEL_RUNNING).await;
+            spawn_readiness_probe(deps.cfg.game_port, deps.ready_tx.clone());
+            publish_label(deps.sdk, PROCESS_LABEL_RUNNING).await;
         }
         Err(err) => {
             error!(error = ?err, action, "failed to (re)launch child");
@@ -285,11 +302,9 @@ async fn relaunch(
 }
 
 async fn handle_unexpected_exit(
-    cfg: &SupervisorConfig,
-    sdk: &SdkClient,
+    deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    ready_tx: &mpsc::Sender<()>,
     health_stop: &Arc<Notify>,
     exit: std::io::Result<std::process::ExitStatus>,
 ) {
@@ -298,20 +313,24 @@ async fn handle_unexpected_exit(
         Err(err) => error!(error = ?err, "failed waiting on game process"),
     }
     *child = None;
-    match state.on_child_exit(Instant::now(), cfg.crash_window, cfg.crash_threshold) {
+    match state.on_child_exit(
+        Instant::now(),
+        deps.cfg.crash_window,
+        deps.cfg.crash_threshold,
+    ) {
         // Intentional stops reap inline, so a Clean verdict here is defensive only.
-        ExitDisposition::Clean => publish_label(sdk, PROCESS_LABEL_STOPPED).await,
+        ExitDisposition::Clean => publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await,
         ExitDisposition::Relaunch => {
             warn!("relaunching crashed game process after backoff");
             sleep(RELAUNCH_BACKOFF).await;
-            relaunch(cfg, sdk, state, child, ready_tx, "crash-relaunch").await;
+            relaunch(deps, state, child, "crash-relaunch").await;
         }
         ExitDisposition::Escalate => {
             error!(
                 "crash threshold exceeded; stopping health heartbeat so agones recreates the pod"
             );
             health_stop.notify_one();
-            publish_label(sdk, PROCESS_LABEL_STOPPED).await;
+            publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
         }
     }
 }

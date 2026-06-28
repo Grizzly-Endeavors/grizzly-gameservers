@@ -13,8 +13,10 @@ use super::llm::{ChatMessage, ToolCall, ToolDef};
 
 /// Default ceiling on model turns per request. A bounded loop is the lightweight
 /// version of the design's escalation exit: a model that keeps calling tools
-/// without converging is paged to a human rather than left to thrash.
-pub(crate) const DEFAULT_MAX_ROUNDS: usize = 8;
+/// without converging is paged to a human rather than left to thrash. Sized for
+/// a full troubleshooting cycle — browse, read, edit, restart, check logs, and
+/// recover if needed — which spends several tool rounds before a final reply.
+pub(crate) const DEFAULT_MAX_ROUNDS: usize = 16;
 
 /// What the user is told the agent could not resolve on its own.
 pub(crate) const ESCALATION_REPLY: &str =
