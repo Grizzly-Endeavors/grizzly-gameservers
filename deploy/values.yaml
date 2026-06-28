@@ -3,8 +3,12 @@
 # CI bumps the image tag to the gate-signed digest per ADR-020.
 image:
   repository: registry.registry.svc.cluster.local:5000/grizzly-gameservers
-  # Dev: a mutable tag pushed by hand (scripts: docker push localhost:5000/...).
-  # CI overwrites this with the gate-signed digest per ADR-020.
+  # CI (deploy.yml) overwrites `digest` with the gate-signed digest per ADR-020;
+  # when set, the chart pins repository@digest (immutable — what cosign signs and
+  # Kyverno verifies) and ignores tag/pullPolicy below.
+  digest: ""
+  # Dev fallback: a mutable tag pushed by hand (just bot-push). Used only when
+  # digest is empty.
   tag: "dev"
   pullPolicy: Always # dev: re-pull the mutable :dev tag on each rollout
 

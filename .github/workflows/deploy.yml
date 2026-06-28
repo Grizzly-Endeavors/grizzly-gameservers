@@ -1,18 +1,67 @@
-# Build → GATE → deploy. PLACEHOLDER: build/deploy steps are stubbed until the
-# bot/agent and deploy chart exist. The gate caller below is the real contract
-# (see grizzly-platform .github/templates/ci/deploy-with-gate.yaml.example and
-# the root gate-config.json honest map).
-#
-# Intentionally gated behind `if: false` so it doesn't run red CI while the repo
-# is a scaffold. Flip on once there's an image to build and sign.
+# Build → GATE → deploy. On push to main: build the bot/ops-agent image, hand it
+# to the centrally-owned gate (which cosign-signs the digest ONLY on a clean
+# pass), then pin that signed digest into deploy/values.yaml and commit so Flux
+# reconciles it. The deploy job runs only if the gate passed, so an unsigned
+# image never reaches the cluster — and the bot-scoped Kyverno policy in
+# grizzly-platform (enforce-gameservers-bot-signature) refuses it at admission
+# anyway. See grizzly-platform .github/workflows/gate.yaml and the root
+# gate-config.json honest map.
 name: Build and Deploy
 on:
   push:
     branches: [main]
 
+env:
+  REGISTRY: registry.registry.svc.cluster.local:5000
+  IMAGE_NAME: grizzly-gameservers
+
 jobs:
-  todo:
-    if: false # remove when build/gate/deploy is wired
+  build:
     runs-on: lab-runners
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
-      - run: echo "TODO: docker build → call grizzly-gate gate.yaml → bump deploy/values.yaml digest [skip ci]"
+      - uses: actions/checkout@v4
+      - name: Build and push (capture digest)
+        id: push
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile -t "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" .
+          docker push "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}"
+          # The gate signs by digest, and the chart pins by digest — resolve the
+          # immutable digest of what we just pushed.
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" | cut -d@ -f2)
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+  gate:
+    needs: build
+    uses: grizzly-endeavors/grizzly-platform/.github/workflows/gate.yaml@master
+    with:
+      image: registry.registry.svc.cluster.local:5000/grizzly-gameservers@${{ needs.build.outputs.digest }}
+      gate_version: v0.6.0 # pinned for reproducibility; bump deliberately
+
+  deploy:
+    needs: gate # only runs if the gate passed and signed the image
+    runs-on: lab-runners
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      # ADR-020 model: pin deploy/values.yaml to the gate-signed digest and
+      # commit [skip ci]; Flux reconciles. [skip ci] keeps this commit from
+      # re-triggering the workflow.
+      - name: Pin signed digest and commit
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e DIGEST -v "$PWD":/w -w /w mikefarah/yq:4 \
+            -i '.image.digest = strenv(DIGEST)' deploy/values.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/values.yaml
+          git commit -m "ci: deploy gate-signed bot image [skip ci]" \
+            -m "image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          git push origin HEAD:main
