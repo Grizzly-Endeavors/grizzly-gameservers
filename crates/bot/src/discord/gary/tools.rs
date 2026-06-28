@@ -113,7 +113,7 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
             ),
             ToolDef::function(
                 REMOVE_SERVER,
-                "Permanently delete a server and its world. Asks the user to confirm first.",
+                "Permanently delete a server and its world. The user is presented with a confirmation prompt before anything is destroyed, run this tool when asked, you don't have to confirm.",
                 params_schema::<NameParams>(),
             ),
         ]);
