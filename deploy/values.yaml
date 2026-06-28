@@ -11,14 +11,12 @@ image:
   # digest is empty.
   tag: "dev"
   pullPolicy: Always # dev: re-pull the mutable :dev tag on each rollout
-
 # Credentials synced from OpenBao via External Secrets Operator.
 # Renders discord-bot + ollama-api Secrets into the release namespace.
 externalSecrets:
   enabled: true
   secretStore: openbao # ClusterSecretStore provisioned in grizzly-platform
   refreshInterval: 1h
-
 # Discord bot / ops-agent workload.
 bot:
   enabled: true
