@@ -1,5 +1,6 @@
 mod auth;
 pub(crate) mod commands;
+pub(crate) mod gary;
 mod render;
 
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use kube::Client;
 use tokio::sync::Mutex;
 
+use crate::agent::OllamaConfig;
 use crate::agones::GameCatalog;
 
 /// Per-command state shared with every poise command handler.
@@ -24,6 +26,9 @@ pub(crate) struct Data {
     pub(crate) provision_lock: Arc<Mutex<()>>,
     pub(crate) admin_role_id: Option<u64>,
     pub(crate) admin_user_ids: Arc<[u64]>,
+    /// Agent ("Gary") model connection, or `None` when no key is configured —
+    /// in which case mentions reply that Gary isn't set up.
+    pub(crate) ollama: Option<OllamaConfig>,
 }
 
 pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;

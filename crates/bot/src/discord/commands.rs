@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use poise::serenity_prelude as serenity;
 use serenity::{
@@ -17,8 +17,8 @@ use super::{Context, Error};
 use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, StartBegin, StartOutcome, begin_start,
     build_instance_name, instance_runtime_state, kill_instance, list_active_servers,
-    list_instance_names, provision_instance, remove_instance, supervisor_restart, supervisor_start,
-    supervisor_stop, wait_for_instance_ready,
+    list_instance_names, now_entropy, provision_instance, remove_instance, supervisor_restart,
+    supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
 
 /// How long the dropdown / confirm components stay live before we give up
@@ -644,13 +644,4 @@ fn cleared(embed: serenity::CreateEmbed) -> poise::CreateReply {
     poise::CreateReply::default()
         .embed(embed)
         .components(vec![])
-}
-
-/// Clock-derived entropy for generated instance ids. Not security-sensitive —
-/// uniqueness is ultimately enforced by the API rejecting a duplicate name.
-fn now_entropy() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }

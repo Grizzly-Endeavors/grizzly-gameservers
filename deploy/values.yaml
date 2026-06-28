@@ -29,6 +29,11 @@ bot:
   # may stay in git). A friend needs this role or to be on the OpenBao user-id allowlist.
   adminRoleId: "" # Discord role id allowed to manage servers
   logLevel: info # RUST_LOG value
+  # Ops agent (Gary): the Ollama Cloud model tag. The API key is synced from
+  # OpenBao into the ollama-api Secret and injected via secretKeyRef (optional —
+  # an absent key disables Gary). Override the model here without a rebuild.
+  ollamaModel: glm-5.2
+  ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
   # Per-game catalog path baked into the image; override only if relocated.
   # catalogDir: /usr/local/share/grizzly-gameservers/games
   resources:
