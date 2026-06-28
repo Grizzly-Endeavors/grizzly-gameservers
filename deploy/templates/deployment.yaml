@@ -63,6 +63,21 @@ spec:
                 secretKeyRef:
                   name: discord-bot
                   key: admin_user_ids
+            # Ops agent (Gary). The key is synced from OpenBao into the ollama-api
+            # Secret; marked optional so a missing key leaves Gary disabled (the
+            # binary's documented behaviour) rather than crash-looping the pod.
+            - name: OLLAMA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ollama-api
+                  key: api_key
+                  optional: true
+            - name: OLLAMA_MODEL
+              value: {{ .Values.bot.ollamaModel | quote }}
+            {{- if .Values.bot.ollamaBaseUrl }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.bot.ollamaBaseUrl | quote }}
+            {{- end }}
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:

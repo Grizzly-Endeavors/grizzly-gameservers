@@ -32,6 +32,10 @@ bot-logs:
 game-push game="minecraft" tag="dev":
     ./scripts/push-game-image.sh {{game}} {{tag}}
 
+# Build the bot/ops-agent image and push it to the in-cluster registry (dev).
+bot-push tag="dev":
+    ./scripts/push-bot-image.sh {{tag}}
+
 # Run the full test suite (quiet format).
 test:
     cargo test --quiet
