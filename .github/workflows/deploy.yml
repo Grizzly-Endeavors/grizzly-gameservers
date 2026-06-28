@@ -38,7 +38,7 @@ jobs:
     uses: grizzly-endeavors/grizzly-platform/.github/workflows/gate.yaml@master
     with:
       image: registry.registry.svc.cluster.local:5000/grizzly-gameservers@${{ needs.build.outputs.digest }}
-      gate_version: v0.6.0 # pinned for reproducibility; bump deliberately
+      gate_version: v0.7.0 # pinned for reproducibility; bump deliberately
 
   deploy:
     needs: gate # only runs if the gate passed and signed the image
