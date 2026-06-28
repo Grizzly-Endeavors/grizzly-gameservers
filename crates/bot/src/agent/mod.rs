@@ -4,6 +4,8 @@
 
 pub(crate) mod llm;
 pub(crate) mod session;
+pub(crate) mod store;
 
 pub(crate) use llm::{ChatMessage, OllamaConfig, ToolCall, ToolDef, send_chat_completion};
-pub(crate) use session::{DEFAULT_MAX_ROUNDS, SessionOutcome, run_session};
+pub(crate) use session::{DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, run_session};
+pub(crate) use store::SessionStore;

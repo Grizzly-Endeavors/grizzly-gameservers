@@ -1,29 +1,34 @@
-//! Gary, the Discord-facing ops agent. An `@mention` runs a fresh tool-calling
-//! session against the configured model: anyone may ask, but only admins are
-//! handed the mutating tools. This is the Discord shell — the model client and
-//! loop live in `crate::agent`, the tool executors in [`tools`].
+//! Gary, the Discord-facing ops agent. An `@mention` runs a tool-calling session
+//! against the configured model — continuing this person's recent conversation
+//! in the channel when one is still live (see [`crate::agent::SessionStore`]),
+//! else starting fresh. Anyone may ask, but only admins are handed the mutating
+//! tools. This is the Discord shell — the model client and loop live in
+//! `crate::agent`, the tool executors in [`tools`].
 
 mod tools;
 
 use std::future::Future;
-use std::pin::Pin;
+use std::pin::{Pin, pin};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use poise::serenity_prelude as serenity;
-use serenity::{CreateMessage, EditMessage};
-use tracing::{error, warn};
+use serenity::CreateMessage;
+use tokio::sync::{mpsc, watch};
+use tracing::{error, trace, warn};
 
 use super::auth::is_authorized;
+use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, SessionOutcome, ToolDef, run_session, send_chat_completion,
+    ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolDef, run_session,
+    send_chat_completion,
 };
 
-/// Discord's hard cap on message content. Replies are trimmed to fit under it.
-const MAX_DISCORD_CONTENT: usize = 2000;
-
-/// Shown while a session runs, then edited in place with the final reply.
-const THINKING_PLACEHOLDER: &str = "🤔 thinking…";
+/// How often the typing indicator is refreshed while a session runs. Discord's
+/// indicator lasts ~10s, so 8s keeps it lit without a visible gap.
+const TYPING_INTERVAL: Duration = Duration::from_secs(8);
 
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
@@ -57,9 +62,10 @@ pub(crate) async fn on_event(
     Ok(())
 }
 
-/// Run one agent session for a mention and report the result back in-channel.
-/// Builds the model/tool callbacks, drives the loop, then edits the placeholder
-/// with the final reply.
+/// Run one agent turn for a mention and report back in-channel. Builds the
+/// model/tool callbacks, keeps a typing indicator lit while the loop runs, posts
+/// the model's interim narration as it arrives and its final reply (chunked),
+/// then persists the transcript for the next mention.
 async fn handle_mention(
     ctx: &serenity::Context,
     data: &Data,
@@ -87,11 +93,15 @@ async fn handle_mention(
 
     let is_admin = caller_is_admin(data, message);
     let tool_defs = tools::available_tools(is_admin);
-    let system_prompt = build_system_prompt(is_admin, &game_catalog_list(data));
+    let games = game_catalog_list(data);
 
-    let Some(mut placeholder) = post_placeholder(ctx, message).await else {
-        return;
-    };
+    // Continue this person's conversation in this channel if it's still live,
+    // else start fresh; the appended user turn is what the model answers.
+    let key = (message.channel_id.get(), message.author.id.get());
+    let mut messages = data.sessions.checkout(key, Instant::now(), || {
+        build_system_prompt(is_admin, &games)
+    });
+    messages.push(ChatMessage::user(prompt));
 
     let tool_ctx = tools::ToolCtx {
         data,
@@ -105,41 +115,111 @@ async fn handle_mention(
     // over the non-Copy `tool_ctx` directly would be `FnOnce`.
     let http = &data.http;
     let tool_ctx = &tool_ctx;
-    let complete = move |messages: Vec<ChatMessage>, defs: Vec<ToolDef>| {
-        Box::pin(async move { send_chat_completion(http, ollama, &messages, &defs).await })
+    let complete = move |transcript: Vec<ChatMessage>, defs: Vec<ToolDef>| {
+        Box::pin(async move { send_chat_completion(http, ollama, &transcript, &defs).await })
             as CompleteFuture<'_>
     };
     let dispatch = move |call| {
         Box::pin(async move { tools::dispatch(tool_ctx, &call).await }) as DispatchFuture<'_>
     };
+    // Interim model narration is fanned out over this channel and posted as it
+    // arrives; the send is fire-and-forget so the loop never blocks on Discord.
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<SessionEvent>();
+    let progress = move |event: SessionEvent| {
+        if progress_tx.send(event).is_err() {
+            trace!("agent: progress receiver dropped before session ended");
+        }
+    };
 
-    let final_text = match run_session(
-        system_prompt,
-        prompt,
-        tool_defs,
-        DEFAULT_MAX_ROUNDS,
-        &complete,
-        &dispatch,
-    )
-    .await
-    {
+    let typing = start_typing(ctx, message.channel_id);
+
+    // Drive the session while draining interim text concurrently, so the model's
+    // words post the moment it writes them rather than all at the end.
+    let outcome = {
+        let mut session = pin!(run_session(
+            &mut messages,
+            tool_defs,
+            DEFAULT_MAX_ROUNDS,
+            &complete,
+            &dispatch,
+            &progress,
+        ));
+        loop {
+            tokio::select! {
+                done = &mut session => break done,
+                Some(SessionEvent::AssistantText(text)) = progress_rx.recv() => {
+                    send_chunks(ctx, message, &text).await;
+                }
+            }
+        }
+    };
+    while let Ok(SessionEvent::AssistantText(text)) = progress_rx.try_recv() {
+        send_chunks(ctx, message, &text).await;
+    }
+
+    let (final_text, persist) = match outcome {
         Ok(SessionOutcome { reply, escalated }) => {
             if escalated {
                 warn!(user = %message.author.id, "agent escalated: round budget exhausted");
             }
-            reply
+            (reply, true)
         }
         Err(err) => {
             error!(error = ?err, user = %message.author.id, "agent: session failed");
-            "Something went wrong while I was working on that. Try again in a moment.".to_owned()
+            (
+                "Something went wrong while I was working on that. Try again in a moment."
+                    .to_owned(),
+                false,
+            )
         }
     };
 
-    if let Err(err) = placeholder
-        .edit(ctx, EditMessage::new().content(truncate(&final_text)))
-        .await
-    {
-        error!(error = ?err, "agent: failed to edit reply with result");
+    drop(typing);
+    send_chunks(ctx, message, &final_text).await;
+
+    // Only a clean turn is worth continuing from; a failed one leaves the prior
+    // session untouched so a retry doesn't inherit a half-finished transcript.
+    if persist {
+        data.sessions.commit(key, messages, Instant::now());
+    }
+}
+
+/// Keep Discord's typing indicator lit for `channel_id` until the returned guard
+/// is dropped. Dropping it closes the watch channel, which wakes the task out of
+/// its sleep and ends it.
+fn start_typing(ctx: &serenity::Context, channel_id: serenity::ChannelId) -> watch::Sender<bool> {
+    let http = Arc::clone(&ctx.http);
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            if let Err(err) = channel_id.broadcast_typing(&http).await {
+                trace!(error = %err, "agent: typing indicator refresh failed");
+            }
+            tokio::select! {
+                () = tokio::time::sleep(TYPING_INTERVAL) => {}
+                _ = stop_rx.changed() => break,
+            }
+        }
+    });
+    stop_tx
+}
+
+/// Send `text` as one or more reply messages, splitting on Discord's size cap
+/// without breaking code fences. Each chunk threads under the user's message.
+async fn send_chunks(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
+    for chunk in chunk_text(text, DISCORD_MAX_CHARS) {
+        if let Err(err) = message
+            .channel_id
+            .send_message(
+                ctx,
+                CreateMessage::new()
+                    .content(chunk)
+                    .reference_message(message),
+            )
+            .await
+        {
+            error!(error = ?err, "agent: failed to send reply chunk");
+        }
     }
 }
 
@@ -204,28 +284,6 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
     prompt
 }
 
-async fn post_placeholder(
-    ctx: &serenity::Context,
-    message: &serenity::Message,
-) -> Option<serenity::Message> {
-    match message
-        .channel_id
-        .send_message(
-            ctx,
-            CreateMessage::new()
-                .content(THINKING_PLACEHOLDER)
-                .reference_message(message),
-        )
-        .await
-    {
-        Ok(posted) => Some(posted),
-        Err(err) => {
-            error!(error = ?err, "agent: failed to post thinking placeholder");
-            None
-        }
-    }
-}
-
 async fn reply(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
     if let Err(err) = message
         .channel_id
@@ -239,17 +297,6 @@ async fn reply(ctx: &serenity::Context, message: &serenity::Message, text: &str)
     {
         error!(error = ?err, "agent: failed to send reply");
     }
-}
-
-/// Trim a reply to fit Discord's content cap, marking that it was cut.
-fn truncate(text: &str) -> String {
-    if text.chars().count() <= MAX_DISCORD_CONTENT {
-        return text.to_owned();
-    }
-    let keep = MAX_DISCORD_CONTENT.saturating_sub(1);
-    let mut out: String = text.chars().take(keep).collect();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]

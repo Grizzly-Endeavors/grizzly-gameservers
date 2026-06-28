@@ -1,4 +1,5 @@
 mod auth;
+mod chunking;
 pub(crate) mod commands;
 pub(crate) mod gary;
 mod render;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use kube::Client;
 use tokio::sync::Mutex;
 
-use crate::agent::OllamaConfig;
+use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 
 /// Per-command state shared with every poise command handler.
@@ -29,6 +30,9 @@ pub(crate) struct Data {
     /// Agent ("Gary") model connection, or `None` when no key is configured —
     /// in which case mentions reply that Gary isn't set up.
     pub(crate) ollama: Option<OllamaConfig>,
+    /// Short-lived per-`(channel, user)` conversation transcripts giving Gary
+    /// follow-up continuity across mentions.
+    pub(crate) sessions: Arc<SessionStore>,
 }
 
 pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;

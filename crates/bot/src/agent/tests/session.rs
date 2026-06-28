@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::super::llm::{FunctionCall, Role};
 use super::*;
 
-/// An assistant turn that calls one tool.
-fn tool_turn(id: &str, name: &str, arguments: &str) -> ChatMessage {
+/// An assistant turn that calls one tool, optionally with narration text.
+fn tool_turn(id: &str, name: &str, arguments: &str, content: Option<&str>) -> ChatMessage {
     ChatMessage {
         role: Role::Assistant,
-        content: None,
+        content: content.map(str::to_owned),
         tool_calls: Some(vec![ToolCall {
             id: id.to_owned(),
             kind: "function".to_owned(),
@@ -34,9 +34,19 @@ fn text_turn(text: &str) -> ChatMessage {
     }
 }
 
+/// The seeded transcript the shell hands to `run_session`.
+fn seed(user: &str) -> Vec<ChatMessage> {
+    vec![ChatMessage::system("sys"), ChatMessage::user(user)]
+}
+
 /// Build a `complete` closure that hands back the given canned turns in order.
 fn canned(turns: Vec<ChatMessage>) -> Mutex<VecDeque<ChatMessage>> {
     Mutex::new(VecDeque::from(turns))
+}
+
+/// A progress sink that discards every event.
+fn ignore_progress() -> impl Fn(SessionEvent) + Sync {
+    |_| {}
 }
 
 #[tokio::test]
@@ -52,14 +62,16 @@ async fn returns_text_reply_without_calling_tools() {
         dispatched.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { String::new() })
     };
+    let progress = ignore_progress();
 
+    let mut messages = seed("what's up");
     let outcome = run_session(
-        "sys".to_owned(),
-        "what's up".to_owned(),
+        &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         complete,
         dispatch,
+        &progress,
     )
     .await
     .unwrap();
@@ -76,7 +88,7 @@ async fn returns_text_reply_without_calling_tools() {
 #[tokio::test]
 async fn runs_one_tool_round_then_replies() {
     let turns = canned(vec![
-        tool_turn("c1", "list_servers", "{}"),
+        tool_turn("c1", "list_servers", "{}", None),
         text_turn("here they are"),
     ]);
     let seen = Mutex::new(Vec::new());
@@ -89,14 +101,16 @@ async fn runs_one_tool_round_then_replies() {
         seen.lock().unwrap().push(call.function.name.clone());
         Box::pin(async move { "mc-abc12: Ready".to_owned() })
     };
+    let progress = ignore_progress();
 
+    let mut messages = seed("list servers");
     let outcome = run_session(
-        "sys".to_owned(),
-        "list servers".to_owned(),
+        &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         complete,
         dispatch,
+        &progress,
     )
     .await
     .unwrap();
@@ -104,25 +118,64 @@ async fn runs_one_tool_round_then_replies() {
     assert_eq!(outcome.reply, "here they are");
     assert!(!outcome.escalated);
     assert_eq!(seen.lock().unwrap().as_slice(), ["list_servers"]);
+    // The transcript is left populated for the caller to persist: the seed plus
+    // the assistant tool turn, its tool result, and the final assistant text.
+    assert!(
+        messages.len() > 2,
+        "the transcript should carry the turns the session ran"
+    );
+}
+
+#[tokio::test]
+async fn emits_interim_text_only_when_the_model_narrates() {
+    let turns = canned(vec![
+        tool_turn("c1", "list_servers", "{}", Some("let me check on that")),
+        tool_turn("c2", "list_servers", "{}", Some("   ")),
+        tool_turn("c3", "list_servers", "{}", None),
+        text_turn("done"),
+    ]);
+    let events: Mutex<Vec<SessionEvent>> = Mutex::new(Vec::new());
+
+    let complete: &CompleteFn = &|_, _| {
+        let next = turns.lock().unwrap().pop_front().unwrap();
+        Box::pin(async move { Ok(next) })
+    };
+    let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
+    let progress = |event: SessionEvent| events.lock().unwrap().push(event);
+
+    let mut messages = seed("list servers");
+    run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        complete,
+        dispatch,
+        &progress,
+    )
+    .await
+    .unwrap();
+
+    // Only the turn with real narration fires; blank and absent content do not.
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [SessionEvent::AssistantText(
+            "let me check on that".to_owned()
+        )]
+    );
 }
 
 #[tokio::test]
 async fn escalates_when_round_budget_is_exhausted() {
     // The model never stops calling tools — every turn is another call.
     let complete: &CompleteFn =
-        &|_, _| Box::pin(async { Ok(tool_turn("c", "list_servers", "{}")) });
+        &|_, _| Box::pin(async { Ok(tool_turn("c", "list_servers", "{}", None)) });
     let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
+    let progress = ignore_progress();
 
-    let outcome = run_session(
-        "sys".to_owned(),
-        "loop forever".to_owned(),
-        Vec::new(),
-        3,
-        complete,
-        dispatch,
-    )
-    .await
-    .unwrap();
+    let mut messages = seed("loop forever");
+    let outcome = run_session(&mut messages, Vec::new(), 3, complete, dispatch, &progress)
+        .await
+        .unwrap();
 
     assert!(outcome.escalated, "an unbounded tool loop must escalate");
     assert_eq!(outcome.reply, ESCALATION_REPLY);
@@ -136,14 +189,16 @@ async fn empty_text_reply_falls_back_to_a_prompt() {
         Box::pin(async move { Ok(next) })
     };
     let dispatch: &DispatchFn = &|_| Box::pin(async { String::new() });
+    let progress = ignore_progress();
 
+    let mut messages = seed("hi");
     let outcome = run_session(
-        "sys".to_owned(),
-        "hi".to_owned(),
+        &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         complete,
         dispatch,
+        &progress,
     )
     .await
     .unwrap();
@@ -160,14 +215,16 @@ async fn propagates_completion_errors() {
     let complete: &CompleteFn =
         &|_, _| Box::pin(async { Err(anyhow::anyhow!("endpoint unreachable")) });
     let dispatch: &DispatchFn = &|_| Box::pin(async { String::new() });
+    let progress = ignore_progress();
 
+    let mut messages = seed("hi");
     let err = run_session(
-        "sys".to_owned(),
-        "hi".to_owned(),
+        &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         complete,
         dispatch,
+        &progress,
     )
     .await
     .unwrap_err();
