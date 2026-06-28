@@ -31,6 +31,14 @@ jobs:
           # The gate signs by digest, and the chart pins by digest — resolve the
           # immutable digest of what we just pushed.
           digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" | cut -d@ -f2)
+          # Fail loud on a missing/garbage digest. RepoDigests is only populated
+          # from the registry's push response, so a registry hiccup can leave it
+          # empty — and an empty digest silently poisons the gate (scans `@`) and
+          # deploy (pins `@`). Guard the whole pipeline at the source.
+          case "$digest" in
+            sha256:*) : ;;
+            *) echo "::error::empty/invalid image digest from registry: '${digest}'"; exit 1 ;;
+          esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   gate:
@@ -57,6 +65,13 @@ jobs:
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
+          # Defense in depth: even though build guards its output, a partial job
+          # re-run can leave needs.build.outputs.digest stale/empty for this job.
+          # Never pin/commit an empty digest — fail instead of shipping garbage.
+          case "${DIGEST:-}" in
+            sha256:*) : ;;
+            *) echo "::error::refusing to pin empty/invalid digest: '${DIGEST:-}'"; exit 1 ;;
+          esac
           # Pipe through yq via stdin/stdout rather than mounting the workspace
           # and writing in place: the yq image runs as uid 1000 and can't write
           # the runner-owned file (permission denied). Here yq only transforms a
