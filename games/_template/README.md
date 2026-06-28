@@ -19,5 +19,6 @@ Skeleton for onboarding a new game. The manifests here carry a deliberate securi
 
 ## Notes
 
+- **Data directory for the ops agent (`SUPERVISOR_DATA_DIR`)**: the supervisor scopes Gary's file tools (`browse_files`/`read_file`/`write_file`/`restore_file`) to this directory, defaulting to `/data` (itzg/minecraft's mount). If your game's data PVC `mountPath` is anything other than `/data`, set `SUPERVISOR_DATA_DIR` to match — in the image `ENV` beside `SUPERVISOR_CHILD_CMD`, or in the pod spec — so the agent can reach the game's config and logs. Paths outside this directory (absolute paths, `..`) are refused.
 - **UDP games** (Valheim, etc.): set `protocol: UDP` on the port and Service. The edge forwards UDP+TCP, but TCP MSS clamping doesn't help UDP — a game sending >~1380-byte datagrams needs its own MTU/payload setting (the `wg0` tunnel is 1420). See `docs/activation-status.md`.
 - Promote a single `GameServer` to a `Fleet` + shim-managed per-instance NodePort Services once the ops agent/shim owns allocation.
