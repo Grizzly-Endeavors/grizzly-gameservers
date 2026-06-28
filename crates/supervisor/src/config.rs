@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -15,6 +16,10 @@ const DEFAULT_GAME_PORT: u16 = 25565;
 const DEFAULT_CONTROL_PORT: u16 = 9359;
 /// Where the auto-injected Agones SDK sidecar serves its REST API.
 const DEFAULT_SDK_BASE_URL: &str = "http://127.0.0.1:9358";
+/// The instance PVC mount the agent's file operations are confined to — matches
+/// the Minecraft `volumeMounts.mountPath`. Games whose PVC mounts elsewhere
+/// override it via `SUPERVISOR_DATA_DIR`.
+const DEFAULT_DATA_DIR: &str = "/data";
 /// 5s gives a 3× margin against the catalog health budget
 /// (periodSeconds 15 × failureThreshold 5 = 75s).
 const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 5;
@@ -38,6 +43,8 @@ pub struct SupervisorConfig {
     pub control_port: u16,
     /// Base URL of the Agones SDK sidecar's REST API.
     pub sdk_base_url: String,
+    /// Root the agent's file operations are confined to (the instance PVC mount).
+    pub data_dir: PathBuf,
     /// How often to ping the SDK `/health` endpoint.
     pub health_interval: Duration,
     /// How long to wait for a graceful child exit before SIGKILL.
@@ -74,6 +81,9 @@ impl SupervisorConfig {
             optional_parse(lookup, "SUPERVISOR_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
         let sdk_base_url =
             optional(lookup, "AGONES_SDK_HTTP").unwrap_or_else(|| DEFAULT_SDK_BASE_URL.to_owned());
+        let data_dir = PathBuf::from(
+            optional(lookup, "SUPERVISOR_DATA_DIR").unwrap_or_else(|| DEFAULT_DATA_DIR.to_owned()),
+        );
         let health_interval = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_HEALTH_INTERVAL_SECS")?
                 .unwrap_or(DEFAULT_HEALTH_INTERVAL_SECS),
@@ -94,6 +104,7 @@ impl SupervisorConfig {
             game_port,
             control_port,
             sdk_base_url,
+            data_dir,
             health_interval,
             graceful_timeout,
             crash_window,

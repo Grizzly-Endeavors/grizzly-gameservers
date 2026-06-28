@@ -33,6 +33,11 @@ fn applies_defaults_with_empty_environment() {
         "default graceful timeout"
     );
     assert_eq!(config.crash_threshold, 5, "default crash threshold");
+    assert_eq!(
+        config.data_dir,
+        std::path::Path::new("/data"),
+        "default data dir"
+    );
 }
 
 #[test]
@@ -46,6 +51,7 @@ fn overrides_from_environment() {
         ("SUPERVISOR_GRACEFUL_TIMEOUT_SECS", "120"),
         ("SUPERVISOR_CRASH_WINDOW_SECS", "60"),
         ("SUPERVISOR_CRASH_THRESHOLD", "10"),
+        ("SUPERVISOR_DATA_DIR", "/srv/world"),
     ]);
     let config = SupervisorConfig::from_env_with(&env).unwrap();
     assert_eq!(
@@ -74,6 +80,11 @@ fn overrides_from_environment() {
         "crash window override"
     );
     assert_eq!(config.crash_threshold, 10, "crash threshold override");
+    assert_eq!(
+        config.data_dir,
+        std::path::Path::new("/srv/world"),
+        "data dir override"
+    );
 }
 
 #[test]

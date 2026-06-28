@@ -1,16 +1,21 @@
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
 use tracing::warn;
 
 use crate::config::SupervisorConfig;
+use crate::logs::LogBuffer;
 
 /// Launch the supervised game-server process. Inherits the environment so the
 /// itzg image reads its `EULA`/`MEMORY`/etc. knobs, and `kill_on_drop` so a
-/// supervisor crash can't orphan the game.
+/// supervisor crash can't orphan the game. stdout/stderr are piped (not
+/// inherited) so [`capture_output`] can both tee them to the supervisor's own
+/// output and retain a tail for the control API.
 ///
 /// # Errors
 ///
@@ -20,8 +25,55 @@ pub fn spawn(cfg: &SupervisorConfig) -> Result<Child> {
     cmd.kill_on_drop(true);
     // No interactive console; stop/restart go through SIGTERM, not stdin.
     cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     cmd.spawn()
         .with_context(|| format!("failed to spawn child command {:?}", cfg.child_command))
+}
+
+/// Drain the child's piped stdout and stderr into `logs`, re-emitting each line
+/// to the supervisor's own stdout/stderr so `kubectl logs` still shows the game's
+/// output. The reader tasks end on their own when the pipes close at child exit.
+pub fn capture_output(child: &mut Child, logs: &Arc<LogBuffer>) {
+    if let Some(stdout) = child.stdout.take() {
+        spawn_line_pump(stdout, Arc::clone(logs), Stream::Stdout);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_line_pump(stderr, Arc::clone(logs), Stream::Stderr);
+    }
+}
+
+/// Which standard stream a captured line came from, so it can be re-emitted on
+/// the matching supervisor stream.
+#[derive(Clone, Copy)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+fn spawn_line_pump<R>(reader: R, logs: Arc<LogBuffer>, stream: Stream)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    match stream {
+                        Stream::Stdout => println!("{line}"),
+                        Stream::Stderr => eprintln!("{line}"),
+                    }
+                    logs.push(line);
+                }
+                Ok(None) => break,
+                Err(err) => {
+                    warn!(error = %err, "failed reading child output stream");
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Gracefully stop the child: SIGTERM (which itzg's `mc-server-runner` traps into
