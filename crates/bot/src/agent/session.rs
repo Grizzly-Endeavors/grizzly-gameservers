@@ -37,6 +37,20 @@ pub(crate) type CompleteFn<'a> = dyn Fn(
 pub(crate) type DispatchFn<'a> =
     dyn Fn(ToolCall) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> + Sync + 'a;
 
+/// Something worth surfacing to the user mid-session, before the final reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SessionEvent {
+    /// The model's own words on a tool-calling turn — narration it wrote
+    /// alongside the tool calls (e.g. "let me restart minecraft for you"). Not a
+    /// synthesized status line; only fires when the model actually says something.
+    AssistantText(String),
+}
+
+/// Side-channel for [`SessionEvent`]s as the loop runs. Synchronous and
+/// fire-and-forget so the shell can fan them out to Discord without blocking the
+/// loop; the shell typically forwards them over a channel.
+pub(crate) type ProgressFn<'a> = dyn Fn(SessionEvent) + Sync + 'a;
+
 /// The end state of a session: the text to send back, and whether it ended by
 /// escalating (round budget exhausted) so the caller can log/flag accordingly.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,24 +61,24 @@ pub(crate) struct SessionOutcome {
 
 /// Drive the tool-calling loop to a final reply.
 ///
+/// `messages` is the seeded transcript — `[system, ...prior turns, user]` — and
+/// is appended to in place as the model answers, so on return the caller holds
+/// the full updated transcript to persist for the next turn. `progress` receives
+/// the model's interim narration as it arrives.
+///
 /// # Errors
 ///
 /// Returns an error only if `complete` itself errors (e.g. the endpoint is
 /// unreachable). Tool failures are surfaced to the model as result text, not
 /// propagated, so the model can react to them.
 pub(crate) async fn run_session(
-    system_prompt: String,
-    user_prompt: String,
+    messages: &mut Vec<ChatMessage>,
     tools: Vec<ToolDef>,
     max_rounds: usize,
     complete: &CompleteFn<'_>,
     dispatch: &DispatchFn<'_>,
+    progress: &ProgressFn<'_>,
 ) -> Result<SessionOutcome> {
-    let mut messages = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
-
     for _ in 0..max_rounds {
         let assistant = complete(messages.clone(), tools.clone()).await?;
 
@@ -78,6 +92,17 @@ pub(crate) async fn run_session(
                 escalated: false,
             });
         };
+
+        // Surface any words the model wrote alongside its tool calls before we go
+        // run them — that narration is the only progress text the user sees.
+        if let Some(text) = assistant
+            .content
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            progress(SessionEvent::AssistantText(text.to_owned()));
+        }
 
         messages.push(assistant);
         for call in calls {

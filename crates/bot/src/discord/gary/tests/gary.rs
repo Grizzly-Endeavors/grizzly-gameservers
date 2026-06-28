@@ -1,5 +1,3 @@
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use poise::serenity_prelude as serenity;
 
 use super::*;
@@ -57,17 +55,4 @@ fn read_only_prompt_scopes_to_lookups() {
 fn empty_catalog_renders_as_none() {
     let prompt = build_system_prompt(false, "");
     assert!(prompt.contains("(none)"));
-}
-
-#[test]
-fn truncate_passes_short_text_through() {
-    assert_eq!(truncate("hi there"), "hi there");
-}
-
-#[test]
-fn truncate_caps_overlong_text_with_marker() {
-    let long = "x".repeat(MAX_DISCORD_CONTENT + 50);
-    let out = truncate(&long);
-    assert_eq!(out.chars().count(), MAX_DISCORD_CONTENT);
-    assert_eq!(out.chars().last().unwrap(), '…');
 }

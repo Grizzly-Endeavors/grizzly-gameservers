@@ -632,6 +632,23 @@ async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<I
         .filter(move |name| name.starts_with(&needle))
 }
 
+/// Start fresh with Gary, forgetting the recent back-and-forth.
+#[poise::command(slash_command, rename = "new-session")]
+pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.data()
+        .sessions
+        .clear((ctx.channel_id().get(), ctx.author().id.get()));
+    ctx.send(
+        reply_with(neutral_embed(
+            "Fresh start",
+            "Okay, starting fresh — I've cleared what we were just talking about.",
+        ))
+        .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
 /// A non-ephemeral reply carrying a single embed — the shape every
 /// non-interactive command response uses.
 fn reply_with(embed: serenity::CreateEmbed) -> poise::CreateReply {

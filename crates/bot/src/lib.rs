@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
 use tracing::{error, info, warn};
 
-use agent::OllamaConfig;
+use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
 
 /// Start the Discord bot: connect to Kubernetes, register the guild-scoped
@@ -50,6 +50,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let admin_role_id = config.admin_role_id;
     let admin_user_ids: std::sync::Arc<[u64]> = config.admin_user_ids.into();
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    let sessions = std::sync::Arc::new(SessionStore::new());
     let guild_id = serenity::GuildId::new(config.guild_id);
 
     let ollama = config.ollama_api_key.map(|api_key| OllamaConfig {
@@ -73,6 +74,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                 commands::start(),
                 commands::restart(),
                 commands::remove(),
+                commands::new_session(),
             ],
             event_handler: |ctx, event, framework, data| {
                 Box::pin(discord::gary::on_event(ctx, event, framework, data))
@@ -98,6 +100,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                     admin_role_id,
                     admin_user_ids,
                     ollama,
+                    sessions,
                 })
             })
         })
