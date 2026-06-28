@@ -89,8 +89,15 @@ pub(crate) async fn run_session(
         let Some(calls) = assistant.requested_tool_calls().map(<[_]>::to_vec) else {
             let reply = assistant
                 .content
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| EMPTY_REPLY_FALLBACK.to_owned());
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map_or_else(|| EMPTY_REPLY_FALLBACK.to_owned(), str::to_owned);
+            // Record the answer in the transcript before returning, or the next
+            // turn sees the user's question with no reply after it and answers it
+            // again. Tool rounds already append their turns above; this is the one
+            // exit that otherwise wouldn't.
+            messages.push(assistant);
             return Ok(SessionOutcome {
                 reply,
                 escalated: false,

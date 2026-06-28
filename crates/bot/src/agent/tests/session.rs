@@ -87,6 +87,16 @@ async fn returns_text_reply_without_calling_tools() {
         0,
         "a text-only reply must not invoke any tools"
     );
+    // The final answer must land in the transcript the caller persists, or the
+    // next turn would see the question with no answer after it and re-answer it.
+    assert_eq!(
+        messages.len(),
+        3,
+        "seed (system + user) plus the assistant reply"
+    );
+    let last = messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert_eq!(last.content.as_deref(), Some("3 servers are running"));
 }
 
 #[tokio::test]
