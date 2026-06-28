@@ -138,7 +138,7 @@ These rules are strict because this project is primarily developed with AI codin
 
 ### Test modules
 
-Use `#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]` at the top of `#[cfg(test)] mod tests` — not `#[allow]`.
+Test code may freely use `.unwrap()` / `.expect()` / `panic!` / `dbg!` — the root `clippy.toml` exempts them in tests (`allow-unwrap-in-tests` etc.), mirroring grizzly-gate's own policy. Do **not** add `#[expect(clippy::unwrap_used, ...)]` to test files: the gate exempts the lint, so the expectation never fires and becomes an unfulfilled-expectation hard error. (`tests_outside_test_module` is *not* test-exempt — see the integration-test boilerplate below.)
 
 ### Unsafe
 
@@ -204,11 +204,9 @@ The `#[path]` attribute makes the loaded file a **child** of the impl module, so
 
 ### Unit test file boilerplate
 
-Every sibling test file starts with:
+A sibling test file needs no lint preamble — `.unwrap()` and friends are exempt in tests via the root `clippy.toml`. Just open with the imports:
 
 ```rust
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use super::*;
 // ...
 ```
@@ -218,14 +216,13 @@ use super::*;
 Every `tests/*.rs` file at crate root must start with:
 
 ```rust
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #![expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live at crate root by cargo convention"
 )]
 ```
 
-The second attribute is required because `clippy::tests_outside_test_module` is denied project-wide and fires on top-level `#[test]` functions — which are exactly what integration tests are.
+This attribute is required because `clippy::tests_outside_test_module` is denied project-wide and fires on top-level `#[test]` functions — which are exactly what integration tests are. It is *not* covered by the test exemptions in `clippy.toml`, so it stays. (Unwrap/expect/panic/dbg need no suppression — those are exempt in tests.)
 
 ### What gets tested
 

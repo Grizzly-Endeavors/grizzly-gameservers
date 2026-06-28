@@ -23,7 +23,7 @@ const PORT_RANGE: RangeInclusive<i32> = 7000..=7010;
 /// How long `/create` and `/start` wait for a server to report Ready before
 /// telling the friend it is "still starting". Generous because first-boot world
 /// generation plus the readiness sidecar's SDK call can take minutes.
-const READY_TIMEOUT: Duration = Duration::from_secs(300);
+const READY_TIMEOUT: Duration = Duration::from_mins(5);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Outcome of a `/create`. Expected friend-visible results (name clash, no free

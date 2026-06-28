@@ -1,5 +1,3 @@
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use super::*;
 
 fn lookup_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
@@ -71,12 +69,12 @@ fn overrides_from_environment() {
     );
     assert_eq!(
         config.graceful_timeout,
-        Duration::from_secs(120),
+        Duration::from_mins(2),
         "graceful timeout override"
     );
     assert_eq!(
         config.crash_window,
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         "crash window override"
     );
     assert_eq!(config.crash_threshold, 10, "crash threshold override");

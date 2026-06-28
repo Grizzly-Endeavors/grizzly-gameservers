@@ -1,5 +1,3 @@
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use super::*;
 
 fn summary(name: &str, game: Option<&str>, state: &str, address: Option<&str>) -> ServerSummary {

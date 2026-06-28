@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// model on a cold cloud route can take tens of seconds; the shared `reqwest`
 /// client's short default (tuned for in-cluster supervisor hops) is overridden
 /// here the same way the supervisor's mutating calls override it.
-const COMPLETION_TIMEOUT: Duration = Duration::from_secs(120);
+const COMPLETION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Connection settings for the agent's chat-completions endpoint.
 #[derive(Clone, Debug)]
