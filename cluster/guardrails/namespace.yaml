@@ -5,8 +5,12 @@ metadata:
   labels:
     app.kubernetes.io/name: grizzly-gameservers
     app.kubernetes.io/managed-by: flux
-  # grizzly.io/gated=true is intentionally NOT set yet. Agones injects an
-  # unsigned third-party SDK sidecar into every GameServer pod, so gating this
-  # namespace requires the Kyverno carve-out tracked in cluster/kyverno/. Add
-  # the label once that exists. See docs/design/00-overview.md → "Image
-  # admission carve-out".
+    # Opts this namespace into Kyverno gate-signature verification. Enforcement
+    # is scoped to the bot image only (grizzly-platform's
+    # enforce-gameservers-bot-signature policy targets registry/grizzly-gameservers@*),
+    # so it does NOT require the Agones carve-out: the injected Agones SDK
+    # sidecar is a gcr.io image the policy never matches, and game-supervisor
+    # images (…-minecraft@…) are excluded by the glob. The platform's broad
+    # verify-gate-signature policy stays in Audit, so unsigned game images here
+    # only generate report-only entries. See ADR-003 and cluster/kyverno/.
+    grizzly.io/gated: "true"

@@ -43,7 +43,7 @@ fn checkout_continues_a_committed_transcript() {
 
 #[test]
 fn an_idle_session_past_its_ttl_starts_fresh() {
-    let ttl = Duration::from_secs(60);
+    let ttl = Duration::from_mins(1);
     let store = SessionStore::with_ttl(ttl);
     let start = Instant::now();
 

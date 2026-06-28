@@ -1,0 +1,13 @@
+# Clippy config aligned with grizzly-gate (the CI gate is the authority and
+# force-injects this exact policy via CLIPPY_CONF_DIR, ignoring a repo's own
+# clippy.toml of the same kind). The gate denies unwrap/expect/panic/dbg as a
+# hard floor but exempts test code — so test assertions don't each need an
+# #[expect(...)] suppression. Mirroring it here keeps `just lint` consistent
+# with the gate: without these, the gate sees an unwrap in a test, never fires
+# unwrap_used, and any #![expect(clippy::unwrap_used)] becomes an unfulfilled
+# expectation (a hard error under -D warnings). See gate config
+# languages/rust/clippy.toml.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true

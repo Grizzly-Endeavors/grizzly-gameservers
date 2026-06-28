@@ -21,7 +21,7 @@ use crate::{process, readiness};
 
 /// How long the readiness probe waits for the game to bind before giving up.
 /// Generous: first-boot Minecraft world generation can run for minutes.
-const READINESS_GIVE_UP: Duration = Duration::from_secs(600);
+const READINESS_GIVE_UP: Duration = Duration::from_mins(10);
 /// Brief pause before relaunching a crashed child, so a hard crash-loop backs
 /// off rather than spinning the CPU until escalation.
 const RELAUNCH_BACKOFF: Duration = Duration::from_secs(2);

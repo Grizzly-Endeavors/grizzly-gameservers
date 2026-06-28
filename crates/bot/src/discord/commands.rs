@@ -23,7 +23,7 @@ use crate::agones::{
 
 /// How long the dropdown / confirm components stay live before we give up
 /// waiting for the user and clear them.
-const COMPONENT_TIMEOUT: Duration = Duration::from_secs(120);
+const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]

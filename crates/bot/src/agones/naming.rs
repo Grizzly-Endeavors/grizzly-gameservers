@@ -88,8 +88,9 @@ fn base36_suffix(mut value: u64, len: usize) -> String {
 pub(crate) fn now_entropy() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Pick the lowest port in `range` that is neither in `used` nor `excluded`.

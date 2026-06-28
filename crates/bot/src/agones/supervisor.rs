@@ -16,7 +16,7 @@ use super::types::GameServer;
 /// (90s default) plus respawn margin — otherwise the bot times out and reports a
 /// failure while the restart actually succeeds. The client's short default still
 /// applies to cheap calls; this overrides it only where the work is genuinely slow.
-const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
+const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Where an instance is in the warm/cold spectrum, used to route `/start`:
 /// a live pod takes the fast supervisor path; a killed one needs a reschedule.

@@ -49,7 +49,7 @@ const NON_ADMIN_REFUSAL: &str =
 
 /// How long the remove-confirmation buttons stay live before the deletion is
 /// abandoned — matched to the slash command's `/remove` timeout.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(120);
+const CONFIRM_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Everything a tool executor needs: the shared bot state plus the Discord
 /// handles the destructive-confirmation flow uses, and whether the caller is an

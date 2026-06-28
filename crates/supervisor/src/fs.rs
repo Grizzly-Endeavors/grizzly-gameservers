@@ -141,7 +141,7 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
         let (kind, size) = if file_type.is_dir() {
             (EntryKind::Dir, 0)
         } else if file_type.is_file() {
-            let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let len = entry.metadata().map_or(0, |m| m.len());
             (EntryKind::File, len)
         } else {
             (EntryKind::Other, 0)

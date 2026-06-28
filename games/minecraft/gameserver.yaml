@@ -38,8 +38,17 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: minecraft
+    # Pod hardening (runAsNonRoot / readOnlyRootFilesystem / allowPrivilegeEscalation)
+    # is deliberately deferred for the game pod: the composite image runs the
+    # supervisor as PID 1 wrapping itzg/minecraft-server, which bootstraps as root
+    # (chowns /data, writes outside the world volume) and would break under a
+    # read-only root or forced non-root user without live validation. This pod is
+    # NOT in the bot deploy path; rootless hardening is tracked alongside game-image
+    # CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
       containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: minecraft
           # Composite image: grizzly supervisor (PID 1) wrapping itzg's server.
           # CI replaces the tag with the gate-signed digest (ADR-020).

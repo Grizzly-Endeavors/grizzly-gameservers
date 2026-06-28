@@ -1,5 +1,3 @@
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;

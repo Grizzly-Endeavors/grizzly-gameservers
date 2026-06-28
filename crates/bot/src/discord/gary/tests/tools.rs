@@ -1,5 +1,3 @@
-#![expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-
 use crate::agones::{FsOutcome, RemoveOutcome, ServerSummary, SupervisorOutcome};
 
 use super::*;

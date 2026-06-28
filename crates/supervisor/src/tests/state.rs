@@ -1,6 +1,6 @@
 use super::*;
 
-const WINDOW: Duration = Duration::from_secs(300);
+const WINDOW: Duration = Duration::from_mins(5);
 const THRESHOLD: u32 = 3;
 
 #[test]
@@ -114,7 +114,7 @@ fn crashes_outside_window_do_not_accumulate() {
 
     // Two crashes far enough apart that each is alone in the window.
     let first = state.on_child_exit(base, WINDOW, THRESHOLD);
-    let later = base + WINDOW + Duration::from_secs(60);
+    let later = base + WINDOW + Duration::from_mins(1);
     let second = state.on_child_exit(later, WINDOW, THRESHOLD);
     let third = state.on_child_exit(later + Duration::from_secs(1), WINDOW, THRESHOLD);
 

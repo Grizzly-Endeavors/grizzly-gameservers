@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.103"
-grizzly-control-api = { path = "../control-api" }
+grizzly-control-api = { path = "../control-api", version = "0.1.0" }
 dotenvy = "0.15.7"
 # axum drives the in-pod control API; hyper/tower are already in the workspace
 # tree (via the bot's serenity), so this unifies rather than adds a new stack.

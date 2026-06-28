@@ -32,8 +32,17 @@ spec:
           type: RuntimeDefault
       containers:
         - name: bot
+          {{- if .Values.image.digest }}
+          # Gate-signed, digest-pinned image (CI path). Immutable — what cosign
+          # signs and Kyverno verifies at admission. pullPolicy is irrelevant for
+          # a digest ref but IfNotPresent avoids a needless re-pull.
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          imagePullPolicy: IfNotPresent
+          {{- else }}
+          # Dev path: mutable hand-pushed tag (just bot-push). Always re-pull.
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "Always" }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

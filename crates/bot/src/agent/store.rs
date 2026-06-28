@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use super::llm::{ChatMessage, Role};
 
 /// How long a session may sit idle before its next use starts fresh.
-const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const SESSION_TTL: Duration = Duration::from_mins(30);
 
 /// Ceiling on retained messages per session (the leading system prompt always
 /// counts as one and is never dropped). Bounds memory and prompt size for a
