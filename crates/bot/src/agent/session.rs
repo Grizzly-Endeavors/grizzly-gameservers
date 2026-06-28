@@ -46,10 +46,12 @@ pub(crate) enum SessionEvent {
     AssistantText(String),
 }
 
-/// Side-channel for [`SessionEvent`]s as the loop runs. Synchronous and
-/// fire-and-forget so the shell can fan them out to Discord without blocking the
-/// loop; the shell typically forwards them over a channel.
-pub(crate) type ProgressFn<'a> = dyn Fn(SessionEvent) + Sync + 'a;
+/// Sink for [`SessionEvent`]s as the loop runs. Async and awaited inline so a
+/// turn's narration is fully delivered before its tool calls run — the model's
+/// "I'll restart it" must land ahead of the restart's side effects (e.g. a
+/// confirmation prompt), not race them.
+pub(crate) type ProgressFn<'a> =
+    dyn Fn(SessionEvent) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Sync + 'a;
 
 /// The end state of a session: the text to send back, and whether it ended by
 /// escalating (round budget exhausted) so the caller can log/flag accordingly.
@@ -93,15 +95,16 @@ pub(crate) async fn run_session(
             });
         };
 
-        // Surface any words the model wrote alongside its tool calls before we go
-        // run them — that narration is the only progress text the user sees.
+        // Deliver any words the model wrote alongside its tool calls before we
+        // run them — that narration is the only progress text the user sees, and
+        // awaiting it here guarantees it lands ahead of the tools' side effects.
         if let Some(text) = assistant
             .content
             .as_deref()
             .map(str::trim)
             .filter(|t| !t.is_empty())
         {
-            progress(SessionEvent::AssistantText(text.to_owned()));
+            progress(SessionEvent::AssistantText(text.to_owned())).await;
         }
 
         messages.push(assistant);

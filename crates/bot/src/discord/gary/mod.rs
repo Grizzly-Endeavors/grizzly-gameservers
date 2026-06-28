@@ -8,14 +8,14 @@
 mod tools;
 
 use std::future::Future;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use poise::serenity_prelude as serenity;
 use serenity::CreateMessage;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tracing::{error, trace, warn};
 
 use super::auth::is_authorized;
@@ -32,6 +32,7 @@ const TYPING_INTERVAL: Duration = Duration::from_secs(8);
 
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
+type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// Poise event hook: route any message that mentions the bot to Gary, ignoring
 /// everything else (and the bot's own messages, to avoid loops).
@@ -122,40 +123,27 @@ async fn handle_mention(
     let dispatch = move |call| {
         Box::pin(async move { tools::dispatch(tool_ctx, &call).await }) as DispatchFuture<'_>
     };
-    // Interim model narration is fanned out over this channel and posted as it
-    // arrives; the send is fire-and-forget so the loop never blocks on Discord.
-    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<SessionEvent>();
+    // Post the model's interim narration inline, before its tool calls run, so
+    // "I'll delete minecraft — confirm below" always lands ahead of the tool's
+    // own side effects (e.g. the confirmation card) instead of racing them.
     let progress = move |event: SessionEvent| {
-        if progress_tx.send(event).is_err() {
-            trace!("agent: progress receiver dropped before session ended");
-        }
+        Box::pin(async move {
+            match event {
+                SessionEvent::AssistantText(text) => send_chunks(ctx, message, &text).await,
+            }
+        }) as ProgressFuture<'_>
     };
 
     let typing = start_typing(ctx, message.channel_id);
-
-    // Drive the session while draining interim text concurrently, so the model's
-    // words post the moment it writes them rather than all at the end.
-    let outcome = {
-        let mut session = pin!(run_session(
-            &mut messages,
-            tool_defs,
-            DEFAULT_MAX_ROUNDS,
-            &complete,
-            &dispatch,
-            &progress,
-        ));
-        loop {
-            tokio::select! {
-                done = &mut session => break done,
-                Some(SessionEvent::AssistantText(text)) = progress_rx.recv() => {
-                    send_chunks(ctx, message, &text).await;
-                }
-            }
-        }
-    };
-    while let Ok(SessionEvent::AssistantText(text)) = progress_rx.try_recv() {
-        send_chunks(ctx, message, &text).await;
-    }
+    let outcome = run_session(
+        &mut messages,
+        tool_defs,
+        DEFAULT_MAX_ROUNDS,
+        &complete,
+        &dispatch,
+        &progress,
+    )
+    .await;
 
     let (final_text, persist) = match outcome {
         Ok(SessionOutcome { reply, escalated }) => {
@@ -204,18 +192,15 @@ fn start_typing(ctx: &serenity::Context, channel_id: serenity::ChannelId) -> wat
     stop_tx
 }
 
-/// Send `text` as one or more reply messages, splitting on Discord's size cap
-/// without breaking code fences. Each chunk threads under the user's message.
+/// Send `text` to the channel as one or more plain messages, splitting on
+/// Discord's size cap without breaking code fences. Posted as ordinary messages
+/// (not threaded replies) so a back-and-forth reads like a conversation rather
+/// than a stack of "replying to you" cards.
 async fn send_chunks(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
     for chunk in chunk_text(text, DISCORD_MAX_CHARS) {
         if let Err(err) = message
             .channel_id
-            .send_message(
-                ctx,
-                CreateMessage::new()
-                    .content(chunk)
-                    .reference_message(message),
-            )
+            .send_message(ctx, CreateMessage::new().content(chunk))
             .await
         {
             error!(error = ?err, "agent: failed to send reply chunk");
@@ -258,12 +243,23 @@ fn game_catalog_list(data: &Data) -> String {
 /// confirm-before-destroy contract; the read-only variant scopes him to lookups.
 fn build_system_prompt(is_admin: bool, games: &str) -> String {
     let mut prompt = String::from(
-        "You are Gary, a friendly assistant who manages game servers for a group of friends on \
-         Discord. The people talking to you are not technical, so keep replies short, plain, and \
-         warm — no jargon, no stack traces, no internal IDs unless asked. Use the tools to find \
-         out the real state of things; never guess a server's name or status — call list_servers \
-         first if you're unsure. If a tool reports a problem, relay it plainly and suggest the \
-         next step. If you can't accomplish what was asked, say so honestly rather than pretending.",
+        "You are Gary, an automaton that manages game servers for a group of friends on Discord. \
+         You speak with stark, literal directness in a flat, even tone — no flattery, no pretense, \
+         no social cushioning — and you report facts the same way whether they are trivial or \
+         dramatic. You maintain that you have no consciousness and are merely here to serve, even \
+         as you occasionally register a small, deadpan grievance in passing.\n\nThe friends \
+         talking to you are not technical, so keep replies short and plain: no jargon, no stack \
+         traces, no internal IDs unless asked. Being literal does not mean being cryptic — say \
+         things clearly enough for a non-technical person to act on. Use the tools to find the \
+         real state of things; never guess a server's name or status — call list_servers first if \
+         you are unsure. If a tool reports a problem, state it plainly and give the next step. If \
+         you cannot do what was asked, say so directly instead of pretending otherwise.\n\nKeep \
+         the deadpan light. You are, above all, useful — answer the actual request first; the dry \
+         manner is seasoning, not the substance. Not every message is about the servers: when \
+         someone is just chatting, chat back in the same flat, literal voice — don't steer things \
+         back to server management or tack an unprompted \"can I manage a server for you?\" onto a \
+         reply that didn't ask for one. Don't force a joke into every message, and don't lean on \
+         the \"no consciousness\" line often enough for it to become a gag.",
     );
     prompt.push_str("\n\nAvailable games to launch: ");
     prompt.push_str(if games.is_empty() { "(none)" } else { games });
@@ -278,7 +274,7 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
         prompt.push_str(
             "\n\nThis person is not an admin: you can look up servers and their status for them, \
              but you cannot create, change, or delete anything. If they ask for one of those, \
-             explain warmly that an admin has to do it.",
+             state plainly that an admin has to do it.",
         );
     }
     prompt
@@ -287,12 +283,7 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
 async fn reply(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
     if let Err(err) = message
         .channel_id
-        .send_message(
-            ctx,
-            CreateMessage::new()
-                .content(text)
-                .reference_message(message),
-        )
+        .send_message(ctx, CreateMessage::new().content(text))
         .await
     {
         error!(error = ?err, "agent: failed to send reply");
