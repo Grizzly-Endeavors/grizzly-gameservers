@@ -60,17 +60,23 @@ jobs:
       # ADR-020 model: pin deploy/values.yaml to the gate-signed digest and
       # commit [skip ci]; Flux reconciles. [skip ci] keeps this commit from
       # re-triggering the workflow.
-      - name: Pin signed digest and commit
-        env:
-          DIGEST: ${{ needs.build.outputs.digest }}
+      - name: Resolve signed digest, pin, and commit
         run: |
           set -euo pipefail
-          # Defense in depth: even though build guards its output, a partial job
-          # re-run can leave needs.build.outputs.digest stale/empty for this job.
-          # Never pin/commit an empty digest — fail instead of shipping garbage.
-          case "${DIGEST:-}" in
+          # Resolve the digest from the registry by the immutable per-run tag
+          # rather than needs.build.outputs.digest: GitHub Actions drops job
+          # outputs for this (regular) job on workflow re-runs — the gate job
+          # (a reusable workflow) still receives the value, but this job sees ''
+          # and would pin a garbage `@`. The ${GITHUB_SHA} tag is exactly what
+          # build pushed and what the gate signed, and docker inspect here uses
+          # the same method build did, so it yields the identical digest whether
+          # this is a first run or a re-run.
+          docker pull -q "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}"
+          export DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" | cut -d@ -f2)"
+          # Guard: never pin/commit an empty or malformed digest.
+          case "$DIGEST" in
             sha256:*) : ;;
-            *) echo "::error::refusing to pin empty/invalid digest: '${DIGEST:-}'"; exit 1 ;;
+            *) echo "::error::could not resolve a sha256 digest for ${GITHUB_SHA}: '${DIGEST}'"; exit 1 ;;
           esac
           # Pipe through yq via stdin/stdout rather than mounting the workspace
           # and writing in place: the yq image runs as uid 1000 and can't write
