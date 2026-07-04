@@ -36,6 +36,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # libc::kill delivers SIGTERM to the child for a graceful world-save; the only
 # unsafe in the crate, scoped at the FFI boundary.
 libc = "0.2"
+# System CSPRNG to mint the ephemeral RCON password at pod startup — the password
+# never touches git or a k8s object, so it is generated here and injected into
+# the game child's environment. The RCON protocol itself is hand-rolled in
+# src/rcon.rs (no client crate), keeping the dependency tree gate-clean.
+getrandom = "0.4.3"
 
 [dev-dependencies]
 # Scratch directories for the path-scoped filesystem tests (fs.rs).

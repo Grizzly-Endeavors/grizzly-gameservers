@@ -801,6 +801,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dotenvy",
+ "getrandom 0.4.3",
  "grizzly-control-api",
  "libc",
  "reqwest",

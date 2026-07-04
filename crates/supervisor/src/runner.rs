@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::logs::LogBuffer;
+use crate::rcon::RconRuntime;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
 use crate::{process, readiness};
@@ -43,13 +44,26 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         .context("failed to build agones SDK http client")?;
     let sdk = SdkClient::new(http, cfg.sdk_base_url.clone());
 
+    // Mint the RCON password once per pod (not per child) so it stays stable
+    // across in-place restarts; `None` leaves the /command route disabled.
+    let rcon = match cfg.rcon_port {
+        Some(port) => Some(Arc::new(
+            RconRuntime::new(port, cfg.rcon_minecraft)
+                .context("failed to initialize rcon client")?,
+        )),
+        None => None,
+    };
+
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
     let logs = Arc::new(LogBuffer::new());
     let control_port = cfg.control_port;
     let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
     let serve_logs = Arc::clone(&logs);
+    let serve_rcon = rcon.clone();
     tokio::spawn(async move {
-        if let Err(err) = control::serve(control_port, control_tx, data_root, serve_logs).await {
+        if let Err(err) =
+            control::serve(control_port, control_tx, data_root, serve_logs, serve_rcon).await
+        {
             error!(error = ?err, "control api terminated");
         }
     });
@@ -61,7 +75,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         Arc::clone(&health_stop),
     ));
 
-    supervise(cfg, sdk, control_rx, health_stop, logs).await
+    supervise(cfg, sdk, control_rx, health_stop, logs, rcon).await
 }
 
 /// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
@@ -93,6 +107,7 @@ struct RunDeps<'a> {
     sdk: &'a SdkClient,
     ready_tx: &'a mpsc::Sender<()>,
     logs: &'a Arc<LogBuffer>,
+    rcon: Option<&'a RconRuntime>,
 }
 
 async fn supervise(
@@ -101,9 +116,11 @@ async fn supervise(
     mut control_rx: mpsc::Receiver<ControlRequest>,
     health_stop: Arc<Notify>,
     logs: Arc<LogBuffer>,
+    rcon: Option<Arc<RconRuntime>>,
 ) -> Result<()> {
+    let rcon = rcon.as_deref();
     let mut state = SupervisorState::new();
-    let mut child = Some(process::spawn(&cfg).context("failed to spawn initial child")?);
+    let mut child = Some(process::spawn(&cfg, rcon).context("failed to spawn initial child")?);
     if let Some(running) = child.as_mut() {
         process::capture_output(running, &logs);
     }
@@ -122,6 +139,7 @@ async fn supervise(
         sdk: &sdk,
         ready_tx: &ready_tx,
         logs: &logs,
+        rcon,
     };
 
     loop {
@@ -282,7 +300,7 @@ async fn relaunch(
     child: &mut Option<Child>,
     action: &str,
 ) {
-    match process::spawn(deps.cfg) {
+    match process::spawn(deps.cfg, deps.rcon) {
         Ok(spawned) => {
             *child = Some(spawned);
             if let Some(running) = child.as_mut() {

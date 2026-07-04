@@ -196,6 +196,27 @@ fn restore_request_and_response_round_trip() {
 }
 
 #[test]
+fn command_request_and_response_round_trip() {
+    let request = CommandRequest {
+        command: "say hello".to_owned(),
+    };
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        serde_json::from_str::<CommandRequest>(&request_json).unwrap(),
+        request
+    );
+
+    let response = CommandResponse {
+        output: "There are 2 of a max of 20 players online".to_owned(),
+    };
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        serde_json::from_str::<CommandResponse>(&response_json).unwrap(),
+        response
+    );
+}
+
+#[test]
 fn logs_query_defaults_lines_to_none() {
     let parsed: LogsQuery = serde_json::from_str("{}").unwrap();
     assert_eq!(

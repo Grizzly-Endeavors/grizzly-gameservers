@@ -1,6 +1,6 @@
-//! The bot's client for the supervisor's filesystem and logs routes — the
-//! transport behind Gary's attach/inspect/edit tools. Each call runs the same
-//! existence/managed/pod-IP gate as the lifecycle actions (via
+//! The bot's client for the supervisor's filesystem, logs, and command routes —
+//! the transport behind Gary's attach/inspect/edit and run-command tools. Each
+//! call runs the same existence/managed/pod-IP gate as the lifecycle actions (via
 //! [`resolve_managed_pod`]) and then issues one HTTP request to the in-pod
 //! control API, mapping the reply to a [`FsOutcome`] the tool layer renders as
 //! plain text.
@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use grizzly_control_api::{
-    ControlError, DirEntry, ListResponse, LogsQuery, LogsResponse, PathQuery, ReadResponse,
-    RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
+    CommandRequest, CommandResponse, ControlError, DirEntry, ListResponse, LogsQuery, LogsResponse,
+    PathQuery, ReadResponse, RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
 };
 use kube::Client;
 use serde::de::DeserializeOwned;
@@ -187,6 +187,37 @@ pub(crate) async fn supervisor_read_logs(
         .await;
     let outcome: FsOutcome<LogsResponse> = finish(response, &url).await;
     Ok(map_payload(outcome, |logs| logs.lines))
+}
+
+/// Run one in-game console command against the instance's server over RCON. A
+/// [`FsOutcome::Rejected`] here carries the supervisor's reason (e.g. RCON not
+/// enabled for the game, or the console couldn't be reached).
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn supervisor_send_command(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+    command: &str,
+) -> Result<FsOutcome<CommandResponse>> {
+    let pod_ip = match target_pod(client, namespace, instance).await? {
+        Ok(pod_ip) => pod_ip,
+        Err(not_ready) => return Ok(not_ready.into_outcome()),
+    };
+    let url = format!("http://{pod_ip}:{control_port}/command");
+    let response = http
+        .post(&url)
+        .json(&CommandRequest {
+            command: command.to_owned(),
+        })
+        .timeout(FS_TIMEOUT)
+        .send()
+        .await;
+    Ok(finish(response, &url).await)
 }
 
 /// The non-ready resolutions, separated from the pod IP so a caller can turn one

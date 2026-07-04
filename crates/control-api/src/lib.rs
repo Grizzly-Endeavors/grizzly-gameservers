@@ -238,6 +238,22 @@ pub struct RestoreResponse {
     pub path: String,
 }
 
+/// Body of `POST /command`: an in-game console command to run over RCON against
+/// the running server (e.g. `list`, `say hello`). The command is passed to the
+/// game verbatim — no leading slash for Minecraft. Only served for games whose
+/// per-game template enables RCON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRequest {
+    pub command: String,
+}
+
+/// Body of the `POST /command` response: the game's RCON reply text, which may be
+/// empty for commands that produce no output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandResponse {
+    pub output: String,
+}
+
 /// Query for `GET /logs`: how many trailing lines of captured output to return.
 /// Absent means the supervisor's default tail length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

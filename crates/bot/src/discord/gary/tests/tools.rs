@@ -38,6 +38,7 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
         READ_LOGS,
         WRITE_FILE,
         RESTORE_FILE,
+        SEND_COMMAND,
     ] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -46,8 +47,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        13,
-        "eight lifecycle tools plus five filesystem tools"
+        14,
+        "eight lifecycle tools, five filesystem tools, and send_command"
     );
 }
 
@@ -60,6 +61,51 @@ fn filesystem_tools_are_admin_only() {
             "{tool} must not be offered to non-admins"
         );
     }
+}
+
+#[test]
+fn send_command_is_admin_only() {
+    assert!(
+        !tool_names(false).iter().any(|name| name == SEND_COMMAND),
+        "send_command must not be offered to non-admins"
+    );
+    assert!(
+        tool_names(true).iter().any(|name| name == SEND_COMMAND),
+        "send_command must be offered to admins"
+    );
+}
+
+#[test]
+fn command_param_schema_exposes_name_and_command() {
+    let schema = params_schema::<CommandParams>();
+    let properties = schema
+        .as_object()
+        .and_then(|object| object.get("properties"))
+        .and_then(serde_json::Value::as_object)
+        .unwrap();
+    assert!(properties.contains_key("name"), "schema needs a name field");
+    assert!(
+        properties.contains_key("command"),
+        "schema needs a command field"
+    );
+}
+
+#[test]
+fn command_output_renders_reply_or_notes_silence() {
+    let with_output = CommandResponse {
+        output: "There are 2 of a max of 20 players online".to_owned(),
+    };
+    let rendered = format_command_output("mc", "list", &with_output);
+    assert!(rendered.contains("list"));
+    assert!(rendered.contains("There are 2 of a max of 20 players online"));
+
+    let empty = CommandResponse {
+        output: "   \n".to_owned(),
+    };
+    assert!(
+        format_command_output("mc", "say hi", &empty).contains("no output"),
+        "a blank reply should be reported as no output"
+    );
 }
 
 #[test]
