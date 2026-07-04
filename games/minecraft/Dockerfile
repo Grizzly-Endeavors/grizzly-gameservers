@@ -50,6 +50,16 @@ COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzl
 # The supervisor launches itzg's /start as its child; itzg still reads EULA,
 # MEMORY and friends from the pod environment exactly as before.
 ENV SUPERVISOR_CHILD_CMD=/start
+# Enable RCON so Gary's send_command tool can issue in-game console commands.
+# itzg binds RCON on loopback; the supervisor mints the password at pod startup
+# and injects it (RCON_PASSWORD) into itzg's environment, so no secret is baked
+# into the image or any Kubernetes object. The port stays pod-internal — it is
+# never added to a NodePort Service — and SUPERVISOR_RCON_MINECRAFT selects the
+# Minecraft RCON dialect for the supervisor's client.
+ENV ENABLE_RCON=true
+ENV RCON_PORT=25575
+ENV SUPERVISOR_RCON_PORT=25575
+ENV SUPERVISOR_RCON_MINECRAFT=true
 # No USER: the supervisor (PID 1) needs root to bootstrap itzg (chown /data, server
 # setup); rootless game-pod hardening is deferred (see the FROM note above, ADR-003).
 # nosemgrep: dockerfile.security.missing-user-entrypoint

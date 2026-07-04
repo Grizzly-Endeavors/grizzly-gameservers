@@ -14,6 +14,7 @@ pub mod control;
 pub mod fs;
 pub mod logs;
 pub mod process;
+pub mod rcon;
 pub mod readiness;
 pub mod runner;
 pub mod sdk;

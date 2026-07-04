@@ -22,6 +22,6 @@ pub(crate) use supervisor::{
 };
 pub(crate) use supervisor_fs::{
     FsOutcome, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
-    supervisor_restore_file, supervisor_write_file,
+    supervisor_restore_file, supervisor_send_command, supervisor_write_file,
 };
 pub(crate) use types::ServerSummary;

@@ -30,6 +30,9 @@ const DEFAULT_CRASH_WINDOW_SECS: u64 = 300;
 /// Crashes within the window before the supervisor stops the heartbeat and lets
 /// Agones recreate the pod.
 const DEFAULT_CRASH_THRESHOLD: u32 = 5;
+/// Child env var the minted RCON password is injected under. Matches itzg's
+/// `RCON_PASSWORD`; a Source game overrides it to whatever its entrypoint reads.
+const DEFAULT_RCON_PASSWORD_ENV: &str = "RCON_PASSWORD";
 
 /// Runtime configuration for the supervisor, sourced from the process
 /// environment. Every knob has a default so the container can run with no env.
@@ -53,6 +56,15 @@ pub struct SupervisorConfig {
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
     pub crash_threshold: u32,
+    /// Localhost port the game's RCON listens on, or `None` when the per-game
+    /// template doesn't enable RCON. Its presence turns on the `/command` route.
+    pub rcon_port: Option<u16>,
+    /// Whether the RCON client runs in Minecraft-quirks mode (Minecraft's RCON
+    /// diverges from the base Source protocol). Ignored when `rcon_port` is `None`.
+    pub rcon_minecraft: bool,
+    /// Child env var the minted RCON password is injected under. Ignored when
+    /// `rcon_port` is `None`.
+    pub rcon_password_env: String,
 }
 
 impl SupervisorConfig {
@@ -98,6 +110,10 @@ impl SupervisorConfig {
         );
         let crash_threshold = optional_parse(lookup, "SUPERVISOR_CRASH_THRESHOLD")?
             .unwrap_or(DEFAULT_CRASH_THRESHOLD);
+        let rcon_port = optional_parse(lookup, "SUPERVISOR_RCON_PORT")?;
+        let rcon_minecraft = optional_flag(lookup, "SUPERVISOR_RCON_MINECRAFT");
+        let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
+            .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
 
         Ok(Self {
             child_command,
@@ -109,12 +125,26 @@ impl SupervisorConfig {
             graceful_timeout,
             crash_window,
             crash_threshold,
+            rcon_port,
+            rcon_minecraft,
+            rcon_password_env,
         })
     }
 }
 
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
     lookup(key).and_then(|raw| raw.into_string().ok())
+}
+
+/// Interpret an optional flag variable as a boolean, accepting the common truthy
+/// spellings case-insensitively. Absent or unrecognized values are `false`.
+fn optional_flag(lookup: EnvLookup, key: &str) -> bool {
+    optional(lookup, key).is_some_and(|raw| {
+        matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Parse an optional variable into any `FromStr` numeric type, surfacing both

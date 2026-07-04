@@ -10,6 +10,7 @@ use tracing::warn;
 
 use crate::config::SupervisorConfig;
 use crate::logs::LogBuffer;
+use crate::rcon::RconRuntime;
 
 /// Launch the supervised game-server process. Inherits the environment so the
 /// itzg image reads its `EULA`/`MEMORY`/etc. knobs, and `kill_on_drop` so a
@@ -17,16 +18,24 @@ use crate::logs::LogBuffer;
 /// inherited) so [`capture_output`] can both tee them to the supervisor's own
 /// output and retain a tail for the control API.
 ///
+/// When `rcon` is set, the minted password is injected into the child's
+/// environment under [`SupervisorConfig::rcon_password_env`] so the game
+/// configures its RCON server with the same value the supervisor authenticates
+/// with — keeping the password out of git and any Kubernetes object.
+///
 /// # Errors
 ///
 /// Returns an error if the child command cannot be spawned.
-pub fn spawn(cfg: &SupervisorConfig) -> Result<Child> {
+pub fn spawn(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child> {
     let mut cmd = Command::new(&cfg.child_command);
     cmd.kill_on_drop(true);
     // No interactive console; stop/restart go through SIGTERM, not stdin.
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    if let Some(rcon) = rcon {
+        cmd.env(&cfg.rcon_password_env, rcon.password());
+    }
     cmd.spawn()
         .with_context(|| format!("failed to spawn child command {:?}", cfg.child_command))
 }

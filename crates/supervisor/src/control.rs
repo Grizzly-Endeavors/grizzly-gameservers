@@ -10,16 +10,17 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
-    ControlCommand, ControlError, ControlOk, ListResponse, LogsQuery, LogsResponse, PathQuery,
-    ReadResponse, RestoreRequest, RestoreResponse, ResultKind, RouteError, StatusResponse,
-    WriteRequest, WriteResponse,
+    CommandRequest, CommandResponse, ControlCommand, ControlError, ControlOk, ListResponse,
+    LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse, ResultKind,
+    RouteError, StatusResponse, WriteRequest, WriteResponse,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::fs::{self, FsError};
 use crate::logs::{DEFAULT_TAIL_LINES, LogBuffer};
+use crate::rcon::RconRuntime;
 
 /// A control request handed from the HTTP layer to the runner, with a one-shot
 /// channel for the runner to answer on.
@@ -45,6 +46,8 @@ struct ControlState {
     data_root: Arc<Path>,
     /// Tail of the game process's recent output, served by `GET /logs`.
     logs: Arc<LogBuffer>,
+    /// RCON client for `POST /command`, or `None` when the game doesn't enable it.
+    rcon: Option<Arc<RconRuntime>>,
 }
 
 /// Serve the control API on `0.0.0.0:port` until the listener errors. The port is
@@ -52,9 +55,11 @@ struct ControlState {
 /// (allowed by a scoped Cilium egress rule) can reach it.
 ///
 /// The lifecycle routes (stop/start/restart/status) are matched by the
-/// [`ControlCommand`] fallback; the filesystem and logs routes carry bodies and
-/// queries, so they're registered explicitly and handled in this layer rather
-/// than handed to the runner.
+/// [`ControlCommand`] fallback; the filesystem, logs, and command routes carry
+/// bodies and queries, so they're registered explicitly and handled in this layer
+/// rather than handed to the runner. `POST /command` runs entirely here — it
+/// speaks RCON to the game over loopback, independent of the child-process
+/// lifecycle the runner owns.
 ///
 /// # Errors
 ///
@@ -64,6 +69,7 @@ pub async fn serve(
     tx: mpsc::Sender<ControlRequest>,
     data_root: Arc<Path>,
     logs: Arc<LogBuffer>,
+    rcon: Option<Arc<RconRuntime>>,
 ) -> Result<()> {
     let app = Router::new()
         .route("/fs/list", get(fs_list))
@@ -71,11 +77,13 @@ pub async fn serve(
         .route("/fs/write", post(fs_write))
         .route("/fs/restore", post(fs_restore))
         .route("/logs", get(logs_tail))
+        .route("/command", post(run_command))
         .fallback(any(handle))
         .with_state(ControlState {
             tx,
             data_root,
             logs,
+            rcon,
         });
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = TcpListener::bind(addr)
@@ -187,6 +195,30 @@ async fn logs_tail(State(state): State<ControlState>, Query(query): Query<LogsQu
     let count = query.lines.unwrap_or(DEFAULT_TAIL_LINES);
     let lines = state.logs.tail(count);
     (StatusCode::OK, Json(LogsResponse { lines })).into_response()
+}
+
+/// Run one in-game console command over RCON. Returns 409 when the game doesn't
+/// enable RCON, and 500 (with a diagnostic log) when the command can't be
+/// delivered — a paused or unreachable game console lands here. The bot relays
+/// the message; the developer-facing detail stays in the log.
+async fn run_command(
+    State(state): State<ControlState>,
+    Json(body): Json<CommandRequest>,
+) -> Response {
+    let Some(rcon) = state.rcon.as_ref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ControlError::new("rcon is not enabled for this game")),
+        )
+            .into_response();
+    };
+    match rcon.run_command(&body.command).await {
+        Ok(output) => (StatusCode::OK, Json(CommandResponse { output })).into_response(),
+        Err(err) => {
+            warn!(error = ?err, command = %body.command, "rcon command failed");
+            internal_error("couldn't reach the server's console")
+        }
+    }
 }
 
 /// Map a filesystem error to an HTTP status + developer-facing body, logging IO

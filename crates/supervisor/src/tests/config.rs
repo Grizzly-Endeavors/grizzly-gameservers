@@ -36,6 +36,12 @@ fn applies_defaults_with_empty_environment() {
         std::path::Path::new("/data"),
         "default data dir"
     );
+    assert_eq!(config.rcon_port, None, "rcon disabled by default");
+    assert!(!config.rcon_minecraft, "minecraft quirks off by default");
+    assert_eq!(
+        config.rcon_password_env, "RCON_PASSWORD",
+        "default rcon password env"
+    );
 }
 
 #[test]
@@ -50,6 +56,9 @@ fn overrides_from_environment() {
         ("SUPERVISOR_CRASH_WINDOW_SECS", "60"),
         ("SUPERVISOR_CRASH_THRESHOLD", "10"),
         ("SUPERVISOR_DATA_DIR", "/srv/world"),
+        ("SUPERVISOR_RCON_PORT", "25575"),
+        ("SUPERVISOR_RCON_MINECRAFT", "true"),
+        ("SUPERVISOR_RCON_PASSWORD_ENV", "SOURCE_RCON_PW"),
     ]);
     let config = SupervisorConfig::from_env_with(&env).unwrap();
     assert_eq!(
@@ -83,6 +92,31 @@ fn overrides_from_environment() {
         std::path::Path::new("/srv/world"),
         "data dir override"
     );
+    assert_eq!(config.rcon_port, Some(25575), "rcon port override");
+    assert!(config.rcon_minecraft, "minecraft quirks enabled");
+    assert_eq!(
+        config.rcon_password_env, "SOURCE_RCON_PW",
+        "rcon password env override"
+    );
+}
+
+#[test]
+fn rcon_flag_accepts_truthy_spellings_and_ignores_others() {
+    for truthy in ["1", "true", "TRUE", "Yes", "on"] {
+        let pairs = [("SUPERVISOR_RCON_MINECRAFT", truthy)];
+        let env = lookup_from(&pairs);
+        let config = SupervisorConfig::from_env_with(&env).unwrap();
+        assert!(config.rcon_minecraft, "{truthy:?} should enable the flag");
+    }
+    for falsy in ["0", "false", "no", "", "maybe"] {
+        let pairs = [("SUPERVISOR_RCON_MINECRAFT", falsy)];
+        let env = lookup_from(&pairs);
+        let config = SupervisorConfig::from_env_with(&env).unwrap();
+        assert!(
+            !config.rcon_minecraft,
+            "{falsy:?} should leave the flag off"
+        );
+    }
 }
 
 #[test]

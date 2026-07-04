@@ -281,6 +281,13 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
              you can tell what worked. If you can't get it healthy, say so plainly and stop rather \
              than thrashing.",
         );
+        prompt.push_str(
+            "\n\nOn games that support it, send_command runs an in-game console command over RCON \
+             (like list, say, or whitelist) and takes effect immediately — use it for live \
+             operations rather than editing files. Write the command without a leading slash. If a \
+             server doesn't have RCON enabled, send_command will say so; fall back to editing files \
+             and restarting.",
+        );
     } else {
         prompt.push_str(
             "\n\nThis person is not an admin: you can look up servers and their status for them, \

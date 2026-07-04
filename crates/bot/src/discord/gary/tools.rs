@@ -15,7 +15,9 @@ use serenity::{
 };
 use tracing::{error, warn};
 
-use grizzly_control_api::{DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse};
+use grizzly_control_api::{
+    CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
+};
 
 use super::super::Data;
 use super::super::render::{neutral_embed, remove_confirm_embed, remove_result_embed};
@@ -25,7 +27,8 @@ use crate::agones::{
     StartBegin, SupervisorOutcome, begin_start, build_instance_name, instance_runtime_state,
     kill_instance, list_active_servers, now_entropy, provision_instance, remove_instance,
     supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
-    supervisor_restore_file, supervisor_start, supervisor_stop, supervisor_write_file,
+    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
+    supervisor_write_file,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -41,6 +44,7 @@ const READ_FILE: &str = "read_file";
 const READ_LOGS: &str = "read_logs";
 const WRITE_FILE: &str = "write_file";
 const RESTORE_FILE: &str = "restore_file";
+const SEND_COMMAND: &str = "send_command";
 
 /// Returned to the model when a non-admin caller reaches a mutating tool. The
 /// model is only offered mutating tools for admins, so this is defense in depth.
@@ -106,6 +110,15 @@ struct LogsParams {
     /// omitted.
     #[serde(default)]
     lines: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct CommandParams {
+    /// Exact server name, as shown by `list_servers`.
+    name: String,
+    /// The in-game console command to run, without a leading slash — e.g.
+    /// `list`, `say hello everyone`, `weather clear`, `whitelist add steve`.
+    command: String,
 }
 
 /// The tools advertised to the model for a given caller. Everyone gets the
@@ -180,6 +193,11 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
                 "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
                 params_schema::<PathParams>(),
             ),
+            ToolDef::function(
+                SEND_COMMAND,
+                "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
+                params_schema::<CommandParams>(),
+            ),
         ]);
     }
     tools
@@ -240,10 +258,13 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
+        SEND_COMMAND if ctx.is_admin => match parse::<CommandParams>(args) {
+            Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
+            Err(message) => message,
+        },
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | KILL_SERVER
-        | REMOVE_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE => {
-            NON_ADMIN_REFUSAL.to_owned()
-        }
+        | REMOVE_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE
+        | SEND_COMMAND => NON_ADMIN_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
 }
@@ -660,6 +681,28 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String 
     }
 }
 
+async fn exec_send_command(ctx: &ToolCtx<'_>, name: &str, command: &str) -> String {
+    match supervisor_send_command(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        name,
+        ctx.data.control_port,
+        command,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(name, outcome) {
+            Ok(result) => format_command_output(name, command, &result),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, server = %name, "agent: send_command failed");
+            cluster_error()
+        }
+    }
+}
+
 /// Collapse a filesystem outcome into either its payload or a plain-language
 /// explanation of why the operation couldn't be served, for the model to relay.
 fn fs_result<T>(name: &str, outcome: FsOutcome<T>) -> Result<T, String> {
@@ -731,6 +774,15 @@ fn format_restore(result: &RestoreResponse) -> String {
         "restored {} to its previous version; restart the server to apply it",
         result.path
     )
+}
+
+fn format_command_output(name: &str, command: &str, result: &CommandResponse) -> String {
+    let output = result.output.trim();
+    if output.is_empty() {
+        format!("ran `{command}` on {name}; the server returned no output")
+    } else {
+        format!("ran `{command}` on {name}:\n{output}")
+    }
 }
 
 fn format_server_list(servers: &[ServerSummary]) -> String {
