@@ -12,10 +12,10 @@ pub(crate) const NAME_KEY: &str = "app.kubernetes.io/name";
 
 /// Records which catalog game an instance was created from. Read back off the
 /// Service on `/start`, which is the only object that survives a `/stop`.
-pub(crate) const GAME_KEY: &str = "grizzly-gameservers.bearflinn.com/game";
+pub(crate) const GAME_KEY: &str = "grizzly-gameservers.grizzly-endeavors.com/game";
 
 /// Records the instance name on every object of the trio.
-pub(crate) const INSTANCE_KEY: &str = "grizzly-gameservers.bearflinn.com/instance";
+pub(crate) const INSTANCE_KEY: &str = "grizzly-gameservers.grizzly-endeavors.com/instance";
 
 /// Selector key Agones auto-applies to each game-server pod; the per-instance
 /// `NodePort` Service selects on it with the `GameServer`'s own name as the value.

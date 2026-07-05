@@ -26,7 +26,7 @@ bot:
   # credentials they tie a personal Discord identity to the project. Both are synced
   # from OpenBao (grizzly-platform/gameservers/discord → guild_id, admin_user_ids)
   # and injected via secretKeyRef in templates/deployment.yaml.
-  domain: gameservers.bearflinn.com # base domain for friend-facing connection addresses
+  domain: gameservers.grizzly-endeavors.com # base domain for friend-facing connection addresses
   # Optional role-based authorization (a role id is not personally identifying, so it
   # may stay in git). A friend needs this role or to be on the OpenBao user-id allowlist.
   adminRoleId: "" # Discord role id allowed to manage servers

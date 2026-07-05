@@ -19,7 +19,7 @@ fn parses_required_fields_and_applies_defaults() {
     assert_eq!(config.guild_id, 42, "guild id should parse to integer");
     assert_eq!(config.namespace, "game-servers", "namespace should default");
     assert_eq!(
-        config.domain, "gameservers.bearflinn.com",
+        config.domain, "gameservers.grizzly-endeavors.com",
         "domain should default"
     );
     assert_eq!(config.admin_role_id, None, "admin role is optional");

@@ -7,7 +7,7 @@ fn summarize_builds_connection_address_from_node_port() {
         Some("minecraft"),
         Some("Ready"),
         Some(7000),
-        "gameservers.bearflinn.com",
+        "gameservers.grizzly-endeavors.com",
     );
 
     assert_eq!(summary.name, "survival", "name should pass through");
@@ -19,7 +19,7 @@ fn summarize_builds_connection_address_from_node_port() {
     assert_eq!(summary.state, "Ready", "state should pass through");
     assert_eq!(
         summary.address.as_deref(),
-        Some("survival.gameservers.bearflinn.com:7000"),
+        Some("survival.gameservers.grizzly-endeavors.com:7000"),
         "address should combine name, domain, and node port"
     );
 }
@@ -31,7 +31,7 @@ fn summarize_omits_address_when_no_node_port() {
         Some("valheim"),
         Some("Scheduled"),
         None,
-        "gameservers.bearflinn.com",
+        "gameservers.grizzly-endeavors.com",
     );
 
     assert_eq!(
@@ -47,7 +47,7 @@ fn summarize_defaults_unknown_state_and_tolerates_missing_game() {
         None,
         None,
         Some(7001),
-        "gameservers.bearflinn.com",
+        "gameservers.grizzly-endeavors.com",
     );
 
     assert_eq!(
