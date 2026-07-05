@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 pub(crate) type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
 const DEFAULT_NAMESPACE: &str = "game-servers";
-const DEFAULT_DOMAIN: &str = "gameservers.bearflinn.com";
+const DEFAULT_DOMAIN: &str = "gameservers.grizzly-endeavors.com";
 /// Where the per-game catalog is baked into the container image (see Dockerfile).
 const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
 /// Port the in-pod supervisor serves its control API on; must match the catalog

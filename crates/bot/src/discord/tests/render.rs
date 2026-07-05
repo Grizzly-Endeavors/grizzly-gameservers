@@ -29,13 +29,13 @@ fn populated_list_renders_one_line_per_server_with_address() {
             "survival",
             Some("minecraft"),
             "Ready",
-            Some("survival.gameservers.bearflinn.com:7000"),
+            Some("survival.gameservers.grizzly-endeavors.com:7000"),
         ),
         summary(
             "valheim",
             Some("valheim"),
             "Allocated",
-            Some("valheim.gameservers.bearflinn.com:7001"),
+            Some("valheim.gameservers.grizzly-endeavors.com:7001"),
         ),
     ];
     let spec = server_list_spec(&servers);
@@ -47,7 +47,7 @@ fn populated_list_renders_one_line_per_server_with_address() {
         first.contains("survival")
             && first.contains("minecraft")
             && first.contains("Ready")
-            && first.contains("survival.gameservers.bearflinn.com:7000"),
+            && first.contains("survival.gameservers.grizzly-endeavors.com:7000"),
         "first line should show the world name, its game, state, and address, got: {first}"
     );
 }
