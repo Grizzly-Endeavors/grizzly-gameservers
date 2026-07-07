@@ -23,17 +23,29 @@ use crate::agones::{
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
+    let reply = ctx
+        .send(reply_with(working_embed(
+            "Looking up servers",
+            "Checking what's running…",
+        )))
+        .await?;
 
     match list_active_servers(data.kube_client.clone(), &data.namespace, &data.domain).await {
         Ok(summaries) => {
-            ctx.send(reply_with(server_list_embed(&summaries))).await?;
+            reply
+                .edit(ctx, cleared(server_list_embed(&summaries)))
+                .await?;
         }
         Err(err) => {
             error!(error = ?err, namespace = %data.namespace, "failed to list game servers");
-            ctx.send(reply_with(error_embed(
-                "Couldn't reach the cluster right now. Try again in a moment.",
-            )))
-            .await?;
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't reach the cluster right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
         }
     }
 
@@ -554,10 +566,7 @@ pub(crate) async fn remove(
         reply
             .edit(
                 ctx,
-                cleared(neutral_embed(
-                    "Timed out",
-                    "Timed out — nothing was deleted.",
-                )),
+                cleared(neutral_embed("Timed out", "Nothing was deleted.")),
             )
             .await?;
         return Ok(());

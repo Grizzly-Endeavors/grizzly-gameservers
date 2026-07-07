@@ -156,7 +156,10 @@ fn supervisor_outcomes_map_to_distinct_messages() {
     let missing = format_supervisor("mc", &SupervisorOutcome::NotFound);
     assert!(paused.contains("paused"));
     assert!(running.contains("already running"));
-    assert_eq!(missing, "there's no server named mc");
+    assert_eq!(
+        missing,
+        "there's no server named mc — check list_servers for the current names"
+    );
 }
 
 #[test]
@@ -185,7 +188,7 @@ fn fs_result_passes_payload_through_and_maps_problems() {
     assert_eq!(fs_result("mc", FsOutcome::Ok(42)), Ok(42));
     assert_eq!(
         fs_result::<()>("mc", FsOutcome::NotFound),
-        Err("there's no server named mc".to_owned())
+        Err("there's no server named mc — check list_servers for the current names".to_owned())
     );
     assert!(
         fs_result::<()>("mc", FsOutcome::NotManaged)

@@ -115,7 +115,7 @@ fn kill_spec(outcome: &KillOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_NEUTRAL,
             body: format!(
                 "**{server}** is fully shut down and its world is saved. `/start` brings it back \
-                 (a little slower than `/stop`'s pause, since the pod has to come back up)."
+                 (a little slower than `/stop`'s pause, since it has to fully boot back up)."
             ),
         },
         KillOutcome::NotFound => not_found_spec(server),
@@ -213,7 +213,9 @@ fn not_found_spec(server: &str) -> EmbedSpec {
     EmbedSpec {
         title: "No such server".to_owned(),
         colour: COLOUR_ERROR,
-        body: format!("There's no server named **{server}**."),
+        body: format!(
+            "There's no server named **{server}**. Check `/servers` for the current names."
+        ),
     }
 }
 

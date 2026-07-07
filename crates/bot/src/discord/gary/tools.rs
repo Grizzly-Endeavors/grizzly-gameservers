@@ -809,7 +809,9 @@ fn format_supervisor(name: &str, outcome: &SupervisorOutcome) -> String {
         SupervisorOutcome::PodNotReady => {
             format!("{name} isn't ready to control yet — try again shortly")
         }
-        SupervisorOutcome::Unreachable => format!("I couldn't reach {name}'s controls right now"),
+        SupervisorOutcome::Unreachable => {
+            format!("I couldn't reach {name}'s controls right now — worth trying again in a moment")
+        }
         SupervisorOutcome::Failed(message) => format!("{name}'s controls refused that: {message}"),
         SupervisorOutcome::NotFound => no_such(name),
         SupervisorOutcome::NotManaged => not_managed(name),
@@ -825,7 +827,7 @@ fn format_remove(name: &str, outcome: &RemoveOutcome) -> String {
 }
 
 fn no_such(name: &str) -> String {
-    format!("there's no server named {name}")
+    format!("there's no server named {name} — check list_servers for the current names")
 }
 
 fn not_managed(name: &str) -> String {
