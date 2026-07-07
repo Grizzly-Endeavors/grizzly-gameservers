@@ -132,6 +132,125 @@ pub(crate) async fn supervisor_write_file(
     Ok(finish(response, &url).await)
 }
 
+/// The result of a targeted single-occurrence edit, before any restart. The
+/// soft-failure variants leave the file untouched; only [`Self::Edited`] wrote.
+pub(crate) enum EditOutcome {
+    /// The edit applied and was written; carries the write result so the caller
+    /// can mention the backup/restore path just like a plain write.
+    Edited(WriteResponse),
+    /// `old` wasn't found in the file, so there was nothing to replace.
+    NoMatch,
+    /// `old` appears more than once; carries the count so the caller can ask for
+    /// a more specific anchor rather than guessing which one to change.
+    Ambiguous(usize),
+    /// `old` and `new` are identical — no change to make.
+    Unchanged,
+    /// The file was too large to read in full, so a safe read-modify-write round
+    /// trip isn't possible; the caller should fall back to a full rewrite.
+    TooLargeToEdit,
+    /// The read or the write couldn't be served; carries the shared FS failure
+    /// (payload dropped to unit — it's irrelevant to why the edit didn't land).
+    Unserved(FsOutcome<()>),
+}
+
+/// The find-and-replace an edit applies, kept together so the two strings can't
+/// be passed in the wrong order at a call site (and to keep
+/// [`supervisor_edit_file`] within the argument budget).
+pub(crate) struct Replacement<'a> {
+    pub(crate) old: &'a str,
+    pub(crate) new: &'a str,
+}
+
+/// Edit a file in place by replacing the single occurrence of `old` with `new`,
+/// reading the current contents, applying the change, and writing it back (which
+/// snapshots the prior version for `restore_file`). Refuses ambiguous or missing
+/// anchors so a change can't silently hit the wrong text or clobber the file.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn supervisor_edit_file(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+    path: &str,
+    edit: Replacement<'_>,
+) -> Result<EditOutcome> {
+    let Replacement { old, new } = edit;
+    if old == new {
+        return Ok(EditOutcome::Unchanged);
+    }
+    if old.is_empty() {
+        // An empty anchor has no location to replace at; treat it as "not found"
+        // rather than matching every character boundary.
+        return Ok(EditOutcome::NoMatch);
+    }
+
+    let read =
+        match supervisor_read_file(client, http, namespace, instance, control_port, path).await? {
+            FsOutcome::Ok(read) => read,
+            unserved @ (FsOutcome::NotFound
+            | FsOutcome::NotManaged
+            | FsOutcome::PodNotReady
+            | FsOutcome::Unreachable
+            | FsOutcome::Rejected(_)) => return Ok(into_unserved(unserved)),
+        };
+    if read.truncated {
+        return Ok(EditOutcome::TooLargeToEdit);
+    }
+
+    let updated = match apply_unique_edit(&read.content, old, new) {
+        EditApply::Replaced(text) => text,
+        EditApply::NoMatch => return Ok(EditOutcome::NoMatch),
+        EditApply::Ambiguous(count) => return Ok(EditOutcome::Ambiguous(count)),
+    };
+
+    match supervisor_write_file(
+        client,
+        http,
+        namespace,
+        instance,
+        control_port,
+        path,
+        &updated,
+    )
+    .await?
+    {
+        FsOutcome::Ok(result) => Ok(EditOutcome::Edited(result)),
+        unserved @ (FsOutcome::NotFound
+        | FsOutcome::NotManaged
+        | FsOutcome::PodNotReady
+        | FsOutcome::Unreachable
+        | FsOutcome::Rejected(_)) => Ok(into_unserved(unserved)),
+    }
+}
+
+/// Re-tag a read/write [`FsOutcome`] that didn't succeed as the edit's
+/// [`EditOutcome::Unserved`], dropping the (absent) payload.
+fn into_unserved<T>(outcome: FsOutcome<T>) -> EditOutcome {
+    EditOutcome::Unserved(map_payload(outcome, |_| ()))
+}
+
+/// The pure in-memory outcome of applying a single-occurrence replacement.
+enum EditApply {
+    Replaced(String),
+    NoMatch,
+    Ambiguous(usize),
+}
+
+/// Replace `old` with `new` only when it occurs exactly once. Occurrences are
+/// counted non-overlapping, left to right — the same match semantics a reader
+/// expects when they copy a unique snippet to anchor a change.
+fn apply_unique_edit(content: &str, old: &str, new: &str) -> EditApply {
+    match content.matches(old).count() {
+        0 => EditApply::NoMatch,
+        1 => EditApply::Replaced(content.replacen(old, new, 1)),
+        count => EditApply::Ambiguous(count),
+    }
+}
+
 /// Restore a file under the instance's data root from its last snapshot.
 ///
 /// # Errors
@@ -300,3 +419,7 @@ fn map_payload<T, U>(outcome: FsOutcome<T>, transform: impl FnOnce(T) -> U) -> F
         FsOutcome::Rejected(message) => FsOutcome::Rejected(message),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/supervisor_fs.rs"]
+mod tests;

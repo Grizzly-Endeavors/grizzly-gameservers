@@ -71,13 +71,12 @@ impl SupervisorState {
     pub fn on_started(&mut self, pid: u32, now: Instant) {
         self.pid = Some(pid);
         self.started_at = Some(now);
-        // Keep `Running` if readiness was already signalled on an earlier boot
-        // (a warm relaunch); otherwise we're still coming up.
-        self.phase = if self.readied {
-            ProcessPhase::Running
-        } else {
-            ProcessPhase::Starting
-        };
+        // Every (re)launch is `Starting` until this boot's readiness probe
+        // confirms the new child is accepting connections again. `readied` stays
+        // sticky only to gate the one-shot Agones `/ready` (see `settle_ready`),
+        // not to fake the phase — so `Running` always means "up right now",
+        // which is what a caller waiting for a restart to land needs to see.
+        self.phase = ProcessPhase::Starting;
     }
 
     /// Record that the child is accepting connections and the Agones SDK

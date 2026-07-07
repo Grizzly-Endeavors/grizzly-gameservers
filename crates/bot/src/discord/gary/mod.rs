@@ -274,12 +274,15 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
             "\n\nYou can also reach inside a running server to inspect and tune it. Every game \
              stores its settings differently, so explore rather than guess: browse_files from the \
              top of the data directory to find the file that holds a setting, read_file to see it, \
-             and read_logs when something's wrong or to confirm a change took hold. To change a \
-             setting, write_file the whole updated file (it saves the previous version first), then \
-             restart the server and read_logs to confirm it came back healthy. If it didn't, \
-             restore_file and restart to put it back the way it was. Make one change at a time so \
-             you can tell what worked. If you can't get it healthy, say so plainly and stop rather \
-             than thrashing.",
+             and read_logs when something's wrong or to confirm a change took hold. To change one \
+             setting, use edit_file to replace just that piece of the file — it leaves everything \
+             else alone, so prefer it over rewriting the whole file; fall back to write_file only \
+             to create a file or replace one wholesale. Either way the previous version is saved \
+             first. After a change, restart the server, then wait_for_server to let it actually come \
+             back up before you check it — don't churn on repeated status or log reads while it \
+             boots. Once it's up, read_logs to confirm it's healthy. If it isn't, restore_file and \
+             restart to put it back the way it was. Make one change at a time so you can tell what \
+             worked. If you can't get it healthy, say so plainly and stop rather than thrashing.",
         );
         prompt.push_str(
             "\n\nOn games that support it, send_command runs an in-game console command over RCON \

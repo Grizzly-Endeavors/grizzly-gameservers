@@ -1,4 +1,6 @@
-use crate::agones::{DestroyOutcome, FsOutcome, ServerSummary, SupervisorOutcome};
+use crate::agones::{
+    DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, ServerSummary, SupervisorOutcome,
+};
 
 use super::*;
 
@@ -37,8 +39,10 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
         READ_FILE,
         READ_LOGS,
         WRITE_FILE,
+        EDIT_FILE,
         RESTORE_FILE,
         SEND_COMMAND,
+        WAIT_FOR_SERVER,
     ] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -47,15 +51,23 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        14,
-        "eight lifecycle tools, five filesystem tools, and send_command"
+        16,
+        "eight lifecycle tools, six filesystem tools, send_command, and wait_for_server"
     );
 }
 
 #[test]
 fn filesystem_tools_are_admin_only() {
     let names = tool_names(false);
-    for tool in [BROWSE_FILES, READ_FILE, READ_LOGS, WRITE_FILE, RESTORE_FILE] {
+    for tool in [
+        BROWSE_FILES,
+        READ_FILE,
+        READ_LOGS,
+        WRITE_FILE,
+        EDIT_FILE,
+        RESTORE_FILE,
+        WAIT_FOR_SERVER,
+    ] {
         assert!(
             !names.iter().any(|name| name == tool),
             "{tool} must not be offered to non-admins"
@@ -270,6 +282,62 @@ fn write_result_flags_whether_a_revert_is_possible() {
         backed_up: false,
     };
     assert!(format_write(&fresh).contains("nothing to restore"));
+}
+
+#[test]
+fn edit_success_points_at_restart_and_undo() {
+    let rendered = format_edit(
+        "mc",
+        "server.properties",
+        EditOutcome::Edited(WriteResponse {
+            path: "server.properties".to_owned(),
+            backed_up: true,
+        }),
+    );
+    assert!(rendered.contains("edited server.properties"));
+    assert!(
+        rendered.contains("restore_file"),
+        "should mention how to undo"
+    );
+    assert!(rendered.contains("restart"), "should prompt a restart");
+}
+
+#[test]
+fn edit_soft_failures_explain_the_recovery() {
+    assert!(
+        format_edit("mc", "server.properties", EditOutcome::NoMatch).contains("couldn't find"),
+        "a missing anchor should tell Gary to re-read and match exactly"
+    );
+    let ambiguous = format_edit("mc", "server.properties", EditOutcome::Ambiguous(3));
+    assert!(ambiguous.contains('3'), "ambiguity should report the count");
+    assert!(
+        format_edit("mc", "server.properties", EditOutcome::TooLargeToEdit).contains("write_file"),
+        "an un-editable large file should point at the write_file fallback"
+    );
+    // A shared FS failure carried through Unserved renders like any other.
+    assert_eq!(
+        format_edit(
+            "mc",
+            "server.properties",
+            EditOutcome::Unserved(FsOutcome::NotFound)
+        ),
+        "there's no server named mc — check list_servers for the current names"
+    );
+}
+
+#[test]
+fn ready_wait_outcomes_map_to_distinct_messages() {
+    assert!(format_ready_wait("mc", &ReadyWait::Ready).contains("back up"));
+    assert!(format_ready_wait("mc", &ReadyWait::Crashed).contains("crashed"));
+    assert!(
+        format_ready_wait("mc", &ReadyWait::Stopped).contains("stopped"),
+        "a paused server won't come up on its own and should say so"
+    );
+    assert!(format_ready_wait("mc", &ReadyWait::TimedOut).contains("still isn't accepting"));
+    assert_eq!(
+        format_ready_wait("mc", &ReadyWait::NotFound),
+        "there's no server named mc — check list_servers for the current names"
+    );
 }
 
 #[test]
