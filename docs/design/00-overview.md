@@ -79,7 +79,7 @@ This repo is a gated first-party app (ADR-020 delivery model):
 - `grizzly-platform` tracks it as a `GitRepository` + `Kustomization` under `kubernetes/apps/grizzly-gameservers/` pointing at this repo's `deploy/` chart. Adding the app is one folder + one list line there; everything else lives here.
 - **Standing up Agones is gated here on purpose.** The gate vets external repos before deploy, so security-sensitive standup (the Agones install, the namespace, RBAC, NetworkPolicy) belongs in *this* repo where the gate sees it — not in `grizzly-platform`, which would route it around the check. Co-locating the agent with its own leash means the code and what it's allowed to touch move in one reviewed PR.
 
-**Image admission carve-out:** the gate/cosign/Kyverno path signs *our* images. Agones is third-party and **injects an SDK sidecar into every GameServer pod** (a Google image), so even a signed game-server image shares a pod with an unsigned one. In a `gated=true` namespace Kyverno would bounce the sidecar (and the operator in `agones-system`). So the Agones upstream images need a deliberate carve-out — a scoped Kyverno exception (`cluster/kyverno/`) or keeping the operator out of a gated namespace. The *config* gets gated; the third-party *images* need an explicit admission decision.
+**Image admission carve-out:** the gate/cosign/Kyverno path signs *our* images. Agones is third-party and **injects an SDK sidecar into every GameServer pod** (a Google image), so even a signed game-server image shares a pod with an unsigned one. In a `gated=true` namespace Kyverno would bounce the sidecar (and the operator in `agones-system`). Resolved for the current phase: enforcement is bot-scoped only, so the sidecar and game/supervisor images (not yet gate-signed in CI) are untouched by policy — full-namespace enforcement stays a documented follow-up ([ADR-003](../decisions/003-bot-scoped-gate-enforcement.md)).
 
 ## What `grizzly-platform` keeps
 
@@ -93,6 +93,7 @@ Only two things — everything else is here:
 - ~~**Node-pin vs. NodePort**~~ — resolved: NodePort, no node-pinning ([ADR-002](../decisions/002-nodeport-no-node-pin.md)).
 - ~~**Agones packaging**~~ — resolved: standalone gated HelmRelease ([ADR-001](../decisions/001-agones-packaging.md)).
 - ~~**NL front door**~~ — resolved: Gary, the `@mention`-triggered tool-calling LLM agent (`crates/bot/src/discord/gary/`), sits alongside the deterministic slash commands rather than replacing them.
+- ~~**Image admission carve-out**~~ — resolved for the current phase: bot-scoped gate enforcement ([ADR-003](../decisions/003-bot-scoped-gate-enforcement.md)); full-namespace enforcement is a documented follow-up.
 - **Per-game catalog format** — how `games/<game>/` expresses image + defaults + port shape + persistence. Seeded by `games/minecraft/`; not yet generalized.
 
 ## Rejected alternatives (brief)

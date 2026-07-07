@@ -2,9 +2,9 @@
 
 A Discord-driven service for spinning up and managing game servers on Grizzly Endeavors hardware. Friends issue commands in Discord; servers run as containers in the homelab Kubernetes cluster (via Agones) and are exposed through the Hetzner proxy VPS. An LLM ops agent handles per-game config tweaks and break-fixing so day-to-day operation doesn't need a human.
 
-See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architecture and [`CLAUDE.md`](CLAUDE.md) for working conventions. **Status: in development.** The Discord shim and the in-pod process supervisor are implemented; the LLM ops agent is still to come.
+See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architecture and [`CLAUDE.md`](CLAUDE.md) for working conventions. **Status: live.** The Discord shim, the LLM ops agent (Gary), and the in-pod process supervisor are all deployed and gate-signed via CI; see [`docs/activation-status.md`](docs/activation-status.md) for what's verified.
 
-A Cargo workspace with three crates: `crates/bot` (Discord shim + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (in-pod process supervisor baked into game images, binary `grizzly-supervisor`), and `crates/control-api` (wire types shared by the two).
+A Cargo workspace with three crates: `crates/bot` (Discord shim + ops agent + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (in-pod process supervisor baked into game images, binary `grizzly-supervisor`), and `crates/control-api` (wire types shared by the two).
 
 ## Build
 
