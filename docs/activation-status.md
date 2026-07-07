@@ -19,5 +19,5 @@ The infrastructure is up. The cluster runs Agones, the guardrails, and a live Mi
 
 ## Deferred
 
-- **`cluster/kyverno/` carve-out + `grizzly.io/gated=true`** — the namespace stays ungated until signed app images ship; only then does Agones' unsigned SDK sidecar need a Kyverno exception. The egress leash + RBAC already provide the blast-radius containment that matters.
+- **Full-namespace gate enforcement** — `game-servers` already carries `grizzly.io/gated=true`, but enforcement is bot-scoped only (ADR-003); the Agones SDK sidecar needs no carve-out (it's a `gcr.io` image the policy glob never matches), but game/supervisor images aren't yet gate-signed in CI, so full-namespace enforcement stays a documented follow-up (see `cluster/kyverno/README.md`).
 - **Fleet + per-instance NodePort Services** — the single standalone Minecraft `GameServer` becomes a `Fleet` with shim-managed per-server Services once the shim exists.
