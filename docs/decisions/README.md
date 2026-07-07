@@ -6,4 +6,4 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-002 — NodePort routing, no node-pinning](002-nodeport-no-node-pin.md)
 - [ADR-003 — Bot-scoped gate-signature enforcement](003-bot-scoped-gate-enforcement.md)
 
-Still open: NL front door, and the per-game catalog format (seeded by `games/minecraft/`, not yet generalized).
+Still open: the per-game catalog format (seeded by `games/minecraft/`, not yet generalized).
