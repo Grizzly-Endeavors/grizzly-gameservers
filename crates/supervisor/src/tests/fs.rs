@@ -188,6 +188,43 @@ fn symlink_escape_is_rejected_on_read() {
 }
 
 #[test]
+fn symlink_escape_is_rejected_on_write() {
+    let dir = seed();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("secret");
+    std::fs::write(&secret, "untouched").unwrap();
+    // A symlink that lives inside the root but points outside it — the write
+    // target itself, not just its parent directory.
+    std::os::unix::fs::symlink(&secret, dir.path().join("link")).unwrap();
+    assert_eq!(
+        write_file(dir.path(), "link", "pwned"),
+        Err(FsError::OutsideRoot)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&secret).unwrap(),
+        "untouched",
+        "the write must never reach the symlink target"
+    );
+}
+
+#[test]
+fn symlink_escape_is_rejected_on_restore() {
+    let dir = seed();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = outside.path().join("secret");
+    std::fs::write(&secret, "top secret").unwrap();
+    // The restore *target* is a symlink pointing outside the root.
+    std::os::unix::fs::symlink(&secret, dir.path().join("link")).unwrap();
+    std::fs::write(dir.path().join("link.grizzly.bak"), "backup content").unwrap();
+    assert_eq!(restore_file(dir.path(), "link"), Err(FsError::OutsideRoot));
+    assert_eq!(
+        std::fs::read_to_string(&secret).unwrap(),
+        "top secret",
+        "the restore must never overwrite the symlink target"
+    );
+}
+
+#[test]
 fn client_errors_classify_as_4xx_and_io_as_5xx() {
     assert!(FsError::OutsideRoot.is_client_error());
     assert!(FsError::NotFound.is_client_error());
