@@ -302,7 +302,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-async fn exec_server_status(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     match list_active_servers(
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
@@ -312,8 +312,8 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, name: &str) -> String {
     {
         Ok(summaries) => summaries
             .iter()
-            .find(|summary| summary.name == name)
-            .map_or_else(|| no_such(name), format_summary),
+            .find(|summary| summary.name == server)
+            .map_or_else(|| no_such(server), format_summary),
         Err(err) => {
             error!(error = ?err, "agent: server_status failed");
             cluster_error()
@@ -328,8 +328,8 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
             game_ids(ctx)
         );
     };
-    let instance = match build_instance_name(game, name, now_entropy()) {
-        Ok(instance) => instance,
+    let server = match build_instance_name(game, name, now_entropy()) {
+        Ok(server) => server,
         Err(err) => return format!("that name won't work: {err}"),
     };
 
@@ -339,57 +339,57 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         &ctx.data.domain,
         &ctx.data.provision_lock,
         entry,
-        &instance,
+        &server,
     )
     .await
     {
         // Don't block the loop on first-boot world generation (minutes). Report
         // the address now; the user can ask for status to see when it's ready.
         Ok(ProvisionOutcome::Provisioned { address }) => format!(
-            "created {instance}; it'll be reachable at {address} once it finishes booting (first boot can take a couple of minutes)"
+            "created {server}; it'll be reachable at {address} once it finishes booting (first boot can take a couple of minutes)"
         ),
-        Ok(ProvisionOutcome::AlreadyExists) => format!("a server named {instance} already exists"),
+        Ok(ProvisionOutcome::AlreadyExists) => format!("a server named {server} already exists"),
         Ok(ProvisionOutcome::PortsExhausted) => {
             "all server slots are in use right now — destroy one first, then try again".to_owned()
         }
         Err(err) => {
-            error!(error = ?err, game, instance, "agent: create failed");
+            error!(error = ?err, game, server, "agent: create failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_stop(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
     match supervisor_stop(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
     )
     .await
     {
-        Ok(outcome) => format_supervisor(name, &outcome),
+        Ok(outcome) => format_supervisor(server, &outcome),
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: stop failed");
+            error!(error = ?err, %server, "agent: stop failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_restart(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
     match supervisor_restart(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
     )
     .await
     {
-        Ok(outcome) => format_supervisor(name, &outcome),
+        Ok(outcome) => format_supervisor(server, &outcome),
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: restart failed");
+            error!(error = ?err, %server, "agent: restart failed");
             cluster_error()
         }
     }
@@ -399,67 +399,67 @@ async fn exec_restart(ctx: &ToolCtx<'_>, name: &str) -> String {
 /// place via the supervisor; a shut-down instance is rescheduled. Unlike the slash
 /// command, the agent doesn't block waiting for readiness — it reports the
 /// address and lets the user poll status.
-async fn exec_start(ctx: &ToolCtx<'_>, name: &str) -> String {
-    match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, name).await {
+async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
+    match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(RuntimeState::PodUp) => match supervisor_start(
             &ctx.data.kube_client,
             &ctx.data.http,
             &ctx.data.namespace,
-            name,
+            server,
             ctx.data.control_port,
         )
         .await
         {
-            Ok(outcome) => format_supervisor(name, &outcome),
+            Ok(outcome) => format_supervisor(server, &outcome),
             Err(err) => {
-                error!(error = ?err, server = %name, "agent: warm start failed");
+                error!(error = ?err, %server, "agent: warm start failed");
                 cluster_error()
             }
         },
-        Ok(RuntimeState::Down) => exec_cold_start(ctx, name).await,
-        Ok(RuntimeState::Absent) => no_such(name),
+        Ok(RuntimeState::Down) => exec_cold_start(ctx, server).await,
+        Ok(RuntimeState::Absent) => no_such(server),
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: start state lookup failed");
+            error!(error = ?err, %server, "agent: start state lookup failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_cold_start(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     match begin_start(
         &ctx.data.kube_client,
         &ctx.data.namespace,
         &ctx.data.domain,
         &ctx.data.catalog,
-        name,
+        server,
     )
     .await
     {
         Ok(StartBegin::Starting { address }) => {
-            format!("starting {name}; it'll be reachable at {address} once it boots back up")
+            format!("starting {server}; it'll be reachable at {address} once it boots back up")
         }
-        Ok(StartBegin::AlreadyRunning) => format!("{name} is already running"),
-        Ok(StartBegin::NotFound) => no_such(name),
-        Ok(StartBegin::NotManaged) => not_managed(name),
+        Ok(StartBegin::AlreadyRunning) => format!("{server} is already running"),
+        Ok(StartBegin::NotFound) => no_such(server),
+        Ok(StartBegin::NotManaged) => not_managed(server),
         Ok(StartBegin::UnknownGame(game)) => {
-            format!("{name} runs '{game}', which isn't in the catalog anymore")
+            format!("{server} runs '{game}', which isn't in the catalog anymore")
         }
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: cold start failed");
+            error!(error = ?err, %server, "agent: cold start failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_shutdown(ctx: &ToolCtx<'_>, name: &str) -> String {
-    match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
+async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
+    match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(ShutdownOutcome::Down) => {
-            format!("stopped {name}; its world is saved and it can be started again")
+            format!("stopped {server}; its world is saved and it can be started again")
         }
-        Ok(ShutdownOutcome::NotFound) => no_such(name),
-        Ok(ShutdownOutcome::NotManaged) => not_managed(name),
+        Ok(ShutdownOutcome::NotFound) => no_such(server),
+        Ok(ShutdownOutcome::NotManaged) => not_managed(server),
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: shutdown failed");
+            error!(error = ?err, %server, "agent: shutdown failed");
             cluster_error()
         }
     }
@@ -468,7 +468,7 @@ async fn exec_shutdown(ctx: &ToolCtx<'_>, name: &str) -> String {
 /// Permanent deletion is gated behind an explicit Discord confirmation: the
 /// model can request it, but a human must click through before any world is
 /// destroyed. The returned text tells the model what the human decided.
-async fn exec_destroy(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new("gary_destroy_confirm")
             .label("Delete it")
@@ -482,14 +482,14 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, name: &str) -> String {
         .send_message(
             ctx.serenity,
             CreateMessage::new()
-                .embed(destroy_confirm_embed(name))
+                .embed(destroy_confirm_embed(server))
                 .components(vec![buttons]),
         )
         .await
     {
         Ok(message) => message,
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: failed to post destroy confirmation");
+            error!(error = ?err, %server, "agent: failed to post destroy confirmation");
             return "I couldn't post a confirmation prompt in this channel, so I didn't delete anything.".to_owned();
         }
     };
@@ -500,12 +500,12 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, name: &str) -> String {
         .timeout(COMPONENT_TIMEOUT)
         .await;
 
-    finish_destroy(ctx, name, prompt, decision).await
+    finish_destroy(ctx, server, prompt, decision).await
 }
 
 async fn finish_destroy(
     ctx: &ToolCtx<'_>,
-    name: &str,
+    server: &str,
     mut prompt: serenity::Message,
     decision: Option<serenity::ComponentInteraction>,
 ) -> String {
@@ -516,7 +516,7 @@ async fn finish_destroy(
             neutral_embed("Timed out", "Nothing was deleted."),
         )
         .await;
-        return format!("the confirmation timed out — {name} was not deleted");
+        return format!("the confirmation timed out — {server} was not deleted");
     };
 
     if let Err(err) = interaction
@@ -533,16 +533,16 @@ async fn finish_destroy(
             neutral_embed("Cancelled", "Nothing was deleted."),
         )
         .await;
-        return format!("the user cancelled — {name} was not deleted");
+        return format!("the user cancelled — {server} was not deleted");
     }
 
-    match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
+    match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(outcome) => {
-            edit_prompt(ctx, &mut prompt, destroy_result_embed(&outcome, name)).await;
-            format_destroy(name, &outcome)
+            edit_prompt(ctx, &mut prompt, destroy_result_embed(&outcome, server)).await;
+            format_destroy(server, &outcome)
         }
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: destroy failed");
+            error!(error = ?err, %server, "agent: destroy failed");
             cluster_error()
         }
     }
@@ -564,134 +564,134 @@ async fn edit_prompt(
     }
 }
 
-async fn exec_browse_files(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_list_files(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         path,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
+        Ok(outcome) => match fs_result(server, outcome) {
             Ok(entries) => format_entries(path, &entries),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: browse_files failed");
+            error!(error = ?err, %server, "agent: browse_files failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_read_file(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_read_file(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         path,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
+        Ok(outcome) => match fs_result(server, outcome) {
             Ok(file) => format_file(&file),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: read_file failed");
+            error!(error = ?err, %server, "agent: read_file failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_read_logs(ctx: &ToolCtx<'_>, name: &str, lines: Option<usize>) -> String {
+async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -> String {
     match supervisor_read_logs(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         lines,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
-            Ok(log_lines) => format_logs(name, &log_lines),
+        Ok(outcome) => match fs_result(server, outcome) {
+            Ok(log_lines) => format_logs(server, &log_lines),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: read_logs failed");
+            error!(error = ?err, %server, "agent: read_logs failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_write_file(ctx: &ToolCtx<'_>, name: &str, path: &str, content: &str) -> String {
+async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &str) -> String {
     match supervisor_write_file(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         path,
         content,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
+        Ok(outcome) => match fs_result(server, outcome) {
             Ok(result) => format_write(&result),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: write_file failed");
+            error!(error = ?err, %server, "agent: write_file failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_restore_file(ctx: &ToolCtx<'_>, name: &str, path: &str) -> String {
+async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_restore_file(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         path,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
+        Ok(outcome) => match fs_result(server, outcome) {
             Ok(result) => format_restore(&result),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: restore_file failed");
+            error!(error = ?err, %server, "agent: restore_file failed");
             cluster_error()
         }
     }
 }
 
-async fn exec_send_command(ctx: &ToolCtx<'_>, name: &str, command: &str) -> String {
+async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
     match supervisor_send_command(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
-        name,
+        server,
         ctx.data.control_port,
         command,
     )
     .await
     {
-        Ok(outcome) => match fs_result(name, outcome) {
-            Ok(result) => format_command_output(name, command, &result),
+        Ok(outcome) => match fs_result(server, outcome) {
+            Ok(result) => format_command_output(server, command, &result),
             Err(problem) => problem,
         },
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: send_command failed");
+            error!(error = ?err, %server, "agent: send_command failed");
             cluster_error()
         }
     }
@@ -699,16 +699,16 @@ async fn exec_send_command(ctx: &ToolCtx<'_>, name: &str, command: &str) -> Stri
 
 /// Collapse a filesystem outcome into either its payload or a plain-language
 /// explanation of why the operation couldn't be served, for the model to relay.
-fn fs_result<T>(name: &str, outcome: FsOutcome<T>) -> Result<T, String> {
+fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
     match outcome {
         FsOutcome::Ok(value) => Ok(value),
-        FsOutcome::NotFound => Err(no_such(name)),
-        FsOutcome::NotManaged => Err(not_managed(name)),
+        FsOutcome::NotFound => Err(no_such(server)),
+        FsOutcome::NotManaged => Err(not_managed(server)),
         FsOutcome::PodNotReady => Err(format!(
-            "{name} isn't ready to work with yet — try again shortly"
+            "{server} isn't ready to work with yet — try again shortly"
         )),
         FsOutcome::Unreachable => Err(format!(
-            "I couldn't reach {name} just now — worth trying again in a moment"
+            "I couldn't reach {server} just now — worth trying again in a moment"
         )),
         FsOutcome::Rejected(message) => Err(format!("that didn't work: {message}")),
     }
@@ -744,11 +744,11 @@ fn format_file(file: &ReadResponse) -> String {
     format!("contents of {}{note}:\n{}", file.path, file.content)
 }
 
-fn format_logs(name: &str, lines: &[String]) -> String {
+fn format_logs(server: &str, lines: &[String]) -> String {
     if lines.is_empty() {
-        return format!("{name} hasn't produced any output yet");
+        return format!("{server} hasn't produced any output yet");
     }
-    format!("recent output from {name}:\n{}", lines.join("\n"))
+    format!("recent output from {server}:\n{}", lines.join("\n"))
 }
 
 fn format_write(result: &WriteResponse) -> String {
@@ -770,12 +770,12 @@ fn format_restore(result: &RestoreResponse) -> String {
     )
 }
 
-fn format_command_output(name: &str, command: &str, result: &CommandResponse) -> String {
+fn format_command_output(server: &str, command: &str, result: &CommandResponse) -> String {
     let output = result.output.trim();
     if output.is_empty() {
-        format!("ran `{command}` on {name}; the server returned no output")
+        format!("ran `{command}` on {server}; the server returned no output")
     } else {
-        format!("ran `{command}` on {name}:\n{output}")
+        format!("ran `{command}` on {server}:\n{output}")
     }
 }
 
@@ -799,39 +799,43 @@ fn format_summary(server: &ServerSummary) -> String {
     )
 }
 
-fn format_supervisor(name: &str, outcome: &SupervisorOutcome) -> String {
+fn format_supervisor(server: &str, outcome: &SupervisorOutcome) -> String {
     match outcome {
-        SupervisorOutcome::Paused => format!("paused {name}; world saved and kept warm"),
-        SupervisorOutcome::Resumed => format!("{name} is waking up — ready in a few seconds"),
-        SupervisorOutcome::Restarted => format!("restarted {name} — back up in a few seconds"),
-        SupervisorOutcome::AlreadyStopped => format!("{name} is already paused"),
-        SupervisorOutcome::AlreadyRunning => format!("{name} is already running"),
+        SupervisorOutcome::Paused => format!("paused {server}; world saved and kept warm"),
+        SupervisorOutcome::Resumed => format!("{server} is waking up — ready in a few seconds"),
+        SupervisorOutcome::Restarted => format!("restarted {server} — back up in a few seconds"),
+        SupervisorOutcome::AlreadyStopped => format!("{server} is already paused"),
+        SupervisorOutcome::AlreadyRunning => format!("{server} is already running"),
         SupervisorOutcome::PodNotReady => {
-            format!("{name} isn't ready to control yet — try again shortly")
+            format!("{server} isn't ready to control yet — try again shortly")
         }
         SupervisorOutcome::Unreachable => {
-            format!("I couldn't reach {name}'s controls right now — worth trying again in a moment")
+            format!(
+                "I couldn't reach {server}'s controls right now — worth trying again in a moment"
+            )
         }
-        SupervisorOutcome::Failed(message) => format!("{name}'s controls refused that: {message}"),
-        SupervisorOutcome::NotFound => no_such(name),
-        SupervisorOutcome::NotManaged => not_managed(name),
+        SupervisorOutcome::Failed(message) => {
+            format!("{server}'s controls refused that: {message}")
+        }
+        SupervisorOutcome::NotFound => no_such(server),
+        SupervisorOutcome::NotManaged => not_managed(server),
     }
 }
 
-fn format_destroy(name: &str, outcome: &DestroyOutcome) -> String {
+fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
     match outcome {
-        DestroyOutcome::Destroyed => format!("deleted {name} and its world"),
-        DestroyOutcome::NotFound => no_such(name),
-        DestroyOutcome::NotManaged => not_managed(name),
+        DestroyOutcome::Destroyed => format!("deleted {server} and its world"),
+        DestroyOutcome::NotFound => no_such(server),
+        DestroyOutcome::NotManaged => not_managed(server),
     }
 }
 
-fn no_such(name: &str) -> String {
-    format!("there's no server named {name} — check list_servers for the current names")
+fn no_such(server: &str) -> String {
+    format!("there's no server named {server} — check list_servers for the current names")
 }
 
-fn not_managed(name: &str) -> String {
-    format!("{name} is managed by the platform and can't be controlled from here")
+fn not_managed(server: &str) -> String {
+    format!("{server} is managed by the platform and can't be controlled from here")
 }
 
 fn cluster_error() -> String {

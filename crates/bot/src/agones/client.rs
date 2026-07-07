@@ -48,8 +48,8 @@ pub(crate) async fn list_active_servers(
     let mut summaries = Vec::with_capacity(gs_list.items.len());
     let mut live: HashSet<&str> = HashSet::new();
     for gameserver in &gs_list.items {
-        let name = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
-        live.insert(name);
+        let instance = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
+        live.insert(instance);
         let agones_state = gameserver
             .status
             .as_ref()
@@ -63,15 +63,15 @@ pub(crate) async fn list_active_servers(
         } else {
             agones_state
         };
-        let node_port = node_port_by_server.get(name).copied();
+        let node_port = node_port_by_server.get(instance).copied();
         if node_port.is_none() {
             warn!(
-                gameserver = name,
+                gameserver = instance,
                 "no NodePort service matched gameserver; address omitted"
             );
         }
         let game = label_value(gameserver.metadata.labels.as_ref(), GAME_KEY);
-        summaries.push(summarize(name, game, state, node_port, domain));
+        summaries.push(summarize(instance, game, state, node_port, domain));
     }
 
     append_stopped_instances(&svc_list.items, &live, domain, &mut summaries);

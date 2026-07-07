@@ -151,8 +151,8 @@ async fn finish_create(
         return Ok(());
     };
 
-    let instance = match build_instance_name(game, name, now_entropy()) {
-        Ok(instance) => instance,
+    let server = match build_instance_name(game, name, now_entropy()) {
+        Ok(server) => server,
         Err(err) => {
             reply
                 .edit(
@@ -169,7 +169,7 @@ async fn finish_create(
             ctx,
             cleared(working_embed(
                 &format!("Launching {game}"),
-                &format!("Setting up **{instance}**…"),
+                &format!("Setting up **{server}**…"),
             )),
         )
         .await?;
@@ -180,13 +180,13 @@ async fn finish_create(
         &data.domain,
         &data.provision_lock,
         entry,
-        &instance,
+        &server,
     )
     .await
     {
         Ok(ProvisionOutcome::Provisioned { address }) => {
-            await_ready(ctx, reply, &instance, address, |address, ready| {
-                create_result_embed(&CreateOutcome::Created { address, ready }, &instance)
+            await_ready(ctx, reply, &server, address, |address, ready| {
+                create_result_embed(&CreateOutcome::Created { address, ready }, &server)
             })
             .await?;
         }
@@ -194,10 +194,7 @@ async fn finish_create(
             reply
                 .edit(
                     ctx,
-                    cleared(create_result_embed(
-                        &CreateOutcome::AlreadyExists,
-                        &instance,
-                    )),
+                    cleared(create_result_embed(&CreateOutcome::AlreadyExists, &server)),
                 )
                 .await?;
         }
@@ -205,15 +202,12 @@ async fn finish_create(
             reply
                 .edit(
                     ctx,
-                    cleared(create_result_embed(
-                        &CreateOutcome::PortsExhausted,
-                        &instance,
-                    )),
+                    cleared(create_result_embed(&CreateOutcome::PortsExhausted, &server)),
                 )
                 .await?;
         }
         Err(err) => {
-            error!(error = ?err, game = %game, instance = %instance, "failed to create game server");
+            error!(error = ?err, game, %server, "failed to create game server");
             reply
                 .edit(
                     ctx,
@@ -234,7 +228,7 @@ async fn finish_create(
 async fn await_ready(
     ctx: Context<'_>,
     reply: &poise::ReplyHandle<'_>,
-    name: &str,
+    server: &str,
     address: String,
     finalize: impl FnOnce(String, bool) -> serenity::CreateEmbed,
 ) -> Result<(), Error> {
@@ -243,7 +237,7 @@ async fn await_ready(
         .edit(
             ctx,
             cleared(working_embed(
-                &format!("{name} is booting"),
+                &format!("{server} is booting"),
                 &format!(
                     "Address: `{address}` — it'll be playable in a minute or two. Hang tight."
                 ),
@@ -251,12 +245,12 @@ async fn await_ready(
         )
         .await?;
 
-    match wait_for_instance_ready(&data.kube_client, &data.namespace, name).await {
+    match wait_for_instance_ready(&data.kube_client, &data.namespace, server).await {
         Ok(ready) => {
             reply.edit(ctx, cleared(finalize(address, ready))).await?;
         }
         Err(err) => {
-            error!(error = ?err, server = %name, "failed to wait for readiness");
+            error!(error = ?err, %server, "failed to wait for readiness");
             reply
                 .edit(
                     ctx,
