@@ -87,6 +87,21 @@ async fn read_packet_rejects_a_too_short_length_prefix() {
     );
 }
 
+#[tokio::test]
+async fn read_packet_rejects_an_oversized_length_prefix() {
+    // Above MAX_PACKET_LEN; rejected before any body bytes are read, so no body
+    // needs to be supplied.
+    let bytes = i32::try_from(MAX_PACKET_LEN + 1)
+        .unwrap()
+        .to_le_bytes()
+        .to_vec();
+    let mut reader = bytes.as_slice();
+    assert!(
+        read_packet(&mut reader).await.is_err(),
+        "an oversized packet length should be rejected"
+    );
+}
+
 #[test]
 fn truncate_output_leaves_short_text_untouched() {
     let text = "There are 2 of a max of 20 players online".to_owned();

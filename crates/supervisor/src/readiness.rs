@@ -28,3 +28,7 @@ pub async fn wait_accepting(port: u16, give_up: Duration) -> bool {
         sleep(PROBE_INTERVAL).await;
     }
 }
+
+#[cfg(test)]
+#[path = "tests/readiness.rs"]
+mod tests;
