@@ -184,7 +184,7 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
     // The bug this guards: narration that races its own tool's side effects (a
     // confirm card) and loses. The loop must await the progress send first.
     let turns = canned(vec![
-        tool_turn("c1", "remove_server", "{}", Some("deleting minecraft now")),
+        tool_turn("c1", "destroy_server", "{}", Some("deleting minecraft now")),
         text_turn("done"),
     ]);
     let order: Mutex<Vec<&str>> = Mutex::new(Vec::new());

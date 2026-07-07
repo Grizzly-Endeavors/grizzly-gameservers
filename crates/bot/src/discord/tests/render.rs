@@ -155,34 +155,34 @@ fn unknown_game_on_start_is_an_error_naming_the_game() {
 #[test]
 fn not_found_outcomes_are_errors() {
     assert_eq!(
-        kill_spec(&KillOutcome::NotFound, "ghost").colour,
+        shutdown_spec(&ShutdownOutcome::NotFound, "ghost").colour,
         COLOUR_ERROR,
-        "killing a nonexistent server is an error"
+        "shutting down a nonexistent server is an error"
     );
     assert_eq!(
-        remove_spec(&RemoveOutcome::NotFound, "ghost").colour,
+        destroy_spec(&DestroyOutcome::NotFound, "ghost").colour,
         COLOUR_ERROR,
-        "removing a nonexistent server is an error"
+        "destroying a nonexistent server is an error"
     );
 }
 
 #[test]
-fn kill_and_remove_success_stay_neutral() {
+fn shutdown_and_destroy_success_stay_neutral() {
     assert_eq!(
-        kill_spec(&KillOutcome::Killed, "minecraft").colour,
+        shutdown_spec(&ShutdownOutcome::Down, "minecraft").colour,
         COLOUR_NEUTRAL,
         "a clean shutdown is a no-drama neutral state"
     );
     assert_eq!(
-        remove_spec(&RemoveOutcome::Removed, "minecraft").colour,
+        destroy_spec(&DestroyOutcome::Destroyed, "minecraft").colour,
         COLOUR_NEUTRAL,
-        "a confirmed removal is a no-drama neutral state"
+        "a confirmed destruction is a no-drama neutral state"
     );
 }
 
 #[test]
 fn not_managed_outcomes_explain_the_boundary() {
-    let spec = kill_spec(&KillOutcome::NotManaged, "platform-thing");
+    let spec = shutdown_spec(&ShutdownOutcome::NotManaged, "platform-thing");
     assert_eq!(spec.colour, COLOUR_ERROR, "a refused op is an error");
     assert!(
         spec.body.contains("platform-thing"),

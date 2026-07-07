@@ -1,4 +1,4 @@
-use crate::agones::{FsOutcome, RemoveOutcome, ServerSummary, SupervisorOutcome};
+use crate::agones::{DestroyOutcome, FsOutcome, ServerSummary, SupervisorOutcome};
 
 use super::*;
 
@@ -16,7 +16,7 @@ fn non_admins_get_only_read_only_tools() {
     assert!(
         !names
             .iter()
-            .any(|name| name == CREATE_SERVER || name == REMOVE_SERVER),
+            .any(|name| name == CREATE_SERVER || name == DESTROY_SERVER),
         "read-only tier must not expose any mutating tool"
     );
 }
@@ -31,8 +31,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
         STOP_SERVER,
         START_SERVER,
         RESTART_SERVER,
-        KILL_SERVER,
-        REMOVE_SERVER,
+        SHUTDOWN_SERVER,
+        DESTROY_SERVER,
         BROWSE_FILES,
         READ_FILE,
         READ_LOGS,
@@ -177,10 +177,10 @@ fn supervisor_failed_relays_the_supervisors_reason() {
 #[test]
 fn remove_outcomes_report_deletion_or_absence() {
     assert_eq!(
-        format_remove("mc", &RemoveOutcome::Removed),
+        format_destroy("mc", &DestroyOutcome::Destroyed),
         "deleted mc and its world"
     );
-    assert!(format_remove("mc", &RemoveOutcome::NotManaged).contains("managed by the platform"));
+    assert!(format_destroy("mc", &DestroyOutcome::NotManaged).contains("managed by the platform"));
 }
 
 #[test]

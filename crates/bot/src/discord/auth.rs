@@ -12,7 +12,7 @@ pub(crate) fn is_authorized(
     allowlist.contains(&user) || admin_role.is_some_and(|role| roles.contains(&role))
 }
 
-/// poise check for `/create`, `/stop`, `/start`, `/remove`. Denies with an
+/// poise check for `/create`, `/stop`, `/start`, `/destroy`. Denies with an
 /// ephemeral message (returning `false` alone would give the friend no feedback).
 ///
 /// # Errors

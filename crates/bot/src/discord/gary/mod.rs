@@ -266,7 +266,7 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
     if is_admin {
         prompt.push_str(
             "\n\nThis person is an admin: you may create, stop, start, restart, and shut down \
-             servers for them. Deleting a server (remove) destroys its world permanently and \
+             servers for them. Deleting a server (destroy) destroys its world permanently and \
              always asks them to confirm with a button first — describe what you're about to \
              delete before you call it, and respect their answer.",
         );

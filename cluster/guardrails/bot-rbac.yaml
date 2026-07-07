@@ -1,7 +1,7 @@
 # The Discord bot's identity and permissions — also the ops agent's ("Gary")
 # identity, since Gary runs inside the bot process rather than as a separate
 # workload. The bot provisions per-world instances on command
-# (create/kill/start/restart/remove), so it can create and delete GameServers,
+# (create/shutdown/start/restart/destroy), so it can create and delete GameServers,
 # their NodePort Services and their PVCs, and read pod IPs to reach the in-pod
 # supervisor control API for /stop, warm /start and /restart. It never patches
 # or execs — Gary operates a running server entirely through that supervisor
@@ -20,7 +20,7 @@ metadata:
   namespace: game-servers
 rules:
   # List gameservers and read lifecycle state; create/delete them for
-  # create/stop/start/remove. No patch/update — every lifecycle path replaces
+  # create/stop/start/destroy. No patch/update — every lifecycle path replaces
   # objects rather than mutating in place.
   - apiGroups: ["agones.dev"]
     resources: ["gameservers"]
@@ -31,7 +31,7 @@ rules:
     resources: ["services"]
     verbs: ["get", "list", "create", "delete"]
   # Per-world persistent storage: created on /create, retained across /stop,
-  # deleted only on /remove.
+  # deleted only on /destroy.
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "delete"]

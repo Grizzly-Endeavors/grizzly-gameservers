@@ -7,9 +7,9 @@
 A thin Rust supervisor (`grizzly-supervisor`) is **baked into the game image as its entrypoint** (`games/minecraft/Dockerfile`), launching the game server as a child process. It owns the Agones SDK lifecycle (calls `/ready` once the game accepts connections, then keeps `/health` pinged — including while the game is intentionally paused, so the pod survives) and serves an HTTP control API on `:9359`. The Discord bot drives it for in-place lifecycle:
 
 - `/stop` → pause the game process; pod stays up (fast resume) → **Paused**.
-- `/kill` → delete the `GameServer` (pod gone), keep Service+PVC → **Stopped** (cold resume).
+- `/shutdown` → delete the `GameServer` (pod gone), keep Service+PVC → **Stopped** (cold resume).
 - `/restart` → bounce the process in place.
-- `/start` → state-aware: warm (pod up) resumes via the supervisor; cold (killed) reschedules.
+- `/start` → state-aware: warm (pod up) resumes via the supervisor; cold (shut down) reschedules.
 
 It also serves the file surface (`/fs/list`, `/fs/read`, `/fs/write` with snapshot, `/fs/restore`, `/logs`) and, for games that enable it, an RCON console bridge:
 

@@ -12,11 +12,11 @@ use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::{GameServer, ServerSummary, summarize};
 
 /// State label shown for a managed instance whose Service (and leased port)
-/// still exist but whose `GameServer` has been torn down by `/kill`.
+/// still exist but whose `GameServer` has been torn down by `/shutdown`.
 const STOPPED_STATE: &str = "Stopped";
 
 /// State shown for a server whose pod is up but whose game process the
-/// supervisor has paused (`/stop`). Distinct from `Stopped` (= killed).
+/// supervisor has paused (`/stop`). Distinct from `Stopped` (= shut down).
 const PAUSED_STATE: &str = "Paused";
 
 /// List every Agones `GameServer` in `namespace`, joining each to its
@@ -78,7 +78,7 @@ pub(crate) async fn list_active_servers(
     Ok(summaries)
 }
 
-/// A `/kill` deletes the `GameServer` but keeps its Service, so a managed Service
+/// A `/shutdown` deletes the `GameServer` but keeps its Service, so a managed Service
 /// with no live `GameServer` behind it is a stopped instance. Surface those so a
 /// friend can see — and `/start` — a world that is currently down.
 fn append_stopped_instances(

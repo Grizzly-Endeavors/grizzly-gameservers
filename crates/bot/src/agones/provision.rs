@@ -34,8 +34,8 @@ pub(crate) enum CreateOutcome {
     PortsExhausted,
 }
 
-pub(crate) enum KillOutcome {
-    Killed,
+pub(crate) enum ShutdownOutcome {
+    Down,
     NotFound,
     NotManaged,
 }
@@ -48,8 +48,8 @@ pub(crate) enum StartOutcome {
     UnknownGame(String),
 }
 
-pub(crate) enum RemoveOutcome {
-    Removed,
+pub(crate) enum DestroyOutcome {
+    Destroyed,
     NotFound,
     NotManaged,
 }
@@ -173,7 +173,7 @@ async fn create_storage_and_server(
     Ok(())
 }
 
-/// Kill a running instance: delete only its `GameServer`, leaving the Service
+/// Shut down a running instance: delete only its `GameServer`, leaving the Service
 /// (and its leased port) and the PVC in place so `/start` can recreate it. This
 /// is the heavier teardown — the pod is gone and a cold `/start` reschedules it.
 /// The lighter `/stop` (pause the process, keep the pod) goes through the
@@ -182,24 +182,24 @@ async fn create_storage_and_server(
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached.
-pub(crate) async fn kill_instance(
+pub(crate) async fn shutdown_instance(
     client: &Client,
     namespace: &str,
     name: &str,
-) -> Result<KillOutcome> {
+) -> Result<ShutdownOutcome> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
         .get_opt(name)
         .await
         .with_context(|| format!("failed to read service {name}"))?
     else {
-        return Ok(KillOutcome::NotFound);
+        return Ok(ShutdownOutcome::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
-        return Ok(KillOutcome::NotManaged);
+        return Ok(ShutdownOutcome::NotManaged);
     }
     delete_if_present(&gameserver_api(client, namespace), name).await?;
-    Ok(KillOutcome::Killed)
+    Ok(ShutdownOutcome::Down)
 }
 
 /// Result of the start-up phase of `/start`: the `GameServer` has been recreated
@@ -284,27 +284,27 @@ pub(crate) async fn begin_start(
 ///
 /// Returns an error if the cluster cannot be reached or a delete fails for a
 /// reason other than the object already being gone.
-pub(crate) async fn remove_instance(
+pub(crate) async fn destroy_instance(
     client: &Client,
     namespace: &str,
     name: &str,
-) -> Result<RemoveOutcome> {
+) -> Result<DestroyOutcome> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
         .get_opt(name)
         .await
         .with_context(|| format!("failed to read service {name}"))?
     else {
-        return Ok(RemoveOutcome::NotFound);
+        return Ok(DestroyOutcome::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
-        return Ok(RemoveOutcome::NotManaged);
+        return Ok(DestroyOutcome::NotManaged);
     }
     delete_if_present(&gameserver_api(client, namespace), name).await?;
     delete_if_present(&services, name).await?;
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     delete_if_present(&pvcs, &pvc_name(name)).await?;
-    Ok(RemoveOutcome::Removed)
+    Ok(DestroyOutcome::Destroyed)
 }
 
 /// Names of every shim-managed instance (running or stopped), for autocomplete.

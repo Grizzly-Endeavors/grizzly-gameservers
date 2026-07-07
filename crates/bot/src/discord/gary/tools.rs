@@ -17,16 +17,16 @@ use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
-use super::super::render::{neutral_embed, remove_confirm_embed, remove_result_embed};
+use super::super::render::{destroy_confirm_embed, destroy_result_embed, neutral_embed};
 use super::super::{COMPONENT_TIMEOUT, Data};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
-    FsOutcome, KillOutcome, ProvisionOutcome, RemoveOutcome, RuntimeState, ServerSummary,
-    StartBegin, SupervisorOutcome, begin_start, build_instance_name, instance_runtime_state,
-    kill_instance, list_active_servers, now_entropy, provision_instance, remove_instance,
-    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
-    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
-    supervisor_write_file,
+    DestroyOutcome, FsOutcome, ProvisionOutcome, RuntimeState, ServerSummary, ShutdownOutcome,
+    StartBegin, SupervisorOutcome, begin_start, build_instance_name, destroy_instance,
+    instance_runtime_state, list_active_servers, now_entropy, provision_instance,
+    shutdown_instance, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
+    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
+    supervisor_stop, supervisor_write_file,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -35,8 +35,8 @@ const CREATE_SERVER: &str = "create_server";
 const STOP_SERVER: &str = "stop_server";
 const START_SERVER: &str = "start_server";
 const RESTART_SERVER: &str = "restart_server";
-const KILL_SERVER: &str = "kill_server";
-const REMOVE_SERVER: &str = "remove_server";
+const SHUTDOWN_SERVER: &str = "shutdown_server";
+const DESTROY_SERVER: &str = "destroy_server";
 const BROWSE_FILES: &str = "browse_files";
 const READ_FILE: &str = "read_file";
 const READ_LOGS: &str = "read_logs";
@@ -153,12 +153,12 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
                 params_schema::<NameParams>(),
             ),
             ToolDef::function(
-                KILL_SERVER,
+                SHUTDOWN_SERVER,
                 "Fully shut a server down to free its slot, keeping the world so it can start later.",
                 params_schema::<NameParams>(),
             ),
             ToolDef::function(
-                REMOVE_SERVER,
+                DESTROY_SERVER,
                 "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
                 params_schema::<NameParams>(),
             ),
@@ -224,12 +224,12 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_restart(ctx, &params.name).await,
             Err(message) => message,
         },
-        KILL_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
-            Ok(params) => exec_kill(ctx, &params.name).await,
+        SHUTDOWN_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        REMOVE_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
-            Ok(params) => exec_remove(ctx, &params.name).await,
+        DESTROY_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
         BROWSE_FILES if ctx.is_admin => match parse::<PathParams>(args) {
@@ -256,8 +256,8 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
         },
-        CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | KILL_SERVER
-        | REMOVE_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE
+        CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
+        | DESTROY_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE
         | SEND_COMMAND => NON_ADMIN_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
@@ -350,7 +350,7 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         ),
         Ok(ProvisionOutcome::AlreadyExists) => format!("a server named {instance} already exists"),
         Ok(ProvisionOutcome::PortsExhausted) => {
-            "all server slots are in use right now — remove one first, then try again".to_owned()
+            "all server slots are in use right now — destroy one first, then try again".to_owned()
         }
         Err(err) => {
             error!(error = ?err, game, instance, "agent: create failed");
@@ -396,7 +396,7 @@ async fn exec_restart(ctx: &ToolCtx<'_>, name: &str) -> String {
 }
 
 /// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in
-/// place via the supervisor; a killed instance is rescheduled. Unlike the slash
+/// place via the supervisor; a shut-down instance is rescheduled. Unlike the slash
 /// command, the agent doesn't block waiting for readiness — it reports the
 /// address and lets the user poll status.
 async fn exec_start(ctx: &ToolCtx<'_>, name: &str) -> String {
@@ -416,7 +416,7 @@ async fn exec_start(ctx: &ToolCtx<'_>, name: &str) -> String {
                 cluster_error()
             }
         },
-        Ok(RuntimeState::Killed) => exec_cold_start(ctx, name).await,
+        Ok(RuntimeState::Down) => exec_cold_start(ctx, name).await,
         Ok(RuntimeState::Absent) => no_such(name),
         Err(err) => {
             error!(error = ?err, server = %name, "agent: start state lookup failed");
@@ -451,15 +451,15 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, name: &str) -> String {
     }
 }
 
-async fn exec_kill(ctx: &ToolCtx<'_>, name: &str) -> String {
-    match kill_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
-        Ok(KillOutcome::Killed) => {
+async fn exec_shutdown(ctx: &ToolCtx<'_>, name: &str) -> String {
+    match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
+        Ok(ShutdownOutcome::Down) => {
             format!("stopped {name}; its world is saved and it can be started again")
         }
-        Ok(KillOutcome::NotFound) => no_such(name),
-        Ok(KillOutcome::NotManaged) => not_managed(name),
+        Ok(ShutdownOutcome::NotFound) => no_such(name),
+        Ok(ShutdownOutcome::NotManaged) => not_managed(name),
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: kill failed");
+            error!(error = ?err, server = %name, "agent: shutdown failed");
             cluster_error()
         }
     }
@@ -468,12 +468,12 @@ async fn exec_kill(ctx: &ToolCtx<'_>, name: &str) -> String {
 /// Permanent deletion is gated behind an explicit Discord confirmation: the
 /// model can request it, but a human must click through before any world is
 /// destroyed. The returned text tells the model what the human decided.
-async fn exec_remove(ctx: &ToolCtx<'_>, name: &str) -> String {
+async fn exec_destroy(ctx: &ToolCtx<'_>, name: &str) -> String {
     let buttons = CreateActionRow::Buttons(vec![
-        CreateButton::new("gary_remove_confirm")
+        CreateButton::new("gary_destroy_confirm")
             .label("Delete it")
             .style(ButtonStyle::Danger),
-        CreateButton::new("gary_remove_cancel")
+        CreateButton::new("gary_destroy_cancel")
             .label("Cancel")
             .style(ButtonStyle::Secondary),
     ]);
@@ -482,14 +482,14 @@ async fn exec_remove(ctx: &ToolCtx<'_>, name: &str) -> String {
         .send_message(
             ctx.serenity,
             CreateMessage::new()
-                .embed(remove_confirm_embed(name))
+                .embed(destroy_confirm_embed(name))
                 .components(vec![buttons]),
         )
         .await
     {
         Ok(message) => message,
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: failed to post remove confirmation");
+            error!(error = ?err, server = %name, "agent: failed to post destroy confirmation");
             return "I couldn't post a confirmation prompt in this channel, so I didn't delete anything.".to_owned();
         }
     };
@@ -500,10 +500,10 @@ async fn exec_remove(ctx: &ToolCtx<'_>, name: &str) -> String {
         .timeout(COMPONENT_TIMEOUT)
         .await;
 
-    finish_remove(ctx, name, prompt, decision).await
+    finish_destroy(ctx, name, prompt, decision).await
 }
 
-async fn finish_remove(
+async fn finish_destroy(
     ctx: &ToolCtx<'_>,
     name: &str,
     mut prompt: serenity::Message,
@@ -523,10 +523,10 @@ async fn finish_remove(
         .create_response(ctx.serenity, CreateInteractionResponse::Acknowledge)
         .await
     {
-        warn!(error = ?err, "agent: failed to acknowledge remove interaction");
+        warn!(error = ?err, "agent: failed to acknowledge destroy interaction");
     }
 
-    if interaction.data.custom_id != "gary_remove_confirm" {
+    if interaction.data.custom_id != "gary_destroy_confirm" {
         edit_prompt(
             ctx,
             &mut prompt,
@@ -536,13 +536,13 @@ async fn finish_remove(
         return format!("the user cancelled — {name} was not deleted");
     }
 
-    match remove_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
+    match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, name).await {
         Ok(outcome) => {
-            edit_prompt(ctx, &mut prompt, remove_result_embed(&outcome, name)).await;
-            format_remove(name, &outcome)
+            edit_prompt(ctx, &mut prompt, destroy_result_embed(&outcome, name)).await;
+            format_destroy(name, &outcome)
         }
         Err(err) => {
-            error!(error = ?err, server = %name, "agent: remove failed");
+            error!(error = ?err, server = %name, "agent: destroy failed");
             cluster_error()
         }
     }
@@ -560,7 +560,7 @@ async fn edit_prompt(
         )
         .await
     {
-        warn!(error = ?err, "agent: failed to clear remove confirmation prompt");
+        warn!(error = ?err, "agent: failed to clear destroy confirmation prompt");
     }
 }
 
@@ -818,11 +818,11 @@ fn format_supervisor(name: &str, outcome: &SupervisorOutcome) -> String {
     }
 }
 
-fn format_remove(name: &str, outcome: &RemoveOutcome) -> String {
+fn format_destroy(name: &str, outcome: &DestroyOutcome) -> String {
     match outcome {
-        RemoveOutcome::Removed => format!("deleted {name} and its world"),
-        RemoveOutcome::NotFound => no_such(name),
-        RemoveOutcome::NotManaged => not_managed(name),
+        DestroyOutcome::Destroyed => format!("deleted {name} and its world"),
+        DestroyOutcome::NotFound => no_such(name),
+        DestroyOutcome::NotManaged => not_managed(name),
     }
 }
 

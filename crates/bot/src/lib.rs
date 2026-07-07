@@ -69,11 +69,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
             commands: vec![
                 commands::servers(),
                 commands::create(),
-                commands::kill(),
+                commands::shutdown(),
                 commands::stop(),
                 commands::start(),
                 commands::restart(),
-                commands::remove(),
+                commands::destroy(),
                 commands::new_session(),
             ],
             event_handler: |ctx, event, framework, data| {

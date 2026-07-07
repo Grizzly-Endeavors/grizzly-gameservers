@@ -19,12 +19,12 @@ use super::types::GameServer;
 const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Where an instance is in the warm/cold spectrum, used to route `/start`:
-/// a live pod takes the fast supervisor path; a killed one needs a reschedule.
+/// a live pod takes the fast supervisor path; a shut-down one needs a reschedule.
 pub(crate) enum RuntimeState {
     /// The `GameServer` (and its pod) exist — the supervisor can act in place.
     PodUp,
-    /// No `GameServer`, but the Service survives — `/kill`ed, needs a cold start.
-    Killed,
+    /// No `GameServer`, but the Service survives — `/shutdown`ed, needs a cold start.
+    Down,
     /// Nothing by that name.
     Absent,
 }
@@ -126,7 +126,7 @@ pub(crate) async fn supervisor_restart(
     .await
 }
 
-/// Classify an instance as warm (pod up), cold (killed), or absent so `/start`
+/// Classify an instance as warm (pod up), cold (shut down), or absent so `/start`
 /// can pick the fast or the reschedule path.
 ///
 /// # Errors
@@ -153,7 +153,7 @@ pub(crate) async fn instance_runtime_state(
         .with_context(|| format!("failed to read service {instance}"))?
         .is_some()
     {
-        return Ok(RuntimeState::Killed);
+        return Ok(RuntimeState::Down);
     }
     Ok(RuntimeState::Absent)
 }
