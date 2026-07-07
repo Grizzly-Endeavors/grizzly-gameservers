@@ -21,12 +21,13 @@ use super::super::render::{destroy_confirm_embed, destroy_result_embed, neutral_
 use super::super::{COMPONENT_TIMEOUT, Data};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
-    DestroyOutcome, FsOutcome, ProvisionOutcome, RuntimeState, ServerSummary, ShutdownOutcome,
-    StartBegin, SupervisorOutcome, begin_start, build_instance_name, destroy_instance,
-    instance_runtime_state, list_active_servers, now_entropy, provision_instance,
-    shutdown_instance, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
-    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
-    supervisor_stop, supervisor_write_file,
+    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
+    ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome, begin_start,
+    build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
+    now_entropy, provision_instance, shutdown_instance, supervisor_edit_file,
+    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
+    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
+    supervisor_write_file, wait_for_ready,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -41,8 +42,10 @@ const BROWSE_FILES: &str = "browse_files";
 const READ_FILE: &str = "read_file";
 const READ_LOGS: &str = "read_logs";
 const WRITE_FILE: &str = "write_file";
+const EDIT_FILE: &str = "edit_file";
 const RESTORE_FILE: &str = "restore_file";
 const SEND_COMMAND: &str = "send_command";
+const WAIT_FOR_SERVER: &str = "wait_for_server";
 
 /// Returned to the model when a non-admin caller reaches a mutating tool. The
 /// model is only offered mutating tools for admins, so this is defense in depth.
@@ -94,6 +97,22 @@ struct WriteParams {
     path: String,
     /// The full new contents of the file.
     content: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct EditParams {
+    /// Exact server name, as shown by `list_servers`.
+    name: String,
+    /// Path within the server's data directory to edit, e.g. `server.properties`.
+    /// The previous version is saved first so `restore_file` can undo the change.
+    path: String,
+    /// The exact text to find and replace. Must appear once in the file — copy it
+    /// verbatim, whitespace included, and include enough surrounding text to be
+    /// unique. If it's missing or appears more than once, the edit is refused and
+    /// nothing changes.
+    old_text: String,
+    /// The text to put in its place.
+    new_text: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -178,8 +197,13 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
                 params_schema::<LogsParams>(),
             ),
             ToolDef::function(
+                EDIT_FILE,
+                "Change one setting in a config file in place: find old_text and replace it with new_text, leaving the rest of the file untouched. Prefer this over write_file for a targeted change — you don't rewrite the whole file, so you can't accidentally clobber other settings. old_text must match exactly once; if it's missing or ambiguous the edit is refused and nothing changes. Saves the previous version first (restore_file undoes it). Takes effect on the next restart.",
+                params_schema::<EditParams>(),
+            ),
+            ToolDef::function(
                 WRITE_FILE,
-                "Overwrite a config file in a running server's data directory with new contents. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
+                "Overwrite a config file in a running server's data directory with entirely new contents — use this to create a file or rewrite one wholesale; prefer edit_file to change one setting. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
                 params_schema::<WriteParams>(),
             ),
             ToolDef::function(
@@ -191,6 +215,11 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
                 SEND_COMMAND,
                 "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
                 params_schema::<CommandParams>(),
+            ),
+            ToolDef::function(
+                WAIT_FOR_SERVER,
+                "Wait for a starting or restarting server to actually come back up and start accepting players, up to a few minutes. Use this after start_server, restart_server, or a config change plus restart instead of repeatedly checking status or logs — it blocks until the server is ready, has crashed, or the wait runs out, then tells you which.",
+                params_schema::<NameParams>(),
             ),
         ]);
     }
@@ -248,6 +277,19 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
             Err(message) => message,
         },
+        EDIT_FILE if ctx.is_admin => match parse::<EditParams>(args) {
+            Ok(params) => {
+                exec_edit_file(
+                    ctx,
+                    &params.name,
+                    &params.path,
+                    &params.old_text,
+                    &params.new_text,
+                )
+                .await
+            }
+            Err(message) => message,
+        },
         RESTORE_FILE if ctx.is_admin => match parse::<PathParams>(args) {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
@@ -256,9 +298,13 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
         },
+        WAIT_FOR_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_wait_for_server(ctx, &params.name).await,
+            Err(message) => message,
+        },
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
-        | DESTROY_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | RESTORE_FILE
-        | SEND_COMMAND => NON_ADMIN_REFUSAL.to_owned(),
+        | DESTROY_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE
+        | RESTORE_FILE | SEND_COMMAND | WAIT_FOR_SERVER => NON_ADMIN_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
 }
@@ -653,6 +699,35 @@ async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &
     }
 }
 
+async fn exec_edit_file(
+    ctx: &ToolCtx<'_>,
+    server: &str,
+    path: &str,
+    old_text: &str,
+    new_text: &str,
+) -> String {
+    match supervisor_edit_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        path,
+        Replacement {
+            old: old_text,
+            new: new_text,
+        },
+    )
+    .await
+    {
+        Ok(outcome) => format_edit(server, path, outcome),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: edit_file failed");
+            cluster_error()
+        }
+    }
+}
+
 async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_restore_file(
         &ctx.data.kube_client,
@@ -692,6 +767,24 @@ async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> St
         },
         Err(err) => {
             error!(error = ?err, %server, "agent: send_command failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_wait_for_server(ctx: &ToolCtx<'_>, server: &str) -> String {
+    match wait_for_ready(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await
+    {
+        Ok(outcome) => format_ready_wait(server, &outcome),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: wait_for_server failed");
             cluster_error()
         }
     }
@@ -763,6 +856,43 @@ fn format_write(result: &WriteResponse) -> String {
     )
 }
 
+/// Render an [`EditOutcome`]. The soft-failure variants explain what to do next
+/// (re-read and match exactly, disambiguate, or fall back to `write_file`) so Gary
+/// can recover instead of reporting a dead end.
+fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
+    match outcome {
+        EditOutcome::Edited(result) => {
+            let saved = if result.backed_up {
+                "saved the previous version first, so restore_file can undo this"
+            } else {
+                "this is a new file, so there's nothing to restore it to"
+            };
+            format!(
+                "edited {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
+                result.path
+            )
+        }
+        EditOutcome::NoMatch => format!(
+            "I couldn't find that exact text in {path} on {server} — read the file again and copy the current text verbatim, whitespace and all"
+        ),
+        EditOutcome::Ambiguous(count) => format!(
+            "that text appears {count} times in {path}, so I can't tell which one to change — include more of the surrounding lines so it matches only once"
+        ),
+        EditOutcome::Unchanged => {
+            format!("the old and new text are identical, so there's nothing to change in {path}")
+        }
+        EditOutcome::TooLargeToEdit => format!(
+            "{path} is too big to edit safely this way — rewrite the whole file with write_file instead"
+        ),
+        EditOutcome::Unserved(problem) => match fs_result(server, problem) {
+            // Unserved only ever carries a failure; the Ok arm is unreachable in
+            // practice but is handled defensively rather than panicking.
+            Ok(()) => cluster_error(),
+            Err(message) => message,
+        },
+    }
+}
+
 fn format_restore(result: &RestoreResponse) -> String {
     format!(
         "restored {} to its previous version; restart the server to apply it",
@@ -819,6 +949,23 @@ fn format_supervisor(server: &str, outcome: &SupervisorOutcome) -> String {
         }
         SupervisorOutcome::NotFound => no_such(server),
         SupervisorOutcome::NotManaged => not_managed(server),
+    }
+}
+
+fn format_ready_wait(server: &str, outcome: &ReadyWait) -> String {
+    match outcome {
+        ReadyWait::Ready => format!("{server} is back up and accepting players"),
+        ReadyWait::Crashed => format!(
+            "{server} crashed while coming up — read its logs to see why, and restore_file if a recent change is at fault"
+        ),
+        ReadyWait::Stopped => {
+            format!("{server} is stopped, so it won't come up on its own — start it first")
+        }
+        ReadyWait::TimedOut => format!(
+            "{server} still isn't accepting players after a few minutes — a big world can take a while to load, so check the logs or wait and try again"
+        ),
+        ReadyWait::NotFound => no_such(server),
+        ReadyWait::NotManaged => not_managed(server),
     }
 }
 

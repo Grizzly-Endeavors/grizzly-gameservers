@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use grizzly_control_api::{ControlCommand, ControlError, ControlOk, ResultKind};
+use grizzly_control_api::{
+    ControlCommand, ControlError, ControlOk, ProcessPhase, ResultKind, StatusResponse,
+};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
@@ -17,6 +19,16 @@ use super::types::GameServer;
 /// failure while the restart actually succeeds. The client's short default still
 /// applies to cheap calls; this overrides it only where the work is genuinely slow.
 const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
+
+/// Per-request timeout for the cheap `GET /status` poll. Touches only in-memory
+/// state, so a slower reply means a wedged pod, not real work.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long [`wait_for_ready`] polls for a (re)starting server to come back up
+/// before giving up. Matches the create/start readiness budget so a slow first
+/// boot (world generation) has the same room here as it does there.
+const READY_WAIT_TIMEOUT: Duration = Duration::from_mins(5);
+const READY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Where an instance is in the warm/cold spectrum, used to route `/start`:
 /// a live pod takes the fast supervisor path; a shut-down one needs a reschedule.
@@ -284,6 +296,113 @@ fn map_result_kind(kind: ResultKind) -> SupervisorOutcome {
         ResultKind::Starting => SupervisorOutcome::Resumed,
         ResultKind::AlreadyRunning => SupervisorOutcome::AlreadyRunning,
         ResultKind::Restarting => SupervisorOutcome::Restarted,
+    }
+}
+
+/// How a wait for a (re)starting server to come back up resolved. Every variant
+/// is terminal for the wait: the caller reports it and does not keep polling.
+pub(crate) enum ReadyWait {
+    /// The game process is accepting connections again.
+    Ready,
+    /// The process crashed while coming up (a bad change is the usual cause).
+    Crashed,
+    /// The server is paused, so it will never come up on its own.
+    Stopped,
+    /// The wait budget elapsed while the server was still coming up.
+    TimedOut,
+    /// No live `GameServer` by that name.
+    NotFound,
+    /// The instance exists but isn't shim-managed.
+    NotManaged,
+}
+
+/// One `GET /status` poll: the parsed body, or why it couldn't be read this tick.
+/// The transient reasons ([`Self::PodNotReady`], [`Self::Unreachable`]) are
+/// expected during a cold start and mean "keep polling", not "give up".
+enum StatusPoll {
+    Ok(StatusResponse),
+    NotFound,
+    NotManaged,
+    PodNotReady,
+    Unreachable,
+}
+
+/// Block until a starting or restarting server is actually accepting players
+/// again, so the caller can wait once instead of churning on repeated status
+/// checks. Polls the supervisor's honest per-boot [`ProcessPhase`]: `Running`
+/// means up *now* (a warm relaunch reads `Starting` until the new child re-binds),
+/// so this doesn't return early on a restart. Gives up after [`READY_WAIT_TIMEOUT`].
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn wait_for_ready(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+) -> Result<ReadyWait> {
+    let deadline = tokio::time::Instant::now() + READY_WAIT_TIMEOUT;
+    let mut ticker = tokio::time::interval(READY_POLL_INTERVAL);
+
+    loop {
+        ticker.tick().await;
+        match poll_status(client, http, namespace, instance, control_port).await? {
+            StatusPoll::Ok(status) => match status.process {
+                ProcessPhase::Running => return Ok(ReadyWait::Ready),
+                ProcessPhase::Crashed => return Ok(ReadyWait::Crashed),
+                ProcessPhase::Stopped => return Ok(ReadyWait::Stopped),
+                // Still coming up (or briefly bouncing) — keep waiting.
+                ProcessPhase::Starting | ProcessPhase::Stopping => {}
+            },
+            StatusPoll::NotFound => return Ok(ReadyWait::NotFound),
+            StatusPoll::NotManaged => return Ok(ReadyWait::NotManaged),
+            // Transient while a cold-started pod is still scheduling — keep waiting.
+            StatusPoll::PodNotReady | StatusPoll::Unreachable => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(ReadyWait::TimedOut);
+        }
+    }
+}
+
+/// Fetch and parse one `GET /status` from the instance's supervisor.
+async fn poll_status(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+) -> Result<StatusPoll> {
+    let pod_ip = match resolve_managed_pod(client, namespace, instance).await? {
+        PodTarget::Ready(pod_ip) => pod_ip,
+        PodTarget::NotFound => return Ok(StatusPoll::NotFound),
+        PodTarget::NotManaged => return Ok(StatusPoll::NotManaged),
+        PodTarget::PodNotReady => return Ok(StatusPoll::PodNotReady),
+    };
+    let url = format!(
+        "http://{pod_ip}:{control_port}{}",
+        ControlCommand::Status.path()
+    );
+    match http.get(&url).timeout(STATUS_TIMEOUT).send().await {
+        Ok(response) if response.status().is_success() => {
+            match response.json::<StatusResponse>().await {
+                Ok(status) => Ok(StatusPoll::Ok(status)),
+                Err(err) => {
+                    warn!(error = ?err, url, "failed to parse supervisor status reply");
+                    Ok(StatusPoll::Unreachable)
+                }
+            }
+        }
+        Ok(response) => {
+            warn!(status = %response.status(), url, "supervisor status route returned an error");
+            Ok(StatusPoll::Unreachable)
+        }
+        Err(err) => {
+            warn!(error = ?err, url, "failed to reach supervisor status route");
+            Ok(StatusPoll::Unreachable)
+        }
     }
 }
 

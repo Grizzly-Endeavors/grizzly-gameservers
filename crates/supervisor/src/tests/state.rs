@@ -27,7 +27,7 @@ fn first_boot_goes_starting_then_running_on_ready() {
 }
 
 #[test]
-fn warm_relaunch_is_running_immediately() {
+fn warm_relaunch_is_starting_until_the_new_child_accepts() {
     let now = Instant::now();
     let mut state = SupervisorState::new();
     state.on_started(1, now);
@@ -37,8 +37,19 @@ fn warm_relaunch_is_running_immediately() {
     state.on_started(2, now);
     assert_eq!(
         state.phase,
+        ProcessPhase::Starting,
+        "a warm relaunch is Starting until the new child is accepting again — Running must not report early"
+    );
+    assert!(
+        state.is_ready(),
+        "readiness stays sticky across the relaunch so Agones /ready is not re-signalled"
+    );
+    // This boot's readiness probe confirms the port is accepting again.
+    state.on_ready();
+    assert_eq!(
+        state.phase,
         ProcessPhase::Running,
-        "an already-readied server is Running the moment its child is back"
+        "only once the new child accepts does the phase honestly report Running"
     );
 }
 
