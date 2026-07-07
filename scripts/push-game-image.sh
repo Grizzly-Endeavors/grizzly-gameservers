@@ -42,4 +42,4 @@ echo "==> pushing"
 docker push "$image"
 
 echo "==> done: registry.registry.svc.cluster.local:5000/grizzly-gameservers-${game}:${tag}"
-echo "    /create (or /kill then /start) the server to pull the new image."
+echo "    /create (or /shutdown then /start) the server to pull the new image."
