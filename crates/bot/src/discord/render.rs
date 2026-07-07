@@ -44,7 +44,9 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
         };
     }
 
-    let any_ready = servers.iter().any(|server| server.state == "Ready");
+    let any_ready = servers
+        .iter()
+        .any(|server| matches!(server.state.as_str(), "Ready" | "Allocated"));
     let lines: Vec<String> = servers
         .iter()
         .map(|server| {
@@ -166,6 +168,11 @@ fn supervisor_spec(outcome: &SupervisorOutcome, server: &str) -> EmbedSpec {
             body: format!(
                 "I couldn't reach **{server}**'s controls right now. Try again in a moment."
             ),
+        },
+        SupervisorOutcome::Failed(message) => EmbedSpec {
+            title: "Command failed".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("**{server}**'s controls refused that: {message}"),
         },
         SupervisorOutcome::NotFound => not_found_spec(server),
         SupervisorOutcome::NotManaged => not_managed_spec(server),

@@ -160,6 +160,18 @@ fn supervisor_outcomes_map_to_distinct_messages() {
 }
 
 #[test]
+fn supervisor_failed_relays_the_supervisors_reason() {
+    let message = format_supervisor(
+        "mc",
+        &SupervisorOutcome::Failed("rcon is not enabled for this game".to_owned()),
+    );
+    assert!(
+        message.contains("rcon is not enabled for this game"),
+        "Gary should relay the supervisor's own reason, got: {message}"
+    );
+}
+
+#[test]
 fn remove_outcomes_report_deletion_or_absence() {
     assert_eq!(
         format_remove("mc", &RemoveOutcome::Removed),

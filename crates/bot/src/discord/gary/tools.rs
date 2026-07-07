@@ -3,8 +3,6 @@
 //! renders a compact text result for the model to relay. The results are plain
 //! text on purpose — Gary composes the friendly Discord reply himself.
 
-use std::time::Duration;
-
 use poise::serenity_prelude as serenity;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
@@ -19,8 +17,8 @@ use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
-use super::super::Data;
 use super::super::render::{neutral_embed, remove_confirm_embed, remove_result_embed};
+use super::super::{COMPONENT_TIMEOUT, Data};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
     FsOutcome, KillOutcome, ProvisionOutcome, RemoveOutcome, RuntimeState, ServerSummary,
@@ -50,10 +48,6 @@ const SEND_COMMAND: &str = "send_command";
 /// model is only offered mutating tools for admins, so this is defense in depth.
 const NON_ADMIN_REFUSAL: &str =
     "that action needs an admin — I can only look things up for you here.";
-
-/// How long the remove-confirmation buttons stay live before the deletion is
-/// abandoned — matched to the slash command's `/remove` timeout.
-const CONFIRM_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Everything a tool executor needs: the shared bot state plus the Discord
 /// handles the destructive-confirmation flow uses, and whether the caller is an
@@ -503,7 +497,7 @@ async fn exec_remove(ctx: &ToolCtx<'_>, name: &str) -> String {
     let decision = ComponentInteractionCollector::new(ctx.serenity)
         .author_id(ctx.author_id)
         .message_id(prompt.id)
-        .timeout(CONFIRM_TIMEOUT)
+        .timeout(COMPONENT_TIMEOUT)
         .await;
 
     finish_remove(ctx, name, prompt, decision).await
@@ -816,6 +810,7 @@ fn format_supervisor(name: &str, outcome: &SupervisorOutcome) -> String {
             format!("{name} isn't ready to control yet — try again shortly")
         }
         SupervisorOutcome::Unreachable => format!("I couldn't reach {name}'s controls right now"),
+        SupervisorOutcome::Failed(message) => format!("{name}'s controls refused that: {message}"),
         SupervisorOutcome::NotFound => no_such(name),
         SupervisorOutcome::NotManaged => not_managed(name),
     }

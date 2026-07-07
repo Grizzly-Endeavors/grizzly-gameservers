@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use grizzly_control_api::{ControlCommand, ControlOk, ResultKind};
+use grizzly_control_api::{ControlCommand, ControlError, ControlOk, ResultKind};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
@@ -45,8 +45,12 @@ pub(crate) enum SupervisorOutcome {
     AlreadyRunning,
     /// The pod exists but isn't far enough along to have a reachable control API.
     PodNotReady,
-    /// The control API couldn't be reached or returned an error.
+    /// The control API couldn't be reached, or replied with a body we couldn't
+    /// parse as a [`ControlError`].
     Unreachable,
+    /// The supervisor was reached but refused or failed the request; carries
+    /// its developer-facing message for the caller to relay.
+    Failed(String),
     /// No live `GameServer` by that name.
     NotFound,
     /// The instance exists but isn't shim-managed.
@@ -226,9 +230,16 @@ async fn supervisor_action(
         }
         Ok(response) => {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!(%status, body, url, "supervisor control api returned an error");
-            Ok(SupervisorOutcome::Unreachable)
+            match response.json::<ControlError>().await {
+                Ok(error) => {
+                    warn!(%status, error = error.error, url, "supervisor control api refused the request");
+                    Ok(SupervisorOutcome::Failed(error.error))
+                }
+                Err(err) => {
+                    warn!(%status, error = ?err, url, "supervisor control api returned an unreadable error");
+                    Ok(SupervisorOutcome::Unreachable)
+                }
+            }
         }
         Err(err) => {
             warn!(error = ?err, url, "failed to reach supervisor control api");

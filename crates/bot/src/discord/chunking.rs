@@ -20,7 +20,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         return Vec::new();
     }
     if text.len() <= max_chars {
-        return vec![text.to_string()];
+        return vec![text.to_owned()];
     }
 
     let mut chunks: Vec<String> = Vec::new();
@@ -98,7 +98,7 @@ fn update_fence_state(text: &str, in_fence: &mut bool, fence_header: &mut String
                 fence_header.clear();
             } else {
                 *in_fence = true;
-                *fence_header = trimmed.to_string();
+                trimmed.clone_into(fence_header);
             }
         }
     }

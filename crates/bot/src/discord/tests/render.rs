@@ -68,6 +68,16 @@ fn list_with_a_ready_server_is_green() {
 }
 
 #[test]
+fn list_with_only_an_allocated_server_is_green() {
+    let servers = [summary("survival", Some("minecraft"), "Allocated", None)];
+    assert_eq!(
+        server_list_spec(&servers).colour,
+        COLOUR_UP,
+        "a claimed (Allocated) server is at least as up as Ready, so it should also colour green"
+    );
+}
+
+#[test]
 fn list_with_no_ready_servers_stays_neutral() {
     let servers = [summary("survival", Some("minecraft"), "Scheduled", None)];
     let spec = server_list_spec(&servers);
@@ -220,5 +230,22 @@ fn supervisor_failures_are_errors() {
         supervisor_spec(&SupervisorOutcome::PodNotReady, "survival").colour,
         COLOUR_ERROR,
         "a not-ready pod is surfaced as a retryable error"
+    );
+}
+
+#[test]
+fn supervisor_rejection_is_an_error_naming_the_reason() {
+    let spec = supervisor_spec(
+        &SupervisorOutcome::Failed("world is mid-save, try again shortly".to_owned()),
+        "survival",
+    );
+    assert_eq!(
+        spec.colour, COLOUR_ERROR,
+        "a refused command is an actionable error, not a transport failure"
+    );
+    assert!(
+        spec.body.contains("world is mid-save, try again shortly"),
+        "the supervisor's reason should reach the friend, got: {}",
+        spec.body
     );
 }

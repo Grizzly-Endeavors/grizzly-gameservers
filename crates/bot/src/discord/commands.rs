@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteractionDataKind, CreateActionRow, CreateButton,
@@ -13,17 +11,13 @@ use super::render::{
     remove_result_embed, server_list_embed, start_result_embed, supervisor_result_embed,
     working_embed,
 };
-use super::{Context, Error};
+use super::{COMPONENT_TIMEOUT, Context, Error};
 use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, StartBegin, StartOutcome, begin_start,
     build_instance_name, instance_runtime_state, kill_instance, list_active_servers,
     list_instance_names, now_entropy, provision_instance, remove_instance, supervisor_restart,
     supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
-
-/// How long the dropdown / confirm components stay live before we give up
-/// waiting for the user and clear them.
-const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]

@@ -1,5 +1,4 @@
-# Placeholder values for the grizzly-gameservers chart.
-# Real values (image, agones wiring, agent config) land with the chart templates.
+# Default values for the grizzly-gameservers chart.
 # CI bumps the image tag to the gate-signed digest per ADR-020.
 image:
   repository: registry.registry.svc.cluster.local:5000/grizzly-gameservers
@@ -40,8 +39,8 @@ bot:
   # catalogDir: /usr/local/share/grizzly-gameservers/games
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 100m
+      memory: 128Mi
     limits:
       cpu: "1"
-      memory: 256Mi
+      memory: 512Mi
