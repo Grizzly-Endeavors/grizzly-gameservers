@@ -7,6 +7,9 @@
 /// never overflows.
 pub(crate) const DISCORD_MAX_CHARS: usize = 2000;
 
+/// Appended to close a code fence that's still open at a chunk boundary.
+const FENCE_CLOSE: &str = "\n```";
+
 /// Split text into chunks that fit within `max_chars`, preserving code fence
 /// integrity.
 ///
@@ -39,7 +42,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         };
 
         // Suffix we may need to append (close fence if still open at end of chunk)
-        let suffix_reserve: usize = if in_fence { 4 } else { 0 }; // "\n```"
+        let suffix_reserve: usize = if in_fence { FENCE_CLOSE.len() } else { 0 };
 
         let budget = max_chars
             .saturating_sub(prefix.len())
@@ -55,7 +58,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
             chunk.push_str(remaining);
             update_fence_state(remaining, &mut in_fence, &mut fence_header);
             if in_fence {
-                chunk.push_str("\n```");
+                chunk.push_str(FENCE_CLOSE);
             }
             chunks.push(chunk);
             break;
@@ -71,7 +74,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         chunk.push_str(slice);
 
         if in_fence {
-            chunk.push_str("\n```");
+            chunk.push_str(FENCE_CLOSE);
         }
 
         chunks.push(chunk);

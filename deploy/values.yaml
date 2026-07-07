@@ -36,7 +36,7 @@ bot:
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
   # Per-game catalog path baked into the image; override only if relocated.
-  # catalogDir: /usr/local/share/grizzly-gameservers/games
+  catalogDir: ""
   resources:
     requests:
       cpu: 100m

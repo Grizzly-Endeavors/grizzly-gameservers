@@ -87,6 +87,10 @@ spec:
             - name: OLLAMA_BASE_URL
               value: {{ .Values.bot.ollamaBaseUrl | quote }}
             {{- end }}
+            {{- if .Values.bot.catalogDir }}
+            - name: GAMESERVERS_CATALOG_DIR
+              value: {{ .Values.bot.catalogDir | quote }}
+            {{- end }}
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:
