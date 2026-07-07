@@ -1,10 +1,12 @@
-# The Discord bot's identity and permissions. The bot provisions per-world
-# instances on command (create/kill/start/restart/remove), so it can create and
-# delete GameServers, their NodePort Services and their PVCs, and read pod IPs to
-# reach the in-pod supervisor control API for /stop, warm /start and /restart —
-# but nothing more. It is separate from the ops-agent (which patches gameservers
-# and execs into pods); the bot never patches or execs, and is namespace-scoped,
-# never cluster-wide.
+# The Discord bot's identity and permissions — also the ops agent's ("Gary")
+# identity, since Gary runs inside the bot process rather than as a separate
+# workload. The bot provisions per-world instances on command
+# (create/kill/start/restart/remove), so it can create and delete GameServers,
+# their NodePort Services and their PVCs, and read pod IPs to reach the in-pod
+# supervisor control API for /stop, warm /start and /restart. It never patches
+# or execs — Gary operates a running server entirely through that supervisor
+# HTTP API, not through K8s exec/patch — and is namespace-scoped, never
+# cluster-wide.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

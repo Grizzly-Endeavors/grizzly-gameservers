@@ -3,6 +3,5 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - networkpolicy.yaml
-  - rbac.yaml
   - bot-rbac.yaml
   - bot-to-supervisor-egress.yaml
