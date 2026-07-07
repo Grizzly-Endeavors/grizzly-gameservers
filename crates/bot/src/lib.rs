@@ -82,6 +82,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                 commands::destroy(),
                 commands::new_session(),
             ],
+            command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
             event_handler: |ctx, event, framework, data| {
                 Box::pin(discord::gary::on_event(ctx, event, framework, data))
             },

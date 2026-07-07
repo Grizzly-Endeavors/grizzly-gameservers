@@ -10,6 +10,7 @@ mod instance;
 mod labels;
 mod naming;
 mod provision;
+mod scope;
 mod supervisor;
 mod supervisor_fs;
 mod types;
@@ -22,6 +23,7 @@ pub(crate) use provision::{
     begin_start, destroy_instance, list_instance_names, provision_instance, shutdown_instance,
     wait_for_instance_ready,
 };
+pub(crate) use scope::{ScopeVerdict, ServerScope, verify_scope};
 pub(crate) use supervisor::{
     ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state, supervisor_restart,
     supervisor_start, supervisor_stop, wait_for_ready,

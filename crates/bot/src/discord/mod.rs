@@ -9,6 +9,8 @@ pub(crate) mod commands;
 pub(crate) mod gary;
 mod render;
 
+pub(crate) use auth::require_scope;
+
 use std::sync::Arc;
 use std::time::Duration;
 

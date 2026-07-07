@@ -22,12 +22,12 @@ use super::super::{COMPONENT_TIMEOUT, Data};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
-    ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome, begin_start,
-    build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
-    now_entropy, provision_instance, shutdown_instance, supervisor_edit_file,
+    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
+    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
+    list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_edit_file,
     supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
     supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
-    supervisor_write_file, wait_for_ready,
+    supervisor_write_file, verify_scope, wait_for_ready,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -61,11 +61,22 @@ pub(crate) struct ToolCtx<'a> {
     pub(crate) channel_id: serenity::ChannelId,
     pub(crate) author_id: serenity::UserId,
     pub(crate) is_admin: bool,
+    /// The servers this caller may see and act on — every tool that targets an
+    /// existing server by name is gated on it in [`dispatch`], and the listing
+    /// tools query within it.
+    pub(crate) scope: ServerScope,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct NameParams {
     /// Exact server name, as shown by `list_servers`.
+    name: String,
+}
+
+/// Just the `name` field, pulled from any targeted tool's arguments (they all
+/// carry one) for the scope gate in [`dispatch`], ignoring the rest.
+#[derive(Deserialize)]
+struct TargetName {
     name: String,
 }
 
@@ -229,8 +240,20 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
 /// Run one tool call and return the text result to feed back to the model. Bad
 /// arguments, unknown names, and non-admin attempts at mutating tools all return
 /// an explanatory string rather than failing the loop.
+///
+/// Before dispatching, any tool that targets an existing server by name is
+/// confined to the caller's [`ServerScope`](ToolCtx::scope): a server in another
+/// channel reads as "no such server", so Gary can neither see nor touch another
+/// group's servers. `list_servers` scopes itself in its query; `create_server`
+/// makes a new server and stamps the current channel, so neither is gated here.
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
+    if targets_existing_server(call.function.name.as_str())
+        && let Ok(TargetName { name }) = serde_json::from_str::<TargetName>(args)
+        && let Some(refusal) = scope_refusal(ctx, &name).await
+    {
+        return refusal;
+    }
     match call.function.name.as_str() {
         LIST_SERVERS => exec_list_servers(ctx).await,
         SERVER_STATUS => match parse::<NameParams>(args) {
@@ -314,6 +337,50 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
         .map_err(|err| format!("I couldn't read the arguments for that tool: {err}"))
 }
 
+/// Whether a tool acts on an *existing* server named in its arguments — the set
+/// the scope gate applies to. `list_servers` (no target) and `create_server`
+/// (makes a new one) are the only tools that don't, so they're excluded.
+fn targets_existing_server(tool: &str) -> bool {
+    matches!(
+        tool,
+        SERVER_STATUS
+            | STOP_SERVER
+            | START_SERVER
+            | RESTART_SERVER
+            | SHUTDOWN_SERVER
+            | DESTROY_SERVER
+            | BROWSE_FILES
+            | READ_FILE
+            | READ_LOGS
+            | WRITE_FILE
+            | EDIT_FILE
+            | RESTORE_FILE
+            | SEND_COMMAND
+            | WAIT_FOR_SERVER
+    )
+}
+
+/// `None` if `server` is reachable in the caller's scope, else the text to hand
+/// back to the model instead of running the tool. A foreign server is reported
+/// as missing, identically to one that truly doesn't exist.
+async fn scope_refusal(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
+    match verify_scope(
+        &ctx.data.kube_client,
+        &ctx.data.namespace,
+        server,
+        &ctx.scope,
+    )
+    .await
+    {
+        Ok(ScopeVerdict::InScope) => None,
+        Ok(ScopeVerdict::Foreign | ScopeVerdict::Absent) => Some(no_such(server)),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: scope check failed");
+            Some(cluster_error())
+        }
+    }
+}
+
 /// The parameter schema for a tool that takes no arguments.
 fn empty_object_schema() -> serde_json::Value {
     serde_json::json!({ "type": "object", "properties": {} })
@@ -337,6 +404,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
         &ctx.data.domain,
+        &ctx.scope,
     )
     .await
     {
@@ -353,6 +421,7 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
         &ctx.data.domain,
+        &ctx.scope,
     )
     .await
     {
@@ -386,6 +455,7 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         &ctx.data.provision_lock,
         entry,
         &server,
+        &ctx.channel_id.get().to_string(),
     )
     .await
     {

@@ -62,6 +62,7 @@ fn identity() -> InstanceIdentity {
         game: "minecraft".to_owned(),
         namespace: "game-servers".to_owned(),
         node_port: 7003,
+        channel: "555".to_owned(),
     }
 }
 
@@ -76,6 +77,7 @@ fn gameserver_gets_instance_identity_and_rebound_claim() {
     assert_eq!(labels.get(MANAGED_BY_KEY).unwrap(), MANAGED_BY_VALUE);
     assert_eq!(labels.get(GAME_KEY).unwrap(), "minecraft");
     assert_eq!(labels.get(INSTANCE_KEY).unwrap(), "minecraft-ab12");
+    assert_eq!(labels.get(CHANNEL_KEY).unwrap(), "555");
 
     let claim = gs
         .data
@@ -93,6 +95,17 @@ fn gameserver_leaves_unrelated_spec_fields_untouched() {
         Some("minecraft"),
         "the owning-container field must survive rendering"
     );
+}
+
+#[test]
+fn empty_channel_leaves_the_channel_label_off() {
+    // A pre-scoping instance cold-started from a Service with no channel label
+    // must not be stamped with an empty "" channel — the label is simply absent.
+    let mut unscoped = identity();
+    unscoped.channel = String::new();
+    let gs = render_gameserver(&entry(), &unscoped).unwrap();
+    let labels = gs.metadata.labels.as_ref().unwrap();
+    assert!(!labels.contains_key(CHANNEL_KEY));
 }
 
 #[test]

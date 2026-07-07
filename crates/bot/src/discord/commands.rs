@@ -5,7 +5,7 @@ use serenity::{
 };
 use tracing::error;
 
-use super::auth::require_admin;
+use super::auth::{require_admin, visibility_scope};
 use super::render::{
     create_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed, neutral_embed,
     server_list_embed, shutdown_result_embed, start_result_embed, supervisor_result_embed,
@@ -13,10 +13,10 @@ use super::render::{
 };
 use super::{COMPONENT_TIMEOUT, Context, Error};
 use crate::agones::{
-    CreateOutcome, ProvisionOutcome, RuntimeState, StartBegin, StartOutcome, begin_start,
-    build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
-    list_instance_names, now_entropy, provision_instance, shutdown_instance, supervisor_restart,
-    supervisor_start, supervisor_stop, wait_for_instance_ready,
+    CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
+    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
+    list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
+    supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
 
 /// List the game servers currently running and how to connect to them.
@@ -30,7 +30,14 @@ pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
         )))
         .await?;
 
-    match list_active_servers(data.kube_client.clone(), &data.namespace, &data.domain).await {
+    match list_active_servers(
+        data.kube_client.clone(),
+        &data.namespace,
+        &data.domain,
+        &command_scope(ctx),
+    )
+    .await
+    {
         Ok(summaries) => {
             reply
                 .edit(ctx, cleared(server_list_embed(&summaries)))
@@ -181,6 +188,7 @@ async fn finish_create(
         &data.provision_lock,
         entry,
         &server,
+        &ctx.channel_id().get().to_string(),
     )
     .await
     {
@@ -617,13 +625,14 @@ pub(crate) async fn destroy(
 async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<Item = String> {
     let data = ctx.data();
     let needle = partial.to_owned();
-    let names = match list_instance_names(&data.kube_client, &data.namespace).await {
-        Ok(names) => names,
-        Err(err) => {
-            error!(error = ?err, "failed to list instances for autocomplete");
-            Vec::new()
-        }
-    };
+    let names =
+        match list_instance_names(&data.kube_client, &data.namespace, &command_scope(ctx)).await {
+            Ok(names) => names,
+            Err(err) => {
+                error!(error = ?err, "failed to list instances for autocomplete");
+                Vec::new()
+            }
+        };
     names
         .into_iter()
         .filter(move |name| name.starts_with(&needle))
@@ -644,6 +653,18 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     )
     .await?;
     Ok(())
+}
+
+/// The set of servers this invocation may see and act on: the allowlisted
+/// super-admin sees every channel, everyone else only the channel they ran the
+/// command in (a DM being its own channel).
+fn command_scope(ctx: Context<'_>) -> ServerScope {
+    let data = ctx.data();
+    visibility_scope(
+        ctx.author().id.get(),
+        ctx.channel_id().get(),
+        &data.admin_user_ids,
+    )
 }
 
 /// A non-ephemeral reply carrying a single embed — the shape every

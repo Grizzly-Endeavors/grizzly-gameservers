@@ -93,6 +93,11 @@ async fn handle_mention(
     }
 
     let is_admin = caller_is_admin(data, message);
+    let scope = super::auth::visibility_scope(
+        message.author.id.get(),
+        message.channel_id.get(),
+        &data.admin_user_ids,
+    );
     let tool_defs = tools::available_tools(is_admin);
     let games = game_catalog_list(data);
 
@@ -110,6 +115,7 @@ async fn handle_mention(
         channel_id: message.channel_id,
         author_id: message.author.id,
         is_admin,
+        scope,
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the
     // session may call them across several rounds. A `move` closure that closed
