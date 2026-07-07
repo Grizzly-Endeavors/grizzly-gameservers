@@ -1,8 +1,9 @@
 {{- if .Values.bot.enabled -}}
-# The Discord bot + ops-agent workload. Runs as the read-only discord-bot
-# ServiceAccount (cluster/guardrails/bot-rbac.yaml) so it can list gameservers
-# and resolve their NodePort addresses, nothing more. The bot token is mounted
-# from the ESO-synced discord-bot Secret; everything else is plain config.
+# The Discord bot + ops-agent workload. Runs as the discord-bot ServiceAccount
+# (cluster/guardrails/bot-rbac.yaml), which can create/delete gameservers,
+# their NodePort Services and PVCs, and read pod IPs to reach the in-pod
+# supervisor control API — never patch or exec. The bot token is mounted from
+# the ESO-synced discord-bot Secret; everything else is plain config.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -19,7 +19,7 @@ This is a gated first-party app under the ADR-020 delivery model: root `gate-con
 
 - `crates/` — Rust workspace. `bot/` (Discord shim + ops agent + Agones client + config loader, binary `grizzly-gameservers`), `supervisor/` (in-pod process supervisor baked into game images, binary `grizzly-supervisor`), `control-api/` (wire types shared by the bot's control client and the supervisor's control server). Strict lints live in `[workspace.lints]` at the root `Cargo.toml`; each crate opts in with `[lints] workspace = true`.
 - `deploy/` — Helm chart Flux renders (the bot/agent workload).
-- `cluster/` — Agones standup, agent guardrails (namespace/RBAC/NetworkPolicy), Kyverno image carve-out.
+- `cluster/` — Agones standup, agent guardrails (namespace/RBAC/NetworkPolicy), Kyverno gate-scope docs (bot-scoped enforcement; full-namespace carve-out tracked as a follow-up).
 - `games/` — per-game base GameServer/Fleet templates.
 - `docs/design/` — design of record; `docs/decisions/` — ADRs as decisions resolve.
 

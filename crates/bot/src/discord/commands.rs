@@ -555,7 +555,7 @@ pub(crate) async fn remove(
             .edit(
                 ctx,
                 cleared(neutral_embed(
-                    "Cancelled",
+                    "Timed out",
                     "Timed out — nothing was deleted.",
                 )),
             )
