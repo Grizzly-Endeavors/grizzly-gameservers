@@ -1,3 +1,9 @@
+//! Kubernetes/Agones access: the per-game catalog, listing and lifecycle
+//! (create/start/stop/restart/shutdown/destroy) of `GameServer` instances, and
+//! the client for the in-pod supervisor's control API. Everything here talks
+//! to the cluster; the Discord-facing layer in `crate::discord` composes these
+//! into commands and Gary's tools.
+
 mod catalog;
 mod client;
 mod instance;

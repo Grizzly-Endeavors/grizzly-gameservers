@@ -1,3 +1,8 @@
+//! The Discord shell: slash [`commands`], Gary's `@mention` shell ([`gary`]),
+//! auth/admin gating ([`auth`]), reply chunking, and embed rendering
+//! ([`render`]). Holds [`Data`], the per-command state every handler shares,
+//! and defers all cluster/Agones work to `crate::agones`.
+
 mod auth;
 mod chunking;
 pub(crate) mod commands;
