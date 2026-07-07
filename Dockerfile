@@ -21,12 +21,12 @@ RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 # `chef` is an internal build stage, not a registry image; no version tag exists.
-# nosemgrep: dockerfile.best-practice.missing-image-version
+# nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# nosemgrep: dockerfile.best-practice.missing-image-version -- internal stage.
+# nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-gameservers

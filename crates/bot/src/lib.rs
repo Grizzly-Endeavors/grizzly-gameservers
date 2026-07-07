@@ -1,3 +1,9 @@
+//! `grizzly-gameservers`: the Discord shim, ops agent, and Agones client for
+//! friends to spin up and manage game servers. [`discord`] owns the slash
+//! commands and Gary's Discord-facing shell; [`agent`] is Gary's reusable
+//! chat-completions/tool-calling core; [`agones`] talks to Kubernetes and
+//! Agones. [`run`] wires them together and drives the gateway loop.
+
 mod agent;
 mod agones;
 mod config;
