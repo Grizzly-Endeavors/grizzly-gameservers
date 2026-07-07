@@ -68,6 +68,16 @@ fn list_with_a_ready_server_is_green() {
 }
 
 #[test]
+fn list_with_only_an_allocated_server_is_green() {
+    let servers = [summary("survival", Some("minecraft"), "Allocated", None)];
+    assert_eq!(
+        server_list_spec(&servers).colour,
+        COLOUR_UP,
+        "a claimed (Allocated) server is at least as up as Ready, so it should also colour green"
+    );
+}
+
+#[test]
 fn list_with_no_ready_servers_stays_neutral() {
     let servers = [summary("survival", Some("minecraft"), "Scheduled", None)];
     let spec = server_list_spec(&servers);
@@ -145,34 +155,34 @@ fn unknown_game_on_start_is_an_error_naming_the_game() {
 #[test]
 fn not_found_outcomes_are_errors() {
     assert_eq!(
-        kill_spec(&KillOutcome::NotFound, "ghost").colour,
+        shutdown_spec(&ShutdownOutcome::NotFound, "ghost").colour,
         COLOUR_ERROR,
-        "killing a nonexistent server is an error"
+        "shutting down a nonexistent server is an error"
     );
     assert_eq!(
-        remove_spec(&RemoveOutcome::NotFound, "ghost").colour,
+        destroy_spec(&DestroyOutcome::NotFound, "ghost").colour,
         COLOUR_ERROR,
-        "removing a nonexistent server is an error"
+        "destroying a nonexistent server is an error"
     );
 }
 
 #[test]
-fn kill_and_remove_success_stay_neutral() {
+fn shutdown_and_destroy_success_stay_neutral() {
     assert_eq!(
-        kill_spec(&KillOutcome::Killed, "minecraft").colour,
+        shutdown_spec(&ShutdownOutcome::Down, "minecraft").colour,
         COLOUR_NEUTRAL,
         "a clean shutdown is a no-drama neutral state"
     );
     assert_eq!(
-        remove_spec(&RemoveOutcome::Removed, "minecraft").colour,
+        destroy_spec(&DestroyOutcome::Destroyed, "minecraft").colour,
         COLOUR_NEUTRAL,
-        "a confirmed removal is a no-drama neutral state"
+        "a confirmed destruction is a no-drama neutral state"
     );
 }
 
 #[test]
 fn not_managed_outcomes_explain_the_boundary() {
-    let spec = kill_spec(&KillOutcome::NotManaged, "platform-thing");
+    let spec = shutdown_spec(&ShutdownOutcome::NotManaged, "platform-thing");
     assert_eq!(spec.colour, COLOUR_ERROR, "a refused op is an error");
     assert!(
         spec.body.contains("platform-thing"),
@@ -220,5 +230,22 @@ fn supervisor_failures_are_errors() {
         supervisor_spec(&SupervisorOutcome::PodNotReady, "survival").colour,
         COLOUR_ERROR,
         "a not-ready pod is surfaced as a retryable error"
+    );
+}
+
+#[test]
+fn supervisor_rejection_is_an_error_naming_the_reason() {
+    let spec = supervisor_spec(
+        &SupervisorOutcome::Failed("world is mid-save, try again shortly".to_owned()),
+        "survival",
+    );
+    assert_eq!(
+        spec.colour, COLOUR_ERROR,
+        "a refused command is an actionable error, not a transport failure"
+    );
+    assert!(
+        spec.body.contains("world is mid-save, try again shortly"),
+        "the supervisor's reason should reach the friend, got: {}",
+        spec.body
     );
 }

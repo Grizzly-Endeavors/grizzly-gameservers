@@ -60,21 +60,6 @@ impl SupervisorState {
         }
     }
 
-    #[must_use]
-    pub fn desired(&self) -> DesiredState {
-        self.desired
-    }
-
-    #[must_use]
-    pub fn phase(&self) -> ProcessPhase {
-        self.phase
-    }
-
-    #[must_use]
-    pub fn pid(&self) -> Option<u32> {
-        self.pid
-    }
-
     /// Whether the Agones SDK `/ready` has been signalled at least once, so the
     /// runner calls it only on first boot and not on warm relaunches.
     #[must_use]

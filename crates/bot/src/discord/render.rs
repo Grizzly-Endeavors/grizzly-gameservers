@@ -2,7 +2,7 @@ use poise::serenity_prelude as serenity;
 use serenity::{Colour, CreateEmbed};
 
 use crate::agones::{
-    CreateOutcome, KillOutcome, RemoveOutcome, ServerSummary, StartOutcome, SupervisorOutcome,
+    CreateOutcome, DestroyOutcome, ServerSummary, ShutdownOutcome, StartOutcome, SupervisorOutcome,
 };
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
@@ -44,7 +44,9 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
         };
     }
 
-    let any_ready = servers.iter().any(|server| server.state == "Ready");
+    let any_ready = servers
+        .iter()
+        .any(|server| matches!(server.state.as_str(), "Ready" | "Allocated"));
     let lines: Vec<String> = servers
         .iter()
         .map(|server| {
@@ -80,7 +82,7 @@ fn create_spec(outcome: &CreateOutcome, instance: &str) -> EmbedSpec {
         CreateOutcome::PortsExhausted => EmbedSpec {
             title: "No slots free".to_owned(),
             colour: COLOUR_ERROR,
-            body: "All server slots are in use right now. Remove one first, then try again."
+            body: "All server slots are in use right now. Destroy one first, then try again."
                 .to_owned(),
         },
     }
@@ -106,18 +108,18 @@ fn start_spec(outcome: &StartOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-fn kill_spec(outcome: &KillOutcome, server: &str) -> EmbedSpec {
+fn shutdown_spec(outcome: &ShutdownOutcome, server: &str) -> EmbedSpec {
     match outcome {
-        KillOutcome::Killed => EmbedSpec {
+        ShutdownOutcome::Down => EmbedSpec {
             title: format!("Stopped {server}"),
             colour: COLOUR_NEUTRAL,
             body: format!(
                 "**{server}** is fully shut down and its world is saved. `/start` brings it back \
-                 (a little slower than `/stop`'s pause, since the pod has to come back up)."
+                 (a little slower than `/stop`'s pause, since it has to fully boot back up)."
             ),
         },
-        KillOutcome::NotFound => not_found_spec(server),
-        KillOutcome::NotManaged => not_managed_spec(server),
+        ShutdownOutcome::NotFound => not_found_spec(server),
+        ShutdownOutcome::NotManaged => not_managed_spec(server),
     }
 }
 
@@ -167,20 +169,25 @@ fn supervisor_spec(outcome: &SupervisorOutcome, server: &str) -> EmbedSpec {
                 "I couldn't reach **{server}**'s controls right now. Try again in a moment."
             ),
         },
+        SupervisorOutcome::Failed(message) => EmbedSpec {
+            title: "Command failed".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("**{server}**'s controls refused that: {message}"),
+        },
         SupervisorOutcome::NotFound => not_found_spec(server),
         SupervisorOutcome::NotManaged => not_managed_spec(server),
     }
 }
 
-fn remove_spec(outcome: &RemoveOutcome, server: &str) -> EmbedSpec {
+fn destroy_spec(outcome: &DestroyOutcome, server: &str) -> EmbedSpec {
     match outcome {
-        RemoveOutcome::Removed => EmbedSpec {
-            title: format!("Removed {server}"),
+        DestroyOutcome::Destroyed => EmbedSpec {
+            title: format!("Destroyed {server}"),
             colour: COLOUR_NEUTRAL,
             body: format!("**{server}** and its world have been deleted."),
         },
-        RemoveOutcome::NotFound => not_found_spec(server),
-        RemoveOutcome::NotManaged => not_managed_spec(server),
+        DestroyOutcome::NotFound => not_found_spec(server),
+        DestroyOutcome::NotManaged => not_managed_spec(server),
     }
 }
 
@@ -206,7 +213,9 @@ fn not_found_spec(server: &str) -> EmbedSpec {
     EmbedSpec {
         title: "No such server".to_owned(),
         colour: COLOUR_ERROR,
-        body: format!("There's no server named **{server}**."),
+        body: format!(
+            "There's no server named **{server}**. Check `/servers` for the current names."
+        ),
     }
 }
 
@@ -230,16 +239,16 @@ pub(crate) fn start_result_embed(outcome: &StartOutcome, server: &str) -> Create
     start_spec(outcome, server).into_embed()
 }
 
-pub(crate) fn kill_result_embed(outcome: &KillOutcome, server: &str) -> CreateEmbed {
-    kill_spec(outcome, server).into_embed()
+pub(crate) fn shutdown_result_embed(outcome: &ShutdownOutcome, server: &str) -> CreateEmbed {
+    shutdown_spec(outcome, server).into_embed()
 }
 
 pub(crate) fn supervisor_result_embed(outcome: &SupervisorOutcome, server: &str) -> CreateEmbed {
     supervisor_spec(outcome, server).into_embed()
 }
 
-pub(crate) fn remove_result_embed(outcome: &RemoveOutcome, server: &str) -> CreateEmbed {
-    remove_spec(outcome, server).into_embed()
+pub(crate) fn destroy_result_embed(outcome: &DestroyOutcome, server: &str) -> CreateEmbed {
+    destroy_spec(outcome, server).into_embed()
 }
 
 /// Red embed for "the operation broke" — the user-facing message must already
@@ -274,9 +283,9 @@ pub(crate) fn neutral_embed(title: &str, body: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// Red warning shown before a destructive `/remove`, gating the deletion behind
+/// Red warning shown before a destructive `/destroy`, gating the deletion behind
 /// an explicit Confirm/Cancel button press.
-pub(crate) fn remove_confirm_embed(server: &str) -> CreateEmbed {
+pub(crate) fn destroy_confirm_embed(server: &str) -> CreateEmbed {
     EmbedSpec {
         title: format!("Delete {server}?"),
         colour: COLOUR_ERROR,

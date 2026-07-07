@@ -1,4 +1,4 @@
-use crate::agones::{FsOutcome, RemoveOutcome, ServerSummary, SupervisorOutcome};
+use crate::agones::{DestroyOutcome, FsOutcome, ServerSummary, SupervisorOutcome};
 
 use super::*;
 
@@ -16,7 +16,7 @@ fn non_admins_get_only_read_only_tools() {
     assert!(
         !names
             .iter()
-            .any(|name| name == CREATE_SERVER || name == REMOVE_SERVER),
+            .any(|name| name == CREATE_SERVER || name == DESTROY_SERVER),
         "read-only tier must not expose any mutating tool"
     );
 }
@@ -31,8 +31,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
         STOP_SERVER,
         START_SERVER,
         RESTART_SERVER,
-        KILL_SERVER,
-        REMOVE_SERVER,
+        SHUTDOWN_SERVER,
+        DESTROY_SERVER,
         BROWSE_FILES,
         READ_FILE,
         READ_LOGS,
@@ -156,16 +156,31 @@ fn supervisor_outcomes_map_to_distinct_messages() {
     let missing = format_supervisor("mc", &SupervisorOutcome::NotFound);
     assert!(paused.contains("paused"));
     assert!(running.contains("already running"));
-    assert_eq!(missing, "there's no server named mc");
+    assert_eq!(
+        missing,
+        "there's no server named mc — check list_servers for the current names"
+    );
+}
+
+#[test]
+fn supervisor_failed_relays_the_supervisors_reason() {
+    let message = format_supervisor(
+        "mc",
+        &SupervisorOutcome::Failed("rcon is not enabled for this game".to_owned()),
+    );
+    assert!(
+        message.contains("rcon is not enabled for this game"),
+        "Gary should relay the supervisor's own reason, got: {message}"
+    );
 }
 
 #[test]
 fn remove_outcomes_report_deletion_or_absence() {
     assert_eq!(
-        format_remove("mc", &RemoveOutcome::Removed),
+        format_destroy("mc", &DestroyOutcome::Destroyed),
         "deleted mc and its world"
     );
-    assert!(format_remove("mc", &RemoveOutcome::NotManaged).contains("managed by the platform"));
+    assert!(format_destroy("mc", &DestroyOutcome::NotManaged).contains("managed by the platform"));
 }
 
 #[test]
@@ -173,7 +188,7 @@ fn fs_result_passes_payload_through_and_maps_problems() {
     assert_eq!(fs_result("mc", FsOutcome::Ok(42)), Ok(42));
     assert_eq!(
         fs_result::<()>("mc", FsOutcome::NotFound),
-        Err("there's no server named mc".to_owned())
+        Err("there's no server named mc — check list_servers for the current names".to_owned())
     );
     assert!(
         fs_result::<()>("mc", FsOutcome::NotManaged)

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use grizzly_control_api::{ControlCommand, ControlOk, ResultKind};
+use grizzly_control_api::{ControlCommand, ControlError, ControlOk, ResultKind};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
@@ -19,12 +19,12 @@ use super::types::GameServer;
 const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Where an instance is in the warm/cold spectrum, used to route `/start`:
-/// a live pod takes the fast supervisor path; a killed one needs a reschedule.
+/// a live pod takes the fast supervisor path; a shut-down one needs a reschedule.
 pub(crate) enum RuntimeState {
     /// The `GameServer` (and its pod) exist — the supervisor can act in place.
     PodUp,
-    /// No `GameServer`, but the Service survives — `/kill`ed, needs a cold start.
-    Killed,
+    /// No `GameServer`, but the Service survives — `/shutdown`ed, needs a cold start.
+    Down,
     /// Nothing by that name.
     Absent,
 }
@@ -45,8 +45,12 @@ pub(crate) enum SupervisorOutcome {
     AlreadyRunning,
     /// The pod exists but isn't far enough along to have a reachable control API.
     PodNotReady,
-    /// The control API couldn't be reached or returned an error.
+    /// The control API couldn't be reached, or replied with a body we couldn't
+    /// parse as a [`ControlError`].
     Unreachable,
+    /// The supervisor was reached but refused or failed the request; carries
+    /// its developer-facing message for the caller to relay.
+    Failed(String),
     /// No live `GameServer` by that name.
     NotFound,
     /// The instance exists but isn't shim-managed.
@@ -122,7 +126,7 @@ pub(crate) async fn supervisor_restart(
     .await
 }
 
-/// Classify an instance as warm (pod up), cold (killed), or absent so `/start`
+/// Classify an instance as warm (pod up), cold (shut down), or absent so `/start`
 /// can pick the fast or the reschedule path.
 ///
 /// # Errors
@@ -149,7 +153,7 @@ pub(crate) async fn instance_runtime_state(
         .with_context(|| format!("failed to read service {instance}"))?
         .is_some()
     {
-        return Ok(RuntimeState::Killed);
+        return Ok(RuntimeState::Down);
     }
     Ok(RuntimeState::Absent)
 }
@@ -226,9 +230,16 @@ async fn supervisor_action(
         }
         Ok(response) => {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            warn!(%status, body, url, "supervisor control api returned an error");
-            Ok(SupervisorOutcome::Unreachable)
+            match response.json::<ControlError>().await {
+                Ok(error) => {
+                    warn!(%status, error = error.error, url, "supervisor control api refused the request");
+                    Ok(SupervisorOutcome::Failed(error.error))
+                }
+                Err(err) => {
+                    warn!(%status, error = ?err, url, "supervisor control api returned an unreadable error");
+                    Ok(SupervisorOutcome::Unreachable)
+                }
+            }
         }
         Err(err) => {
             warn!(error = ?err, url, "failed to reach supervisor control api");

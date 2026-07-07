@@ -79,3 +79,7 @@ async fn ensure_success(response: reqwest::Response, url: &str) -> Result<()> {
     let body = response.text().await.unwrap_or_default();
     bail!("agones SDK call to {url} returned {status}: {body}");
 }
+
+#[cfg(test)]
+#[path = "tests/sdk.rs"]
+mod tests;

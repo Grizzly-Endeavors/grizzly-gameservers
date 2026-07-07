@@ -154,3 +154,7 @@ pub async fn wait_optional(child: &mut Option<Child>) -> std::io::Result<ExitSta
         None => std::future::pending().await,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/process.rs"]
+mod tests;

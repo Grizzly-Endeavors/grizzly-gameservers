@@ -12,8 +12,8 @@ pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::list_active_servers;
 pub(crate) use naming::{build_instance_name, now_entropy};
 pub(crate) use provision::{
-    CreateOutcome, KillOutcome, ProvisionOutcome, RemoveOutcome, StartBegin, StartOutcome,
-    begin_start, kill_instance, list_instance_names, provision_instance, remove_instance,
+    CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,
+    begin_start, destroy_instance, list_instance_names, provision_instance, shutdown_instance,
     wait_for_instance_ready,
 };
 pub(crate) use supervisor::{

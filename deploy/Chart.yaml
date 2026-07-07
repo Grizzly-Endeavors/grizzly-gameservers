@@ -1,6 +1,6 @@
 apiVersion: v2
 name: grizzly-gameservers
-description: Discord-driven game server provisioning (bot + ops agent). PLACEHOLDER chart — no templates yet.
+description: Discord-driven game server provisioning (bot + ops agent).
 type: application
 version: 0.0.0
 appVersion: "0.0.0"

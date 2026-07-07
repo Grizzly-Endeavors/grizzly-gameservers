@@ -118,6 +118,20 @@ fn parent_within(root: &Path, path: &Path) -> Result<(), FsError> {
     canonical_within(root, parent).map(|_| ())
 }
 
+/// Reject `path` if a symlink already sits there pointing outside `root`.
+/// `parent_within` only vets the parent directory, so a write/restore target
+/// that doesn't exist yet can't be `canonical_within`-checked directly — but a
+/// *pre-existing* symlink at that exact path must still be caught before
+/// `fs::write`/`fs::copy` follows it out of the root. A target that doesn't
+/// exist, or exists but isn't a symlink, is safe: its real path is exactly
+/// `parent`'s (already-verified) real path joined with the file name.
+fn reject_escaping_symlink(root: &Path, path: &Path) -> Result<(), FsError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => canonical_within(root, path).map(|_| ()),
+        Ok(_) | Err(_) => Ok(()),
+    }
+}
+
 /// List the entries of a directory under `root`, sorted by name.
 ///
 /// # Errors
@@ -192,10 +206,13 @@ pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<bool, FsError
     }
     let resolved = resolve_in_root(root, rel)?;
     parent_within(root, &resolved)?;
+    reject_escaping_symlink(root, &resolved)?;
+    let backup = backup_path(&resolved);
+    reject_escaping_symlink(root, &backup)?;
     let backed_up = match std::fs::metadata(&resolved) {
         Ok(meta) if meta.is_dir() => return Err(FsError::NotAFile),
         Ok(_) => {
-            std::fs::copy(&resolved, backup_path(&resolved)).map_err(|err| io(&err))?;
+            std::fs::copy(&resolved, &backup).map_err(|err| io(&err))?;
             true
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
@@ -214,7 +231,9 @@ pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<bool, FsError
 pub fn restore_file(root: &Path, rel: &str) -> Result<(), FsError> {
     let resolved = resolve_in_root(root, rel)?;
     parent_within(root, &resolved)?;
+    reject_escaping_symlink(root, &resolved)?;
     let backup = backup_path(&resolved);
+    reject_escaping_symlink(root, &backup)?;
     match std::fs::copy(&backup, &resolved) {
         Ok(_) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(FsError::NoBackup),

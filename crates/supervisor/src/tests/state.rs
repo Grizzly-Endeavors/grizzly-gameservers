@@ -7,12 +7,12 @@ const THRESHOLD: u32 = 3;
 fn starts_running_and_coming_up() {
     let state = SupervisorState::new();
     assert_eq!(
-        state.desired(),
+        state.desired,
         DesiredState::Running,
         "starts desiring Running"
     );
-    assert_eq!(state.phase(), ProcessPhase::Starting, "starts in Starting");
-    assert_eq!(state.pid(), None, "no child yet");
+    assert_eq!(state.phase, ProcessPhase::Starting, "starts in Starting");
+    assert_eq!(state.pid, None, "no child yet");
 }
 
 #[test]
@@ -20,14 +20,10 @@ fn first_boot_goes_starting_then_running_on_ready() {
     let now = Instant::now();
     let mut state = SupervisorState::new();
     state.on_started(1234, now);
-    assert_eq!(state.phase(), ProcessPhase::Starting, "not ready yet");
-    assert_eq!(state.pid(), Some(1234), "tracks the child pid");
+    assert_eq!(state.phase, ProcessPhase::Starting, "not ready yet");
+    assert_eq!(state.pid, Some(1234), "tracks the child pid");
     state.on_ready();
-    assert_eq!(
-        state.phase(),
-        ProcessPhase::Running,
-        "ready flips to Running"
-    );
+    assert_eq!(state.phase, ProcessPhase::Running, "ready flips to Running");
 }
 
 #[test]
@@ -40,7 +36,7 @@ fn warm_relaunch_is_running_immediately() {
     state.on_restart_requested();
     state.on_started(2, now);
     assert_eq!(
-        state.phase(),
+        state.phase,
         ProcessPhase::Running,
         "an already-readied server is Running the moment its child is back"
     );
@@ -53,15 +49,15 @@ fn intentional_stop_settles_to_stopped() {
     state.on_started(7, now);
     state.on_ready();
     state.on_stop_requested();
-    assert_eq!(state.phase(), ProcessPhase::Stopping, "stop is in flight");
+    assert_eq!(state.phase, ProcessPhase::Stopping, "stop is in flight");
     let disposition = state.on_child_exit(now, WINDOW, THRESHOLD);
     assert_eq!(
         disposition,
         ExitDisposition::Clean,
         "an exit while desired==Stopped is clean"
     );
-    assert_eq!(state.phase(), ProcessPhase::Stopped, "settles to Stopped");
-    assert_eq!(state.pid(), None, "no child while stopped");
+    assert_eq!(state.phase, ProcessPhase::Stopped, "settles to Stopped");
+    assert_eq!(state.pid, None, "no child while stopped");
 }
 
 #[test]
@@ -76,7 +72,7 @@ fn unexpected_exit_below_threshold_relaunches() {
         ExitDisposition::Relaunch,
         "a single crash while desired==Running relaunches"
     );
-    assert_eq!(state.phase(), ProcessPhase::Starting, "coming back up");
+    assert_eq!(state.phase, ProcessPhase::Starting, "coming back up");
     assert_eq!(state.status(now).restarts, 1, "counts the restart");
 }
 
@@ -99,7 +95,7 @@ fn repeated_crashes_in_window_escalate() {
         "crash 3 within the window escalates"
     );
     assert_eq!(
-        state.phase(),
+        state.phase,
         ProcessPhase::Crashed,
         "phase is Crashed on escalate"
     );

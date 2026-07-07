@@ -1,8 +1,9 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # Rendered by the grizzly-gameservers-cluster Flux Kustomization (path ./cluster)
-# in grizzly-platform. cluster/kyverno is intentionally omitted — the namespace
-# is ungated until the Agones-sidecar carve-out lands.
+# in grizzly-platform. cluster/kyverno is intentionally omitted here — its
+# policy lives in grizzly-platform, not this repo. See cluster/kyverno/README.md
+# for what's enforced today (bot image only) vs. deferred (full-namespace gating).
 resources:
   - agones
   - guardrails

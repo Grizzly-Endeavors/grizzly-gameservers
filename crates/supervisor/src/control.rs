@@ -240,3 +240,7 @@ fn fs_error(op: &str, path: &str, err: &FsError) -> Response {
     }
     (status, Json(ControlError::new(err.to_string()))).into_response()
 }
+
+#[cfg(test)]
+#[path = "tests/control.rs"]
+mod tests;

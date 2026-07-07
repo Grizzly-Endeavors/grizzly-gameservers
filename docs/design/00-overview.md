@@ -1,6 +1,6 @@
 # grizzly-gameservers — High-Level Design
 
-**Status:** Scaffold / design. No implementation yet.
+**Status:** Design of record. The system described here is implemented and deployed — see `docs/activation-status.md` for current live/deferred status.
 
 ## What this is
 
@@ -24,8 +24,9 @@ Discord (friends)
    ▼
 Discord shim ──────────► Ops agent (LLM loop)
    │  allocate/teardown        │  read config+logs, mutate, restart, verify, roll back
+   │                           │  (via the per-pod supervisor's HTTP control API)
    ▼                           ▼
-Agones (lifecycle, ports, allocation API, health, exec substrate)
+Agones (lifecycle, ports, allocation API, health)
    ▼
 GameServer pods (per-game image + per-instance config on a PVC)
    ▲
@@ -37,13 +38,13 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 
 **Discord shim** — the only piece that is purely "our product." Thin: authenticate the friend, map a command to an Agones allocation/teardown, hand back `IP:port`. No quotas, no billing — this is a friends-scale service.
 
-**Ops agent** — the center of gravity. An LLM loop that translates intent and operates running servers: read current config + logs (via Agones/k8s exec), decide the change, mutate the right file, restart the GameServer, watch health, report back. This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
-- *Apply a known change* (gather rate, difficulty, add a mod) — bounded and reliable. Build this first.
+**Ops agent** ("Gary") — the center of gravity. An LLM loop (mentioned in Discord) that translates intent and operates running servers: read current config + logs, decide the change, mutate the right file, restart the GameServer, watch health, report back — all via the per-pod supervisor's HTTP control API (see below), never `kubectl exec` (see "Why not exec-as-tools" in [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md)). This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
+- *Apply a known change* (gather rate, difficulty, add a mod) — bounded and reliable. Shipped first.
 - *Diagnose an arbitrary failure and fix it* — open-ended; the agent will sometimes flail here. Scope it with an explicit escalation exit (see below).
 
-**Agones** — purpose-built CNCF project for running dedicated game servers on Kubernetes. Provides GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a pod to exec into, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting.
+**Agones** — purpose-built CNCF project for running dedicated game servers on Kubernetes. Provides GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting.
 
-**Per-pod supervisor** — a thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the bot drives to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. `/stop` pauses the process (pod stays up); `/kill` is the heavier teardown that deletes the GameServer. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md). This is also the substrate the ops agent's future file/console tools will dock into.
+**Per-pod supervisor** — a thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the bot/ops agent drive to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. `/stop` pauses the process (pod stays up); `/shutdown` is the heavier teardown that deletes the GameServer. This is also the substrate the ops agent's file tools (browse/read/write/restore) and RCON console bridge (`send_command`) dock into — all shipped. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md).
 
 **Edge** — a static UDP+TCP port range (**7000–7010**) forwarded once from the VPS over the existing `wg0` tunnel to the cluster. Lives in `grizzly-platform`, not here. See "Edge forwarding" below.
 
@@ -91,7 +92,7 @@ Only two things — everything else is here:
 
 - ~~**Node-pin vs. NodePort**~~ — resolved: NodePort, no node-pinning ([ADR-002](../decisions/002-nodeport-no-node-pin.md)).
 - ~~**Agones packaging**~~ — resolved: standalone gated HelmRelease ([ADR-001](../decisions/001-agones-packaging.md)).
-- **NL front door** — whether/when to add an LLM intent-parser so friends can describe servers in plain English (slash commands cover v1 deterministically; the parser is a bolt-on that must emit *validated* params, never construct k8s objects directly).
+- ~~**NL front door**~~ — resolved: Gary, the `@mention`-triggered tool-calling LLM agent (`crates/bot/src/discord/gary/`), sits alongside the deterministic slash commands rather than replacing them.
 - **Per-game catalog format** — how `games/<game>/` expresses image + defaults + port shape + persistence. Seeded by `games/minecraft/`; not yet generalized.
 
 ## Rejected alternatives (brief)

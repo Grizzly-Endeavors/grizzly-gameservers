@@ -5,12 +5,18 @@ pub(crate) mod gary;
 mod render;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use kube::Client;
 use tokio::sync::Mutex;
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
+
+/// How long an interactive component (button, confirm prompt) waits for a
+/// friend to respond before the interaction expires. Shared so `/destroy`'s
+/// confirm dialog and other component collectors stay in lockstep.
+pub(crate) const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Per-command state shared with every poise command handler.
 pub(crate) struct Data {

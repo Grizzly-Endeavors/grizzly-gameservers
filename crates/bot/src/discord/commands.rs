@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use poise::serenity_prelude as serenity;
 use serenity::{
     ButtonStyle, ComponentInteractionDataKind, CreateActionRow, CreateButton,
@@ -9,37 +7,45 @@ use tracing::error;
 
 use super::auth::require_admin;
 use super::render::{
-    create_result_embed, error_embed, kill_result_embed, neutral_embed, remove_confirm_embed,
-    remove_result_embed, server_list_embed, start_result_embed, supervisor_result_embed,
+    create_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed, neutral_embed,
+    server_list_embed, shutdown_result_embed, start_result_embed, supervisor_result_embed,
     working_embed,
 };
-use super::{Context, Error};
+use super::{COMPONENT_TIMEOUT, Context, Error};
 use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, StartBegin, StartOutcome, begin_start,
-    build_instance_name, instance_runtime_state, kill_instance, list_active_servers,
-    list_instance_names, now_entropy, provision_instance, remove_instance, supervisor_restart,
+    build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
+    list_instance_names, now_entropy, provision_instance, shutdown_instance, supervisor_restart,
     supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
-
-/// How long the dropdown / confirm components stay live before we give up
-/// waiting for the user and clear them.
-const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
+    let reply = ctx
+        .send(reply_with(working_embed(
+            "Looking up servers",
+            "Checking what's running…",
+        )))
+        .await?;
 
     match list_active_servers(data.kube_client.clone(), &data.namespace, &data.domain).await {
         Ok(summaries) => {
-            ctx.send(reply_with(server_list_embed(&summaries))).await?;
+            reply
+                .edit(ctx, cleared(server_list_embed(&summaries)))
+                .await?;
         }
         Err(err) => {
             error!(error = ?err, namespace = %data.namespace, "failed to list game servers");
-            ctx.send(reply_with(error_embed(
-                "Couldn't reach the cluster right now. Try again in a moment.",
-            )))
-            .await?;
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't reach the cluster right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
         }
     }
 
@@ -311,7 +317,7 @@ pub(crate) async fn stop(
 
 /// Fully shut a server down to free the slot, keeping the world so /start can bring it back.
 #[poise::command(slash_command, check = "require_admin")]
-pub(crate) async fn kill(
+pub(crate) async fn shutdown(
     ctx: Context<'_>,
     #[description = "Which server to shut down"]
     #[autocomplete = "autocomplete_server"]
@@ -324,14 +330,14 @@ pub(crate) async fn kill(
             "Shutting it down and saving the world…",
         )))
         .await?;
-    match kill_instance(&data.kube_client, &data.namespace, &server).await {
+    match shutdown_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
             reply
-                .edit(ctx, cleared(kill_result_embed(&outcome, &server)))
+                .edit(ctx, cleared(shutdown_result_embed(&outcome, &server)))
                 .await?;
         }
         Err(err) => {
-            error!(error = ?err, server = %server, "failed to kill game server");
+            error!(error = ?err, server = %server, "failed to shut down game server");
             reply
                 .edit(
                     ctx,
@@ -389,7 +395,7 @@ pub(crate) async fn restart(
     Ok(())
 }
 
-/// Start a server: a paused one resumes in seconds, a killed one is rescheduled (slower).
+/// Start a server: a paused one resumes in seconds, a shut-down one is rescheduled (slower).
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn start(
     ctx: Context<'_>,
@@ -435,7 +441,7 @@ pub(crate) async fn start(
                 }
             }
         }
-        Ok(RuntimeState::Killed) => start_cold(ctx, &reply, &server).await?,
+        Ok(RuntimeState::Down) => start_cold(ctx, &reply, &server).await?,
         Ok(RuntimeState::Absent) => {
             reply
                 .edit(
@@ -459,7 +465,7 @@ pub(crate) async fn start(
     Ok(())
 }
 
-/// Cold start: recreate a killed instance's `GameServer` and wait for it to come
+/// Cold start: recreate a shut-down instance's `GameServer` and wait for it to come
 /// up. Split out of [`start`] so the command body stays under the line cap.
 async fn start_cold(
     ctx: Context<'_>,
@@ -523,28 +529,28 @@ fn begin_to_outcome(begin: StartBegin) -> StartOutcome {
     }
 }
 
-/// Permanently remove a server and delete its world.
+/// Permanently destroy a server and delete its world. Cannot be undone.
 #[poise::command(slash_command, check = "require_admin")]
-pub(crate) async fn remove(
+pub(crate) async fn destroy(
     ctx: Context<'_>,
-    #[description = "Which server to remove (this deletes its world)"]
+    #[description = "Which server to destroy (this permanently deletes its world)"]
     #[autocomplete = "autocomplete_server"]
     server: String,
 ) -> Result<(), Error> {
     let data = ctx.data();
 
     let buttons = CreateActionRow::Buttons(vec![
-        CreateButton::new("remove_confirm")
+        CreateButton::new("destroy_confirm")
             .label("Delete it")
             .style(ButtonStyle::Danger),
-        CreateButton::new("remove_cancel")
+        CreateButton::new("destroy_cancel")
             .label("Cancel")
             .style(ButtonStyle::Secondary),
     ]);
     let reply = ctx
         .send(
             poise::CreateReply::default()
-                .embed(remove_confirm_embed(&server))
+                .embed(destroy_confirm_embed(&server))
                 .components(vec![buttons])
                 .ephemeral(true),
         )
@@ -560,10 +566,7 @@ pub(crate) async fn remove(
         reply
             .edit(
                 ctx,
-                cleared(neutral_embed(
-                    "Cancelled",
-                    "Timed out — nothing was deleted.",
-                )),
+                cleared(neutral_embed("Timed out", "Nothing was deleted.")),
             )
             .await?;
         return Ok(());
@@ -576,7 +579,7 @@ pub(crate) async fn remove(
         )
         .await?;
 
-    if interaction.data.custom_id != "remove_confirm" {
+    if interaction.data.custom_id != "destroy_confirm" {
         reply
             .edit(
                 ctx,
@@ -591,24 +594,24 @@ pub(crate) async fn remove(
             ctx,
             cleared(working_embed(
                 &format!("Deleting {server}"),
-                "Removing the server and its world…",
+                "Destroying the server and its world…",
             )),
         )
         .await?;
 
-    match remove_instance(&data.kube_client, &data.namespace, &server).await {
+    match destroy_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
             reply
-                .edit(ctx, cleared(remove_result_embed(&outcome, &server)))
+                .edit(ctx, cleared(destroy_result_embed(&outcome, &server)))
                 .await?;
         }
         Err(err) => {
-            error!(error = ?err, server = %server, "failed to remove game server");
+            error!(error = ?err, server = %server, "failed to destroy game server");
             reply
                 .edit(
                     ctx,
                     cleared(error_embed(
-                        "Couldn't remove the server right now. Try again in a moment.",
+                        "Couldn't destroy the server right now. Try again in a moment.",
                     )),
                 )
                 .await?;

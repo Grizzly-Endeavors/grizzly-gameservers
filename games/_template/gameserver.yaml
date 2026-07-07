@@ -3,14 +3,21 @@
 # the gate's k8s semgrep rules and is PodSecurity "restricted"-compatible, so a
 # new game is gate-clean by default and ready for when the namespace is gated.
 # Adjust only what a specific game genuinely needs (and say why in a comment).
+#
+# The image bakes in the grizzly supervisor as its entrypoint (Dockerfile in
+# this directory): it launches the game as a child, owns the Agones SDK
+# lifecycle (calls /ready once the game accepts connections, then keeps
+# /health pinged — including while the game is paused), and serves an in-pod
+# control API on 9359 that the bot drives for in-place stop/start/restart and
+# Gary's file/RCON tools. See games/minecraft/ for a filled-in, worked example.
 apiVersion: agones.dev/v1
 kind: GameServer
 metadata:
   name: REPLACE_GAME            # e.g. minecraft, valheim
   namespace: game-servers
 spec:
-  # Required when the pod has multiple containers (game + readiness sidecar):
-  # names which container owns the game port.
+  # Names which container owns the game port (the pod is multi-container:
+  # Agones injects its own SDK sidecar alongside this one).
   container: REPLACE_GAME
   ports:
     - name: REPLACE_GAME
@@ -43,16 +50,28 @@ spec:
           type: RuntimeDefault
       containers:
         - name: REPLACE_GAME
+          # REPLACE_IMAGE: the composite image from this directory's Dockerfile
+          # (grizzly supervisor as PID 1, wrapping the game as its child). CI
+          # replaces the tag with the gate-signed digest (ADR-020).
           image: REPLACE_IMAGE          # pin a tag/digest — no floating :latest
           env: []                       # REPLACE with the game's config env
           ports:
             - name: REPLACE_GAME
               containerPort: 0          # REPLACE (match spec.ports.containerPort)
               protocol: TCP
+            # Pod-internal control API the bot/Gary reach over the cluster
+            # network for /stop, /start, /restart and the file/RCON tools.
+            # Deliberately not exposed via the NodePort Service.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
           # Container hardening. readOnlyRootFilesystem means the game may only
           # write to mounted volumes — give it a writable /tmp (emptyDir) and a
           # data volume (PVC) for state. Add more emptyDir mounts for any other
-          # path the image writes to.
+          # path the image writes to. If the game's startup genuinely needs
+          # root (e.g. to chown a fresh data volume, like itzg/minecraft-server
+          # does), drop this block and document why — see
+          # games/minecraft/gameserver.yaml for that worked exception.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -73,32 +92,6 @@ spec:
               # is preferable to a hard cap.
               cpu: "2"
               memory: 4Gi
-        - name: agones-ready
-          # Bridges non-instrumented games to the Agones lifecycle: waits for the
-          # game port, marks the GameServer Ready via the auto-injected SDK
-          # sidecar's REST API (localhost:9358), then keeps health pinged.
-          image: busybox:1.37
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              until nc -z 127.0.0.1 REPLACE_PORT; do sleep 5; done
-              wget -q -O- --post-data='{}' http://127.0.0.1:9358/ready
-              while true; do
-                wget -q -O- --post-data='{}' http://127.0.0.1:9358/health >/dev/null 2>&1 || true
-                sleep 10
-              done
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: "1"
-              memory: 32Mi
       volumes:
         - name: data
           persistentVolumeClaim:

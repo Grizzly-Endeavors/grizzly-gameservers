@@ -2,8 +2,8 @@
 # the GameServer pod wherever it's scheduled, so the static edge (which DNATs
 # 7000-7010 to a single node) reaches the pod without node-pinning.
 #
-# nodePort 7000 requires the apiserver --service-node-port-range to include 7000
-# (extended in grizzly-platform); until that lands this Service fails to admit.
+# nodePort 7000 is in the 7000-7010 edge-forwarded band; apiserver
+# --service-node-port-range was widened in grizzly-platform to allow it.
 # externalTrafficPolicy: Cluster is required so a node without the pod still
 # forwards — it SNATs, so the pod sees a node IP rather than the real client.
 apiVersion: v1
