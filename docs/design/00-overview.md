@@ -55,6 +55,14 @@ Keep these separate — they have different authorities and different safety mod
 - **Per-game config** (Valheim vs. Minecraft): image, default env, port shape, resource sizing, persistence needs. This is the *catalog* — declarative templates in `games/`, version-controlled, gated, Flux-deployed. Rarely changes. An AI coding agent can author/maintain these at dev time via PR → gate → Flux; that's just normal IaC-with-an-agent.
 - **Per-instance config** (this friend's world seed, mods, difficulty, server name): lives on the server's **PVC**, mutated live by the ops agent. It is **not** in any git repo — it's ephemeral friend state, not infra, so it doesn't get PR/gate review. Different tier, different safety model.
 
+## Tenancy: servers are scoped to a Discord channel
+
+One Gary can serve more than one friend group — Bear's friends in one channel, his Dad's friends in another — without either group seeing the other's servers. The **tenant boundary is the Discord channel id** (a DM is its own channel). Every server is stamped, at create time, with the channel it was born in (the `…/channel` label on its GameServer/Service/PVC trio); that label rides on the surviving Service, so scope persists across a stop/start. Then every read and every action confines itself to the caller's channel: `/servers`, autocomplete, Gary's `list_servers`, and every server-targeting command or tool. A server in another channel reads back identically to one that doesn't exist, so scoping never leaks another group's servers.
+
+The one exception is the **super-admin**: a user id on the `GAMESERVERS_ADMIN_USER_IDS` allowlist sees and manages every channel's servers. This is deliberately keyed on the *user-id allowlist only*, not the admin *role* — a friend-group admin who holds the role can manage their own channel but can't reach another group's. Visibility scoping is orthogonal to the existing mutation gate (allowlist-or-role): a role-admin can still act, just only within their channel.
+
+Enforcement lives at two choke points so it can't be forgotten as commands/tools are added: a single poise `command_check` gates every slash command carrying a `server` argument, and Gary's tool `dispatch` gates every tool that names an existing server. Port allocation and name-clash checks stay namespace-global (ports are a shared cluster resource; object names must be unique regardless of channel).
+
 ## Ops-agent guardrails (non-negotiable)
 
 "Ping me if it breaks, so I'm not fiddling" only holds if these are built in from the start. An unsupervised agent with write access to live game state and restart power can make things worse.

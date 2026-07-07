@@ -17,6 +17,13 @@ pub(crate) const GAME_KEY: &str = "grizzly-gameservers.grizzly-endeavors.com/gam
 /// Records the instance name on every object of the trio.
 pub(crate) const INSTANCE_KEY: &str = "grizzly-gameservers.grizzly-endeavors.com/instance";
 
+/// Records the Discord channel id an instance was created in — the tenant
+/// boundary. Every list/lookup/mutation confines itself to servers carrying the
+/// caller's channel (the allowlisted super-admin is exempt and sees all). Read
+/// back off the surviving Service on `/start`, like [`GAME_KEY`], so scope
+/// persists across a stop/start. Absent on pre-scoping and Flux-managed objects.
+pub(crate) const CHANNEL_KEY: &str = "grizzly-gameservers.grizzly-endeavors.com/channel";
+
 /// Selector key Agones auto-applies to each game-server pod; the per-instance
 /// `NodePort` Service selects on it with the `GameServer`'s own name as the value.
 pub(crate) const GAMESERVER_SELECTOR_KEY: &str = "agones.dev/gameserver";

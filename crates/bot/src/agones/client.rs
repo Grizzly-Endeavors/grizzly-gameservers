@@ -9,6 +9,7 @@ use tracing::warn;
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
 use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
+use super::scope::ServerScope;
 use super::types::{GameServer, ServerSummary, summarize};
 
 /// State label shown for a managed instance whose Service (and leased port)
@@ -19,8 +20,11 @@ const STOPPED_STATE: &str = "Stopped";
 /// supervisor has paused (`/stop`). Distinct from `Stopped` (= shut down).
 const PAUSED_STATE: &str = "Paused";
 
-/// List every Agones `GameServer` in `namespace`, joining each to its
-/// `NodePort` Service to resolve a connection address under `domain`.
+/// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
+/// each to its `NodePort` Service to resolve a connection address under
+/// `domain`. A channel scope filters both lists to that channel's servers via
+/// the [`CHANNEL_KEY`](super::labels::CHANNEL_KEY) label; the super-admin scope
+/// lists everything.
 ///
 /// # Errors
 ///
@@ -30,16 +34,22 @@ pub(crate) async fn list_active_servers(
     client: Client,
     namespace: &str,
     domain: &str,
+    scope: &ServerScope,
 ) -> Result<Vec<ServerSummary>> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
     let services: Api<Service> = Api::namespaced(client, namespace);
 
+    let mut params = ListParams::default();
+    if let Some(selector) = scope.label_selector() {
+        params = params.labels(&selector);
+    }
+
     let gs_list = gameservers
-        .list(&ListParams::default())
+        .list(&params)
         .await
         .with_context(|| format!("failed to list gameservers in namespace {namespace}"))?;
     let svc_list = services
-        .list(&ListParams::default())
+        .list(&params)
         .await
         .with_context(|| format!("failed to list services in namespace {namespace}"))?;
 

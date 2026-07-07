@@ -57,6 +57,27 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
 }
 
 #[test]
+fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
+    // The gate must apply to every tool that names an existing server, and only
+    // to those — list_servers scopes its own query and create_server stamps the
+    // channel. Derived from the live tool set so a newly added tool can't slip
+    // past the gate without this failing.
+    for name in tool_names(true) {
+        let should_gate = name != LIST_SERVERS && name != CREATE_SERVER;
+        assert_eq!(
+            targets_existing_server(&name),
+            should_gate,
+            "{name}: scope-gating classification is wrong"
+        );
+    }
+}
+
+#[test]
+fn unknown_tool_is_not_scope_gated() {
+    assert!(!targets_existing_server("frobnicate"));
+}
+
+#[test]
 fn filesystem_tools_are_admin_only() {
     let names = tool_names(false);
     for tool in [

@@ -12,8 +12,9 @@ use tracing::{debug, error, warn};
 
 use super::catalog::{GameCatalog, GameCatalogEntry};
 use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
-use super::labels::{GAME_KEY, is_managed};
+use super::labels::{CHANNEL_KEY, GAME_KEY, is_managed};
 use super::naming::{pvc_name, select_free_port};
+use super::scope::ServerScope;
 use super::types::{GameServer, server_address};
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
@@ -69,7 +70,8 @@ pub(crate) enum ProvisionOutcome {
 /// `GameServer`, and return its address. Does **not** wait for readiness — call
 /// [`wait_for_instance_ready`] for that. The `lock` serializes the
 /// port-lease→Service-create critical section so concurrent creates can't claim
-/// the same `NodePort`.
+/// the same `NodePort`. `channel` is the owning Discord channel id, stamped onto
+/// the trio so scoped listing and mutation can confine to it later.
 ///
 /// # Errors
 ///
@@ -82,9 +84,10 @@ pub(crate) async fn provision_instance(
     lock: &Mutex<()>,
     entry: &GameCatalogEntry,
     instance: &str,
+    channel: &str,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
-    match provision_under_lock(client, namespace, domain, entry, instance).await? {
+    match provision_under_lock(client, namespace, domain, entry, instance, channel).await? {
         Provisioned::Created(address) => Ok(ProvisionOutcome::Provisioned { address }),
         Provisioned::AlreadyExists => Ok(ProvisionOutcome::AlreadyExists),
         Provisioned::PortsExhausted => Ok(ProvisionOutcome::PortsExhausted),
@@ -103,6 +106,7 @@ async fn provision_under_lock(
     domain: &str,
     entry: &GameCatalogEntry,
     instance: &str,
+    channel: &str,
 ) -> Result<Provisioned> {
     if instance_exists(client, namespace, instance).await? {
         return Ok(Provisioned::AlreadyExists);
@@ -121,6 +125,7 @@ async fn provision_under_lock(
             game: entry.id.clone(),
             namespace: namespace.to_owned(),
             node_port: port,
+            channel: channel.to_owned(),
         };
         let service = render_service(entry, &identity)?;
         match services.create(&PostParams::default(), &service).await {
@@ -249,12 +254,23 @@ pub(crate) async fn begin_start(
     };
     let node_port = service_node_port(&service)
         .with_context(|| format!("managed service {instance} has no nodeport"))?;
+    // Carry the owning channel from the surviving Service so the recreated
+    // GameServer keeps its scope; empty for a pre-scoping instance (label
+    // absent), which leaves the channel label off rather than stamping "".
+    let channel = service
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(CHANNEL_KEY))
+        .cloned()
+        .unwrap_or_default();
 
     let identity = InstanceIdentity {
         name: instance.to_owned(),
         game,
         namespace: namespace.to_owned(),
         node_port,
+        channel,
     };
     let gameserver = render_gameserver(entry, &identity)?;
     match gameserver_api(client, namespace)
@@ -302,15 +318,25 @@ pub(crate) async fn destroy_instance(
     Ok(DestroyOutcome::Destroyed)
 }
 
-/// Names of every shim-managed instance (running or stopped), for autocomplete.
+/// Names of the shim-managed instances (running or stopped) visible under
+/// `scope`, for autocomplete — so a friend only completes their own channel's
+/// servers.
 ///
 /// # Errors
 ///
 /// Returns an error if services cannot be listed.
-pub(crate) async fn list_instance_names(client: &Client, namespace: &str) -> Result<Vec<String>> {
+pub(crate) async fn list_instance_names(
+    client: &Client,
+    namespace: &str,
+    scope: &ServerScope,
+) -> Result<Vec<String>> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let mut params = ListParams::default();
+    if let Some(selector) = scope.label_selector() {
+        params = params.labels(&selector);
+    }
     let list = services
-        .list(&ListParams::default())
+        .list(&params)
         .await
         .with_context(|| format!("failed to list services in namespace {namespace}"))?;
     let mut names: Vec<String> = list
