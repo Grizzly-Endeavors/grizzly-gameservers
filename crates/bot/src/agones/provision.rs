@@ -81,10 +81,10 @@ pub(crate) async fn provision_instance(
     domain: &str,
     lock: &Mutex<()>,
     entry: &GameCatalogEntry,
-    instance_name: &str,
+    instance: &str,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
-    match provision_under_lock(client, namespace, domain, entry, instance_name).await? {
+    match provision_under_lock(client, namespace, domain, entry, instance).await? {
         Provisioned::Created(address) => Ok(ProvisionOutcome::Provisioned { address }),
         Provisioned::AlreadyExists => Ok(ProvisionOutcome::AlreadyExists),
         Provisioned::PortsExhausted => Ok(ProvisionOutcome::PortsExhausted),
@@ -102,9 +102,9 @@ async fn provision_under_lock(
     namespace: &str,
     domain: &str,
     entry: &GameCatalogEntry,
-    instance_name: &str,
+    instance: &str,
 ) -> Result<Provisioned> {
-    if instance_exists(client, namespace, instance_name).await? {
+    if instance_exists(client, namespace, instance).await? {
         return Ok(Provisioned::AlreadyExists);
     }
 
@@ -117,7 +117,7 @@ async fn provision_under_lock(
             return Ok(Provisioned::PortsExhausted);
         };
         let identity = InstanceIdentity {
-            name: instance_name.to_owned(),
+            name: instance.to_owned(),
             game: entry.id.clone(),
             namespace: namespace.to_owned(),
             node_port: port,
@@ -128,28 +128,23 @@ async fn provision_under_lock(
             Err(err) if is_port_conflict(&err) => {
                 warn!(
                     port,
-                    instance = instance_name,
-                    "nodeport already taken, retrying with next free port"
+                    instance, "nodeport already taken, retrying with next free port"
                 );
                 excluded.insert(port);
                 continue;
             }
             Err(err) => {
                 return Err(err)
-                    .with_context(|| format!("failed to create service for {instance_name}"));
+                    .with_context(|| format!("failed to create service for {instance}"));
             }
         }
 
         if let Err(err) = create_storage_and_server(client, namespace, entry, &identity).await {
-            error!(error = ?err, instance = instance_name, "create failed after service; rolling back");
-            best_effort_remove(client, namespace, instance_name).await;
+            error!(error = ?err, instance, "create failed after service; rolling back");
+            best_effort_remove(client, namespace, instance).await;
             return Err(err);
         }
-        return Ok(Provisioned::Created(server_address(
-            instance_name,
-            domain,
-            port,
-        )));
+        return Ok(Provisioned::Created(server_address(instance, domain, port)));
     }
 }
 
@@ -185,20 +180,20 @@ async fn create_storage_and_server(
 pub(crate) async fn shutdown_instance(
     client: &Client,
     namespace: &str,
-    name: &str,
+    instance: &str,
 ) -> Result<ShutdownOutcome> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
-        .get_opt(name)
+        .get_opt(instance)
         .await
-        .with_context(|| format!("failed to read service {name}"))?
+        .with_context(|| format!("failed to read service {instance}"))?
     else {
         return Ok(ShutdownOutcome::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
         return Ok(ShutdownOutcome::NotManaged);
     }
-    delete_if_present(&gameserver_api(client, namespace), name).await?;
+    delete_if_present(&gameserver_api(client, namespace), instance).await?;
     Ok(ShutdownOutcome::Down)
 }
 
@@ -228,13 +223,13 @@ pub(crate) async fn begin_start(
     namespace: &str,
     domain: &str,
     catalog: &GameCatalog,
-    name: &str,
+    instance: &str,
 ) -> Result<StartBegin> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
-        .get_opt(name)
+        .get_opt(instance)
         .await
-        .with_context(|| format!("failed to read service {name}"))?
+        .with_context(|| format!("failed to read service {instance}"))?
     else {
         return Ok(StartBegin::NotFound);
     };
@@ -248,15 +243,15 @@ pub(crate) async fn begin_start(
         .as_ref()
         .and_then(|labels| labels.get(GAME_KEY))
         .cloned()
-        .with_context(|| format!("managed service {name} is missing its game label"))?;
+        .with_context(|| format!("managed service {instance} is missing its game label"))?;
     let Some(entry) = catalog.get(&game) else {
         return Ok(StartBegin::UnknownGame(game));
     };
     let node_port = service_node_port(&service)
-        .with_context(|| format!("managed service {name} has no nodeport"))?;
+        .with_context(|| format!("managed service {instance} has no nodeport"))?;
 
     let identity = InstanceIdentity {
-        name: name.to_owned(),
+        name: instance.to_owned(),
         game,
         namespace: namespace.to_owned(),
         node_port,
@@ -269,11 +264,11 @@ pub(crate) async fn begin_start(
         Ok(_) => {}
         Err(err) if is_already_exists(&err) => return Ok(StartBegin::AlreadyRunning),
         Err(err) => {
-            return Err(err).with_context(|| format!("failed to start gameserver {name}"));
+            return Err(err).with_context(|| format!("failed to start gameserver {instance}"));
         }
     }
     Ok(StartBegin::Starting {
-        address: server_address(name, domain, node_port),
+        address: server_address(instance, domain, node_port),
     })
 }
 
@@ -287,23 +282,23 @@ pub(crate) async fn begin_start(
 pub(crate) async fn destroy_instance(
     client: &Client,
     namespace: &str,
-    name: &str,
+    instance: &str,
 ) -> Result<DestroyOutcome> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
-        .get_opt(name)
+        .get_opt(instance)
         .await
-        .with_context(|| format!("failed to read service {name}"))?
+        .with_context(|| format!("failed to read service {instance}"))?
     else {
         return Ok(DestroyOutcome::NotFound);
     };
     if !is_managed(service.metadata.labels.as_ref()) {
         return Ok(DestroyOutcome::NotManaged);
     }
-    delete_if_present(&gameserver_api(client, namespace), name).await?;
-    delete_if_present(&services, name).await?;
+    delete_if_present(&gameserver_api(client, namespace), instance).await?;
+    delete_if_present(&services, instance).await?;
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
-    delete_if_present(&pvcs, &pvc_name(name)).await?;
+    delete_if_present(&pvcs, &pvc_name(instance)).await?;
     Ok(DestroyOutcome::Destroyed)
 }
 
@@ -334,20 +329,20 @@ fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObject> {
     Api::namespaced_with(client.clone(), namespace, &resource)
 }
 
-async fn instance_exists(client: &Client, namespace: &str, name: &str) -> Result<bool> {
+async fn instance_exists(client: &Client, namespace: &str, instance: &str) -> Result<bool> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     if services
-        .get_opt(name)
+        .get_opt(instance)
         .await
-        .with_context(|| format!("failed to check for existing service {name}"))?
+        .with_context(|| format!("failed to check for existing service {instance}"))?
         .is_some()
     {
         return Ok(true);
     }
     let exists = gameserver_api(client, namespace)
-        .get_opt(name)
+        .get_opt(instance)
         .await
-        .with_context(|| format!("failed to check for existing gameserver {name}"))?
+        .with_context(|| format!("failed to check for existing gameserver {instance}"))?
         .is_some();
     Ok(exists)
 }
@@ -390,7 +385,7 @@ fn service_node_port(service: &Service) -> Option<i32> {
 pub(crate) async fn wait_for_instance_ready(
     client: &Client,
     namespace: &str,
-    name: &str,
+    instance: &str,
 ) -> Result<bool> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
@@ -398,15 +393,15 @@ pub(crate) async fn wait_for_instance_ready(
 
     loop {
         ticker.tick().await;
-        match gameservers.get_opt(name).await {
+        match gameservers.get_opt(instance).await {
             Ok(Some(gameserver)) => {
                 if is_ready(&gameserver) {
                     return Ok(true);
                 }
             }
-            Ok(None) => debug!(name, "gameserver not yet visible to the api"),
+            Ok(None) => debug!(instance, "gameserver not yet visible to the api"),
             Err(err) => {
-                return Err(err).with_context(|| format!("failed to poll readiness of {name}"));
+                return Err(err).with_context(|| format!("failed to poll readiness of {instance}"));
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -425,16 +420,16 @@ fn is_ready(gameserver: &GameServer) -> bool {
     )
 }
 
-async fn best_effort_remove(client: &Client, namespace: &str, name: &str) {
+async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     for outcome in [
-        delete_if_present(&gameserver_api(client, namespace), name).await,
-        delete_if_present(&services, name).await,
-        delete_if_present(&pvcs, &pvc_name(name)).await,
+        delete_if_present(&gameserver_api(client, namespace), instance).await,
+        delete_if_present(&services, instance).await,
+        delete_if_present(&pvcs, &pvc_name(instance)).await,
     ] {
         if let Err(err) = outcome {
-            warn!(error = ?err, instance = name, "rollback delete failed; manual cleanup may be needed");
+            warn!(error = ?err, instance, "rollback delete failed; manual cleanup may be needed");
         }
     }
 }

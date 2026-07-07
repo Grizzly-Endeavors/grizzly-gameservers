@@ -69,15 +69,13 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
     }
 }
 
-fn create_spec(outcome: &CreateOutcome, instance: &str) -> EmbedSpec {
+fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
     match outcome {
-        CreateOutcome::Created { address, ready } => {
-            started_spec(instance, address, *ready, "is up")
-        }
+        CreateOutcome::Created { address, ready } => started_spec(server, address, *ready, "is up"),
         CreateOutcome::AlreadyExists => EmbedSpec {
             title: "Already running".to_owned(),
             colour: COLOUR_NEUTRAL,
-            body: format!("A server named **{instance}** already exists."),
+            body: format!("A server named **{server}** already exists."),
         },
         CreateOutcome::PortsExhausted => EmbedSpec {
             title: "No slots free".to_owned(),
@@ -231,8 +229,8 @@ pub(crate) fn server_list_embed(servers: &[ServerSummary]) -> CreateEmbed {
     server_list_spec(servers).into_embed()
 }
 
-pub(crate) fn create_result_embed(outcome: &CreateOutcome, instance: &str) -> CreateEmbed {
-    create_spec(outcome, instance).into_embed()
+pub(crate) fn create_result_embed(outcome: &CreateOutcome, server: &str) -> CreateEmbed {
+    create_spec(outcome, server).into_embed()
 }
 
 pub(crate) fn start_result_embed(outcome: &StartOutcome, server: &str) -> CreateEmbed {
