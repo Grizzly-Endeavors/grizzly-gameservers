@@ -117,7 +117,10 @@ impl ArchiveStore {
                     config.host, config.port, config.database
                 )
             })?;
-        sqlx::query(SCHEMA)
+        // `raw_sql` runs via the simple query protocol so the multi-statement
+        // schema (table + index) executes as one batch; `query` would prepare it
+        // and Postgres rejects multiple commands in a prepared statement.
+        sqlx::raw_sql(SCHEMA)
             .execute(&pool)
             .await
             .context("failed to apply archives schema")?;
