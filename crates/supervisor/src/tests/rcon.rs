@@ -129,6 +129,35 @@ async fn connect_with_retry_waits_out_a_late_binding_listener() {
 }
 
 #[test]
+fn broadcast_command_builds_a_minecraft_tellraw() {
+    let command = broadcast_command("Gary: ran `op Bear`", true).unwrap();
+    assert!(
+        command.starts_with("tellraw @a "),
+        "minecraft broadcast should use tellraw, got {command:?}"
+    );
+    // The message must be carried as a JSON text component (serde-escaped), not
+    // hand-quoted, so it survives special characters.
+    let json = command.strip_prefix("tellraw @a ").unwrap();
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(value.get("text").unwrap(), "Gary: ran `op Bear`");
+}
+
+#[test]
+fn broadcast_command_escapes_message_json() {
+    // A quote in the message must not break out of the JSON string.
+    let command = broadcast_command(r#"Gary: said "hi""#, true).unwrap();
+    let json = command.strip_prefix("tellraw @a ").unwrap();
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(value.get("text").unwrap(), r#"Gary: said "hi""#);
+}
+
+#[test]
+fn broadcast_command_falls_back_to_say_for_non_minecraft() {
+    let command = broadcast_command("Gary: heads up", false).unwrap();
+    assert_eq!(command, "say Gary: heads up");
+}
+
+#[test]
 fn truncate_output_leaves_short_text_untouched() {
     let text = "There are 2 of a max of 20 players online".to_owned();
     assert_eq!(truncate_output(text.clone()), text);

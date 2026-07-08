@@ -60,6 +60,10 @@ ENV ENABLE_RCON=true
 ENV RCON_PORT=25575
 ENV SUPERVISOR_RCON_PORT=25575
 ENV SUPERVISOR_RCON_MINECRAFT=true
+# Suppress Minecraft's built-in [Rcon: …] op-broadcast: the bot announces Gary's
+# console commands itself as an attributed "Gary: …" tellraw, so the raw RCON echo
+# would just be duplicate, less-friendly noise.
+ENV BROADCAST_RCON_TO_OPS=false
 # No USER: the supervisor (PID 1) needs root to bootstrap itzg (chown /data, server
 # setup); rootless game-pod hardening is deferred (see the FROM note above, ADR-003).
 # nosemgrep: dockerfile.security.missing-user-entrypoint

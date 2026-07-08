@@ -10,9 +10,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
-    CommandRequest, CommandResponse, ControlCommand, ControlError, ControlOk, ListResponse,
-    LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse, ResultKind,
-    RouteError, StatusResponse, WriteRequest, WriteResponse,
+    AnnounceRequest, CommandRequest, CommandResponse, ControlCommand, ControlError, ControlOk,
+    ListResponse, LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest,
+    RestoreResponse, ResultKind, RouteError, StatusResponse, WriteRequest, WriteResponse,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -78,6 +78,7 @@ pub async fn serve(
         .route("/fs/restore", post(fs_restore))
         .route("/logs", get(logs_tail))
         .route("/command", post(run_command))
+        .route("/announce", post(announce))
         .fallback(any(handle))
         .with_state(ControlState {
             tx,
@@ -219,6 +220,32 @@ async fn run_command(
             internal_error(
                 "the server's console isn't responding yet — it may still be starting up, so try again in a moment",
             )
+        }
+    }
+}
+
+/// Broadcast a message to everyone on the server over RCON. Returns 409 when the
+/// game doesn't enable RCON (the bot treats this as best-effort and moves on), and
+/// 500 when the console can't be reached. The bot never blocks a real action on
+/// this route's outcome.
+async fn announce(
+    State(state): State<ControlState>,
+    Json(body): Json<AnnounceRequest>,
+) -> Response {
+    let Some(rcon) = state.rcon.as_ref() else {
+        return (
+            StatusCode::CONFLICT,
+            Json(ControlError::new(
+                "announcements aren't supported for this game",
+            )),
+        )
+            .into_response();
+    };
+    match rcon.broadcast(&body.message).await {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(err) => {
+            warn!(error = ?err, message = %body.message, "rcon announce failed");
+            internal_error("couldn't broadcast the message to the server")
         }
     }
 }
