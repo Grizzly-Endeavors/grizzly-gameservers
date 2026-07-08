@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
+use crate::backup::MaybeBackups;
 use crate::store::HomeChannels;
 
 /// How long an interactive component (button, confirm prompt) waits for a
@@ -50,6 +51,24 @@ pub(crate) struct Data {
     /// Channels where Gary answers without an `@mention` (plus DMs, which are
     /// always no-mention). Backed by Postgres; disabled if persistence is down.
     pub(crate) home_channels: Arc<HomeChannels>,
+    /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
+    /// backup commands then report "not configured", same shape as Gary/home).
+    pub(crate) backup: MaybeBackups,
+}
+
+/// Build the backup-flow context from the shared per-command [`Data`]. Shared by
+/// the slash commands and Gary's tools so both drive the backup subsystem the same
+/// way.
+pub(crate) fn backup_ctx(data: &Data) -> crate::backup::BackupCtx<'_> {
+    crate::backup::BackupCtx {
+        client: &data.kube_client,
+        http: &data.http,
+        namespace: &data.namespace,
+        domain: &data.domain,
+        control_port: data.control_port,
+        catalog: &data.catalog,
+        provision_lock: &data.provision_lock,
+    }
 }
 
 pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;

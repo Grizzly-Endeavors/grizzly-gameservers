@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -28,6 +29,15 @@ const DEFAULT_DB_PORT: u16 = 5432;
 /// provisioned by `setup-grizzly-gameservers-stores.yml`.
 const DEFAULT_DB_NAME: &str = "grizzly_gameservers";
 const DEFAULT_DB_USER: &str = "grizzly_gameservers";
+/// Self-hosted versitygw `s3-bulk` on the R730xd — the endpoint the platform S3
+/// doc designates for backups/archives. Path-style, plain HTTP over the LAN.
+const DEFAULT_S3_ENDPOINT: &str = "http://10.0.0.200:7072";
+const DEFAULT_S3_BUCKET: &str = "grizzly-gameservers";
+const DEFAULT_S3_REGION: &str = "us-east-1";
+/// How often the scheduled cycle backs up every running server, in hours.
+const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
+/// How many backups to retain per server; older ones are pruned each cycle.
+const DEFAULT_BACKUP_RETENTION: usize = 7;
 
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
@@ -55,6 +65,25 @@ pub struct BotConfig {
     /// `DB_PASSWORD` is set — the bot then runs without persistence (no-mention
     /// home channels are disabled), the same graceful-degrade shape as `ollama`.
     pub(crate) db: Option<DbConfig>,
+    /// S3 (versitygw) connection for backups/archives. `None` when the access/
+    /// secret keys aren't set — backups/archive/restore then report "not
+    /// configured", the same graceful-degrade shape as `db`/`ollama`.
+    pub(crate) s3: Option<S3Config>,
+    /// How often the scheduled backup cycle runs.
+    pub(crate) backup_interval: Duration,
+    /// How many backups to keep per server before the cycle prunes older ones.
+    pub(crate) backup_retention: usize,
+}
+
+/// Connection settings for the backups S3 bucket. Only the access/secret keys are
+/// secrets (synced from `OpenBao` via ESO); the rest carry infra defaults.
+#[derive(Clone, Debug)]
+pub(crate) struct S3Config {
+    pub(crate) endpoint: String,
+    pub(crate) bucket: String,
+    pub(crate) region: String,
+    pub(crate) access_key: String,
+    pub(crate) secret_key: String,
 }
 
 /// Connection settings for the bot's foundation-Postgres database. Only the
@@ -108,6 +137,14 @@ impl BotConfig {
             optional(lookup, "OLLAMA_MODEL").unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_owned());
 
         let db = db_config_from_env(lookup)?;
+        let s3 = s3_config_from_env(lookup);
+        let backup_interval = Duration::from_secs(
+            optional_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
+                .unwrap_or(DEFAULT_BACKUP_INTERVAL_HOURS)
+                .saturating_mul(3600),
+        );
+        let backup_retention = optional_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
+            .unwrap_or(DEFAULT_BACKUP_RETENTION);
 
         Ok(Self {
             token,
@@ -122,8 +159,33 @@ impl BotConfig {
             ollama_base_url,
             ollama_model,
             db,
+            s3,
+            backup_interval,
+            backup_retention,
         })
     }
+}
+
+/// Build the S3 connection settings from the environment, or `None` when either
+/// key is unset/empty — the keys are the parts sourced from `OpenBao`, so their
+/// absence is the signal that backups aren't wired and the feature should degrade
+/// rather than fail.
+fn s3_config_from_env(lookup: EnvLookup) -> Option<S3Config> {
+    let access_key =
+        optional(lookup, "GAMESERVERS_S3_ACCESS_KEY").filter(|value| !value.is_empty());
+    let secret_key =
+        optional(lookup, "GAMESERVERS_S3_SECRET_KEY").filter(|value| !value.is_empty());
+    let (access_key, secret_key) = (access_key?, secret_key?);
+    Some(S3Config {
+        endpoint: optional(lookup, "GAMESERVERS_S3_ENDPOINT")
+            .unwrap_or_else(|| DEFAULT_S3_ENDPOINT.to_owned()),
+        bucket: optional(lookup, "GAMESERVERS_S3_BUCKET")
+            .unwrap_or_else(|| DEFAULT_S3_BUCKET.to_owned()),
+        region: optional(lookup, "GAMESERVERS_S3_REGION")
+            .unwrap_or_else(|| DEFAULT_S3_REGION.to_owned()),
+        access_key,
+        secret_key,
+    })
 }
 
 /// Build the Postgres connection settings from the environment, or `None` when
@@ -153,6 +215,18 @@ fn optional_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
             let value = raw
                 .parse::<u64>()
                 .with_context(|| format!("{key} must be a positive integer, got {raw:?}"))?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn optional_usize(lookup: EnvLookup, key: &str) -> Result<Option<usize>> {
+    match optional(lookup, key) {
+        Some(raw) => {
+            let value = raw
+                .parse::<usize>()
+                .with_context(|| format!("{key} must be a non-negative integer, got {raw:?}"))?;
             Ok(Some(value))
         }
         None => Ok(None),

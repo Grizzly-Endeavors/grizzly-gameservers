@@ -1,23 +1,27 @@
 use poise::serenity_prelude as serenity;
 use serenity::{
-    ButtonStyle, ComponentInteractionDataKind, CreateActionRow, CreateButton,
-    CreateInteractionResponse, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption,
+    ButtonStyle, ComponentInteraction, ComponentInteractionDataKind, CreateActionRow, CreateButton,
+    CreateEmbed, CreateInteractionResponse, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, MessageId,
 };
-use tracing::error;
+use tracing::{error, warn};
 
 use super::auth::{require_admin, visibility_scope};
 use super::render::{
-    create_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed, neutral_embed,
-    server_list_embed, shutdown_result_embed, start_result_embed, supervisor_result_embed,
-    working_embed,
+    archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
+    backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
+    destroy_confirm_embed, destroy_result_embed, error_embed, neutral_embed, recover_result_embed,
+    restore_confirm_embed, restore_result_embed, server_list_embed, shutdown_result_embed,
+    start_result_embed, supervisor_result_embed, working_embed,
 };
-use super::{COMPONENT_TIMEOUT, Context, Error};
+use super::{COMPONENT_TIMEOUT, Context, Error, backup_ctx};
 use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
     begin_start, build_instance_name, destroy_instance, instance_runtime_state,
     list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
     supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
+use crate::backup::{ArtifactSummary, BackupService};
 use crate::store::HomeToggle;
 
 /// List the game servers currently running and how to connect to them.
@@ -697,6 +701,590 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     )
     .await?;
     Ok(())
+}
+
+/// Take a backup of a running server's world to durable storage right now.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn backup(
+    ctx: Context<'_>,
+    #[description = "Which server to back up"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Backing up {server}"),
+            "Saving a snapshot of the world…",
+        )))
+        .await?;
+    match service
+        .backup_instance(&backup_ctx(data), &server, &actor_id(ctx))
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, server = %server, "backup did not succeed");
+            }
+            reply
+                .edit(ctx, cleared(backup_result_embed(&outcome, &server)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to back up game server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't back up the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// List a server's saved backups, newest first.
+#[poise::command(slash_command)]
+pub(crate) async fn backups(
+    ctx: Context<'_>,
+    #[description = "Which server's backups to list"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    let reply = ctx
+        .send(reply_with(working_embed(
+            &format!("Backups of {server}"),
+            "Looking them up…",
+        )))
+        .await?;
+    match service.list_backups(&server).await {
+        Ok(list) => {
+            reply
+                .edit(ctx, cleared(backups_list_embed(&server, &list)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to list backups");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't list backups right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// List the servers archived in this channel (in cold storage, recoverable).
+#[poise::command(slash_command)]
+pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    if !service.archives_enabled() {
+        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        return Ok(());
+    }
+    let reply = ctx
+        .send(reply_with(working_embed(
+            "Archived servers",
+            "Looking them up…",
+        )))
+        .await?;
+    match service
+        .list_archives(&ctx.channel_id().get().to_string())
+        .await
+    {
+        Ok(list) => {
+            reply.edit(ctx, cleared(archives_list_embed(&list))).await?;
+        }
+        Err(err) => {
+            error!(error = ?err, "failed to list archives");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't list archives right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Archive a server: save a durable backup, then release its storage. Recoverable.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn archive(
+    ctx: Context<'_>,
+    #[description = "Which server to archive (frees its storage; recover it later)"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    if !service.archives_enabled() {
+        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        return Ok(());
+    }
+    let Some(reply) =
+        confirm_action(ctx, archive_confirm_embed(&server), "archive_confirm").await?
+    else {
+        return Ok(());
+    };
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Archiving {server}"),
+                "Stopping, backing up, and releasing storage…",
+            )),
+        )
+        .await?;
+    match service
+        .archive_instance(&backup_ctx(data), &server, &actor_id(ctx))
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, server = %server, "archive did not succeed");
+            }
+            reply
+                .edit(ctx, cleared(archive_result_embed(&outcome)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to archive game server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't archive the server right now — nothing was released. \
+                         Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Restore a server to one of its backups. Pick which backup from the menu.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn restore(
+    ctx: Context<'_>,
+    #[description = "Which server to restore"]
+    #[autocomplete = "autocomplete_server"]
+    server: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    let reply = ctx
+        .send(
+            poise::CreateReply::default()
+                .embed(working_embed(
+                    &format!("Restore {server}"),
+                    "Looking up its backups…",
+                ))
+                .ephemeral(true),
+        )
+        .await?;
+    let backups = match service.list_backups(&server).await {
+        Ok(backups) => backups,
+        Err(err) => {
+            error!(error = ?err, server = %server, "failed to list backups for restore");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't list backups right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
+    if backups.is_empty() {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed(
+                    "No backups",
+                    &format!("**{server}** has no backups to restore from yet."),
+                )),
+            )
+            .await?;
+        return Ok(());
+    }
+
+    let options: Vec<CreateSelectMenuOption> = backups
+        .iter()
+        .take(25)
+        .map(|backup| CreateSelectMenuOption::new(backup.created_at.clone(), backup.key.clone()))
+        .collect();
+    let menu = CreateSelectMenu::new("restore_pick", CreateSelectMenuKind::String { options })
+        .placeholder("Pick a backup to restore");
+    reply
+        .edit(
+            ctx,
+            poise::CreateReply::default()
+                .embed(neutral_embed(
+                    &format!("Restore {server}"),
+                    "Pick which backup to roll back to.",
+                ))
+                .components(vec![CreateActionRow::SelectMenu(menu)]),
+        )
+        .await?;
+    finish_restore(ctx, &service, &reply, &server, &backups).await
+}
+
+/// Collect the backup pick and the overwrite confirmation, then run the restore.
+/// Split out of [`restore`] so each stays under the line cap.
+async fn finish_restore(
+    ctx: Context<'_>,
+    service: &BackupService,
+    reply: &poise::ReplyHandle<'_>,
+    server: &str,
+    backups: &[ArtifactSummary],
+) -> Result<(), Error> {
+    let message = reply.message().await?;
+    let Some(pick) = collect_component(ctx, message.id).await else {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Timed out", "Nothing was changed.")),
+            )
+            .await?;
+        return Ok(());
+    };
+    acknowledge(ctx, &pick).await?;
+    let Some(key) = string_select_value(&pick) else {
+        reply
+            .edit(
+                ctx,
+                cleared(error_embed(
+                    "Couldn't read your selection. Try `/restore` again.",
+                )),
+            )
+            .await?;
+        return Ok(());
+    };
+    let label = backups.iter().find(|backup| backup.key == key).map_or_else(
+        || "the selected backup".to_owned(),
+        |b| b.created_at.clone(),
+    );
+
+    reply
+        .edit(
+            ctx,
+            poise::CreateReply::default()
+                .embed(restore_confirm_embed(server, &label))
+                .components(vec![confirm_buttons("restore_confirm")]),
+        )
+        .await?;
+    let Some(confirm) = collect_component(ctx, message.id).await else {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Timed out", "Nothing was changed.")),
+            )
+            .await?;
+        return Ok(());
+    };
+    acknowledge(ctx, &confirm).await?;
+    if confirm.data.custom_id != "restore_confirm" {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Cancelled", "Nothing was changed.")),
+            )
+            .await?;
+        return Ok(());
+    }
+
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Restoring {server}"),
+                "Saving a safety backup, then rolling the world back…",
+            )),
+        )
+        .await?;
+    match service
+        .restore_backup(&backup_ctx(ctx.data()), server, &key)
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, server, "restore did not succeed");
+            }
+            reply
+                .edit(ctx, cleared(restore_result_embed(&outcome, server)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, server, "failed to restore game server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't restore the server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Recover an archived server: recreate it and restore its world. Pick from the menu.
+#[poise::command(slash_command, check = "require_admin")]
+pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed())).await?;
+        return Ok(());
+    };
+    if !service.archives_enabled() {
+        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        return Ok(());
+    }
+    let channel = ctx.channel_id().get().to_string();
+    let reply = ctx
+        .send(
+            poise::CreateReply::default()
+                .embed(working_embed("Recover a server", "Looking up archives…"))
+                .ephemeral(true),
+        )
+        .await?;
+    let archives = match service.list_archives(&channel).await {
+        Ok(archives) => archives,
+        Err(err) => {
+            error!(error = ?err, "failed to list archives for recover");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't list archives right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
+    if archives.is_empty() {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed(
+                    "No archives",
+                    "There's nothing archived in this channel to recover.",
+                )),
+            )
+            .await?;
+        return Ok(());
+    }
+
+    let options: Vec<CreateSelectMenuOption> = archives
+        .iter()
+        .take(25)
+        .map(|archive| {
+            CreateSelectMenuOption::new(
+                format!("{} · {}", archive.name, archive.created_at),
+                archive.name.clone(),
+            )
+        })
+        .collect();
+    let menu = CreateSelectMenu::new("recover_pick", CreateSelectMenuKind::String { options })
+        .placeholder("Pick a server to recover");
+    reply
+        .edit(
+            ctx,
+            poise::CreateReply::default()
+                .embed(neutral_embed(
+                    "Recover a server",
+                    "Pick which archived server to bring back.",
+                ))
+                .components(vec![CreateActionRow::SelectMenu(menu)]),
+        )
+        .await?;
+    finish_recover(ctx, &service, &reply, &channel).await
+}
+
+/// Collect the archive pick and run the recovery. Split out of [`recover`] so each
+/// stays under the line cap.
+async fn finish_recover(
+    ctx: Context<'_>,
+    service: &BackupService,
+    reply: &poise::ReplyHandle<'_>,
+    channel: &str,
+) -> Result<(), Error> {
+    let message = reply.message().await?;
+    let Some(pick) = collect_component(ctx, message.id).await else {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Timed out", "Nothing was recovered.")),
+            )
+            .await?;
+        return Ok(());
+    };
+    acknowledge(ctx, &pick).await?;
+    let Some(name) = string_select_value(&pick) else {
+        reply
+            .edit(
+                ctx,
+                cleared(error_embed(
+                    "Couldn't read your selection. Try `/recover` again.",
+                )),
+            )
+            .await?;
+        return Ok(());
+    };
+
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Recovering {name}"),
+                "Recreating the server and restoring its world…",
+            )),
+        )
+        .await?;
+    match service
+        .recover_archive(&backup_ctx(ctx.data()), channel, &name)
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, name, "recover did not succeed");
+            }
+            reply
+                .edit(ctx, cleared(recover_result_embed(&outcome, &name)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, name, "failed to recover archived server");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't recover that server right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// The invoking user's id, recorded as `created_by` on a manual backup/archive.
+fn actor_id(ctx: Context<'_>) -> String {
+    ctx.author().id.get().to_string()
+}
+
+/// Danger/Cancel button row for a destructive confirmation.
+fn confirm_buttons(confirm_id: &str) -> CreateActionRow {
+    CreateActionRow::Buttons(vec![
+        CreateButton::new(confirm_id)
+            .label("Confirm")
+            .style(ButtonStyle::Danger),
+        CreateButton::new("action_cancel")
+            .label("Cancel")
+            .style(ButtonStyle::Secondary),
+    ])
+}
+
+/// Collect one component interaction on `message`, scoped to the invoking user,
+/// within [`COMPONENT_TIMEOUT`]. `None` means the prompt expired.
+async fn collect_component(ctx: Context<'_>, message: MessageId) -> Option<ComponentInteraction> {
+    serenity::ComponentInteractionCollector::new(ctx.serenity_context())
+        .author_id(ctx.author().id)
+        .message_id(message)
+        .timeout(COMPONENT_TIMEOUT)
+        .await
+}
+
+/// Acknowledge a component press so Discord doesn't mark it failed; the result is
+/// written by editing the original reply.
+async fn acknowledge(ctx: Context<'_>, interaction: &ComponentInteraction) -> Result<(), Error> {
+    interaction
+        .create_response(
+            ctx.serenity_context(),
+            CreateInteractionResponse::Acknowledge,
+        )
+        .await?;
+    Ok(())
+}
+
+/// The chosen value of a string-select interaction, if that's what it was.
+fn string_select_value(interaction: &ComponentInteraction) -> Option<String> {
+    if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
+        values.first().cloned()
+    } else {
+        None
+    }
+}
+
+/// Send a Confirm/Cancel prompt and return the reply handle to continue editing
+/// when confirmed, or `None` (already resolved to a cancel/timeout embed) otherwise.
+async fn confirm_action<'a>(
+    ctx: Context<'a>,
+    prompt: CreateEmbed,
+    confirm_id: &str,
+) -> Result<Option<poise::ReplyHandle<'a>>, Error> {
+    let reply = ctx
+        .send(
+            poise::CreateReply::default()
+                .embed(prompt)
+                .components(vec![confirm_buttons(confirm_id)])
+                .ephemeral(true),
+        )
+        .await?;
+    let message = reply.message().await?;
+    let Some(interaction) = collect_component(ctx, message.id).await else {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Timed out", "Nothing was changed.")),
+            )
+            .await?;
+        return Ok(None);
+    };
+    acknowledge(ctx, &interaction).await?;
+    if interaction.data.custom_id != confirm_id {
+        reply
+            .edit(
+                ctx,
+                cleared(neutral_embed("Cancelled", "Nothing was changed.")),
+            )
+            .await?;
+        return Ok(None);
+    }
+    Ok(Some(reply))
 }
 
 /// The set of servers this invocation may see and act on: the allowlisted

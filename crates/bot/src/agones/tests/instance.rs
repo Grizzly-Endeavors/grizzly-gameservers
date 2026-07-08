@@ -63,6 +63,7 @@ fn identity() -> InstanceIdentity {
         namespace: "game-servers".to_owned(),
         node_port: 7003,
         channel: "555".to_owned(),
+        start_paused: false,
     }
 }
 
@@ -106,6 +107,41 @@ fn empty_channel_leaves_the_channel_label_off() {
     let gs = render_gameserver(&entry(), &unscoped).unwrap();
     let labels = gs.metadata.labels.as_ref().unwrap();
     assert!(!labels.contains_key(CHANNEL_KEY));
+}
+
+#[test]
+fn start_paused_injects_the_supervisor_env_on_the_container() {
+    let mut paused = identity();
+    paused.start_paused = true;
+    let gs = render_gameserver(&entry(), &paused).unwrap();
+    let env = gs
+        .data
+        .pointer("/spec/template/spec/containers/0/env")
+        .and_then(Value::as_array)
+        .expect("container should have an env list after injection");
+    let paused_env = env
+        .iter()
+        .find(|entry| entry.get("name").and_then(Value::as_str) == Some("SUPERVISOR_START_PAUSED"))
+        .expect("SUPERVISOR_START_PAUSED should be present");
+    assert_eq!(
+        paused_env.get("value").and_then(Value::as_str),
+        Some("true")
+    );
+}
+
+#[test]
+fn unpaused_render_adds_no_start_paused_env() {
+    let gs = render_gameserver(&entry(), &identity()).unwrap();
+    let has_pause_env = gs
+        .data
+        .pointer("/spec/template/spec/containers/0/env")
+        .and_then(Value::as_array)
+        .is_some_and(|env| {
+            env.iter().any(|entry| {
+                entry.get("name").and_then(Value::as_str) == Some("SUPERVISOR_START_PAUSED")
+            })
+        });
+    assert!(!has_pause_env, "a normal server must not be paused");
 }
 
 #[test]

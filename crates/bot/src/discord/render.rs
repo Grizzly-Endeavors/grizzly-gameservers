@@ -4,6 +4,9 @@ use serenity::{Colour, CreateEmbed};
 use crate::agones::{
     CreateOutcome, DestroyOutcome, ServerSummary, ShutdownOutcome, StartOutcome, SupervisorOutcome,
 };
+use crate::backup::{
+    ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
+};
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
@@ -207,6 +210,188 @@ fn started_spec(name: &str, address: &str, ready: bool, verb: &str) -> EmbedSpec
     }
 }
 
+fn backup_spec(outcome: &BackupOutcome, server: &str) -> EmbedSpec {
+    match outcome {
+        BackupOutcome::BackedUp { size_bytes } => EmbedSpec {
+            title: format!("💾 Backed up {server}"),
+            colour: COLOUR_UP,
+            body: format!(
+                "Saved a {} backup. `/restore {server}` rolls it back to this (or an earlier) point.",
+                human_size(*size_bytes)
+            ),
+        },
+        BackupOutcome::NotRunning => EmbedSpec {
+            title: "Nothing to back up".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "**{server}** isn't running, so there's nothing live to snapshot. `/start` it first."
+            ),
+        },
+        BackupOutcome::Unreachable(_) => EmbedSpec {
+            title: "Couldn't back it up".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("I couldn't reach **{server}** to back it up. Try again in a moment."),
+        },
+        BackupOutcome::NotFound => not_found_spec(server),
+        BackupOutcome::NotManaged => not_managed_spec(server),
+    }
+}
+
+fn archive_spec(outcome: &ArchiveOutcome) -> EmbedSpec {
+    match outcome {
+        ArchiveOutcome::Archived { name, size_bytes } => EmbedSpec {
+            title: format!("📦 Archived {name}"),
+            colour: COLOUR_NEUTRAL,
+            body: format!(
+                "Saved a {} archive and released the server (its storage is freed). \
+                 Use `/recover` to bring **{name}** back whenever you want.",
+                human_size(*size_bytes)
+            ),
+        },
+        ArchiveOutcome::Unavailable => backups_db_disabled_spec(),
+        ArchiveOutcome::Failed(_) => EmbedSpec {
+            title: "Couldn't archive it".to_owned(),
+            colour: COLOUR_ERROR,
+            body: "Something went wrong archiving that server, so nothing was released. \
+                   Try again in a moment."
+                .to_owned(),
+        },
+        ArchiveOutcome::NotFound => not_found_spec("that server"),
+        ArchiveOutcome::NotManaged => not_managed_spec("that server"),
+    }
+}
+
+fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
+    match outcome {
+        RestoreOutcome::Restored { ready: true } => EmbedSpec {
+            title: format!("🟢 Restored {server}"),
+            colour: COLOUR_UP,
+            body: format!("**{server}** is back up on the restored world."),
+        },
+        RestoreOutcome::Restored { ready: false } => EmbedSpec {
+            title: format!("🟡 {server} is coming back"),
+            colour: COLOUR_PENDING,
+            body: format!("Restored the world onto **{server}** — it'll be playable in a minute."),
+        },
+        RestoreOutcome::Failed(_) => EmbedSpec {
+            title: "Restore failed".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("I couldn't restore **{server}** cleanly. Try again in a moment."),
+        },
+        RestoreOutcome::NotFound => not_found_spec(server),
+        RestoreOutcome::NotManaged => not_managed_spec(server),
+    }
+}
+
+fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
+    match outcome {
+        RecoverOutcome::Recovered { address, ready } => {
+            started_spec(name, address, *ready, "is back")
+        }
+        RecoverOutcome::NoSuchArchive => EmbedSpec {
+            title: "No such archive".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("There's no archived server named **{name}** in this channel."),
+        },
+        RecoverOutcome::NameInUse => EmbedSpec {
+            title: "Name in use".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "A server named **{name}** is already running. Pick it up with `/start`."
+            ),
+        },
+        RecoverOutcome::Unavailable => backups_db_disabled_spec(),
+        RecoverOutcome::UnknownGame(game) => EmbedSpec {
+            title: "Game no longer available".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("**{name}** ran '{game}', which is no longer in the catalog."),
+        },
+        RecoverOutcome::PortsExhausted => EmbedSpec {
+            title: "No slots free".to_owned(),
+            colour: COLOUR_ERROR,
+            body: "All server slots are in use right now. Destroy or archive one first.".to_owned(),
+        },
+        RecoverOutcome::Failed(_) => EmbedSpec {
+            title: "Recover failed".to_owned(),
+            colour: COLOUR_ERROR,
+            body: format!("I couldn't bring **{name}** back cleanly. Try again in a moment."),
+        },
+    }
+}
+
+/// A list of a server's backups or a channel's archives, newest first.
+fn artifact_list_spec(title: &str, artifacts: &[ArtifactSummary], empty: &str) -> EmbedSpec {
+    if artifacts.is_empty() {
+        return EmbedSpec {
+            title: title.to_owned(),
+            colour: COLOUR_NEUTRAL,
+            body: empty.to_owned(),
+        };
+    }
+    let lines: Vec<String> = artifacts
+        .iter()
+        .map(|artifact| {
+            format!(
+                "• **{}** — {} — {}",
+                artifact.name,
+                human_size(artifact.size_bytes),
+                artifact.created_at
+            )
+        })
+        .collect();
+    EmbedSpec {
+        title: title.to_owned(),
+        colour: COLOUR_NEUTRAL,
+        body: lines.join("\n"),
+    }
+}
+
+/// Shown when a backup command is invoked but S3 isn't configured at all.
+fn backups_disabled_spec() -> EmbedSpec {
+    EmbedSpec {
+        title: "Backups aren't set up".to_owned(),
+        colour: COLOUR_ERROR,
+        body: "Backups aren't configured on this bot yet, so there's nothing to save or restore."
+            .to_owned(),
+    }
+}
+
+/// Shown when archive/recover is invoked but the archive catalog (database) is off.
+fn backups_db_disabled_spec() -> EmbedSpec {
+    EmbedSpec {
+        title: "Archives aren't available".to_owned(),
+        colour: COLOUR_ERROR,
+        body: "I can't track archives right now — my long-term memory is offline. \
+               Backups and restore still work; try archiving again later."
+            .to_owned(),
+    }
+}
+
+/// Format a byte count as a friendly size (`B`/`KiB`/`MiB`/`GiB`) using integer
+/// math — a fractional GiB is display-only, so no float cast is needed.
+pub(crate) fn human_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        scaled_size(bytes, GIB, "GiB")
+    } else if bytes >= MIB {
+        scaled_size(bytes, MIB, "MiB")
+    } else if bytes >= KIB {
+        scaled_size(bytes, KIB, "KiB")
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// One-decimal size in the given unit, computed without floats: the tenths come
+/// from the remainder scaled by ten.
+fn scaled_size(bytes: u64, divisor: u64, unit: &str) -> String {
+    let whole = bytes / divisor;
+    let tenths = (bytes % divisor) * 10 / divisor;
+    format!("{whole}.{tenths} {unit}")
+}
+
 fn not_found_spec(server: &str) -> EmbedSpec {
     EmbedSpec {
         title: "No such server".to_owned(),
@@ -247,6 +432,76 @@ pub(crate) fn supervisor_result_embed(outcome: &SupervisorOutcome, server: &str)
 
 pub(crate) fn destroy_result_embed(outcome: &DestroyOutcome, server: &str) -> CreateEmbed {
     destroy_spec(outcome, server).into_embed()
+}
+
+pub(crate) fn backup_result_embed(outcome: &BackupOutcome, server: &str) -> CreateEmbed {
+    backup_spec(outcome, server).into_embed()
+}
+
+pub(crate) fn archive_result_embed(outcome: &ArchiveOutcome) -> CreateEmbed {
+    archive_spec(outcome).into_embed()
+}
+
+pub(crate) fn restore_result_embed(outcome: &RestoreOutcome, server: &str) -> CreateEmbed {
+    restore_spec(outcome, server).into_embed()
+}
+
+pub(crate) fn recover_result_embed(outcome: &RecoverOutcome, name: &str) -> CreateEmbed {
+    recover_spec(outcome, name).into_embed()
+}
+
+pub(crate) fn backups_list_embed(server: &str, artifacts: &[ArtifactSummary]) -> CreateEmbed {
+    artifact_list_spec(
+        &format!("Backups of {server}"),
+        artifacts,
+        &format!("**{server}** has no backups yet. Use `/backup {server}` to take one."),
+    )
+    .into_embed()
+}
+
+pub(crate) fn archives_list_embed(artifacts: &[ArtifactSummary]) -> CreateEmbed {
+    artifact_list_spec(
+        "Archived servers",
+        artifacts,
+        "No servers are archived in this channel. `/archive` puts one into cold storage.",
+    )
+    .into_embed()
+}
+
+pub(crate) fn backups_disabled_embed() -> CreateEmbed {
+    backups_disabled_spec().into_embed()
+}
+
+pub(crate) fn archives_unavailable_embed() -> CreateEmbed {
+    backups_db_disabled_spec().into_embed()
+}
+
+/// Red warning shown before an overwrite-restore, gating it behind a confirm.
+pub(crate) fn restore_confirm_embed(server: &str, label: &str) -> CreateEmbed {
+    EmbedSpec {
+        title: format!("Restore {server}?"),
+        colour: COLOUR_ERROR,
+        body: format!(
+            "This replaces **{server}**'s current world with the backup from **{label}**. \
+             I'll take a safety backup of the current world first, but the live world will be \
+             overwritten. Continue?"
+        ),
+    }
+    .into_embed()
+}
+
+/// Red warning shown before archiving, which releases the server's storage.
+pub(crate) fn archive_confirm_embed(server: &str) -> CreateEmbed {
+    EmbedSpec {
+        title: format!("Archive {server}?"),
+        colour: COLOUR_ERROR,
+        body: format!(
+            "This stops **{server}**, saves a durable backup, and releases its storage. \
+             The world is kept safe in the archive — `/recover` brings it back — but the running \
+             server goes away. Continue?"
+        ),
+    }
+    .into_embed()
 }
 
 /// Red embed for "the operation broke" — the user-facing message must already

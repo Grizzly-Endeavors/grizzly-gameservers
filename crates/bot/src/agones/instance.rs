@@ -24,7 +24,16 @@ pub(crate) struct InstanceIdentity {
     /// Empty leaves the label off — for pre-scoping instances whose surviving
     /// Service carries no channel, so a cold `/start` doesn't stamp a bogus one.
     pub(crate) channel: String,
+    /// Hold the game process down at boot (inject `SUPERVISOR_START_PAUSED`) so the
+    /// bot can seed `/data` from an archive before the first launch. Only set by
+    /// recover-from-archive; a normal create/start leaves it `false`.
+    pub(crate) start_paused: bool,
 }
+
+/// Env var the supervisor reads to boot paused; injected into the game container
+/// when [`InstanceIdentity::start_paused`] is set. Matches the supervisor's own
+/// `SUPERVISOR_START_PAUSED`.
+const START_PAUSED_ENV: &str = "SUPERVISOR_START_PAUSED";
 
 /// Render the `GameServer` for an instance: parse the catalog template, then
 /// override identity (name, namespace, labels) and rebind its data volume to the
@@ -44,7 +53,49 @@ pub(crate) fn render_gameserver(
     obj.metadata.namespace = Some(identity.namespace.clone());
     apply_labels(&mut obj.metadata.labels, identity);
     rebind_claim(&mut obj.data, &pvc_name(&identity.name))?;
+    if identity.start_paused {
+        upsert_container_env(&mut obj.data, START_PAUSED_ENV, "true")?;
+    }
     Ok(obj)
+}
+
+/// Set (or add) an env var on every container in the pod template. The catalog
+/// template defines only the game container — Agones injects its SDK sidecar at
+/// admission, not here — so this reaches exactly the supervisor's container.
+fn upsert_container_env(data: &mut Value, key: &str, value: &str) -> Result<()> {
+    let containers = data
+        .get_mut("spec")
+        .and_then(|spec| spec.get_mut("template"))
+        .and_then(|template| template.get_mut("spec"))
+        .and_then(|pod_spec| pod_spec.get_mut("containers"))
+        .and_then(Value::as_array_mut)
+        .context("gameserver template has no spec.template.spec.containers")?;
+    for container in containers.iter_mut() {
+        let Some(object) = container.as_object_mut() else {
+            continue;
+        };
+        let env = object
+            .entry("env")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let entries = env
+            .as_array_mut()
+            .context("gameserver container `env` is not a list")?;
+        match entries
+            .iter_mut()
+            .find(|entry| entry.get("name").and_then(Value::as_str) == Some(key))
+        {
+            Some(existing) => {
+                let entry = existing
+                    .as_object_mut()
+                    .context("gameserver container env entry is not a map")?;
+                entry.insert("value".to_owned(), Value::String(value.to_owned()));
+                // Drop any valueFrom so the literal value we set is authoritative.
+                entry.remove("valueFrom");
+            }
+            None => entries.push(serde_json::json!({ "name": key, "value": value })),
+        }
+    }
+    Ok(())
 }
 
 /// Render the per-instance `NodePort` Service: override identity, point the
