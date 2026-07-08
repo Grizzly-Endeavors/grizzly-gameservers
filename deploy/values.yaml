@@ -45,6 +45,16 @@ bot:
     port: 5432
     name: grizzly_gameservers
     user: grizzly_gameservers
+  # S3 (s3-bulk versitygw on the R730xd) for world backups/archives. The access/
+  # secret keys come from the grizzly-gameservers-s3 Secret (ESO); absent keys
+  # leave the backup feature disabled. Path-style, plain HTTP over the LAN.
+  s3:
+    endpoint: http://10.0.0.200:7072
+    bucket: grizzly-gameservers
+    region: us-east-1
+  backup:
+    intervalHours: 24 # scheduled snapshot cadence for every running server
+    retention: 7 # backups kept per server before the cycle prunes older ones
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:

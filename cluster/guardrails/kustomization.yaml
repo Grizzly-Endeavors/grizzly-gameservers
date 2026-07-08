@@ -6,3 +6,4 @@ resources:
   - bot-rbac.yaml
   - bot-to-supervisor-egress.yaml
   - bot-to-postgres-egress.yaml
+  - bot-to-s3-egress.yaml
