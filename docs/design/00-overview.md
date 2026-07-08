@@ -53,7 +53,7 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 Keep these separate — they have different authorities and different safety models.
 
 - **Per-game config** (Valheim vs. Minecraft): image, default env, port shape, resource sizing, persistence needs. This is the *catalog* — declarative templates in `games/`, version-controlled, gated, Flux-deployed. Rarely changes. An AI coding agent can author/maintain these at dev time via PR → gate → Flux; that's just normal IaC-with-an-agent.
-- **Per-instance config** (this friend's world seed, mods, difficulty, server name): lives on the server's **PVC**, mutated live by the ops agent. It is **not** in any git repo — it's ephemeral friend state, not infra, so it doesn't get PR/gate review. Different tier, different safety model.
+- **Per-instance config** (this friend's world seed, mods, difficulty, server name): lives on the server's **PVC**, mutated live by the ops agent. It is **not** in any git repo — it's ephemeral friend state, not infra, so it doesn't get PR/gate review. Different tier, different safety model. Because this tier is un-versioned and lost on `/destroy`, it's the tier the **backup/archive/restore** feature preserves: durable off-cluster snapshots to S3, an archive that frees the PVC while keeping the world recoverable, and restore/recover to bring it back. Design: [`02-backups-archive-restore.md`](02-backups-archive-restore.md).
 
 ## Tenancy: servers are scoped to a Discord channel
 
