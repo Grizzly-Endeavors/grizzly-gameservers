@@ -43,6 +43,75 @@ fn applies_defaults_with_empty_environment() {
         "default rcon password env"
     );
     assert!(!config.start_paused, "starts unpaused by default");
+    assert_eq!(config.chat_watch, None, "chat watching off by default");
+}
+
+#[test]
+fn chat_watch_absent_without_format() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_AGENT_URL", "http://bot:9360/ingame-trigger"),
+        ("SUPERVISOR_GAMESERVER_NAME", "mc-abc"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.chat_watch, None,
+        "without a format the watcher stays off even if the endpoint is set"
+    );
+}
+
+#[test]
+fn chat_watch_assembles_when_configured() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_CHAT_FORMAT", "minecraft"),
+        ("SUPERVISOR_AGENT_URL", "http://bot:9360/ingame-trigger"),
+        ("SUPERVISOR_GAMESERVER_NAME", "mc-abc"),
+        ("SUPERVISOR_AGENT_TOKEN", "s3cret"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let watch = config.chat_watch.expect("chat watch should be configured");
+    assert_eq!(watch.format, crate::chat_watcher::ChatFormat::Minecraft);
+    assert_eq!(watch.trigger, "@Gary", "trigger defaults when unset");
+    assert_eq!(watch.agent_url, "http://bot:9360/ingame-trigger");
+    assert_eq!(watch.agent_token.as_deref(), Some("s3cret"));
+    assert_eq!(watch.server, "mc-abc");
+}
+
+#[test]
+fn chat_watch_trigger_is_overridable() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_CHAT_FORMAT", "minecraft"),
+        ("SUPERVISOR_AGENT_URL", "http://bot:9360/ingame-trigger"),
+        ("SUPERVISOR_GAMESERVER_NAME", "mc-abc"),
+        ("SUPERVISOR_CHAT_TRIGGER", "!ask"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let watch = config.chat_watch.expect("chat watch should be configured");
+    assert_eq!(watch.trigger, "!ask");
+    assert_eq!(watch.agent_token, None, "token is optional");
+}
+
+#[test]
+fn chat_watch_format_without_endpoint_is_an_error() {
+    let env = lookup_from(&[("SUPERVISOR_CHAT_FORMAT", "minecraft")]);
+    let err = SupervisorConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("SUPERVISOR_AGENT_URL"),
+        "a format with no endpoint should name the missing key, got: {err}"
+    );
+}
+
+#[test]
+fn chat_watch_rejects_unknown_format() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_CHAT_FORMAT", "quake"),
+        ("SUPERVISOR_AGENT_URL", "http://bot:9360/ingame-trigger"),
+        ("SUPERVISOR_GAMESERVER_NAME", "mc-abc"),
+    ]);
+    let err = SupervisorConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("SUPERVISOR_CHAT_FORMAT"),
+        "an unknown format should name the key, got: {err}"
+    );
 }
 
 #[test]

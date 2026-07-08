@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::warn;
 
@@ -43,12 +44,21 @@ pub fn spawn(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child
 /// Drain the child's piped stdout and stderr into `logs`, re-emitting each line
 /// to the supervisor's own stdout/stderr so `kubectl logs` still shows the game's
 /// output. The reader tasks end on their own when the pipes close at child exit.
-pub fn capture_output(child: &mut Child, logs: &Arc<LogBuffer>) {
+///
+/// When `chat_tx` is set, each line is also teed to the chat watcher. The tee is
+/// non-blocking (a lagging or absent watcher never stalls log capture), so a
+/// backed-up watcher drops chat lines rather than applying backpressure to the
+/// game's output.
+pub fn capture_output(
+    child: &mut Child,
+    logs: &Arc<LogBuffer>,
+    chat_tx: Option<&mpsc::Sender<String>>,
+) {
     if let Some(stdout) = child.stdout.take() {
-        spawn_line_pump(stdout, Arc::clone(logs), Stream::Stdout);
+        spawn_line_pump(stdout, Arc::clone(logs), Stream::Stdout, chat_tx.cloned());
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_line_pump(stderr, Arc::clone(logs), Stream::Stderr);
+        spawn_line_pump(stderr, Arc::clone(logs), Stream::Stderr, chat_tx.cloned());
     }
 }
 
@@ -60,8 +70,12 @@ enum Stream {
     Stderr,
 }
 
-fn spawn_line_pump<R>(reader: R, logs: Arc<LogBuffer>, stream: Stream)
-where
+fn spawn_line_pump<R>(
+    reader: R,
+    logs: Arc<LogBuffer>,
+    stream: Stream,
+    chat_tx: Option<mpsc::Sender<String>>,
+) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -72,6 +86,12 @@ where
                     match stream {
                         Stream::Stdout => println!("{line}"),
                         Stream::Stderr => eprintln!("{line}"),
+                    }
+                    if let Some(tx) = chat_tx.as_ref()
+                        && tx.try_send(line.clone()).is_err()
+                    {
+                        // Watcher lagging or gone; a dropped chat line is acceptable
+                        // — triggers are best-effort and must not stall log capture.
                     }
                     logs.push(line);
                 }

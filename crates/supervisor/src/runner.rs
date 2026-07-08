@@ -18,7 +18,7 @@ use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
-use crate::{process, readiness};
+use crate::{chat_watcher, process, readiness};
 
 /// How long the readiness probe waits for the game to bind before giving up.
 /// Generous: first-boot Minecraft world generation can run for minutes.
@@ -29,6 +29,12 @@ const RELAUNCH_BACKOFF: Duration = Duration::from_secs(2);
 const CONTROL_CHANNEL_DEPTH: usize = 16;
 /// Timeout for SDK calls; loopback, so anything slower is a stuck sidecar.
 const SDK_TIMEOUT: Duration = Duration::from_secs(5);
+/// Buffered captured lines awaiting the chat watcher. Bounded so a stalled watcher
+/// drops chat rather than growing without limit; sized well above normal chat rate.
+const CHAT_CHANNEL_DEPTH: usize = 128;
+/// Timeout for the trigger POST to the bot's agent endpoint. The reply returns
+/// asynchronously over RCON, so this only bounds the handoff, not Gary's turn.
+const CHAT_POST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Boot the control server and health heartbeat, then run the supervision loop
 /// until a shutdown signal.
@@ -54,6 +60,8 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         None => None,
     };
 
+    let chat_tx = spawn_chat_watcher(&cfg)?;
+
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
     let logs = Arc::new(LogBuffer::new());
     let control_port = cfg.control_port;
@@ -75,7 +83,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         Arc::clone(&health_stop),
     ));
 
-    supervise(cfg, sdk, control_rx, health_stop, logs, rcon).await
+    supervise(cfg, sdk, control_rx, health_stop, logs, rcon, chat_tx).await
 }
 
 /// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
@@ -108,6 +116,10 @@ struct RunDeps<'a> {
     ready_tx: &'a mpsc::Sender<()>,
     logs: &'a Arc<LogBuffer>,
     rcon: Option<&'a RconRuntime>,
+    /// Tee for captured lines to the chat watcher, or `None` when the game hasn't
+    /// enabled in-game chat. Threaded through relaunch so a bounced child's output
+    /// keeps flowing to the watcher.
+    chat_tx: Option<&'a mpsc::Sender<String>>,
 }
 
 async fn supervise(
@@ -117,6 +129,7 @@ async fn supervise(
     health_stop: Arc<Notify>,
     logs: Arc<LogBuffer>,
     rcon: Option<Arc<RconRuntime>>,
+    chat_tx: Option<mpsc::Sender<String>>,
 ) -> Result<()> {
     let rcon = rcon.as_deref();
     let mut state = SupervisorState::new();
@@ -133,7 +146,7 @@ async fn supervise(
         None
     } else {
         let mut spawned = process::spawn(&cfg, rcon).context("failed to spawn initial child")?;
-        process::capture_output(&mut spawned, &logs);
+        process::capture_output(&mut spawned, &logs, chat_tx.as_ref());
         let running = Some(spawned);
         note_started(&mut state, running.as_ref())?;
         spawn_readiness_probe(cfg.game_port, ready_tx.clone());
@@ -152,6 +165,7 @@ async fn supervise(
         ready_tx: &ready_tx,
         logs: &logs,
         rcon,
+        chat_tx: chat_tx.as_ref(),
     };
 
     loop {
@@ -182,6 +196,32 @@ async fn supervise(
         warn!(error = ?err, "graceful stop during shutdown failed");
     }
     Ok(())
+}
+
+/// Start the in-game chat watcher when the game enables it, returning the sender
+/// half the line pump tees captured output into. Returns `None` (no tee) when
+/// chat watching is off, so the game's output path is untouched for games that
+/// don't opt in.
+///
+/// # Errors
+///
+/// Returns an error if the watcher's HTTP client can't be built.
+fn spawn_chat_watcher(cfg: &SupervisorConfig) -> Result<Option<mpsc::Sender<String>>> {
+    let Some(watch) = cfg.chat_watch.clone() else {
+        return Ok(None);
+    };
+    let http = reqwest::Client::builder()
+        .timeout(CHAT_POST_TIMEOUT)
+        .build()
+        .context("failed to build chat watcher http client")?;
+    let (chat_tx, chat_rx) = mpsc::channel::<String>(CHAT_CHANNEL_DEPTH);
+    info!(
+        server = %watch.server,
+        trigger = %watch.trigger,
+        "in-game chat watcher enabled"
+    );
+    tokio::spawn(chat_watcher::run(chat_rx, watch, http));
+    Ok(Some(chat_tx))
 }
 
 /// Record a freshly spawned child's pid/launch time on the state machine.
@@ -316,7 +356,7 @@ async fn relaunch(
         Ok(spawned) => {
             *child = Some(spawned);
             if let Some(running) = child.as_mut() {
-                process::capture_output(running, deps.logs);
+                process::capture_output(running, deps.logs, deps.chat_tx);
             }
             if let Err(err) = note_started(state, child.as_ref()) {
                 error!(error = ?err, action, "failed to record (re)launch");

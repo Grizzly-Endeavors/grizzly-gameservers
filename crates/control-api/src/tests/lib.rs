@@ -247,6 +247,21 @@ fn logs_query_defaults_lines_to_none() {
 }
 
 #[test]
+fn ingame_trigger_request_round_trips() {
+    let request = IngameTriggerRequest {
+        server: "mc-abc123".to_owned(),
+        player: "Steve".to_owned(),
+        message: "how do I stop it raining?".to_owned(),
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    let parsed: IngameTriggerRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        parsed, request,
+        "IngameTriggerRequest should survive a serde round-trip"
+    );
+}
+
+#[test]
 fn logs_response_round_trips() {
     let response = LogsResponse {
         lines: vec![

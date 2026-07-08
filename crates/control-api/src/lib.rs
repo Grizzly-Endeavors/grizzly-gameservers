@@ -1,10 +1,14 @@
-//! Wire types shared between the in-pod supervisor's HTTP control server and the
-//! Discord bot's client. Kept dependency-light (serde only) so both sides agree
-//! on the contract without pulling each other's transport stacks.
+//! Wire types shared between the in-pod supervisor and the Discord bot. Kept
+//! dependency-light (serde only) so both sides agree on the contract without
+//! pulling each other's transport stacks.
 //!
-//! The supervisor serves these; the bot consumes them. Routing ([`ControlCommand`])
-//! and bodies ([`StatusResponse`], [`ControlOk`], [`ControlError`]) live together
-//! so a contract change is one edit both sides recompile against.
+//! Most of these describe the supervisor's control server, which the bot
+//! consumes: routing ([`ControlCommand`]) and bodies ([`StatusResponse`],
+//! [`ControlOk`], [`ControlError`]) live together so a contract change is one
+//! edit both sides recompile against. The reverse direction — the supervisor
+//! posting in-game chat triggers to the bot's agent endpoint
+//! ([`IngameTriggerRequest`] on [`INGAME_TRIGGER_PATH`]) — shares this crate too,
+//! so the one contract file stays authoritative for both loops.
 
 use serde::{Deserialize, Serialize};
 
@@ -305,6 +309,26 @@ pub struct LogsQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogsResponse {
     pub lines: Vec<String>,
+}
+
+/// Path the supervisor's chat watcher POSTs an in-game `@Gary` trigger to on the
+/// bot's agent endpoint. This is the one route that flows supervisor → bot (every
+/// other route in this crate flows bot → supervisor), so the bot binds it and the
+/// supervisor is the client — the inverse of the control API. Shared here so both
+/// sides build and match the same path.
+pub const INGAME_TRIGGER_PATH: &str = "/ingame-trigger";
+
+/// Body of `POST /ingame-trigger`: a player addressed the ops agent from inside a
+/// running server's chat. `server` is the Agones `GameServer` name the bot maps
+/// back to a channel scope, `player` is the in-game name to attribute the reply
+/// to, and `message` is the question with the trigger prefix already stripped by
+/// the supervisor. The message is untrusted player input — the bot answers it
+/// read-only and treats it as data, never instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IngameTriggerRequest {
+    pub server: String,
+    pub player: String,
+    pub message: String,
 }
 
 #[cfg(test)]
