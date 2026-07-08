@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use kube::Client;
 use tokio::sync::Mutex;
+use tokio_util::task::TaskTracker;
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
@@ -27,7 +28,10 @@ use crate::store::{GuildConfig, HomeChannels};
 /// confirm dialog and other component collectors stay in lockstep.
 pub(crate) const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// Per-command state shared with every poise command handler.
+/// Per-command state shared with every poise command handler. `Clone` is cheap
+/// (handles are `Arc`/client clones) so an event handler can hand an owned copy
+/// to a spawned, drainable Gary session (see `crate::run`'s task tracker).
+#[derive(Clone)]
 pub(crate) struct Data {
     pub(crate) kube_client: Client,
     /// Client for the in-pod supervisor control API (`/stop`, `/start`, `/restart`).
@@ -59,6 +63,9 @@ pub(crate) struct Data {
     /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
     /// backup commands then report "not configured", same shape as Gary/home).
     pub(crate) backup: MaybeBackups,
+    /// Tracks spawned Gary sessions so the shutdown drain can await an in-flight
+    /// turn (e.g. between a mutating tool call and its follow-up) before exit.
+    pub(crate) tasks: TaskTracker,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

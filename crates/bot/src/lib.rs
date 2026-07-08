@@ -16,6 +16,8 @@ pub use config::BotConfig;
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
@@ -27,6 +29,11 @@ use store::{GuildConfig, HomeChannels};
 /// mutating stop/restart calls override this per-request (they block on the in-pod
 /// graceful stop) — see `CONTROL_MUTATION_TIMEOUT` in `agones::supervisor`.
 const SUPERVISOR_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long, after the gateway stops, to let in-flight work (Gary sessions, a
+/// running backup cycle, in-game answers) finish before the process exits anyway.
+/// Kubernetes' default `terminationGracePeriodSeconds` is 30s, so stay under it.
+const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Start the Discord bot: connect to Kubernetes, register slash commands with
 /// each guild it's in, and run the gateway loop until a shutdown signal arrives.
@@ -65,6 +72,13 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
     let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
 
+    // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
+    // spawned subsystem watches it, and `tasks` tracks their handles so the drain
+    // can await in-flight work (a running backup, an unfinished Gary turn) before
+    // the process exits — not just close the gateway socket.
+    let shutdown = CancellationToken::new();
+    let tasks = TaskTracker::new();
+
     // Builds the backup service (if S3 is configured) and starts its scheduled
     // snapshot cycle; the returned handle also goes into the command Data.
     let backup = setup_backups(
@@ -81,6 +95,8 @@ pub async fn run(config: BotConfig) -> Result<()> {
             catalog: std::sync::Arc::clone(&catalog),
             provision_lock: std::sync::Arc::clone(&provision_lock),
         },
+        &tasks,
+        shutdown.clone(),
     )
     .await;
 
@@ -106,6 +122,8 @@ pub async fn run(config: BotConfig) -> Result<()> {
         },
         config.agent_port,
         config.ingame_token,
+        &tasks,
+        shutdown.clone(),
     );
 
     let data = Data {
@@ -122,15 +140,21 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sessions,
         home_channels,
         backup,
+        tasks: tasks.clone(),
     };
-    run_gateway(config.token, data).await
+    run_gateway(config.token, data, shutdown, tasks).await
 }
 
 /// Build the poise framework around a pre-constructed [`Data`], connect the
 /// Discord client, and run the gateway loop until shutdown. Split from [`run`] so
 /// the setup (Kubernetes, catalog, backups, the in-game endpoint) stays readable
 /// apart from the gateway wiring.
-async fn run_gateway(token: String, data: Data) -> Result<()> {
+async fn run_gateway(
+    token: String,
+    data: Data,
+    shutdown: CancellationToken,
+    tasks: TaskTracker,
+) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: slash_commands(),
@@ -157,13 +181,31 @@ async fn run_gateway(token: String, data: Data) -> Result<()> {
         .await
         .context("failed to build discord client")?;
 
-    spawn_shutdown_watch(std::sync::Arc::clone(&client.shard_manager));
+    spawn_shutdown_watch(
+        std::sync::Arc::clone(&client.shard_manager),
+        shutdown.clone(),
+    );
 
-    client
-        .start()
+    let gateway = client.start().await.context("discord gateway loop failed");
+
+    // The gateway has stopped (a signal fired, or it errored). Cancel the token so
+    // any subsystem not already draining begins, then await outstanding work up to
+    // the grace window before returning — so a SIGTERM can't cut a Gary turn off
+    // between a mutating tool call and its follow-up.
+    shutdown.cancel();
+    tasks.close();
+    if tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, tasks.wait())
         .await
-        .context("discord gateway loop failed")?;
-    Ok(())
+        .is_err()
+    {
+        warn!(
+            timeout_secs = SHUTDOWN_DRAIN_TIMEOUT.as_secs(),
+            "drain timed out; exiting with work still in flight"
+        );
+    } else {
+        info!("in-flight work drained cleanly");
+    }
+    gateway
 }
 
 /// Framework event handler: register this guild's slash commands the moment the
@@ -188,11 +230,17 @@ async fn on_gateway_event(
     discord::gary::on_event(ctx, event, framework, data).await
 }
 
-/// Drain the gateway when SIGINT/SIGTERM arrives, in a background task.
-fn spawn_shutdown_watch(shard_manager: std::sync::Arc<serenity::ShardManager>) {
+/// On SIGINT/SIGTERM: cancel the shared token (so every subsystem starts
+/// draining) and stop the gateway, in a background task. The gateway stopping is
+/// what lets [`run_gateway`] fall through to awaiting the tracked work.
+fn spawn_shutdown_watch(
+    shard_manager: std::sync::Arc<serenity::ShardManager>,
+    shutdown: CancellationToken,
+) {
     tokio::spawn(async move {
         wait_for_shutdown().await;
-        info!("shutdown signal received, stopping discord client");
+        info!("shutdown signal received, draining and stopping discord client");
+        shutdown.cancel();
         shard_manager.shutdown_all().await;
     });
 }
@@ -254,6 +302,8 @@ async fn setup_backups(
     retention: usize,
     interval: std::time::Duration,
     handles: CycleHandles,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
 ) -> backup::MaybeBackups {
     let Some(s3_config) = s3 else {
         warn!("GAMESERVERS_S3_ACCESS_KEY/SECRET_KEY not set; backups/archive/restore disabled");
@@ -267,21 +317,32 @@ async fn setup_backups(
         }
     };
     info!("backups enabled");
-    spawn_backup_cycle(std::sync::Arc::clone(&service), handles);
+    spawn_backup_cycle(std::sync::Arc::clone(&service), handles, tasks, shutdown);
     Some(service)
 }
 
-/// Snapshot every live server on the service's interval, in a background task.
-fn spawn_backup_cycle(service: std::sync::Arc<backup::BackupService>, handles: CycleHandles) {
+/// Snapshot every live server on the service's interval, in a tracked background
+/// task that stops at the next tick boundary once `shutdown` is cancelled. A
+/// snapshot already underway when the signal arrives runs to completion (the
+/// drain window bounds the wait), so a backup is never cut mid-stream.
+fn spawn_backup_cycle(
+    service: std::sync::Arc<backup::BackupService>,
+    handles: CycleHandles,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) {
     let interval = service.interval();
-    tokio::spawn(async move {
+    tasks.spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; skip it so a restart doesn't snapshot
         // right away, only once per interval thereafter.
         ticker.tick().await;
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {}
+                () = shutdown.cancelled() => break,
+            }
             let ctx = backup::BackupCtx {
                 client: &handles.client,
                 http: &handles.http,

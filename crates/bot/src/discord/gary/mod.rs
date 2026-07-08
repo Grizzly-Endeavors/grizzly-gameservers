@@ -65,7 +65,7 @@ pub(crate) async fn on_event(
     let mentioned = new_message.mentions.iter().any(|user| user.id == bot_id);
     if mentioned {
         let prompt = extract_prompt(&new_message.content, bot_id);
-        handle_message(ctx, data, new_message, prompt).await;
+        spawn_session(ctx, data, new_message, prompt);
         return Ok(());
     }
 
@@ -84,8 +84,26 @@ pub(crate) async fn on_event(
     if !is_auto_listen_prompt(prompt) {
         return Ok(());
     }
-    handle_message(ctx, data, new_message, prompt.to_owned()).await;
+    spawn_session(ctx, data, new_message, prompt.to_owned());
     Ok(())
+}
+
+/// Run a Gary turn on the shared task tracker instead of inline in poise's event
+/// dispatch, so the shutdown drain can await an in-flight turn (a mutating tool
+/// call and its follow-up) rather than the gateway socket closing under it. The
+/// spawned task owns cheap clones of the handler's borrowed inputs.
+fn spawn_session(
+    ctx: &serenity::Context,
+    data: &Data,
+    message: &serenity::Message,
+    prompt: String,
+) {
+    let ctx = ctx.clone();
+    let data = data.clone();
+    let message = message.clone();
+    data.tasks.clone().spawn(async move {
+        handle_message(&ctx, &data, &message, prompt).await;
+    });
 }
 
 /// Whether a no-mention message is something Gary should answer: non-empty and

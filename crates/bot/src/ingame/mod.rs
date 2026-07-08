@@ -22,6 +22,8 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use grizzly_control_api::{INGAME_TRIGGER_PATH, IngameTriggerRequest};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 
 use crate::agent::{OllamaConfig, SessionStore};
@@ -51,12 +53,21 @@ pub(crate) struct IngameDeps {
 struct IngameServer {
     deps: IngameDeps,
     token: Option<Arc<str>>,
+    /// Tracks the detached per-trigger answer tasks so the shutdown drain awaits
+    /// an in-flight in-game answer instead of dropping it on process exit.
+    tasks: TaskTracker,
 }
 
 /// Start the in-game agent endpoint in a background task, unless Gary is
 /// unconfigured (then there is nothing to answer with, so it stays off). Warns
 /// when no token is set — the endpoint is then only network-isolated.
-pub(crate) fn spawn(deps: IngameDeps, port: u16, token: Option<String>) {
+pub(crate) fn spawn(
+    deps: IngameDeps,
+    port: u16,
+    token: Option<String>,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) {
     if deps.ollama.is_none() {
         info!("in-game agent endpoint disabled (Gary not configured)");
         return;
@@ -67,18 +78,28 @@ pub(crate) fn spawn(deps: IngameDeps, port: u16, token: Option<String>) {
              protected by network policy"
         );
     }
-    tokio::spawn(async move {
-        if let Err(err) = serve(deps, port, token).await {
+    let tracker = tasks.clone();
+    tasks.spawn(async move {
+        if let Err(err) = serve(deps, port, token, shutdown, tracker).await {
             error!(error = ?err, "in-game agent endpoint terminated");
         }
     });
 }
 
-/// Bind the endpoint and serve until the process exits.
-async fn serve(deps: IngameDeps, port: u16, token: Option<String>) -> Result<()> {
+/// Bind the endpoint and serve until `shutdown` is cancelled, draining in-flight
+/// requests (axum's graceful shutdown) and, via the shared tracker, the detached
+/// answer tasks each trigger spawns.
+async fn serve(
+    deps: IngameDeps,
+    port: u16,
+    token: Option<String>,
+    shutdown: CancellationToken,
+    tasks: TaskTracker,
+) -> Result<()> {
     let state = IngameServer {
         deps,
         token: token.map(Arc::from),
+        tasks,
     };
     let app = Router::new()
         .route(INGAME_TRIGGER_PATH, post(ingame_trigger))
@@ -91,6 +112,7 @@ async fn serve(deps: IngameDeps, port: u16, token: Option<String>) -> Result<()>
         .with_context(|| format!("failed to bind in-game agent endpoint on {addr}"))?;
     info!(port, "in-game agent endpoint listening");
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         .context("in-game agent endpoint server failed")?;
     Ok(())
@@ -150,7 +172,7 @@ async fn ingame_trigger(
     axum::Json(request): axum::Json<IngameTriggerRequest>,
 ) -> StatusCode {
     let deps = server.deps;
-    tokio::spawn(async move {
+    server.tasks.spawn(async move {
         agent::handle_ingame_question(&deps, &request.server, &request.player, &request.message)
             .await;
     });
