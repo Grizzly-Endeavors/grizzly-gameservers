@@ -223,13 +223,13 @@ async fn archive_out(
         Err(err) => {
             error!(error = ?err, "failed to start data archive");
             resume_after_snapshot(query.quiesce, rcon.as_deref()).await;
-            return internal_error("failed to start the backup");
+            return internal_error("failed to spawn tar for the archive stream");
         }
     };
     let Some(stdout) = child.stdout.take() else {
         error!("tar create produced no stdout pipe");
         resume_after_snapshot(query.quiesce, rcon.as_deref()).await;
-        return internal_error("failed to start the backup");
+        return internal_error("archive tar produced no stdout pipe");
     };
     let stderr = child.stderr.take();
     let quiesce = query.quiesce;
@@ -265,19 +265,19 @@ async fn archive_in(
         && let Err(err) = archive::purge(&state.data_root)
     {
         error!(error = ?err, "failed to purge data root before restore");
-        return internal_error("failed to clear the server's data before restoring");
+        return internal_error("failed to purge data root before restore");
     }
 
     let mut child = match archive::spawn_extract(&state.data_root) {
         Ok(child) => child,
         Err(err) => {
             error!(error = ?err, "failed to start data restore");
-            return internal_error("failed to start the restore");
+            return internal_error("failed to spawn tar for the restore extract");
         }
     };
     let Some(mut stdin) = child.stdin.take() else {
         error!("tar extract produced no stdin pipe");
-        return internal_error("failed to start the restore");
+        return internal_error("restore tar produced no stdin pipe");
     };
     let stderr = child.stderr.take();
 
@@ -304,17 +304,17 @@ async fn archive_in(
 
     if let Some(err) = receive_error {
         error!(error = %err, "failed streaming archive into tar");
-        return internal_error("failed to receive the backup data");
+        return internal_error("failed to stream the archive body into tar");
     }
     match status {
         Ok(status) if status.success() => StatusCode::OK.into_response(),
         Ok(status) => {
             error!(?status, stderr = %stderr_tail, "tar extract exited non-zero");
-            internal_error("failed to unpack the backup")
+            internal_error("tar extract exited non-zero")
         }
         Err(err) => {
             error!(error = ?err, "failed to reap tar extract");
-            internal_error("failed to unpack the backup")
+            internal_error("failed to reap tar extract")
         }
     }
 }
@@ -399,7 +399,7 @@ async fn announce(
         Ok(_) => StatusCode::OK.into_response(),
         Err(err) => {
             warn!(error = ?err, message = %body.message, "rcon announce failed");
-            internal_error("couldn't broadcast the message to the server")
+            internal_error("failed to broadcast over rcon")
         }
     }
 }
