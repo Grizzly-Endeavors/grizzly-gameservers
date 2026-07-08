@@ -571,6 +571,16 @@ pub(crate) fn neutral_embed(title: &str, body: &str) -> CreateEmbed {
     .into_embed()
 }
 
+/// The shared refusal shown when a guild-scoped command runs without a guild (a
+/// DM). One home so the "run this in a server" copy doesn't drift across
+/// `/servers`, `/archives`, `/recover`, `/config`, and the scope check.
+pub(crate) fn guild_required_embed() -> CreateEmbed {
+    neutral_embed(
+        "Run this in a server",
+        "These commands only work inside a Discord server — run this in one of its channels, not a direct message.",
+    )
+}
+
 /// Red warning shown before a destructive `/destroy`, gating the deletion behind
 /// an explicit Confirm/Cancel button press.
 pub(crate) fn destroy_confirm_embed(server: &str) -> CreateEmbed {
