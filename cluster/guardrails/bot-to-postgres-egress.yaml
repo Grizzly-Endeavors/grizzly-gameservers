@@ -1,0 +1,31 @@
+# Bot → foundation Postgres.
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) puts every pod in
+# this namespace into default-deny egress and — via the RFC1918 `except` on the
+# internet rule — deliberately makes private LAN hosts, including the foundation
+# stores at 10.0.0.200, unreachable. That keeps a confused or prompt-injected
+# game pod from pivoting into the platform.
+#
+# But the bot keeps its durable state (the no-mention home-channel registry) on
+# the foundation Postgres at 10.0.0.200:5432. Cilium policies are additive, so
+# this widens the bot's egress by exactly one path: the bot identity →
+# 10.0.0.200/32, TCP 5432 only. It is deliberately NOT the whole foundation host
+# — OpenBao on 8200 stays unreachable — and it selects only the bot, so the
+# untrusted game-server pods remain fully leashed and can't reach Postgres.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-to-postgres-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  egress:
+    - toCIDRSet:
+        - cidr: 10.0.0.200/32
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
