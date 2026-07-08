@@ -220,6 +220,10 @@ fn admin_tools() -> Vec<ToolDef> {
             "Fully shut a server down to free its slot, keeping the world so it can start later.",
             params_schema::<NameParams>(),
         ),
+        // "do not confirm" is deliberate and unlike archive/restore's phrasing:
+        // the tool itself posts the Discord Danger/Cancel prompt, so telling Gary
+        // not to seek his own confirmation avoids a redundant chat loop ("are you
+        // sure?" / "yes" / "are you really sure?") stacked in front of that prompt.
         ToolDef::function(
             DESTROY_SERVER,
             "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
