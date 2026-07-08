@@ -120,6 +120,39 @@ impl RconRuntime {
             .await
     }
 
+    /// Flush pending world state and pause further saves so a live snapshot is
+    /// internally consistent, then the caller archives `/data`. A no-op for games
+    /// not in Minecraft mode — `save-off`/`save-all` are Minecraft console verbs,
+    /// so a generic RCON game gets an un-quiesced (still usable) snapshot rather
+    /// than a spurious command. Pair every call with [`Self::resume_saves`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a save command can't be delivered to the console.
+    pub async fn quiesce_for_snapshot(&self) -> Result<()> {
+        if !self.minecraft_quirks {
+            return Ok(());
+        }
+        self.run_command("save-off").await?;
+        self.run_command("save-all flush").await?;
+        Ok(())
+    }
+
+    /// Re-enable world saves after a snapshot. A no-op outside Minecraft mode.
+    /// Always run this to undo [`Self::quiesce_for_snapshot`], even if the
+    /// snapshot failed, so saves are never left disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `save-on` command can't be delivered.
+    pub async fn resume_saves(&self) -> Result<()> {
+        if !self.minecraft_quirks {
+            return Ok(());
+        }
+        self.run_command("save-on").await?;
+        Ok(())
+    }
+
     async fn exec(&self, address: SocketAddr, command: &str) -> Result<String> {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());

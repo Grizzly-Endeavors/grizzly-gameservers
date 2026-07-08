@@ -120,13 +120,25 @@ async fn supervise(
 ) -> Result<()> {
     let rcon = rcon.as_deref();
     let mut state = SupervisorState::new();
-    let mut child = Some(process::spawn(&cfg, rcon).context("failed to spawn initial child")?);
-    if let Some(running) = child.as_mut() {
-        process::capture_output(running, &logs);
-    }
-    note_started(&mut state, child.as_ref())?;
     let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
-    spawn_readiness_probe(cfg.game_port, ready_tx.clone());
+    let mut child = if cfg.start_paused {
+        // Restore path: hold the game down so the bot can seed /data over the
+        // control API before the first launch (otherwise the game would generate
+        // a throwaway fresh world we'd immediately overwrite). Present as Stopped
+        // so the bot's process-state label reads correctly until it issues /start.
+        info!("starting paused; the game process will not launch until /start");
+        state.on_stop_requested();
+        state.on_stopped();
+        publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
+        None
+    } else {
+        let mut spawned = process::spawn(&cfg, rcon).context("failed to spawn initial child")?;
+        process::capture_output(&mut spawned, &logs);
+        let running = Some(spawned);
+        note_started(&mut state, running.as_ref())?;
+        spawn_readiness_probe(cfg.game_port, ready_tx.clone());
+        running
+    };
 
     let mut sigterm =
         signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;

@@ -65,6 +65,12 @@ pub struct SupervisorConfig {
     /// Child env var the minted RCON password is injected under. Ignored when
     /// `rcon_port` is `None`.
     pub rcon_password_env: String,
+    /// Boot the control API but hold the game process down until a `/start` — set
+    /// by the bot when it provisions a server to restore from an archive, so it
+    /// can seed `/data` over the control API before the game ever launches (and
+    /// generates a throwaway fresh world). Off by default: a normal server starts
+    /// its game immediately.
+    pub start_paused: bool,
 }
 
 impl SupervisorConfig {
@@ -114,6 +120,7 @@ impl SupervisorConfig {
         let rcon_minecraft = optional_flag(lookup, "SUPERVISOR_RCON_MINECRAFT");
         let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
             .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
+        let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
 
         Ok(Self {
             child_command,
@@ -128,6 +135,7 @@ impl SupervisorConfig {
             rcon_port,
             rcon_minecraft,
             rcon_password_env,
+            start_paused,
         })
     }
 }

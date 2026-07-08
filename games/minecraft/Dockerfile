@@ -46,6 +46,13 @@ RUN cargo build --release --locked -p grizzly-supervisor
 # itzg performs as root — so no USER is set here. Rootless game-pod hardening is
 # a deferred follow-up (tracked with game-image CI signing + the Agones carve-out).
 FROM itzg/minecraft-server:java25-jdk@sha256:7e570b40bb7cabff1567d19903e9ba0c4f8cc6547dcc9fe5ac62c484e84c5734
+# zstd backs the supervisor's whole-/data archive routes (`tar --zstd`) for the
+# S3 backup/archive/restore flows; tar ships in the base. --no-install-recommends
+# keeps the layer lean.
+# nosemgrep: dockerfile.best-practice.missing-package-version -- distro-pinned, base is digest-pinned.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zstd \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
 # The supervisor launches itzg's /start as its child; itzg still reads EULA,
 # MEMORY and friends from the pod environment exactly as before.

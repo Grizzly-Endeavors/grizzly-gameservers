@@ -263,6 +263,35 @@ pub struct AnnounceRequest {
     pub message: String,
 }
 
+/// Path of the whole-`/data` archive routes. `GET` streams a compressed tar of
+/// the data root out; `POST` extracts an uploaded stream back into it. Streamed
+/// (not JSON) because a world can be gigabytes — the small `fs` read/write caps
+/// deliberately do not apply here. Shared so the bot's client and the
+/// supervisor's server build and match the same path.
+pub const ARCHIVE_PATH: &str = "/archive";
+
+/// Query for `GET /archive`. `quiesce` asks the supervisor to flush game state to
+/// disk before the snapshot (e.g. Minecraft `save-off` + `save-all flush`, then
+/// `save-on` after) so a *live* backup is internally consistent. Ignored when the
+/// game has no RCON. Absent defaults to `false` — used by archive-then-teardown,
+/// where the process is already stopped and there is nothing to flush.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveQuery {
+    #[serde(default)]
+    pub quiesce: bool,
+}
+
+/// Query for `POST /archive`. `purge` wipes the data root's contents before
+/// extracting, so an overwrite-restore replaces the world rather than merging the
+/// tar over whatever is already there. The purge is confined to the data root
+/// (its contents, never the mount itself). Absent defaults to `false` — used when
+/// seeding a freshly provisioned, empty PVC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtractQuery {
+    #[serde(default)]
+    pub purge: bool,
+}
+
 /// Query for `GET /logs`: how many trailing lines of captured output to return.
 /// Absent means the supervisor's default tail length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

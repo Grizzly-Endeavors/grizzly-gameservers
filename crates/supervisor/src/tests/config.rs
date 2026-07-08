@@ -42,6 +42,17 @@ fn applies_defaults_with_empty_environment() {
         config.rcon_password_env, "RCON_PASSWORD",
         "default rcon password env"
     );
+    assert!(!config.start_paused, "starts unpaused by default");
+}
+
+#[test]
+fn start_paused_reads_the_flag() {
+    let env = lookup_from(&[("SUPERVISOR_START_PAUSED", "true")]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert!(
+        config.start_paused,
+        "SUPERVISOR_START_PAUSED should hold the game down"
+    );
 }
 
 #[test]
