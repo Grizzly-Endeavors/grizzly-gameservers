@@ -92,6 +92,9 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
 async fn health_loop(sdk: SdkClient, interval: Duration, stop: Arc<Notify>) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Track health across ticks so a sustained outage warns once on the way down
+    // and once on recovery, rather than every `interval` for as long as it lasts.
+    let mut healthy = true;
     loop {
         tokio::select! {
             () = stop.notified() => {
@@ -99,8 +102,21 @@ async fn health_loop(sdk: SdkClient, interval: Duration, stop: Arc<Notify>) {
                 return;
             }
             _ = ticker.tick() => {
-                if let Err(err) = sdk.health().await {
-                    warn!(error = ?err, "agones health ping failed");
+                match sdk.health().await {
+                    Ok(()) => {
+                        if !healthy {
+                            info!("agones health ping recovered");
+                            healthy = true;
+                        }
+                    }
+                    Err(err) => {
+                        if healthy {
+                            warn!(error = ?err, "agones health ping failing; the sdk sidecar may be unreachable");
+                            healthy = false;
+                        } else {
+                            debug!(error = ?err, "agones health ping still failing");
+                        }
+                    }
                 }
             }
         }

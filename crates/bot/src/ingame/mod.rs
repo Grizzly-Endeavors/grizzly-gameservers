@@ -1,6 +1,6 @@
 //! The in-game agent endpoint: a small HTTP server the game-pod supervisors POST
 //! player `@Gary` chat triggers to. It authenticates the caller with a shared
-//! bearer token, resolves the server to its channel scope, and hands the question
+//! bearer token, resolves the server to its guild scope, and hands the question
 //! to the read-only [`agent`] orchestrator — which answers and broadcasts the
 //! reply back into the game over RCON. This is the bot half of the reverse loop;
 //! the inbound parsing lives in the supervisor's chat watcher.

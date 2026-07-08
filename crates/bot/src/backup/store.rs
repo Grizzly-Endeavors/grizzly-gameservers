@@ -17,6 +17,10 @@ use tracing::{error, info, warn};
 
 use crate::config::DbConfig;
 
+/// Postgres pool size for the archive index. Two is ample: the index is a
+/// low-traffic catalog touched only on archive/recover/list, not a hot path.
+const ARCHIVE_INDEX_MAX_CONNECTIONS: u32 = 2;
+
 /// Idempotent schema for the archive catalog, applied at startup against the
 /// bot's own database. Guild ids are text (Discord snowflakes overflow the sign
 /// bit of `BIGINT`), matching `home_channels`.
@@ -117,7 +121,7 @@ impl ArchiveStore {
             .username(&config.user)
             .password(&config.password);
         let pool = PgPoolOptions::new()
-            .max_connections(2)
+            .max_connections(ARCHIVE_INDEX_MAX_CONNECTIONS)
             .connect_with(options)
             .await
             .with_context(|| {

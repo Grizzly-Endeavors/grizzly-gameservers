@@ -21,6 +21,11 @@ use crate::config::S3Config;
 /// and the only buffer the bot holds in memory during an upload.
 const PART_SIZE: usize = 16 * 1024 * 1024;
 
+/// S3's hard cap on the number of parts in one multipart upload. Enforced
+/// preemptively so an oversized archive fails with a clear message instead of
+/// being signed and PUT part-by-part until the server rejects it opaquely.
+const S3_MAX_PARTS: usize = 10_000;
+
 /// Validity window for each presigned URL. Generous relative to a single part
 /// upload or list over the LAN, so a slow world never outruns its own signature.
 const SIGN_EXPIRY: Duration = Duration::from_hours(1);
@@ -132,9 +137,15 @@ impl S3Store {
         already_uploaded: usize,
         data: Vec<u8>,
     ) -> Result<String> {
-        // Part numbers are 1-based and capped at 10,000 by S3.
-        let part_number = u16::try_from(already_uploaded + 1)
-            .context("archive exceeds the 10,000-part multipart limit")?;
+        // Part numbers are 1-based; S3 caps a multipart upload at S3_MAX_PARTS,
+        // which fits comfortably in the u16 that `upload_part` wants.
+        let part_index = already_uploaded + 1;
+        anyhow::ensure!(
+            part_index <= S3_MAX_PARTS,
+            "archive exceeds the {S3_MAX_PARTS}-part multipart limit"
+        );
+        let part_number =
+            u16::try_from(part_index).context("multipart part number overflowed u16")?;
         let action = self
             .bucket
             .upload_part(Some(&self.credentials), key, part_number, upload_id);

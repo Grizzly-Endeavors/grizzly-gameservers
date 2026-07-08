@@ -57,7 +57,13 @@ case "${1:-}" in
     status)
         if running; then echo "running (pid $(cat "$pid_file"))"; else echo "stopped"; fi
         ;;
-    logs) tail -f "$log_file" ;;
+    logs)
+        if [ ! -f "$log_file" ]; then
+            echo "no log file yet at $log_file — run '$0 start' first" >&2
+            exit 1
+        fi
+        tail -f "$log_file"
+        ;;
     *)
         echo "usage: $0 {start|stop|restart|status|logs}" >&2
         exit 2

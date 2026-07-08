@@ -103,9 +103,13 @@ impl BackupService {
         for target in targets {
             match self.snapshot_target(ctx, &target, CREATED_BY_AUTO).await {
                 Ok(BackupOutcome::BackedUp { .. }) => backed_up += 1,
-                Ok(_) => {
+                Ok(other) => {
                     failed += 1;
-                    warn!(instance = %target.instance, "scheduled backup did not complete");
+                    warn!(
+                        instance = %target.instance,
+                        outcome = ?other,
+                        "scheduled backup did not complete"
+                    );
                 }
                 Err(err) => {
                     failed += 1;

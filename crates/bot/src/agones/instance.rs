@@ -163,7 +163,9 @@ fn apply_labels(labels: &mut Option<BTreeMap<String, String>>, identity: &Instan
 /// Repoint every `persistentVolumeClaim` volume in the pod template at `pvc`.
 /// Errors if the template exposes no such volume — a game with persistent state
 /// must declare one, and silently creating a server with no world storage would
-/// be a data-loss surprise.
+/// be a data-loss surprise. Catalog templates declare exactly one claim today;
+/// if a future template carried two, both would collapse onto this single PVC,
+/// so a multi-claim template must revisit this.
 fn rebind_claim(data: &mut Value, pvc: &str) -> Result<()> {
     let volumes = data
         .get_mut("spec")

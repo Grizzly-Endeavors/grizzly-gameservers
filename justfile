@@ -1,7 +1,7 @@
 # justfile — discoverable dev tasks
 #
-# Every recipe is also documented in README.md as the raw cargo command,
-# so `just` is convenience, not required.
+# The core cargo recipes (ci-local, test, fmt, lint, deny) are also documented
+# in README.md as raw commands; `just` is convenience, not required.
 
 set shell := ["bash", "-cu"]
 
@@ -50,7 +50,7 @@ fmt-check:
 
 # Run clippy with deny-warnings across all targets.
 lint:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets -- -D warnings
 
 # Run cargo-deny (advisories, licenses, bans, sources).
 deny:

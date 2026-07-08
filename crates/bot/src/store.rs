@@ -21,6 +21,13 @@ use tracing::{error, info, warn};
 
 use crate::config::DbConfig;
 
+/// Postgres pool sizes for the bot's two small registries. Both are low-traffic —
+/// loaded once at startup, then the occasional write on `/gary-home` or `/config`
+/// — and the in-memory caches (not the pool) serve the per-message hot path, so
+/// these are deliberately modest.
+const HOME_POOL_MAX_CONNECTIONS: u32 = 4;
+const GUILD_CONFIG_POOL_MAX_CONNECTIONS: u32 = 2;
+
 /// Build a connection pool to the bot's foundation-Postgres database. Discord
 /// snowflakes are stored as text throughout — they are unsigned 64-bit, which
 /// `BIGINT` can't hold the top bit of, and text matches how the id is used
@@ -68,7 +75,7 @@ struct HomeStore {
 
 impl HomeStore {
     async fn connect(config: &DbConfig) -> Result<Self> {
-        let pool = connect_pool(config, 4).await?;
+        let pool = connect_pool(config, HOME_POOL_MAX_CONNECTIONS).await?;
         // raw_sql runs the create-plus-migrate batch as one call.
         sqlx::raw_sql(HOME_SCHEMA)
             .execute(&pool)
@@ -241,7 +248,7 @@ struct GuildConfigStore {
 
 impl GuildConfigStore {
     async fn connect(config: &DbConfig) -> Result<Self> {
-        let pool = connect_pool(config, 2).await?;
+        let pool = connect_pool(config, GUILD_CONFIG_POOL_MAX_CONNECTIONS).await?;
         // raw_sql runs the multi-statement table batch as one call.
         sqlx::raw_sql(GUILD_CONFIG_SCHEMA)
             .execute(&pool)

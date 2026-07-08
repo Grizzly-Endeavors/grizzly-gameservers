@@ -91,8 +91,20 @@ pub(crate) async fn create(
     let options: Vec<CreateSelectMenuOption> = data
         .catalog
         .game_ids()
+        .take(MAX_SELECT_OPTIONS)
         .map(|id| CreateSelectMenuOption::new(id, id))
         .collect();
+    if options.is_empty() {
+        ctx.send(
+            reply_with(neutral_embed(
+                "No games available",
+                "There aren't any games in the catalog to launch yet.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
     let menu = CreateSelectMenu::new("create_game", CreateSelectMenuKind::String { options })
         .placeholder("Pick a game to launch");
 
@@ -284,7 +296,7 @@ async fn await_ready(
                 .edit(
                     ctx,
                     cleared(error_embed(
-                        "The server was created, but I lost track of whether it came online. \
+                        "I lost track of whether the server came online. \
                          Check `/servers` in a minute.",
                     )),
                 )
@@ -767,7 +779,7 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     );
     if !config.is_available() {
         body.push_str(
-            "\n\n⚠️ My config storage is offline right now, so only the owner and operator \
+            "\n\n⚠️ My long-term memory is offline right now, so only the owner and operator \
              are recognized until it reconnects.",
         );
     }
@@ -902,7 +914,7 @@ async fn respond_config_change(
             neutral_embed("No change", &format!("{subject} was already set that way."))
         }
         Ok(ConfigChange::Unavailable) => error_embed(
-            "I can't save that right now — my config storage is offline. Try again later.",
+            "I can't save that right now — my long-term memory is offline. Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, "failed to update guild admin config");
@@ -931,7 +943,8 @@ pub(crate) async fn backup(
 ) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
@@ -977,7 +990,8 @@ pub(crate) async fn backups(
 ) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
@@ -1012,11 +1026,13 @@ pub(crate) async fn backups(
 pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     if !service.archives_enabled() {
-        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        ctx.send(reply_with(archives_unavailable_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     }
     let Some(scope) = command_scope(ctx) else {
@@ -1065,11 +1081,13 @@ pub(crate) async fn archive(
 ) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     if !service.archives_enabled() {
-        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        ctx.send(reply_with(archives_unavailable_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     }
     let Some(reply) =
@@ -1124,7 +1142,8 @@ pub(crate) async fn restore(
 ) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
@@ -1291,11 +1310,13 @@ async fn finish_restore(
 pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
     let Some(service) = data.backup.clone() else {
-        ctx.send(reply_with(backups_disabled_embed())).await?;
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     if !service.archives_enabled() {
-        ctx.send(reply_with(archives_unavailable_embed())).await?;
+        ctx.send(reply_with(archives_unavailable_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     }
     let Some(scope) = command_scope(ctx) else {

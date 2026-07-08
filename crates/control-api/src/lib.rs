@@ -300,7 +300,8 @@ pub struct ExtractQuery {
 /// Absent means the supervisor's default tail length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogsQuery {
-    #[serde(default)]
+    // No #[serde(default)] needed: serde already defaults a missing Option field
+    // to None. (The bool queries above need it because a bare bool does not.)
     pub lines: Option<usize>,
 }
 
