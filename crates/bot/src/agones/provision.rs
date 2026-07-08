@@ -12,7 +12,7 @@ use tracing::{debug, error, warn};
 
 use super::catalog::{GameCatalog, GameCatalogEntry};
 use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
-use super::labels::{GAME_KEY, GUILD_KEY, is_managed};
+use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_node_port};
 use super::naming::{pvc_name, select_free_port};
 use super::scope::ServerScope;
 use super::types::{GameServer, server_address};
@@ -174,6 +174,10 @@ async fn provision_under_lock(
                 excluded.insert(port);
                 continue;
             }
+            // A cross-replica race can slip past the upfront instance_exists check
+            // and collide here; the module doc promises AlreadyExists, so honour
+            // it rather than surfacing a raw 409 to the friend (mirrors begin_start).
+            Err(err) if is_already_exists(&err) => return Ok(Provisioned::AlreadyExists),
             Err(err) => {
                 return Err(err)
                     .with_context(|| format!("failed to create service for {instance}"));
@@ -278,12 +282,8 @@ pub(crate) async fn begin_start(
         return Ok(StartBegin::NotManaged);
     }
 
-    let game = service
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(GAME_KEY))
-        .cloned()
+    let game = label_value(service.metadata.labels.as_ref(), GAME_KEY)
+        .map(str::to_owned)
         .with_context(|| format!("managed service {instance} is missing its game label"))?;
     let Some(entry) = catalog.get(&game) else {
         return Ok(StartBegin::UnknownGame(game));
@@ -293,13 +293,9 @@ pub(crate) async fn begin_start(
     // Carry the owning guild from the surviving Service so the recreated
     // GameServer keeps its scope; empty for a pre-scoping instance (label
     // absent), which leaves the guild label off rather than stamping "".
-    let guild = service
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(GUILD_KEY))
-        .cloned()
-        .unwrap_or_default();
+    let guild = label_value(service.metadata.labels.as_ref(), GUILD_KEY)
+        .unwrap_or_default()
+        .to_owned();
 
     let identity = InstanceIdentity {
         name: instance.to_owned(),
@@ -427,16 +423,6 @@ async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
         }
     }
     Ok(ports)
-}
-
-fn service_node_port(service: &Service) -> Option<i32> {
-    service
-        .spec
-        .as_ref()?
-        .ports
-        .as_ref()?
-        .iter()
-        .find_map(|port| port.node_port)
 }
 
 /// Poll a `GameServer` until it reports Ready/Allocated, returning `false` if it

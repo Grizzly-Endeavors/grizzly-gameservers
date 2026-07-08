@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+
+use k8s_openapi::api::core::v1::Service;
 
 /// Label key + value that marks an object as a shim-provisioned per-world
 /// instance. The Flux-managed singleton game servers do **not** carry this, so
@@ -33,6 +35,53 @@ pub(crate) fn is_managed(labels: Option<&BTreeMap<String, String>>) -> bool {
     labels
         .and_then(|map| map.get(MANAGED_BY_KEY))
         .is_some_and(|value| value == MANAGED_BY_VALUE)
+}
+
+/// Read a single label value off an object's label map, if present. The one home
+/// for the `labels.as_ref().and_then(|m| m.get(KEY))` idiom.
+pub(crate) fn label_value<'a>(
+    labels: Option<&'a BTreeMap<String, String>>,
+    key: &str,
+) -> Option<&'a str> {
+    labels.and_then(|map| map.get(key)).map(String::as_str)
+}
+
+/// The first `NodePort` a Service exposes, if any. Each managed instance's
+/// Service leases exactly one, so "first" is the instance's node port.
+pub(crate) fn service_node_port(service: &Service) -> Option<i32> {
+    service
+        .spec
+        .as_ref()?
+        .ports
+        .as_ref()?
+        .iter()
+        .find_map(|port| port.node_port)
+}
+
+/// The `GameServer` a `NodePort` Service targets, via its `agones.dev/gameserver`
+/// selector — the join key between a Service and the pod behind it.
+pub(crate) fn service_gameserver_target(service: &Service) -> Option<&str> {
+    service
+        .spec
+        .as_ref()?
+        .selector
+        .as_ref()?
+        .get(GAMESERVER_SELECTOR_KEY)
+        .map(String::as_str)
+}
+
+/// Map each `NodePort` Service's targeted gameserver to its first `NodePort`, so
+/// a gameserver listing can resolve each server's address in one pass.
+pub(crate) fn node_ports_by_gameserver(services: &[Service]) -> HashMap<String, i32> {
+    services
+        .iter()
+        .filter_map(|service| {
+            Some((
+                service_gameserver_target(service)?.to_owned(),
+                service_node_port(service)?,
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]

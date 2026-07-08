@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
@@ -8,7 +8,10 @@ use tracing::warn;
 
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
-use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, is_managed};
+use super::labels::{
+    GAME_KEY, GUILD_KEY, is_managed, label_value, node_ports_by_gameserver,
+    service_gameserver_target, service_node_port,
+};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerSummary, summarize};
 
@@ -58,6 +61,12 @@ pub(crate) async fn list_active_servers(
     let mut summaries = Vec::with_capacity(gs_list.items.len());
     let mut live: HashSet<&str> = HashSet::new();
     for gameserver in &gs_list.items {
+        // Only shim-provisioned instances are the bot's domain — skip Flux-managed
+        // singletons so the live half matches the stopped half and the backup
+        // targets, all of which are managed-only.
+        if !is_managed(gameserver.metadata.labels.as_ref()) {
+            continue;
+        }
         let instance = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
         live.insert(instance);
         let agones_state = gameserver
@@ -151,23 +160,13 @@ fn append_stopped_instances(
         if !is_managed(service.metadata.labels.as_ref()) {
             continue;
         }
-        let Some(spec) = service.spec.as_ref() else {
+        let Some(target) = service_gameserver_target(service) else {
             continue;
         };
-        let Some(target) = spec
-            .selector
-            .as_ref()
-            .and_then(|selector| selector.get(GAMESERVER_SELECTOR_KEY))
-        else {
-            continue;
-        };
-        if live.contains(target.as_str()) {
+        if live.contains(target) {
             continue;
         }
-        let node_port = spec
-            .ports
-            .as_ref()
-            .and_then(|ports| ports.iter().find_map(|port| port.node_port));
+        let node_port = service_node_port(service);
         let game = label_value(service.metadata.labels.as_ref(), GAME_KEY);
         summaries.push(summarize(
             target,
@@ -177,34 +176,4 @@ fn append_stopped_instances(
             domain,
         ));
     }
-}
-
-/// Read a single label value off an object's label map, if present.
-fn label_value<'a>(labels: Option<&'a BTreeMap<String, String>>, key: &str) -> Option<&'a str> {
-    labels.and_then(|map| map.get(key)).map(String::as_str)
-}
-
-/// Map each `NodePort` Service's targeted gameserver (via its
-/// `agones.dev/gameserver` selector) to the Service's first `NodePort`.
-fn node_ports_by_gameserver(services: &[Service]) -> HashMap<String, i32> {
-    let mut ports = HashMap::new();
-    for service in services {
-        let Some(spec) = service.spec.as_ref() else {
-            continue;
-        };
-        let Some(selector) = spec.selector.as_ref() else {
-            continue;
-        };
-        let Some(gameserver) = selector.get(GAMESERVER_SELECTOR_KEY) else {
-            continue;
-        };
-        let Some(service_ports) = spec.ports.as_ref() else {
-            continue;
-        };
-        let Some(node_port) = service_ports.iter().find_map(|port| port.node_port) else {
-            continue;
-        };
-        ports.insert(gameserver.clone(), node_port);
-    }
-    ports
 }
