@@ -62,6 +62,7 @@ pub(crate) struct BackupCtx<'a> {
 }
 
 /// Outcome of a manual or scheduled backup of a live server.
+#[derive(Debug)]
 pub(crate) enum BackupOutcome {
     BackedUp {
         size_bytes: u64,

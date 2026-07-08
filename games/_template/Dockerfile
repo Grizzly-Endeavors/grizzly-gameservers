@@ -22,8 +22,8 @@
 # satisfy.
 
 # Builder base pinned by digest (rust:1-slim-trixie, amd64+arm64). Re-verify
-# the current digest before use — this template may be copied long after it
-# was last checked (see grizzly-gameservers CLAUDE.md "Version Pinning").
+# the current digest against the upstream registry before use — this template
+# may be copied long after it was last checked.
 FROM rust:1-slim-trixie@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS chef
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config \

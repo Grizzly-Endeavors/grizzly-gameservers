@@ -6,8 +6,10 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-/// Current manifest schema version, bumped if the shape changes so an old
-/// manifest can still be recognised (and migrated) rather than misread.
+/// Current manifest schema version, stamped into every manifest as a
+/// forward-compatibility marker. Nothing reads it back yet — the loader assumes
+/// schema 1 — so bumping it is only useful once a future reader branches on the
+/// value to migrate or reject an older shape; it does not migrate anything today.
 pub(crate) const MANIFEST_SCHEMA: u32 = 1;
 
 /// Whether an artifact is an automatic/manual backup of a *live* instance or a
@@ -94,7 +96,9 @@ fn stamp(ts: Timestamp) -> String {
 /// The tarball object keys under a backup prefix that should be pruned to keep
 /// only the `keep` newest. `tarball_keys` need not be pre-sorted; they are ranked
 /// lexicographically (== chronologically, given [`stamp_now`]'s format), and
-/// everything older than the newest `keep` is returned oldest-first.
+/// everything older than the newest `keep` is returned oldest-first. `keep == 0`
+/// therefore returns *every* key — callers must reject a zero retention upstream
+/// rather than relying on this to keep a floor.
 pub(crate) fn keys_to_prune(mut tarball_keys: Vec<String>, keep: usize) -> Vec<String> {
     tarball_keys.sort();
     let prune_count = tarball_keys.len().saturating_sub(keep);
