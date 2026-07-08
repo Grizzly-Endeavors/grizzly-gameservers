@@ -152,8 +152,20 @@ impl ControlOk {
     }
 }
 
-/// Error body for any failed control route: `{"error": "..."}`. The message is
-/// developer-facing; the bot translates outcomes into friend-facing copy.
+/// Error body for any failed control route: `{"error": "..."}`.
+///
+/// The bot reads this message in one of three registers depending on the route,
+/// so the supervisor writes each body to match how it's consumed:
+///
+/// - **Relayed** — `/command` and the lifecycle routes (`/stop`, `/start`,
+///   `/restart`): the bot surfaces the message to the friend near-verbatim, so
+///   these bodies are **friend-facing**.
+/// - **Discarded + substituted** — `/archive` and `/restore`: the bot logs the
+///   body but replaces it with its own generic copy for the friend, so these
+///   bodies are **diagnostic** — they only ever land in a log line.
+/// - **Unread** — `/announce`: the bot logs only the status code and never
+///   deserializes the body, so this body is **diagnostic** too (the supervisor's
+///   own log carries the real cause).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlError {
     pub error: String,
