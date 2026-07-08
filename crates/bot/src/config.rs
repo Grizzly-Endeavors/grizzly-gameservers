@@ -16,6 +16,9 @@ const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
 /// Port the in-pod supervisor serves its control API on; must match the catalog
 /// (`games/<game>/gameserver.yaml`) and the supervisor's own default.
 const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Port the in-game agent endpoint listens on for supervisor-posted `@Gary`
+/// triggers. Pod-internal, reached over the bot's `ClusterIP` Service.
+const DEFAULT_AGENT_PORT: u16 = 9360;
 /// Ollama Cloud's `OpenAI`-compatible chat-completions base. The agent ("Gary")
 /// posts to `{base}/chat/completions`. Overridable for self-hosted Ollama.
 const DEFAULT_OLLAMA_BASE_URL: &str = "https://ollama.com/v1";
@@ -73,6 +76,11 @@ pub struct BotConfig {
     pub(crate) backup_interval: Duration,
     /// How many backups to keep per server before the cycle prunes older ones.
     pub(crate) backup_retention: usize,
+    /// Port the in-game agent endpoint binds for supervisor-posted chat triggers.
+    pub(crate) agent_port: u16,
+    /// Shared bearer token the in-game agent endpoint requires. `None` runs it
+    /// open (NetworkPolicy-only); synced from `OpenBao` via ESO in-cluster.
+    pub(crate) ingame_token: Option<String>,
 }
 
 /// Connection settings for the backups S3 bucket. Only the access/secret keys are
@@ -145,6 +153,10 @@ impl BotConfig {
         );
         let backup_retention = optional_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
             .unwrap_or(DEFAULT_BACKUP_RETENTION);
+        let agent_port =
+            optional_u16(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
+        let ingame_token =
+            optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.is_empty());
 
         Ok(Self {
             token,
@@ -162,6 +174,8 @@ impl BotConfig {
             s3,
             backup_interval,
             backup_retention,
+            agent_port,
+            ingame_token,
         })
     }
 }

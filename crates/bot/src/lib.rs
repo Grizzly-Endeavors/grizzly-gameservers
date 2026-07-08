@@ -9,6 +9,7 @@ mod agones;
 mod backup;
 mod config;
 mod discord;
+mod ingame;
 mod store;
 
 pub use config::BotConfig;
@@ -81,20 +82,59 @@ pub async fn run(config: BotConfig) -> Result<()> {
     )
     .await;
 
-    let guild_id = serenity::GuildId::new(config.guild_id);
-
     let ollama = build_ollama(
         config.ollama_api_key,
         config.ollama_base_url,
         config.ollama_model,
     );
 
+    // Start the in-game agent endpoint the game-pod supervisors POST `@Gary` chat
+    // triggers to. Shares Gary's core and session store via cloned handles (the
+    // same pattern as the backup cycle); stays off when Gary isn't configured.
+    ingame::spawn(
+        ingame::IngameDeps {
+            client: kube_client.clone(),
+            http: http.clone(),
+            namespace: namespace.clone(),
+            domain: domain.clone(),
+            control_port,
+            catalog: std::sync::Arc::clone(&catalog),
+            ollama: ollama.clone(),
+            sessions: std::sync::Arc::clone(&sessions),
+        },
+        config.agent_port,
+        config.ingame_token,
+    );
+
+    let data = Data {
+        kube_client,
+        http,
+        namespace,
+        domain,
+        control_port,
+        catalog,
+        provision_lock,
+        admin_role_id,
+        admin_user_ids,
+        ollama,
+        sessions,
+        home_channels,
+        backup,
+    };
+    run_gateway(config.token, serenity::GuildId::new(config.guild_id), data).await
+}
+
+/// Build the poise framework around a pre-constructed [`Data`], connect the
+/// Discord client, and run the gateway loop until shutdown. Split from [`run`] so
+/// the setup (Kubernetes, catalog, backups, the in-game endpoint) stays readable
+/// apart from the gateway wiring.
+async fn run_gateway(token: String, guild_id: serenity::GuildId, data: Data) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: slash_commands(),
             command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
-            event_handler: |ctx, event, framework, data| {
-                Box::pin(discord::gary::on_event(ctx, event, framework, data))
+            event_handler: |ctx, event, framework, event_data| {
+                Box::pin(discord::gary::on_event(ctx, event, framework, event_data))
             },
             ..Default::default()
         })
@@ -106,21 +146,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                     guild = guild_id.get(),
                     "registered guild-scoped slash commands"
                 );
-                Ok(Data {
-                    kube_client,
-                    http,
-                    namespace,
-                    domain,
-                    control_port,
-                    catalog,
-                    provision_lock,
-                    admin_role_id,
-                    admin_user_ids,
-                    ollama,
-                    sessions,
-                    home_channels,
-                    backup,
-                })
+                Ok(data)
             })
         })
         .build();
@@ -130,7 +156,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // could only ever see `@`-mentions and DMs — the two content exemptions.
     let intents =
         serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
-    let mut client = serenity::ClientBuilder::new(config.token, intents)
+    let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
         .await
         .context("failed to build discord client")?;

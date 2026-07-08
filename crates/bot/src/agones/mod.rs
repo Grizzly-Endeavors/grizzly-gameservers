@@ -23,7 +23,7 @@ pub(crate) use provision::{
     begin_start, destroy_instance, list_instance_names, provision_instance,
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
-pub(crate) use scope::{ScopeVerdict, ServerScope, verify_scope};
+pub(crate) use scope::{ScopeVerdict, ServerScope, channel_of, verify_scope};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state,
     resolve_managed_pod, supervisor_restart, supervisor_start, supervisor_stop,
