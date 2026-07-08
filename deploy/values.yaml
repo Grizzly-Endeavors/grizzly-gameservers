@@ -35,6 +35,16 @@ bot:
   # an absent key disables Gary). Override the model here without a rebuild.
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
+  # Foundation Postgres for the bot's durable state (the no-mention home-channel
+  # registry). Host/port/name/user are plain config; the password is synced from
+  # OpenBao into the grizzly-gameservers-db Secret and injected via secretKeyRef
+  # (optional — an absent password disables home channels, mentions still work).
+  # Provisioned by grizzly-platform's setup-grizzly-gameservers-stores.yml.
+  db:
+    host: 10.0.0.200 # foundation Postgres on the R730xd (LAN)
+    port: 5432
+    name: grizzly_gameservers
+    user: grizzly_gameservers
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:

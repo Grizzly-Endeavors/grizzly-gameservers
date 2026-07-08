@@ -8,6 +8,7 @@ mod agent;
 mod agones;
 mod config;
 mod discord;
+mod store;
 
 pub use config::BotConfig;
 
@@ -17,6 +18,7 @@ use tracing::{error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
+use store::HomeChannels;
 
 /// Start the Discord bot: connect to Kubernetes, register the guild-scoped
 /// slash commands, and run the gateway loop until a shutdown signal arrives.
@@ -57,6 +59,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let admin_user_ids: std::sync::Arc<[u64]> = config.admin_user_ids.into();
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
+    let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
     let guild_id = serenity::GuildId::new(config.guild_id);
 
     let ollama = config.ollama_api_key.map(|api_key| OllamaConfig {
@@ -81,6 +84,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
                 commands::restart(),
                 commands::destroy(),
                 commands::new_session(),
+                commands::gary_home(),
             ],
             command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
             event_handler: |ctx, event, framework, data| {
@@ -108,12 +112,17 @@ pub async fn run(config: BotConfig) -> Result<()> {
                     admin_user_ids,
                     ollama,
                     sessions,
+                    home_channels,
                 })
             })
         })
         .build();
 
-    let intents = serenity::GatewayIntents::non_privileged();
+    // MESSAGE_CONTENT is privileged (toggle it on in the Discord dev portal).
+    // Without it, messages in a home channel arrive with empty content, so Gary
+    // could only ever see `@`-mentions and DMs — the two content exemptions.
+    let intents =
+        serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
     let mut client = serenity::ClientBuilder::new(config.token, intents)
         .framework(framework)
         .await

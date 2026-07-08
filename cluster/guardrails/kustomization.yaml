@@ -5,3 +5,4 @@ resources:
   - networkpolicy.yaml
   - bot-rbac.yaml
   - bot-to-supervisor-egress.yaml
+  - bot-to-postgres-egress.yaml

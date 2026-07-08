@@ -175,6 +175,78 @@ fn ollama_overrides_apply_and_blank_key_reads_as_absent() {
 }
 
 #[test]
+fn db_is_none_without_a_password() {
+    // The password is the OpenBao-sourced part; its absence is the degrade signal.
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "42")]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+    assert!(
+        config.db.is_none(),
+        "no DB_PASSWORD should disable persistence"
+    );
+}
+
+#[test]
+fn db_defaults_to_foundation_postgres_when_password_present() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("DB_PASSWORD", "pw"),
+    ]);
+    let db = BotConfig::from_env_with(&env).unwrap().db.unwrap();
+    assert_eq!(db.host, "10.0.0.200");
+    assert_eq!(db.port, 5432);
+    assert_eq!(db.database, "grizzly_gameservers");
+    assert_eq!(db.user, "grizzly_gameservers");
+    assert_eq!(db.password, "pw");
+}
+
+#[test]
+fn blank_db_password_reads_as_absent() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("DB_PASSWORD", ""),
+    ]);
+    assert!(
+        BotConfig::from_env_with(&env).unwrap().db.is_none(),
+        "a blank password should read as unset, not an empty credential"
+    );
+}
+
+#[test]
+fn db_overrides_apply() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("DB_PASSWORD", "pw"),
+        ("DB_HOST", "127.0.0.1"),
+        ("DB_PORT", "6000"),
+        ("DB_NAME", "gg_dev"),
+        ("DB_USER", "dev"),
+    ]);
+    let db = BotConfig::from_env_with(&env).unwrap().db.unwrap();
+    assert_eq!(db.host, "127.0.0.1");
+    assert_eq!(db.port, 6000);
+    assert_eq!(db.database, "gg_dev");
+    assert_eq!(db.user, "dev");
+}
+
+#[test]
+fn invalid_db_port_is_an_error() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DISCORD_GUILD_ID", "42"),
+        ("DB_PASSWORD", "pw"),
+        ("DB_PORT", "99999"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("DB_PORT"),
+        "an out-of-range DB port should name the variable, got: {err}"
+    );
+}
+
+#[test]
 fn zero_guild_id_is_rejected() {
     let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "0")]);
     let err = BotConfig::from_env_with(&env).unwrap_err();
