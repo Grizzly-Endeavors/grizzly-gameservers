@@ -71,6 +71,10 @@ pub(crate) struct ToolCtx<'a> {
     pub(crate) data: &'a Data,
     pub(crate) serenity: &'a serenity::Context,
     pub(crate) channel_id: serenity::ChannelId,
+    /// The guild this conversation is in, stamped on a server Gary creates so it's
+    /// owned by that guild. `None` in an operator's DM — a server created there is
+    /// left unlabeled (operator-only), matching the pre-scoping convention.
+    pub(crate) guild: Option<u64>,
     pub(crate) author_id: serenity::UserId,
     pub(crate) is_admin: bool,
     /// The servers this caller may see and act on — every tool that targets an
@@ -178,7 +182,7 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
         ),
         ToolDef::function(
             LIST_ARCHIVES,
-            "List the servers archived in this channel — ones that were put into cold storage and can be recovered.",
+            "List the servers archived in this Discord server — ones that were put into cold storage and can be recovered.",
             empty_object_schema(),
         ),
     ];
@@ -290,9 +294,9 @@ fn admin_tools() -> Vec<ToolDef> {
 ///
 /// Before dispatching, any tool that targets an existing server by name is
 /// confined to the caller's [`ServerScope`](ToolCtx::scope): a server in another
-/// channel reads as "no such server", so Gary can neither see nor touch another
+/// guild reads as "no such server", so Gary can neither see nor touch another
 /// group's servers. `list_servers` scopes itself in its query; `create_server`
-/// makes a new server and stamps the current channel, so neither is gated here.
+/// makes a new server and stamps the current guild, so neither is gated here.
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
     if targets_existing_server(call.function.name.as_str())
@@ -537,7 +541,7 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         &ctx.data.provision_lock,
         entry,
         &server,
-        &ctx.channel_id.get().to_string(),
+        &ctx.guild.map(|guild| guild.to_string()).unwrap_or_default(),
     )
     .await
     {
@@ -965,10 +969,7 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     if !service.archives_enabled() {
         return archives_unavailable_text();
     }
-    match service
-        .list_archives(&ctx.channel_id.get().to_string())
-        .await
-    {
+    match service.list_archives(&ctx.scope).await {
         Ok(list) => format_archive_list(&list),
         Err(err) => {
             error!(error = ?err, "agent: list_archives failed");
@@ -1101,9 +1102,26 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
     if !service.archives_enabled() {
         return archives_unavailable_text();
     }
-    let channel = ctx.channel_id.get().to_string();
+    // Resolve the archive's owning guild from the caller's scope so recover
+    // recreates it in its original tenant (and an operator can recover across
+    // guilds). The scope-filtered listing also enforces tenancy: an archive in
+    // another guild simply isn't found.
+    let guild = match service.list_archives(&ctx.scope).await {
+        Ok(archives) => match archives.iter().find(|archive| archive.name == name) {
+            Some(archive) => archive.guild.clone(),
+            None => {
+                return format!(
+                    "there's no archived server named {name} here — check list_archives"
+                );
+            }
+        },
+        Err(err) => {
+            error!(error = ?err, %name, "agent: recover archive lookup failed");
+            return cluster_error();
+        }
+    };
     match service
-        .recover_archive(&backup_ctx(ctx.data), &channel, name)
+        .recover_archive(&backup_ctx(ctx.data), &guild, name)
         .await
     {
         Ok(outcome) => {
@@ -1459,7 +1477,9 @@ fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
             }
         }
         RecoverOutcome::NoSuchArchive => {
-            format!("there's no archived server named {name} in this channel — check list_archives")
+            format!(
+                "there's no archived server named {name} in this Discord server — check list_archives"
+            )
         }
         RecoverOutcome::NameInUse => {
             format!("a server named {name} is already running — use start_server instead")
@@ -1497,7 +1517,7 @@ fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
 
 fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
     if artifacts.is_empty() {
-        return "no servers are archived in this channel".to_owned();
+        return "no servers are archived in this Discord server".to_owned();
     }
     let lines = artifacts
         .iter()
@@ -1511,7 +1531,7 @@ fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("archived servers in this channel:\n{lines}")
+    format!("archived servers in this Discord server:\n{lines}")
 }
 
 fn backups_not_configured() -> String {

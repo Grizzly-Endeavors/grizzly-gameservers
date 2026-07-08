@@ -12,7 +12,7 @@ use tracing::{debug, error, warn};
 
 use super::catalog::{GameCatalog, GameCatalogEntry};
 use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
-use super::labels::{CHANNEL_KEY, GAME_KEY, is_managed};
+use super::labels::{GAME_KEY, GUILD_KEY, is_managed};
 use super::naming::{pvc_name, select_free_port};
 use super::scope::ServerScope;
 use super::types::{GameServer, server_address};
@@ -70,7 +70,7 @@ pub(crate) enum ProvisionOutcome {
 /// `GameServer`, and return its address. Does **not** wait for readiness — call
 /// [`wait_for_instance_ready`] for that. The `lock` serializes the
 /// port-lease→Service-create critical section so concurrent creates can't claim
-/// the same `NodePort`. `channel` is the owning Discord channel id, stamped onto
+/// the same `NodePort`. `guild` is the owning Discord guild id, stamped onto
 /// the trio so scoped listing and mutation can confine to it later.
 ///
 /// # Errors
@@ -84,11 +84,11 @@ pub(crate) async fn provision_instance(
     lock: &Mutex<()>,
     entry: &GameCatalogEntry,
     instance: &str,
-    channel: &str,
+    guild: &str,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
     let provisioned =
-        provision_under_lock(client, namespace, domain, entry, instance, channel, false).await?;
+        provision_under_lock(client, namespace, domain, entry, instance, guild, false).await?;
     Ok(provisioned.into_outcome())
 }
 
@@ -107,11 +107,11 @@ pub(crate) async fn provision_paused_instance(
     lock: &Mutex<()>,
     entry: &GameCatalogEntry,
     instance: &str,
-    channel: &str,
+    guild: &str,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
     let provisioned =
-        provision_under_lock(client, namespace, domain, entry, instance, channel, true).await?;
+        provision_under_lock(client, namespace, domain, entry, instance, guild, true).await?;
     Ok(provisioned.into_outcome())
 }
 
@@ -137,7 +137,7 @@ async fn provision_under_lock(
     domain: &str,
     entry: &GameCatalogEntry,
     instance: &str,
-    channel: &str,
+    guild: &str,
     start_paused: bool,
 ) -> Result<Provisioned> {
     if instance_exists(client, namespace, instance).await? {
@@ -157,7 +157,7 @@ async fn provision_under_lock(
             game: entry.id.clone(),
             namespace: namespace.to_owned(),
             node_port: port,
-            channel: channel.to_owned(),
+            guild: guild.to_owned(),
             start_paused,
         };
         let service = render_service(entry, &identity)?;
@@ -287,14 +287,14 @@ pub(crate) async fn begin_start(
     };
     let node_port = service_node_port(&service)
         .with_context(|| format!("managed service {instance} has no nodeport"))?;
-    // Carry the owning channel from the surviving Service so the recreated
+    // Carry the owning guild from the surviving Service so the recreated
     // GameServer keeps its scope; empty for a pre-scoping instance (label
-    // absent), which leaves the channel label off rather than stamping "".
-    let channel = service
+    // absent), which leaves the guild label off rather than stamping "".
+    let guild = service
         .metadata
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(CHANNEL_KEY))
+        .and_then(|labels| labels.get(GUILD_KEY))
         .cloned()
         .unwrap_or_default();
 
@@ -303,7 +303,7 @@ pub(crate) async fn begin_start(
         game,
         namespace: namespace.to_owned(),
         node_port,
-        channel,
+        guild,
         // A cold `/start` resumes a normal server; only recover-from-archive pauses.
         start_paused: false,
     };
@@ -354,7 +354,7 @@ pub(crate) async fn destroy_instance(
 }
 
 /// Names of the shim-managed instances (running or stopped) visible under
-/// `scope`, for autocomplete — so a friend only completes their own channel's
+/// `scope`, for autocomplete — so a friend only completes their own guild's
 /// servers.
 ///
 /// # Errors

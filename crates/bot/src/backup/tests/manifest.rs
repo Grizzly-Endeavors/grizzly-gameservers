@@ -11,7 +11,7 @@ fn backup_keys_pair_tarball_and_manifest_under_the_instance_prefix() {
 }
 
 #[test]
-fn archive_keys_nest_under_channel_and_name() {
+fn archive_keys_nest_under_guild_and_name() {
     let keys = archive_keys("998877", "nether", "20260707T143000Z");
     assert_eq!(
         keys.tarball,
@@ -71,7 +71,7 @@ fn manifest_round_trips_through_json() {
         kind: ArtifactKind::Archive,
         instance: "nether".to_owned(),
         game: "minecraft".to_owned(),
-        channel: "998877".to_owned(),
+        guild: "998877".to_owned(),
         created_by: "12345".to_owned(),
         created_at: "2026-07-07T14:30:00Z".to_owned(),
         tarball_key: "archives/998877/nether/20260707T143000Z.tar.zst".to_owned(),

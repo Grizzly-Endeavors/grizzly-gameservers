@@ -1,14 +1,18 @@
 //! The bot's durable state on foundation Postgres: the registry of no-mention
-//! "home" channels where Gary answers without being `@`-mentioned.
+//! "home" channels where Gary answers without being `@`-mentioned, and the
+//! per-guild admin config (admin roles and users) set at runtime via `/config`.
 //!
-//! [`HomeChannels`] is the façade the rest of the bot uses. It keeps the home
-//! set in memory (loaded once at startup, updated on each `/gary-home` toggle)
-//! so the per-message "is this a home channel?" check never touches the
-//! database, and it **degrades gracefully**: if Postgres is unconfigured or
-//! unreachable at startup, the bot still runs — mentions and slash commands work
-//! — and only the no-mention feature is disabled until a restart reconnects.
+//! [`HomeChannels`] and [`GuildConfig`] are the façades the rest of the bot
+//! uses. Each keeps its state in memory (loaded once at startup, updated on each
+//! mutation) so the per-message hot paths never touch the database, and each
+//! **degrades gracefully**: if Postgres is unconfigured or unreachable at
+//! startup, the bot still runs — mentions and slash commands work — and only the
+//! DB-backed features (no-mention home channels, DB-configured guild admins) go
+//! dark until a restart reconnects. Auth degrades **fail-closed**: with
+//! `GuildConfig` unavailable, only the implicit admins (operators, guild owner)
+//! are recognized; nobody new is admitted.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
@@ -17,45 +21,47 @@ use tracing::{error, info, warn};
 
 use crate::config::DbConfig;
 
-/// Schema for the bot's own database. Applied at startup against a database the
-/// bot's role owns outright (per the foundation-stores model), so a plain
-/// idempotent `CREATE TABLE IF NOT EXISTS` is the whole migration. Channel ids
-/// are stored as text — Discord snowflakes are unsigned 64-bit, which `BIGINT`
-/// can't hold the top bit of, and text matches how the id is used elsewhere.
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS home_channels (\
+/// Build a connection pool to the bot's foundation-Postgres database. Discord
+/// snowflakes are stored as text throughout — they are unsigned 64-bit, which
+/// `BIGINT` can't hold the top bit of, and text matches how the id is used
+/// elsewhere.
+async fn connect_pool(config: &DbConfig, max_connections: u32) -> Result<PgPool> {
+    let options = PgConnectOptions::new()
+        .host(&config.host)
+        .port(config.port)
+        .database(&config.database)
+        .username(&config.user)
+        .password(&config.password);
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect_with(options)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to connect to postgres at {}:{}/{}",
+                config.host, config.port, config.database
+            )
+        })
+}
+
+/// Schema for the home-channel registry. `guild_id` records which guild a home
+/// channel belongs to (nullable for rows written before the guild-tenancy model)
+/// so a guild's home channels can be listed; the per-message `is_home` check only
+/// needs the channel id.
+const HOME_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS home_channels (\
     channel_id TEXT PRIMARY KEY, \
+    guild_id TEXT, \
     added_at TIMESTAMPTZ NOT NULL DEFAULT now())";
 
-/// A connection pool to the bot's foundation-Postgres database, with the schema
-/// applied. Thin wrapper: all the bot needs today is the home-channel registry.
-struct PgStore {
+/// A connection pool for the home-channel registry, schema applied.
+struct HomeStore {
     pool: PgPool,
 }
 
-impl PgStore {
-    /// Connect, apply the schema, and return the store.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the pool can't be built or the schema can't be applied.
+impl HomeStore {
     async fn connect(config: &DbConfig) -> Result<Self> {
-        let options = PgConnectOptions::new()
-            .host(&config.host)
-            .port(config.port)
-            .database(&config.database)
-            .username(&config.user)
-            .password(&config.password);
-        let pool = PgPoolOptions::new()
-            .max_connections(4)
-            .connect_with(options)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to connect to postgres at {}:{}/{}",
-                    config.host, config.port, config.database
-                )
-            })?;
-        sqlx::query(SCHEMA)
+        let pool = connect_pool(config, 4).await?;
+        sqlx::query(HOME_SCHEMA)
             .execute(&pool)
             .await
             .context("failed to apply home_channels schema")?;
@@ -70,12 +76,16 @@ impl PgStore {
             .context("failed to load home channels")
     }
 
-    async fn add(&self, channel: u64) -> Result<()> {
-        sqlx::query("INSERT INTO home_channels (channel_id) VALUES ($1) ON CONFLICT DO NOTHING")
-            .bind(channel.to_string())
-            .execute(&self.pool)
-            .await
-            .with_context(|| format!("failed to add home channel {channel}"))?;
+    async fn add(&self, channel: u64, guild: u64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO home_channels (channel_id, guild_id) VALUES ($1, $2) \
+             ON CONFLICT (channel_id) DO UPDATE SET guild_id = EXCLUDED.guild_id",
+        )
+        .bind(channel.to_string())
+        .bind(guild.to_string())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to add home channel {channel}"))?;
         Ok(())
     }
 
@@ -93,7 +103,7 @@ impl PgStore {
 /// and cached in memory. When persistence is unavailable the façade stays usable
 /// but reports every channel as non-home and refuses toggles (see module docs).
 pub(crate) struct HomeChannels {
-    store: Option<PgStore>,
+    store: Option<HomeStore>,
     cache: RwLock<HashSet<u64>>,
 }
 
@@ -116,7 +126,7 @@ impl HomeChannels {
             warn!("DB_PASSWORD not set; no-mention home channels disabled (mentions still work)");
             return Self::disabled();
         };
-        let store = match PgStore::connect(config).await {
+        let store = match HomeStore::connect(config).await {
             Ok(store) => store,
             Err(err) => {
                 error!(error = ?err, "postgres unavailable; no-mention home channels disabled");
@@ -153,14 +163,15 @@ impl HomeChannels {
     }
 
     /// Flip `channel`'s home status, persisting the change and updating the
-    /// cache. Returns [`HomeToggle::Unavailable`] (changing nothing) when
+    /// cache. `guild` is recorded alongside so a guild's home channels can be
+    /// listed. Returns [`HomeToggle::Unavailable`] (changing nothing) when
     /// persistence is down.
     ///
     /// # Errors
     ///
     /// Returns an error only if the database write fails; the cache is left
     /// untouched in that case so it never drifts from what was persisted.
-    pub(crate) async fn toggle(&self, channel: u64) -> Result<HomeToggle> {
+    pub(crate) async fn toggle(&self, channel: u64, guild: u64) -> Result<HomeToggle> {
         let Some(store) = &self.store else {
             return Ok(HomeToggle::Unavailable);
         };
@@ -170,9 +181,316 @@ impl HomeChannels {
             self.cache.write().await.remove(&channel);
             Ok(HomeToggle::Removed)
         } else {
-            store.add(channel).await?;
+            store.add(channel, guild).await?;
             self.cache.write().await.insert(channel);
             Ok(HomeToggle::Added)
         }
     }
 }
+
+/// Schema for the per-guild admin config. Two tables — one row per (guild, role)
+/// and per (guild, user) — so add/remove is a plain insert/delete without array
+/// columns. These sit *alongside* the operator seed (env `GAMESERVERS_ADMIN_USER_IDS`)
+/// and the guild owner, all of which are admins regardless of these tables.
+const GUILD_CONFIG_SCHEMA: &str = "\
+    CREATE TABLE IF NOT EXISTS guild_admin_roles (\
+        guild_id TEXT NOT NULL, \
+        role_id TEXT NOT NULL, \
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+        PRIMARY KEY (guild_id, role_id)); \
+    CREATE TABLE IF NOT EXISTS guild_admin_users (\
+        guild_id TEXT NOT NULL, \
+        user_id TEXT NOT NULL, \
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+        PRIMARY KEY (guild_id, user_id))";
+
+/// The admin roles and users configured for one guild. Empty when the guild has
+/// no DB config yet (or persistence is down) — callers still admit the implicit
+/// admins (operators, guild owner) on top of this.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GuildAdmins {
+    pub(crate) roles: HashSet<u64>,
+    pub(crate) users: HashSet<u64>,
+}
+
+/// What a `/config` admin mutation did, for the command to report back.
+pub(crate) enum ConfigChange {
+    /// The role/user is now an admin (it wasn't before).
+    Added,
+    /// The role/user is no longer an admin (it was before).
+    Removed,
+    /// No change — it was already in the requested state.
+    Unchanged,
+    /// Persistence is down, so nothing changed.
+    Unavailable,
+}
+
+/// A connection pool for the per-guild admin config, schema applied.
+struct GuildConfigStore {
+    pool: PgPool,
+}
+
+impl GuildConfigStore {
+    async fn connect(config: &DbConfig) -> Result<Self> {
+        let pool = connect_pool(config, 2).await?;
+        // raw_sql runs the multi-statement table batch as one call.
+        sqlx::raw_sql(GUILD_CONFIG_SCHEMA)
+            .execute(&pool)
+            .await
+            .context("failed to apply guild_config schema")?;
+        Ok(Self { pool })
+    }
+
+    /// Load every guild's admin roles and users into one map.
+    async fn load_all(&self) -> Result<HashMap<u64, GuildAdmins>> {
+        let mut map: HashMap<u64, GuildAdmins> = HashMap::new();
+        let roles: Vec<(String, String)> =
+            sqlx::query_as("SELECT guild_id, role_id FROM guild_admin_roles")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to load guild admin roles")?;
+        for (guild, role) in roles {
+            if let (Ok(guild), Ok(role)) = (guild.parse(), role.parse()) {
+                map.entry(guild).or_default().roles.insert(role);
+            }
+        }
+        let users: Vec<(String, String)> =
+            sqlx::query_as("SELECT guild_id, user_id FROM guild_admin_users")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to load guild admin users")?;
+        for (guild, user) in users {
+            if let (Ok(guild), Ok(user)) = (guild.parse(), user.parse()) {
+                map.entry(guild).or_default().users.insert(user);
+            }
+        }
+        Ok(map)
+    }
+
+    async fn add_role(&self, guild: u64, role: u64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_admin_roles (guild_id, role_id) VALUES ($1, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(guild.to_string())
+        .bind(role.to_string())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to add admin role {role} to guild {guild}"))?;
+        Ok(())
+    }
+
+    async fn remove_role(&self, guild: u64, role: u64) -> Result<()> {
+        sqlx::query("DELETE FROM guild_admin_roles WHERE guild_id = $1 AND role_id = $2")
+            .bind(guild.to_string())
+            .bind(role.to_string())
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("failed to remove admin role {role} from guild {guild}"))?;
+        Ok(())
+    }
+
+    async fn add_user(&self, guild: u64, user: u64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_admin_users (guild_id, user_id) VALUES ($1, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(guild.to_string())
+        .bind(user.to_string())
+        .execute(&self.pool)
+        .await
+        .with_context(|| format!("failed to add admin user {user} to guild {guild}"))?;
+        Ok(())
+    }
+
+    async fn remove_user(&self, guild: u64, user: u64) -> Result<()> {
+        sqlx::query("DELETE FROM guild_admin_users WHERE guild_id = $1 AND user_id = $2")
+            .bind(guild.to_string())
+            .bind(user.to_string())
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("failed to remove admin user {user} from guild {guild}"))?;
+        Ok(())
+    }
+}
+
+/// Per-guild admin config (admin roles + users), backed by Postgres and cached
+/// in memory so the per-command auth check never touches the database. When
+/// persistence is unavailable the façade reports empty config for every guild
+/// and refuses mutations — auth then falls back fail-closed to the implicit
+/// admins only (see module docs).
+pub(crate) struct GuildConfig {
+    store: Option<GuildConfigStore>,
+    cache: RwLock<HashMap<u64, GuildAdmins>>,
+}
+
+impl GuildConfig {
+    /// Connect to Postgres (if configured), load all guild config, and return the
+    /// façade. Never fails: any problem is logged and leaves the façade in its
+    /// disabled state so the rest of the bot keeps working.
+    pub(crate) async fn connect(config: Option<&DbConfig>) -> Self {
+        let Some(config) = config else {
+            return Self::disabled();
+        };
+        let store = match GuildConfigStore::connect(config).await {
+            Ok(store) => store,
+            Err(err) => {
+                error!(error = ?err, "postgres unavailable; per-guild admin config disabled");
+                return Self::disabled();
+            }
+        };
+        match store.load_all().await {
+            Ok(cache) => {
+                info!(
+                    guilds_configured = cache.len(),
+                    "loaded per-guild admin config"
+                );
+                Self {
+                    store: Some(store),
+                    cache: RwLock::new(cache),
+                }
+            }
+            Err(err) => {
+                error!(error = ?err, "failed to load guild admin config; feature disabled");
+                Self::disabled()
+            }
+        }
+    }
+
+    fn disabled() -> Self {
+        Self {
+            store: None,
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Whether this façade is backed by a live database. `false` means every
+    /// lookup returns empty config and every mutation is [`ConfigChange::Unavailable`].
+    pub(crate) fn is_available(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// The admin roles and users configured for `guild` (empty when none, or when
+    /// persistence is down). Cloned out so the auth check holds no lock.
+    pub(crate) async fn admins(&self, guild: u64) -> GuildAdmins {
+        self.cache
+            .read()
+            .await
+            .get(&guild)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Add an admin role for `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails; the cache is left
+    /// untouched in that case so it never drifts from what was persisted.
+    pub(crate) async fn add_admin_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+        let Some(store) = &self.store else {
+            return Ok(ConfigChange::Unavailable);
+        };
+        if self
+            .cache
+            .read()
+            .await
+            .get(&guild)
+            .is_some_and(|a| a.roles.contains(&role))
+        {
+            return Ok(ConfigChange::Unchanged);
+        }
+        store.add_role(guild, role).await?;
+        self.cache
+            .write()
+            .await
+            .entry(guild)
+            .or_default()
+            .roles
+            .insert(role);
+        Ok(ConfigChange::Added)
+    }
+
+    /// Remove an admin role from `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn remove_admin_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+        let Some(store) = &self.store else {
+            return Ok(ConfigChange::Unavailable);
+        };
+        if !self
+            .cache
+            .read()
+            .await
+            .get(&guild)
+            .is_some_and(|a| a.roles.contains(&role))
+        {
+            return Ok(ConfigChange::Unchanged);
+        }
+        store.remove_role(guild, role).await?;
+        if let Some(admins) = self.cache.write().await.get_mut(&guild) {
+            admins.roles.remove(&role);
+        }
+        Ok(ConfigChange::Removed)
+    }
+
+    /// Add an admin user for `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn add_admin_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
+        let Some(store) = &self.store else {
+            return Ok(ConfigChange::Unavailable);
+        };
+        if self
+            .cache
+            .read()
+            .await
+            .get(&guild)
+            .is_some_and(|a| a.users.contains(&user))
+        {
+            return Ok(ConfigChange::Unchanged);
+        }
+        store.add_user(guild, user).await?;
+        self.cache
+            .write()
+            .await
+            .entry(guild)
+            .or_default()
+            .users
+            .insert(user);
+        Ok(ConfigChange::Added)
+    }
+
+    /// Remove an admin user from `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn remove_admin_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
+        let Some(store) = &self.store else {
+            return Ok(ConfigChange::Unavailable);
+        };
+        if !self
+            .cache
+            .read()
+            .await
+            .get(&guild)
+            .is_some_and(|a| a.users.contains(&user))
+        {
+            return Ok(ConfigChange::Unchanged);
+        }
+        store.remove_user(guild, user).await?;
+        if let Some(admins) = self.cache.write().await.get_mut(&guild) {
+            admins.users.remove(&user);
+        }
+        Ok(ConfigChange::Removed)
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/store.rs"]
+mod tests;

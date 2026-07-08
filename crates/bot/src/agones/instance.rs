@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::catalog::GameCatalogEntry;
 use super::labels::{
-    CHANNEL_KEY, GAME_KEY, GAMESERVER_SELECTOR_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
+    GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
     NAME_KEY,
 };
 use super::naming::pvc_name;
@@ -20,10 +20,10 @@ pub(crate) struct InstanceIdentity {
     pub(crate) game: String,
     pub(crate) namespace: String,
     pub(crate) node_port: i32,
-    /// Discord channel id that owns this instance (the [`CHANNEL_KEY`] label).
+    /// Discord guild id that owns this instance (the [`GUILD_KEY`] label).
     /// Empty leaves the label off — for pre-scoping instances whose surviving
-    /// Service carries no channel, so a cold `/start` doesn't stamp a bogus one.
-    pub(crate) channel: String,
+    /// Service carries no guild, so a cold `/start` doesn't stamp a bogus one.
+    pub(crate) guild: String,
     /// Hold the game process down at boot (inject `SUPERVISOR_START_PAUSED`) so the
     /// bot can seed `/data` from an archive before the first launch. Only set by
     /// recover-from-archive; a normal create/start leaves it `false`.
@@ -155,8 +155,8 @@ fn apply_labels(labels: &mut Option<BTreeMap<String, String>>, identity: &Instan
     map.insert(MANAGED_BY_KEY.to_owned(), MANAGED_BY_VALUE.to_owned());
     map.insert(GAME_KEY.to_owned(), identity.game.clone());
     map.insert(INSTANCE_KEY.to_owned(), identity.name.clone());
-    if !identity.channel.is_empty() {
-        map.insert(CHANNEL_KEY.to_owned(), identity.channel.clone());
+    if !identity.guild.is_empty() {
+        map.insert(GUILD_KEY.to_owned(), identity.guild.clone());
     }
 }
 

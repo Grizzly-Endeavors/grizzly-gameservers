@@ -21,7 +21,7 @@ use super::{
 };
 use crate::agones::{
     BackupTarget, ControlReady, DestroyOutcome, PodTarget, ProvisionOutcome, ReadyWait,
-    RuntimeState, StartBegin, SupervisorOutcome, begin_start, destroy_instance,
+    RuntimeState, ServerScope, StartBegin, SupervisorOutcome, begin_start, destroy_instance,
     instance_runtime_state, list_backup_targets, provision_paused_instance, resolve_managed_pod,
     supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
 };
@@ -151,17 +151,23 @@ impl BackupService {
         self.summaries(tarballs).await
     }
 
-    /// List a channel's archives (latest per name), newest first.
+    /// List the archives visible under `scope` (latest per name), newest first.
+    /// A guild scope lists that guild's archives; the cross-guild operator scope
+    /// lists every guild's.
     ///
     /// # Errors
     ///
     /// Returns an error if the archive catalog is disabled or the query fails.
-    pub(crate) async fn list_archives(&self, channel: &str) -> Result<Vec<ArtifactSummary>> {
-        let records = self.archives.list_latest_per_name(channel).await?;
+    pub(crate) async fn list_archives(&self, scope: &ServerScope) -> Result<Vec<ArtifactSummary>> {
+        let records = match scope {
+            ServerScope::All => self.archives.list_all_latest_per_name().await?,
+            ServerScope::Guild(guild) => self.archives.list_latest_per_name(guild).await?,
+        };
         Ok(records
             .into_iter()
             .map(|record| ArtifactSummary {
                 name: record.name,
+                guild: record.guild,
                 key: record.tarball_key,
                 size_bytes: u64::try_from(record.size_bytes).unwrap_or(0),
                 created_at: record.created_at,
@@ -211,9 +217,9 @@ impl BackupService {
             });
         }
 
-        let channel = target.channel.clone();
+        let guild = target.guild.clone();
         let stamp = stamp_now();
-        let keys = archive_keys(&channel, instance, &stamp);
+        let keys = archive_keys(&guild, instance, &stamp);
         let source = match self.open_archive_stream(ctx, instance, false).await? {
             ArchiveSource::Ready(response) => response,
             ArchiveSource::NotFound => return Ok(ArchiveOutcome::NotFound),
@@ -234,7 +240,7 @@ impl BackupService {
             ArtifactKind::Archive,
             instance,
             &target.game,
-            &channel,
+            &guild,
             created_by,
             &keys.tarball,
             size,
@@ -245,7 +251,7 @@ impl BackupService {
             .with_context(|| format!("failed to upload archive manifest for {instance}"))?;
         self.archives
             .insert(&ArchiveRecord {
-                channel,
+                guild,
                 name: instance.to_owned(),
                 game: target.game.clone(),
                 tarball_key: keys.tarball.clone(),
@@ -342,13 +348,13 @@ impl BackupService {
     pub(crate) async fn recover_archive(
         &self,
         ctx: &BackupCtx<'_>,
-        channel: &str,
+        guild: &str,
         name: &str,
     ) -> Result<RecoverOutcome> {
         if !self.archives.enabled() {
             return Ok(RecoverOutcome::Unavailable);
         }
-        let Some(record) = self.archives.latest(channel, name).await? else {
+        let Some(record) = self.archives.latest(guild, name).await? else {
             return Ok(RecoverOutcome::NoSuchArchive);
         };
         if !matches!(
@@ -361,6 +367,9 @@ impl BackupService {
             return Ok(RecoverOutcome::UnknownGame(record.game));
         };
 
+        // Stamp the recovered server with the archive's *own* owning guild, not
+        // whatever guild the caller happens to be in — so a cross-guild operator
+        // recovering an archive returns it to its original tenant.
         let address = match provision_paused_instance(
             ctx.client,
             ctx.namespace,
@@ -368,7 +377,7 @@ impl BackupService {
             ctx.provision_lock,
             entry,
             name,
-            channel,
+            &record.guild,
         )
         .await?
         {
@@ -473,7 +482,7 @@ impl BackupService {
             ArtifactKind::Backup,
             instance,
             &target.game,
-            &target.channel,
+            &target.guild,
             created_by,
             &keys.tarball,
             size,
@@ -520,6 +529,7 @@ impl BackupService {
             let manifest = self.s3.get_manifest(&manifest_key).await?;
             summaries.push(ArtifactSummary {
                 name: manifest.instance,
+                guild: manifest.guild,
                 key: tarball,
                 size_bytes: manifest.size_bytes,
                 created_at: manifest.created_at,
@@ -676,7 +686,7 @@ impl BackupService {
         )
     }
 
-    /// Look up a live server's backup target (game/channel/running) by name.
+    /// Look up a live server's backup target (game/guild/running) by name.
     async fn find_target(
         &self,
         ctx: &BackupCtx<'_>,
@@ -748,7 +758,7 @@ fn manifest(
     kind: ArtifactKind,
     instance: &str,
     game: &str,
-    channel: &str,
+    guild: &str,
     created_by: &str,
     tarball_key: &str,
     size_bytes: u64,
@@ -758,7 +768,7 @@ fn manifest(
         kind,
         instance: instance.to_owned(),
         game: game.to_owned(),
-        channel: channel.to_owned(),
+        guild: guild.to_owned(),
         created_by: created_by.to_owned(),
         created_at: Timestamp::now().to_string(),
         tarball_key: tarball_key.to_owned(),

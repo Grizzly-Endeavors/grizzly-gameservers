@@ -76,10 +76,10 @@ fn truncate_caps_long_replies() {
 }
 
 #[test]
-fn format_server_list_is_terse_and_channel_scoped() {
+fn format_server_list_is_terse() {
     assert_eq!(
         format_server_list(&[]),
-        "no game servers are running in this channel right now"
+        "no game servers are running right now"
     );
     let servers = vec![
         ServerSummary {

@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 use crate::backup::MaybeBackups;
-use crate::store::HomeChannels;
+use crate::store::{GuildConfig, HomeChannels};
 
 /// How long an interactive component (button, confirm prompt) waits for a
 /// friend to respond before the interaction expires. Shared so `/destroy`'s
@@ -40,8 +40,13 @@ pub(crate) struct Data {
     /// Serializes the port-lease→Service-create critical section across
     /// concurrent `/create`s so two friends can't claim the same `NodePort`.
     pub(crate) provision_lock: Arc<Mutex<()>>,
-    pub(crate) admin_role_id: Option<u64>,
-    pub(crate) admin_user_ids: Arc<[u64]>,
+    /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
+    /// every guild and carrying the all-guilds visibility scope.
+    pub(crate) operator_ids: Arc<[u64]>,
+    /// Per-guild admin config (admin roles/users) set at runtime via `/config`,
+    /// backed by Postgres. Empty per guild when persistence is down — auth then
+    /// falls back to operators + guild owner (fail-closed).
+    pub(crate) guild_config: Arc<GuildConfig>,
     /// Agent ("Gary") model connection, or `None` when no key is configured —
     /// in which case mentions reply that Gary isn't set up.
     pub(crate) ollama: Option<OllamaConfig>,

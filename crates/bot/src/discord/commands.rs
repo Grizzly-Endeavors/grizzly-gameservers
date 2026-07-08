@@ -22,12 +22,23 @@ use crate::agones::{
     supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
 use crate::backup::{ArtifactSummary, BackupService};
-use crate::store::HomeToggle;
+use crate::store::{ConfigChange, HomeToggle};
 
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
+    let Some(scope) = command_scope(ctx) else {
+        ctx.send(
+            reply_with(neutral_embed(
+                "Run this in a server",
+                "I manage servers inside a Discord server — run `/servers` in a channel there.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    };
     let reply = ctx
         .send(reply_with(working_embed(
             "Looking up servers",
@@ -39,7 +50,7 @@ pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
         data.kube_client.clone(),
         &data.namespace,
         &data.domain,
-        &command_scope(ctx),
+        &scope,
     )
     .await
     {
@@ -193,7 +204,7 @@ async fn finish_create(
         &data.provision_lock,
         entry,
         &server,
-        &ctx.channel_id().get().to_string(),
+        &guild_id_string(ctx),
     )
     .await
     {
@@ -630,14 +641,18 @@ pub(crate) async fn destroy(
 async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<Item = String> {
     let data = ctx.data();
     let needle = partial.to_owned();
-    let names =
-        match list_instance_names(&data.kube_client, &data.namespace, &command_scope(ctx)).await {
-            Ok(names) => names,
-            Err(err) => {
-                error!(error = ?err, "failed to list instances for autocomplete");
-                Vec::new()
+    let names = match command_scope(ctx) {
+        Some(scope) => {
+            match list_instance_names(&data.kube_client, &data.namespace, &scope).await {
+                Ok(names) => names,
+                Err(err) => {
+                    error!(error = ?err, "failed to list instances for autocomplete");
+                    Vec::new()
+                }
             }
-        };
+        }
+        None => Vec::new(),
+    };
     names
         .into_iter()
         .filter(move |name| name.starts_with(&needle))
@@ -647,7 +662,7 @@ async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<I
 #[poise::command(slash_command, rename = "gary-home", check = "require_admin")]
 pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
     // DMs are always no-mention, so there's nothing to toggle there.
-    if ctx.guild_id().is_none() {
+    let Some(guild_id) = ctx.guild_id() else {
         ctx.send(
             reply_with(neutral_embed(
                 "Already listening",
@@ -657,17 +672,18 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
         )
         .await?;
         return Ok(());
-    }
+    };
 
     let embed = match ctx
         .data()
         .home_channels
-        .toggle(ctx.channel_id().get())
+        .toggle(ctx.channel_id().get(), guild_id.get())
         .await
     {
         Ok(HomeToggle::Added) => neutral_embed(
             "This is now Gary's channel",
-            "I'll answer here without being @mentioned. Run `/gary-home` again to turn that off.",
+            "I'll answer here without being @mentioned — separate from which servers exist, \
+             which are shared across the whole Discord server. Run `/gary-home` again to turn it off.",
         ),
         Ok(HomeToggle::Removed) => neutral_embed(
             "Back to mentions only",
@@ -701,6 +717,203 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     )
     .await?;
     Ok(())
+}
+
+/// Configure who can manage this Discord server's game servers.
+#[poise::command(
+    slash_command,
+    subcommands("config_view", "config_admin_role", "config_admin_user")
+)]
+pub(crate) async fn config(ctx: Context<'_>) -> Result<(), Error> {
+    // Discord always resolves a subcommand, so this parent body is defensive.
+    config_group_hint(ctx).await
+}
+
+/// The reply for a `/config` group invoked without a subcommand — defensive, as
+/// Discord normally forces a subcommand choice.
+async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.send(
+        reply_with(neutral_embed(
+            "Pick an option",
+            "Use `/config view`, `/config admin-role`, or `/config admin-user`.",
+        ))
+        .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Show this Discord server's admins (roles and users) and config status.
+#[poise::command(slash_command, rename = "view", check = "require_admin")]
+async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let config = &ctx.data().guild_config;
+    let admins = config.admins(guild.get()).await;
+    let roles = mention_list(&admins.roles, |id| format!("<@&{id}>"));
+    let users = mention_list(&admins.users, |id| format!("<@{id}>"));
+    let mut body = format!(
+        "**Admin roles:** {roles}\n**Admin users:** {users}\n\n\
+         The Discord server's owner and the bot operator can always manage servers. \
+         Game servers are shared across the whole Discord server, not per-channel.",
+    );
+    if !config.is_available() {
+        body.push_str(
+            "\n\n⚠️ My config storage is offline right now, so only the owner and operator \
+             are recognized until it reconnects.",
+        );
+    }
+    ctx.send(reply_with(neutral_embed("Server admins", &body)).ephemeral(true))
+        .await?;
+    Ok(())
+}
+
+/// Manage which roles can administer this server's game servers.
+#[poise::command(
+    slash_command,
+    rename = "admin-role",
+    subcommands("config_admin_role_add", "config_admin_role_remove")
+)]
+async fn config_admin_role(ctx: Context<'_>) -> Result<(), Error> {
+    config_group_hint(ctx).await
+}
+
+/// Let a role manage this Discord server's game servers.
+#[poise::command(slash_command, rename = "add", check = "require_admin")]
+async fn config_admin_role_add(
+    ctx: Context<'_>,
+    #[description = "Role to grant server-admin"] role: serenity::Role,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .add_admin_role(guild.get(), role.id.get())
+        .await;
+    respond_config_change(ctx, change, &format!("The **{}** role", role.name)).await
+}
+
+/// Stop letting a role manage this Discord server's game servers.
+#[poise::command(slash_command, rename = "remove", check = "require_admin")]
+async fn config_admin_role_remove(
+    ctx: Context<'_>,
+    #[description = "Role to revoke server-admin from"] role: serenity::Role,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .remove_admin_role(guild.get(), role.id.get())
+        .await;
+    respond_config_change(ctx, change, &format!("The **{}** role", role.name)).await
+}
+
+/// Manage which people can administer this server's game servers.
+#[poise::command(
+    slash_command,
+    rename = "admin-user",
+    subcommands("config_admin_user_add", "config_admin_user_remove")
+)]
+async fn config_admin_user(ctx: Context<'_>) -> Result<(), Error> {
+    config_group_hint(ctx).await
+}
+
+/// Let a person manage this Discord server's game servers.
+#[poise::command(slash_command, rename = "add", check = "require_admin")]
+async fn config_admin_user_add(
+    ctx: Context<'_>,
+    #[description = "Person to grant server-admin"] user: serenity::User,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .add_admin_user(guild.get(), user.id.get())
+        .await;
+    respond_config_change(ctx, change, &format!("**{}**", user.name)).await
+}
+
+/// Stop letting a person manage this Discord server's game servers.
+#[poise::command(slash_command, rename = "remove", check = "require_admin")]
+async fn config_admin_user_remove(
+    ctx: Context<'_>,
+    #[description = "Person to revoke server-admin from"] user: serenity::User,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .remove_admin_user(guild.get(), user.id.get())
+        .await;
+    respond_config_change(ctx, change, &format!("**{}**", user.name)).await
+}
+
+/// Join a set of ids into a Discord mention list, or an em dash when empty.
+fn mention_list(ids: &std::collections::HashSet<u64>, mention: impl Fn(u64) -> String) -> String {
+    if ids.is_empty() {
+        return "—".to_owned();
+    }
+    ids.iter()
+        .map(|id| mention(*id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The reply for a `/config` mutation, mapping the store outcome to plain text.
+async fn respond_config_change(
+    ctx: Context<'_>,
+    change: Result<ConfigChange, anyhow::Error>,
+    subject: &str,
+) -> Result<(), Error> {
+    let embed = match change {
+        Ok(ConfigChange::Added) => neutral_embed(
+            "Added",
+            &format!("{subject} can now manage this Discord server's game servers."),
+        ),
+        Ok(ConfigChange::Removed) => neutral_embed(
+            "Removed",
+            &format!("{subject} can no longer manage this Discord server's game servers."),
+        ),
+        Ok(ConfigChange::Unchanged) => {
+            neutral_embed("No change", &format!("{subject} was already set that way."))
+        }
+        Ok(ConfigChange::Unavailable) => error_embed(
+            "I can't save that right now — my config storage is offline. Try again later.",
+        ),
+        Err(err) => {
+            error!(error = ?err, "failed to update guild admin config");
+            error_embed("Something went wrong saving that. Try again in a moment.")
+        }
+    };
+    ctx.send(reply_with(embed).ephemeral(true)).await?;
+    Ok(())
+}
+
+/// The ephemeral reply when a `/config` subcommand is somehow run outside a guild.
+fn config_needs_guild_embed() -> CreateEmbed {
+    neutral_embed(
+        "Run this in a server",
+        "`/config` sets up admins for a Discord server — run it in a channel there.",
+    )
 }
 
 /// Take a backup of a running server's world to durable storage right now.
@@ -789,7 +1002,7 @@ pub(crate) async fn backups(
     Ok(())
 }
 
-/// List the servers archived in this channel (in cold storage, recoverable).
+/// List the servers archived in this Discord server (in cold storage, recoverable).
 #[poise::command(slash_command)]
 pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
@@ -801,16 +1014,24 @@ pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
         ctx.send(reply_with(archives_unavailable_embed())).await?;
         return Ok(());
     }
+    let Some(scope) = command_scope(ctx) else {
+        ctx.send(
+            reply_with(neutral_embed(
+                "Run this in a server",
+                "Archives belong to a Discord server — run `/archives` in a channel there.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    };
     let reply = ctx
         .send(reply_with(working_embed(
             "Archived servers",
             "Looking them up…",
         )))
         .await?;
-    match service
-        .list_archives(&ctx.channel_id().get().to_string())
-        .await
-    {
+    match service.list_archives(&scope).await {
         Ok(list) => {
             reply.edit(ctx, cleared(archives_list_embed(&list))).await?;
         }
@@ -1072,7 +1293,17 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
         ctx.send(reply_with(archives_unavailable_embed())).await?;
         return Ok(());
     }
-    let channel = ctx.channel_id().get().to_string();
+    let Some(scope) = command_scope(ctx) else {
+        ctx.send(
+            reply_with(neutral_embed(
+                "Run this in a server",
+                "Archives belong to a Discord server — run `/recover` in a channel there.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    };
     let reply = ctx
         .send(
             poise::CreateReply::default()
@@ -1080,7 +1311,7 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
                 .ephemeral(true),
         )
         .await?;
-    let archives = match service.list_archives(&channel).await {
+    let archives = match service.list_archives(&scope).await {
         Ok(archives) => archives,
         Err(err) => {
             error!(error = ?err, "failed to list archives for recover");
@@ -1101,7 +1332,7 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
                 ctx,
                 cleared(neutral_embed(
                     "No archives",
-                    "There's nothing archived in this channel to recover.",
+                    "No servers in this Discord server have been archived yet.",
                 )),
             )
             .await?;
@@ -1112,9 +1343,12 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
         .iter()
         .take(25)
         .map(|archive| {
+            // The pick value carries the archive's owning guild so recover can
+            // recreate it in its original tenant (a cross-guild operator may see
+            // archives from several guilds at once).
             CreateSelectMenuOption::new(
                 format!("{} · {}", archive.name, archive.created_at),
-                archive.name.clone(),
+                format!("{}:{}", archive.guild, archive.name),
             )
         })
         .collect();
@@ -1131,16 +1365,15 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
                 .components(vec![CreateActionRow::SelectMenu(menu)]),
         )
         .await?;
-    finish_recover(ctx, &service, &reply, &channel).await
+    finish_recover(ctx, &service, &reply).await
 }
 
 /// Collect the archive pick and run the recovery. Split out of [`recover`] so each
-/// stays under the line cap.
+/// stays under the line cap. The pick value is `guild:name` (see [`recover`]).
 async fn finish_recover(
     ctx: Context<'_>,
     service: &BackupService,
     reply: &poise::ReplyHandle<'_>,
-    channel: &str,
 ) -> Result<(), Error> {
     let message = reply.message().await?;
     let Some(pick) = collect_component(ctx, message.id).await else {
@@ -1153,7 +1386,11 @@ async fn finish_recover(
         return Ok(());
     };
     acknowledge(ctx, &pick).await?;
-    let Some(name) = string_select_value(&pick) else {
+    let Some((guild, name)) = string_select_value(&pick).and_then(|value| {
+        value
+            .split_once(':')
+            .map(|(guild, name)| (guild.to_owned(), name.to_owned()))
+    }) else {
         reply
             .edit(
                 ctx,
@@ -1175,7 +1412,7 @@ async fn finish_recover(
         )
         .await?;
     match service
-        .recover_archive(&backup_ctx(ctx.data()), channel, &name)
+        .recover_archive(&backup_ctx(ctx.data()), &guild, &name)
         .await
     {
         Ok(outcome) => {
@@ -1287,16 +1524,27 @@ async fn confirm_action<'a>(
     Ok(Some(reply))
 }
 
-/// The set of servers this invocation may see and act on: the allowlisted
-/// super-admin sees every channel, everyone else only the channel they ran the
-/// command in (a DM being its own channel).
-fn command_scope(ctx: Context<'_>) -> ServerScope {
+/// The set of servers this invocation may see and act on: a cross-guild operator
+/// sees every guild, everyone else only the guild they ran the command in.
+/// `None` for a non-operator with no guild (a DM), which has no tenant to scope
+/// to — slash commands don't register in DMs, so this is defensive.
+fn command_scope(ctx: Context<'_>) -> Option<ServerScope> {
     let data = ctx.data();
     visibility_scope(
         ctx.author().id.get(),
-        ctx.channel_id().get(),
-        &data.admin_user_ids,
+        ctx.guild_id().map(serenity::GuildId::get),
+        &data.operator_ids,
     )
+}
+
+/// The owning-guild id to stamp on a server being created, as a string. Empty
+/// when there's no guild (a DM) — which leaves the guild label off, matching the
+/// pre-scoping convention; slash commands don't register in DMs, so in practice
+/// this is always the guild the command ran in.
+fn guild_id_string(ctx: Context<'_>) -> String {
+    ctx.guild_id()
+        .map(|guild| guild.get().to_string())
+        .unwrap_or_default()
 }
 
 /// A non-ephemeral reply carrying a single embed — the shape every

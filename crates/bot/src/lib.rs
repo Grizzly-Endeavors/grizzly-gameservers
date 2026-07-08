@@ -20,10 +20,10 @@ use tracing::{error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
-use store::HomeChannels;
+use store::{GuildConfig, HomeChannels};
 
-/// Start the Discord bot: connect to Kubernetes, register the guild-scoped
-/// slash commands, and run the gateway loop until a shutdown signal arrives.
+/// Start the Discord bot: connect to Kubernetes, register slash commands with
+/// each guild it's in, and run the gateway loop until a shutdown signal arrives.
 ///
 /// # Errors
 ///
@@ -57,11 +57,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let namespace = config.namespace;
     let domain = config.domain;
     let control_port = config.control_port;
-    let admin_role_id = config.admin_role_id;
-    let admin_user_ids: std::sync::Arc<[u64]> = config.admin_user_ids.into();
+    let operator_ids: std::sync::Arc<[u64]> = config.operator_ids.into();
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
     let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
+    let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
 
     // Builds the backup service (if S3 is configured) and starts its scheduled
     // snapshot cycle; the returned handle also goes into the command Data.
@@ -114,41 +114,35 @@ pub async fn run(config: BotConfig) -> Result<()> {
         control_port,
         catalog,
         provision_lock,
-        admin_role_id,
-        admin_user_ids,
+        operator_ids,
+        guild_config,
         ollama,
         sessions,
         home_channels,
         backup,
     };
-    run_gateway(config.token, serenity::GuildId::new(config.guild_id), data).await
+    run_gateway(config.token, data).await
 }
 
 /// Build the poise framework around a pre-constructed [`Data`], connect the
 /// Discord client, and run the gateway loop until shutdown. Split from [`run`] so
 /// the setup (Kubernetes, catalog, backups, the in-game endpoint) stays readable
 /// apart from the gateway wiring.
-async fn run_gateway(token: String, guild_id: serenity::GuildId, data: Data) -> Result<()> {
+async fn run_gateway(token: String, data: Data) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: slash_commands(),
             command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
             event_handler: |ctx, event, framework, event_data| {
-                Box::pin(discord::gary::on_event(ctx, event, framework, event_data))
+                Box::pin(on_gateway_event(ctx, event, framework, event_data))
             },
             ..Default::default()
         })
-        .setup(move |ctx, _ready, framework| {
-            Box::pin(async move {
-                poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id)
-                    .await?;
-                info!(
-                    guild = guild_id.get(),
-                    "registered guild-scoped slash commands"
-                );
-                Ok(data)
-            })
-        })
+        // The bot is multi-guild: commands register per guild on the GuildCreate
+        // event (see on_gateway_event), which fires on startup for every guild the
+        // bot is in and again whenever it joins a new one — instant, no ~1h global
+        // propagation. So .setup only hands the framework its shared Data.
+        .setup(move |_ctx, _ready, _framework| Box::pin(async move { Ok(data) }))
         .build();
 
     // MESSAGE_CONTENT is privileged (toggle it on in the Discord dev portal).
@@ -170,6 +164,27 @@ async fn run_gateway(token: String, guild_id: serenity::GuildId, data: Data) -> 
     Ok(())
 }
 
+/// Framework event handler: register this guild's slash commands the moment the
+/// bot sees it (`GuildCreate` fires on startup for every guild and again on each
+/// new join), then forward every event to Gary's message handler. Registering
+/// per-guild keeps commands instantly available across any number of guilds,
+/// unlike global registration's ~1h propagation.
+async fn on_gateway_event(
+    ctx: &serenity::Context,
+    event: &serenity::FullEvent,
+    framework: poise::FrameworkContext<'_, Data, discord::Error>,
+    data: &Data,
+) -> Result<(), discord::Error> {
+    if let serenity::FullEvent::GuildCreate { guild, .. } = event {
+        poise::builtins::register_in_guild(ctx, &framework.options().commands, guild.id).await?;
+        info!(
+            guild = guild.id.get(),
+            "registered slash commands for guild"
+        );
+    }
+    discord::gary::on_event(ctx, event, framework, data).await
+}
+
 /// Drain the gateway when SIGINT/SIGTERM arrives, in a background task.
 fn spawn_shutdown_watch(shard_manager: std::sync::Arc<serenity::ShardManager>) {
     tokio::spawn(async move {
@@ -179,7 +194,7 @@ fn spawn_shutdown_watch(shard_manager: std::sync::Arc<serenity::ShardManager>) {
     });
 }
 
-/// The guild-scoped slash commands the bot registers.
+/// The slash commands the bot registers with each guild it's in.
 fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
     vec![
         commands::servers(),
@@ -197,6 +212,7 @@ fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
         commands::recover(),
         commands::new_session(),
         commands::gary_home(),
+        commands::config(),
     ]
 }
 

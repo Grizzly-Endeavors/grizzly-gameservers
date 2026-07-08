@@ -12,18 +12,19 @@ fn lookup_from<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<O
 
 #[test]
 fn parses_required_fields_and_applies_defaults() {
-    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "42")]);
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
     let config = BotConfig::from_env_with(&env).unwrap();
 
     assert_eq!(config.token, "secret", "token should come from env");
-    assert_eq!(config.guild_id, 42, "guild id should parse to integer");
     assert_eq!(config.namespace, "game-servers", "namespace should default");
     assert_eq!(
         config.domain, "gameservers.grizzly-endeavors.com",
         "domain should default"
     );
-    assert_eq!(config.admin_role_id, None, "admin role is optional");
-    assert!(config.admin_user_ids.is_empty(), "allowlist defaults empty");
+    assert!(
+        config.operator_ids.is_empty(),
+        "operator seed defaults empty"
+    );
     assert_eq!(config.control_port, 9359, "control port should default");
     assert_eq!(
         config.catalog_dir,
@@ -33,44 +34,26 @@ fn parses_required_fields_and_applies_defaults() {
 }
 
 #[test]
-fn parses_admin_role_and_user_allowlist() {
+fn parses_operator_allowlist() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
-        ("GAMESERVERS_ADMIN_ROLE_ID", "555"),
         ("GAMESERVERS_ADMIN_USER_IDS", "10, 20 ,30,"),
         ("GAMESERVERS_CATALOG_DIR", "/srv/games"),
     ]);
     let config = BotConfig::from_env_with(&env).unwrap();
 
-    assert_eq!(config.admin_role_id, Some(555));
     assert_eq!(
-        config.admin_user_ids,
+        config.operator_ids,
         vec![10, 20, 30],
-        "allowlist should split on commas and tolerate spaces and a trailing comma"
+        "operator seed should split on commas and tolerate spaces and a trailing comma"
     );
     assert_eq!(config.catalog_dir, std::path::PathBuf::from("/srv/games"));
-}
-
-#[test]
-fn non_numeric_admin_role_is_an_error() {
-    let env = lookup_from(&[
-        ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
-        ("GAMESERVERS_ADMIN_ROLE_ID", "not-a-number"),
-    ]);
-    let err = BotConfig::from_env_with(&env).unwrap_err();
-    assert!(
-        err.to_string().contains("GAMESERVERS_ADMIN_ROLE_ID"),
-        "error should name the offending variable, got: {err}"
-    );
 }
 
 #[test]
 fn non_numeric_user_in_allowlist_is_an_error() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("GAMESERVERS_ADMIN_USER_IDS", "10,nope,30"),
     ]);
     let err = BotConfig::from_env_with(&env).unwrap_err();
@@ -84,7 +67,6 @@ fn non_numeric_user_in_allowlist_is_an_error() {
 fn overrides_namespace_and_domain_when_set() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("GAMESERVERS_NAMESPACE", "other-ns"),
         ("GAMESERVERS_DOMAIN", "example.com"),
     ]);
@@ -99,7 +81,7 @@ fn overrides_namespace_and_domain_when_set() {
 
 #[test]
 fn missing_token_is_an_error() {
-    let env = lookup_from(&[("DISCORD_GUILD_ID", "42")]);
+    let env = lookup_from(&[]);
     let err = BotConfig::from_env_with(&env).unwrap_err();
     assert!(
         err.to_string().contains("DISCORD_BOT_TOKEN"),
@@ -108,20 +90,9 @@ fn missing_token_is_an_error() {
 }
 
 #[test]
-fn non_numeric_guild_id_is_an_error() {
-    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "abc")]);
-    let err = BotConfig::from_env_with(&env).unwrap_err();
-    assert!(
-        err.to_string().contains("DISCORD_GUILD_ID"),
-        "error should name the offending variable, got: {err}"
-    );
-}
-
-#[test]
 fn control_port_override_and_validation() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("GAMESERVERS_CONTROL_PORT", "9400"),
     ]);
     let config = BotConfig::from_env_with(&env).unwrap();
@@ -132,7 +103,6 @@ fn control_port_override_and_validation() {
 
     let bad = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("GAMESERVERS_CONTROL_PORT", "70000"),
     ]);
     let err = BotConfig::from_env_with(&bad).unwrap_err();
@@ -144,7 +114,7 @@ fn control_port_override_and_validation() {
 
 #[test]
 fn ollama_defaults_when_unset_and_key_is_absent() {
-    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "42")]);
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
     let config = BotConfig::from_env_with(&env).unwrap();
 
     assert_eq!(config.ollama_api_key, None, "agent key is optional");
@@ -159,7 +129,6 @@ fn ollama_defaults_when_unset_and_key_is_absent() {
 fn ollama_overrides_apply_and_blank_key_reads_as_absent() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("OLLAMA_API_KEY", ""),
         ("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         ("OLLAMA_MODEL", "qwen3"),
@@ -177,7 +146,7 @@ fn ollama_overrides_apply_and_blank_key_reads_as_absent() {
 #[test]
 fn db_is_none_without_a_password() {
     // The password is the OpenBao-sourced part; its absence is the degrade signal.
-    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "42")]);
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
     let config = BotConfig::from_env_with(&env).unwrap();
     assert!(
         config.db.is_none(),
@@ -187,11 +156,7 @@ fn db_is_none_without_a_password() {
 
 #[test]
 fn db_defaults_to_foundation_postgres_when_password_present() {
-    let env = lookup_from(&[
-        ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
-        ("DB_PASSWORD", "pw"),
-    ]);
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DB_PASSWORD", "pw")]);
     let db = BotConfig::from_env_with(&env).unwrap().db.unwrap();
     assert_eq!(db.host, "10.0.0.200");
     assert_eq!(db.port, 5432);
@@ -202,11 +167,7 @@ fn db_defaults_to_foundation_postgres_when_password_present() {
 
 #[test]
 fn blank_db_password_reads_as_absent() {
-    let env = lookup_from(&[
-        ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
-        ("DB_PASSWORD", ""),
-    ]);
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DB_PASSWORD", "")]);
     assert!(
         BotConfig::from_env_with(&env).unwrap().db.is_none(),
         "a blank password should read as unset, not an empty credential"
@@ -217,7 +178,6 @@ fn blank_db_password_reads_as_absent() {
 fn db_overrides_apply() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("DB_PASSWORD", "pw"),
         ("DB_HOST", "127.0.0.1"),
         ("DB_PORT", "6000"),
@@ -235,7 +195,6 @@ fn db_overrides_apply() {
 fn invalid_db_port_is_an_error() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
-        ("DISCORD_GUILD_ID", "42"),
         ("DB_PASSWORD", "pw"),
         ("DB_PORT", "99999"),
     ]);
@@ -243,15 +202,5 @@ fn invalid_db_port_is_an_error() {
     assert!(
         err.to_string().contains("DB_PORT"),
         "an out-of-range DB port should name the variable, got: {err}"
-    );
-}
-
-#[test]
-fn zero_guild_id_is_rejected() {
-    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("DISCORD_GUILD_ID", "0")]);
-    let err = BotConfig::from_env_with(&env).unwrap_err();
-    assert!(
-        err.to_string().contains("non-zero"),
-        "error should reject zero guild id, got: {err}"
     );
 }

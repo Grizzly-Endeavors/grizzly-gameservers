@@ -2,7 +2,7 @@
 //! servers that can be recovered. It is a *rebuildable projection* of the S3
 //! manifest sidecars (the durable source of truth), not the record of last
 //! resort — so it earns its place only as the fast "what archives does this
-//! channel have?" lookup that a bucket prefix scan can't answer once the instance
+//! guild have?" lookup that a bucket prefix scan can't answer once the instance
 //! is gone.
 //!
 //! Automatic backups need no index (the live instance is their key), so only
@@ -18,11 +18,11 @@ use tracing::{error, info, warn};
 use crate::config::DbConfig;
 
 /// Idempotent schema for the archive catalog, applied at startup against the
-/// bot's own database. Channel ids are text (Discord snowflakes overflow the sign
+/// bot's own database. Guild ids are text (Discord snowflakes overflow the sign
 /// bit of `BIGINT`), matching `home_channels`.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS archives (\
     id BIGSERIAL PRIMARY KEY, \
-    channel_id TEXT NOT NULL, \
+    guild_id TEXT NOT NULL, \
     name TEXT NOT NULL, \
     game TEXT NOT NULL, \
     tarball_key TEXT NOT NULL, \
@@ -30,12 +30,14 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS archives (\
     size_bytes BIGINT NOT NULL, \
     created_by TEXT NOT NULL, \
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
-    CREATE INDEX IF NOT EXISTS archives_channel_name_idx ON archives (channel_id, name)";
+    CREATE INDEX IF NOT EXISTS archives_guild_name_idx ON archives (guild_id, name)";
 
 /// One archived server: enough to recreate it and to show it in `/archives`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ArchiveRecord {
-    pub(crate) channel: String,
+    /// Owning Discord guild id — the tenant the archive belongs to and the guild
+    /// a recovered server is stamped back into.
+    pub(crate) guild: String,
     /// Server name, used both to recover and as the archive key segment.
     pub(crate) name: String,
     pub(crate) game: String,
@@ -48,23 +50,30 @@ pub(crate) struct ArchiveRecord {
     pub(crate) created_at: String,
 }
 
-/// The most recent archive of a name in a channel.
-const LATEST_QUERY: &str = "SELECT channel_id, name, game, tarball_key, manifest_key, \
+/// The most recent archive of a name in a guild.
+const LATEST_QUERY: &str = "SELECT guild_id, name, game, tarball_key, manifest_key, \
     size_bytes, created_by, created_at::text FROM archives \
-    WHERE channel_id = $1 AND name = $2 ORDER BY created_at DESC LIMIT 1";
+    WHERE guild_id = $1 AND name = $2 ORDER BY created_at DESC LIMIT 1";
 
-/// The latest archive of each distinct name in a channel.
-const LIST_QUERY: &str = "SELECT DISTINCT ON (name) channel_id, name, game, tarball_key, \
+/// The latest archive of each distinct name in a guild.
+const LIST_QUERY: &str = "SELECT DISTINCT ON (name) guild_id, name, game, tarball_key, \
     manifest_key, size_bytes, created_by, created_at::text FROM archives \
-    WHERE channel_id = $1 ORDER BY name, created_at DESC";
+    WHERE guild_id = $1 ORDER BY name, created_at DESC";
+
+/// The latest archive of each distinct (guild, name) across every guild, for a
+/// cross-guild operator's listing. Distinct on `(guild_id, name)` so same-named
+/// archives in different guilds each survive rather than collapsing.
+const LIST_ALL_QUERY: &str = "SELECT DISTINCT ON (guild_id, name) guild_id, name, game, \
+    tarball_key, manifest_key, size_bytes, created_by, created_at::text FROM archives \
+    ORDER BY guild_id, name, created_at DESC";
 
 type ArchiveRow = (String, String, String, String, String, i64, String, String);
 
 fn row(columns: ArchiveRow) -> ArchiveRecord {
-    let (channel, name, game, tarball_key, manifest_key, size_bytes, created_by, created_at) =
+    let (guild, name, game, tarball_key, manifest_key, size_bytes, created_by, created_at) =
         columns;
     ArchiveRecord {
-        channel,
+        guild,
         name,
         game,
         tarball_key,
@@ -141,10 +150,10 @@ impl ArchiveStore {
         let pool = self.pool()?;
         sqlx::query(
             "INSERT INTO archives \
-             (channel_id, name, game, tarball_key, manifest_key, size_bytes, created_by) \
+             (guild_id, name, game, tarball_key, manifest_key, size_bytes, created_by) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
-        .bind(&record.channel)
+        .bind(&record.guild)
         .bind(&record.name)
         .bind(&record.game)
         .bind(&record.tarball_key)
@@ -157,15 +166,15 @@ impl ArchiveStore {
         Ok(())
     }
 
-    /// The most recent archive of `name` in `channel`, or `None`.
+    /// The most recent archive of `name` in `guild`, or `None`.
     ///
     /// # Errors
     ///
     /// Returns an error if the store is disabled or the query fails.
-    pub(crate) async fn latest(&self, channel: &str, name: &str) -> Result<Option<ArchiveRecord>> {
+    pub(crate) async fn latest(&self, guild: &str, name: &str) -> Result<Option<ArchiveRecord>> {
         let pool = self.pool()?;
         let found = sqlx::query_as::<_, ArchiveRow>(LATEST_QUERY)
-            .bind(channel)
+            .bind(guild)
             .bind(name)
             .fetch_optional(pool)
             .await
@@ -173,18 +182,33 @@ impl ArchiveStore {
         Ok(found.map(row))
     }
 
-    /// The latest archive of each distinct name in `channel`, for `/archives`.
+    /// The latest archive of each distinct name in `guild`, for `/archives`.
     ///
     /// # Errors
     ///
     /// Returns an error if the store is disabled or the query fails.
-    pub(crate) async fn list_latest_per_name(&self, channel: &str) -> Result<Vec<ArchiveRecord>> {
+    pub(crate) async fn list_latest_per_name(&self, guild: &str) -> Result<Vec<ArchiveRecord>> {
         let pool = self.pool()?;
         let rows = sqlx::query_as::<_, ArchiveRow>(LIST_QUERY)
-            .bind(channel)
+            .bind(guild)
             .fetch_all(pool)
             .await
             .context("failed to list archives")?;
+        Ok(rows.into_iter().map(row).collect())
+    }
+
+    /// The latest archive of each distinct (guild, name) across every guild, for a
+    /// cross-guild operator's `/archives` and `/recover`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store is disabled or the query fails.
+    pub(crate) async fn list_all_latest_per_name(&self) -> Result<Vec<ArchiveRecord>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query_as::<_, ArchiveRow>(LIST_ALL_QUERY)
+            .fetch_all(pool)
+            .await
+            .context("failed to list all archives")?;
         Ok(rows.into_iter().map(row).collect())
     }
 

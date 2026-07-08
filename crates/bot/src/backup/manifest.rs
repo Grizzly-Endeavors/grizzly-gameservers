@@ -30,8 +30,8 @@ pub(crate) struct BackupManifest {
     /// Original instance (server) name.
     pub(crate) instance: String,
     pub(crate) game: String,
-    /// Owning Discord channel id.
-    pub(crate) channel: String,
+    /// Owning Discord guild id.
+    pub(crate) guild: String,
     /// Discord user id that triggered it, or `auto` for the scheduled cycle.
     pub(crate) created_by: String,
     /// RFC 3339 creation time.
@@ -58,9 +58,9 @@ pub(crate) fn backup_prefix(instance: &str) -> String {
     format!("backups/{instance}/")
 }
 
-/// Prefix under which a channel's archives of `name` live.
-pub(crate) fn archive_prefix(channel: &str, name: &str) -> String {
-    format!("archives/{channel}/{name}/")
+/// Prefix under which a guild's archives of `name` live.
+pub(crate) fn archive_prefix(guild: &str, name: &str) -> String {
+    format!("archives/{guild}/{name}/")
 }
 
 /// Keys for a backup of `instance` stamped at `stamp` (see [`stamp_now`]).
@@ -68,9 +68,9 @@ pub(crate) fn backup_keys(instance: &str, stamp: &str) -> ArtifactKeys {
     keys(&format!("{}{stamp}", backup_prefix(instance)))
 }
 
-/// Keys for an archive of `name` in `channel` stamped at `stamp`.
-pub(crate) fn archive_keys(channel: &str, name: &str, stamp: &str) -> ArtifactKeys {
-    keys(&format!("{}{stamp}", archive_prefix(channel, name)))
+/// Keys for an archive of `name` in `guild` stamped at `stamp`.
+pub(crate) fn archive_keys(guild: &str, name: &str, stamp: &str) -> ArtifactKeys {
+    keys(&format!("{}{stamp}", archive_prefix(guild, name)))
 }
 
 fn keys(base: &str) -> ArtifactKeys {
