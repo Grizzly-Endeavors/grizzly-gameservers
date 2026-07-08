@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
 use kube::{Api, Client};
 
-use super::labels::GUILD_KEY;
+use super::labels::{GUILD_KEY, label_value};
 
 /// Which servers an operation may see or touch — the tenant boundary.
 ///
@@ -63,12 +63,7 @@ pub(crate) async fn verify_scope(
     else {
         return Ok(ScopeVerdict::Absent);
     };
-    let guild = service
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(GUILD_KEY))
-        .map(String::as_str);
+    let guild = label_value(service.metadata.labels.as_ref(), GUILD_KEY);
     Ok(classify(guild, scope))
 }
 
@@ -93,12 +88,7 @@ pub(crate) async fn guild_of(
     else {
         return Ok(None);
     };
-    Ok(service
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(GUILD_KEY))
-        .cloned())
+    Ok(label_value(service.metadata.labels.as_ref(), GUILD_KEY).map(str::to_owned))
 }
 
 /// Decide the verdict for an instance whose owning guild label is `guild`
