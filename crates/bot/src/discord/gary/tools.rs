@@ -22,15 +22,17 @@ use super::super::render::{
     human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
-use crate::agent::{ToolCall, ToolDef};
+use crate::agent::{
+    GarySurface, ToolCall, ToolDef, cluster_error, format_server_list, format_summary, no_such,
+};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
-    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
-    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
-    list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
-    supervisor_edit_file, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
-    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
-    supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
+    ScopeVerdict, ServerScope, ShutdownOutcome, StartBegin, SupervisorOutcome, begin_start,
+    build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
+    now_entropy, provision_instance, shutdown_instance, supervisor_announce, supervisor_edit_file,
+    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
+    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
+    supervisor_write_file, verify_scope, wait_for_ready,
 };
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
@@ -503,7 +505,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
     )
     .await
     {
-        Ok(summaries) => format_server_list(&summaries),
+        Ok(summaries) => format_server_list(GarySurface::Discord, &summaries),
         Err(err) => {
             error!(error = ?err, "agent: list_servers failed");
             cluster_error()
@@ -523,7 +525,10 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
         Ok(summaries) => summaries
             .iter()
             .find(|summary| summary.name == server)
-            .map_or_else(|| no_such(server), format_summary),
+            .map_or_else(
+                || no_such(server),
+                |summary| format_summary(GarySurface::Discord, summary),
+            ),
         Err(err) => {
             error!(error = ?err, "agent: server_status failed");
             cluster_error()
@@ -1358,26 +1363,6 @@ fn format_command_output(server: &str, command: &str, result: &CommandResponse) 
     }
 }
 
-fn format_server_list(servers: &[ServerSummary]) -> String {
-    if servers.is_empty() {
-        return "no game servers exist right now".to_owned();
-    }
-    servers
-        .iter()
-        .map(format_summary)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn format_summary(server: &ServerSummary) -> String {
-    let game = server.game.as_deref().unwrap_or("unknown game");
-    let address = server.address.as_deref().unwrap_or("no address yet");
-    format!(
-        "{} (game: {game}, state: {}, address: {address})",
-        server.name, server.state
-    )
-}
-
 fn format_supervisor(server: &str, outcome: &SupervisorOutcome) -> String {
     match outcome {
         SupervisorOutcome::Paused => format!("paused {server}; world saved and kept warm"),
@@ -1553,16 +1538,8 @@ fn archives_unavailable_text() -> String {
         .to_owned()
 }
 
-fn no_such(server: &str) -> String {
-    format!("there's no server named {server} — check list_servers for the current names")
-}
-
 fn not_managed(server: &str) -> String {
     format!("{server} is managed by the platform and can't be controlled from here")
-}
-
-fn cluster_error() -> String {
-    "I couldn't reach the cluster just now — worth trying again in a moment".to_owned()
 }
 
 fn game_ids(ctx: &ToolCtx<'_>) -> String {

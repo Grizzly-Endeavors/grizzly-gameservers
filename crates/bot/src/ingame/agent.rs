@@ -17,12 +17,10 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolCall, ToolDef, run_session,
-    send_chat_completion,
+    ChatMessage, DEFAULT_MAX_ROUNDS, GarySurface, SessionEvent, SessionOutcome, ToolCall, ToolDef,
+    cluster_error, format_server_list, format_summary, no_such, run_session, send_chat_completion,
 };
-use crate::agones::{
-    ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
-};
+use crate::agones::{ServerScope, guild_of, list_active_servers, supervisor_announce};
 
 const LIST_SERVERS: &str = "list_servers";
 const SERVER_STATUS: &str = "server_status";
@@ -220,7 +218,7 @@ struct NameArg {
 
 async fn exec_list_servers(deps: &IngameDeps, scope: &ServerScope) -> String {
     match list_active_servers(deps.client.clone(), &deps.namespace, &deps.domain, scope).await {
-        Ok(summaries) => format_server_list(&summaries),
+        Ok(summaries) => format_server_list(GarySurface::InGame, &summaries),
         Err(err) => {
             error!(error = ?err, "ingame: list_servers failed");
             cluster_error()
@@ -233,37 +231,15 @@ async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) 
         Ok(summaries) => summaries
             .iter()
             .find(|summary| summary.name == name)
-            .map_or_else(|| no_such(name), format_summary),
+            .map_or_else(
+                || no_such(name),
+                |summary| format_summary(GarySurface::InGame, summary),
+            ),
         Err(err) => {
             error!(error = ?err, "ingame: server_status failed");
             cluster_error()
         }
     }
-}
-
-fn format_server_list(servers: &[ServerSummary]) -> String {
-    if servers.is_empty() {
-        return "no game servers are running right now".to_owned();
-    }
-    servers
-        .iter()
-        .map(format_summary)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn format_summary(server: &ServerSummary) -> String {
-    let game = server.game.as_deref().unwrap_or("unknown game");
-    let address = server.address.as_deref().unwrap_or("no address yet");
-    format!("{} ({game}, {}, {address})", server.name, server.state)
-}
-
-fn no_such(server: &str) -> String {
-    format!("there's no server named {server} here")
-}
-
-fn cluster_error() -> String {
-    "I couldn't reach the cluster just now — try again in a moment".to_owned()
 }
 
 /// Gary's instructions for the in-game surface. Hardened against prompt injection

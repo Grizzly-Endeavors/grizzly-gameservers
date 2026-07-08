@@ -1,6 +1,4 @@
-use crate::agones::{
-    DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, ServerSummary, SupervisorOutcome,
-};
+use crate::agones::{DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, SupervisorOutcome};
 
 use super::*;
 
@@ -173,26 +171,6 @@ fn name_param_schema_is_clean_object() {
         !object.contains_key("$schema") && !object.contains_key("title"),
         "provider-unfriendly metadata keys must be stripped"
     );
-}
-
-#[test]
-fn server_summary_renders_game_state_and_address() {
-    let summary = ServerSummary {
-        name: "mc-abc12".to_owned(),
-        game: Some("minecraft".to_owned()),
-        state: "Ready".to_owned(),
-        address: Some("mc-abc12.example.com:7000".to_owned()),
-    };
-    let rendered = format_summary(&summary);
-    assert!(rendered.contains("mc-abc12"));
-    assert!(rendered.contains("minecraft"));
-    assert!(rendered.contains("Ready"));
-    assert!(rendered.contains("mc-abc12.example.com:7000"));
-}
-
-#[test]
-fn empty_server_list_reads_as_none() {
-    assert_eq!(format_server_list(&[]), "no game servers exist right now");
 }
 
 #[test]

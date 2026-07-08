@@ -76,44 +76,6 @@ fn truncate_caps_long_replies() {
 }
 
 #[test]
-fn format_server_list_is_terse() {
-    assert_eq!(
-        format_server_list(&[]),
-        "no game servers are running right now"
-    );
-    let servers = vec![
-        ServerSummary {
-            name: "mc-one".to_owned(),
-            game: Some("minecraft".to_owned()),
-            state: "Ready".to_owned(),
-            address: Some("mc-one.example.com:7000".to_owned()),
-        },
-        ServerSummary {
-            name: "mc-two".to_owned(),
-            game: None,
-            state: "Paused".to_owned(),
-            address: None,
-        },
-    ];
-    let rendered = format_server_list(&servers);
-    assert!(rendered.contains("mc-one"));
-    assert!(rendered.contains("mc-two"));
-    assert!(
-        rendered.contains("unknown game"),
-        "missing game is labelled"
-    );
-    assert!(
-        rendered.contains("no address yet"),
-        "missing address is labelled"
-    );
-}
-
-#[test]
-fn no_such_names_the_missing_server() {
-    assert!(no_such("mc-ghost").contains("mc-ghost"));
-}
-
-#[test]
 fn ingame_prompt_hardens_against_injection_and_scopes_read_only() {
     let prompt = build_ingame_system_prompt("minecraft, valheim");
     assert!(
