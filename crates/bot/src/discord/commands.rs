@@ -18,6 +18,7 @@ use crate::agones::{
     list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
     supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
+use crate::store::HomeToggle;
 
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
@@ -636,6 +637,49 @@ async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<I
     names
         .into_iter()
         .filter(move |name| name.starts_with(&needle))
+}
+
+/// Toggle whether Gary answers in this channel without being @mentioned.
+#[poise::command(slash_command, rename = "gary-home", check = "require_admin")]
+pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
+    // DMs are always no-mention, so there's nothing to toggle there.
+    if ctx.guild_id().is_none() {
+        ctx.send(
+            reply_with(neutral_embed(
+                "Already listening",
+                "This is a DM — I already answer here without being @mentioned.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let embed = match ctx
+        .data()
+        .home_channels
+        .toggle(ctx.channel_id().get())
+        .await
+    {
+        Ok(HomeToggle::Added) => neutral_embed(
+            "This is now Gary's channel",
+            "I'll answer here without being @mentioned. Run `/gary-home` again to turn that off.",
+        ),
+        Ok(HomeToggle::Removed) => neutral_embed(
+            "Back to mentions only",
+            "I'll only answer here when you @mention me now.",
+        ),
+        Ok(HomeToggle::Unavailable) => error_embed(
+            "I can't remember that right now — my long-term memory is offline. \
+             You can still @mention me. Try again later.",
+        ),
+        Err(err) => {
+            error!(error = ?err, channel = ctx.channel_id().get(), "failed to toggle home channel");
+            error_embed("Something went wrong saving that. Try again in a moment.")
+        }
+    };
+    ctx.send(reply_with(embed).ephemeral(true)).await?;
+    Ok(())
 }
 
 /// Start fresh with Gary, forgetting the recent back-and-forth.

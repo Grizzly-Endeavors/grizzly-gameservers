@@ -20,6 +20,14 @@ const DEFAULT_CONTROL_PORT: u16 = 9359;
 const DEFAULT_OLLAMA_BASE_URL: &str = "https://ollama.com/v1";
 /// Default model tag the agent drives — GLM 5.2 via Ollama Cloud unless overridden.
 const DEFAULT_OLLAMA_MODEL: &str = "glm-5.2";
+/// Foundation Postgres on the R730xd (ADR-003). LAN-only, plain TCP; overridable
+/// for local dev against a different host.
+const DEFAULT_DB_HOST: &str = "10.0.0.200";
+const DEFAULT_DB_PORT: u16 = 5432;
+/// The bot's dedicated role and (role-owned) database on foundation Postgres,
+/// provisioned by `setup-grizzly-gameservers-stores.yml`.
+const DEFAULT_DB_NAME: &str = "grizzly_gameservers";
+const DEFAULT_DB_USER: &str = "grizzly_gameservers";
 
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
@@ -43,6 +51,21 @@ pub struct BotConfig {
     pub(crate) ollama_base_url: String,
     /// Model tag the agent drives.
     pub(crate) ollama_model: String,
+    /// Foundation-Postgres connection for the bot's durable state. `None` when no
+    /// `DB_PASSWORD` is set — the bot then runs without persistence (no-mention
+    /// home channels are disabled), the same graceful-degrade shape as `ollama`.
+    pub(crate) db: Option<DbConfig>,
+}
+
+/// Connection settings for the bot's foundation-Postgres database. Only the
+/// password is a secret (synced from `OpenBao`); the rest carry infra defaults.
+#[derive(Clone, Debug)]
+pub(crate) struct DbConfig {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) database: String,
+    pub(crate) user: String,
+    pub(crate) password: String,
 }
 
 impl BotConfig {
@@ -84,6 +107,8 @@ impl BotConfig {
         let ollama_model =
             optional(lookup, "OLLAMA_MODEL").unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_owned());
 
+        let db = db_config_from_env(lookup)?;
+
         Ok(Self {
             token,
             guild_id,
@@ -96,8 +121,30 @@ impl BotConfig {
             ollama_api_key,
             ollama_base_url,
             ollama_model,
+            db,
         })
     }
+}
+
+/// Build the Postgres connection settings from the environment, or `None` when
+/// `DB_PASSWORD` is unset/empty — the password is the one part sourced from
+/// `OpenBao`, so its absence is the signal that persistence isn't wired and the
+/// bot should degrade rather than fail.
+///
+/// # Errors
+///
+/// Returns an error if `DB_PORT` is set but not a valid port number.
+fn db_config_from_env(lookup: EnvLookup) -> Result<Option<DbConfig>> {
+    let Some(password) = optional(lookup, "DB_PASSWORD").filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(DbConfig {
+        host: optional(lookup, "DB_HOST").unwrap_or_else(|| DEFAULT_DB_HOST.to_owned()),
+        port: optional_u16(lookup, "DB_PORT")?.unwrap_or(DEFAULT_DB_PORT),
+        database: optional(lookup, "DB_NAME").unwrap_or_else(|| DEFAULT_DB_NAME.to_owned()),
+        user: optional(lookup, "DB_USER").unwrap_or_else(|| DEFAULT_DB_USER.to_owned()),
+        password,
+    }))
 }
 
 fn optional_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {

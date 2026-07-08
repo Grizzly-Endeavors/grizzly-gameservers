@@ -63,6 +63,16 @@ The one exception is the **super-admin**: a user id on the `GAMESERVERS_ADMIN_US
 
 Enforcement lives at two choke points so it can't be forgotten as commands/tools are added: a single poise `command_check` gates every slash command carrying a `server` argument, and Gary's tool `dispatch` gates every tool that names an existing server. Port allocation and name-clash checks stay namespace-global (ports are a shared cluster resource; object names must be unique regardless of channel).
 
+## Talking to Gary: mentions, DMs, and home channels
+
+By default Gary answers when `@mentioned`. That's a deliberate floor, not just a UX choice: without Discord's privileged **Message Content intent** a bot only receives message *content* for messages that mention it or are DMs to it, so a mention is the one thing that always arrives. With the intent enabled, Gary can also treat a whole channel as his own:
+
+- **`@mention`** — works anywhere, always. The historical default.
+- **DM** — every DM to the bot is answered without a mention (DM content is always delivered).
+- **Home channel** — an admin runs **`/gary-home`** to toggle the current channel; there, Gary answers every message with no mention needed. This is what lets one Gary be dropped into each friend group's channel and "just talk." Combined with per-channel [tenancy](#tenancy-servers-are-scoped-to-a-discord-channel), each group's channel is both where they talk to Gary *and* the only servers he'll act on for them.
+
+In the no-mention paths, blank lines and slash-command-style text (leading `/`) are ignored, so Gary doesn't chime in on every stray message. The home-channel registry is the bot's one piece of **durable state**, kept on the foundation Postgres store (a role-owned DB, provisioned out of `grizzly-platform`); it's cached in memory so the per-message check is free. Persistence **degrades gracefully** — if Postgres is unreachable, mentions and slash commands keep working and only no-mention home channels go dark until reconnect.
+
 ## Ops-agent guardrails (non-negotiable)
 
 "Ping me if it breaks, so I'm not fiddling" only holds if these are built in from the start. An unsupervised agent with write access to live game state and restart power can make things worse.

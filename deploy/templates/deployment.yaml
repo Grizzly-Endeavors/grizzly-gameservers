@@ -92,6 +92,25 @@ spec:
             - name: GAMESERVERS_CATALOG_DIR
               value: {{ .Values.bot.catalogDir | quote }}
             {{- end }}
+            # Foundation-Postgres connection for the bot's durable state (the
+            # no-mention home-channel registry). Host/port/name/user are plain
+            # config; only the password is a secret. It's marked optional so a
+            # missing secret leaves persistence disabled (the binary degrades —
+            # mentions and slash commands still work) rather than crash-looping.
+            - name: DB_HOST
+              value: {{ .Values.bot.db.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.bot.db.port | quote }}
+            - name: DB_NAME
+              value: {{ .Values.bot.db.name | quote }}
+            - name: DB_USER
+              value: {{ .Values.bot.db.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-db
+                  key: db_password
+                  optional: true
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:

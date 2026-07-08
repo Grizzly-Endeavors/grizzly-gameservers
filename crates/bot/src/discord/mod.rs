@@ -19,6 +19,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
+use crate::store::HomeChannels;
 
 /// How long an interactive component (button, confirm prompt) waits for a
 /// friend to respond before the interaction expires. Shared so `/destroy`'s
@@ -46,6 +47,9 @@ pub(crate) struct Data {
     /// Short-lived per-`(channel, user)` conversation transcripts giving Gary
     /// follow-up continuity across mentions.
     pub(crate) sessions: Arc<SessionStore>,
+    /// Channels where Gary answers without an `@mention` (plus DMs, which are
+    /// always no-mention). Backed by Postgres; disabled if persistence is down.
+    pub(crate) home_channels: Arc<HomeChannels>,
 }
 
 pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;

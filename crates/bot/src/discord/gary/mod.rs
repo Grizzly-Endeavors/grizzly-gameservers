@@ -34,8 +34,15 @@ type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Sen
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// Poise event hook: route any message that mentions the bot to Gary, ignoring
-/// everything else (and the bot's own messages, to avoid loops).
+/// Poise event hook: route a message to Gary when it's addressed to him — an
+/// `@mention` anywhere, or *any* message in a DM or a registered home channel
+/// (where a mention isn't required). The bot's own messages are ignored to avoid
+/// loops.
+///
+/// In the no-mention (DM/home) path, empty messages and ones that look like a
+/// slash command (leading `/`) are skipped silently, so Gary doesn't chime in on
+/// every stray line or echo a mistyped command back. The `@mention` path keeps
+/// its existing behavior, including the "mention me with a request" nudge.
 ///
 /// # Errors
 ///
@@ -53,21 +60,48 @@ pub(crate) async fn on_event(
     if new_message.author.bot {
         return Ok(());
     }
+
     let bot_id = framework.bot_id;
-    if !new_message.mentions.iter().any(|user| user.id == bot_id) {
+    let mentioned = new_message.mentions.iter().any(|user| user.id == bot_id);
+    if mentioned {
+        let prompt = extract_prompt(&new_message.content, bot_id);
+        handle_message(ctx, data, new_message, prompt).await;
         return Ok(());
     }
 
-    let prompt = extract_prompt(&new_message.content, bot_id);
-    handle_mention(ctx, data, new_message, prompt).await;
+    // No mention: only listen in a DM or a registered home channel, and only to
+    // an actual request — skip blanks and slash-command-style lines.
+    let is_dm = new_message.guild_id.is_none();
+    if !is_dm
+        && !data
+            .home_channels
+            .is_home(new_message.channel_id.get())
+            .await
+    {
+        return Ok(());
+    }
+    let prompt = new_message.content.trim();
+    if !is_auto_listen_prompt(prompt) {
+        return Ok(());
+    }
+    handle_message(ctx, data, new_message, prompt.to_owned()).await;
     Ok(())
 }
 
-/// Run one agent turn for a mention and report back in-channel. Builds the
-/// model/tool callbacks, keeps a typing indicator lit while the loop runs, posts
-/// the model's interim narration as it arrives and its final reply (chunked),
-/// then persists the transcript for the next mention.
-async fn handle_mention(
+/// Whether a no-mention message is something Gary should answer: non-empty and
+/// not a slash-command-style line (leading `/`). Real slash commands arrive as
+/// interactions, not messages, so this only guards typed `/foo` text — but it
+/// keeps Gary from reacting to it, or to blank lines, in a home channel or DM.
+fn is_auto_listen_prompt(content: &str) -> bool {
+    let trimmed = content.trim();
+    !trimmed.is_empty() && !trimmed.starts_with('/')
+}
+
+/// Run one agent turn for a message addressed to Gary and report back
+/// in-channel. Builds the model/tool callbacks, keeps a typing indicator lit
+/// while the loop runs, posts the model's interim narration as it arrives and
+/// its final reply (chunked), then persists the transcript for the next turn.
+async fn handle_message(
     ctx: &serenity::Context,
     data: &Data,
     message: &serenity::Message,

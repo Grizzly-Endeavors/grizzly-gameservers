@@ -56,3 +56,18 @@ fn empty_catalog_renders_as_none() {
     let prompt = build_system_prompt(false, "");
     assert!(prompt.contains("(none)"));
 }
+
+#[test]
+fn auto_listen_answers_a_real_request() {
+    assert!(is_auto_listen_prompt("restart minecraft"));
+    assert!(is_auto_listen_prompt("  what servers are up?  "));
+}
+
+#[test]
+fn auto_listen_ignores_blank_and_slash_command_lines() {
+    assert!(!is_auto_listen_prompt(""));
+    assert!(!is_auto_listen_prompt("   "));
+    // A typed slash-command-style line — Gary must not answer it in a home channel.
+    assert!(!is_auto_listen_prompt("/servers"));
+    assert!(!is_auto_listen_prompt("  /gary-home"));
+}
