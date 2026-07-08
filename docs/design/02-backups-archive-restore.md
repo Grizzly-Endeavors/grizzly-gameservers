@@ -41,23 +41,23 @@ On the versitygw `s3-bulk` bucket `grizzly-gameservers` (path-style, `us-east-1`
 ```
 backups/<instance>/<stamp>.tar.zst        # automatic + manual; pruned to keep-N
 backups/<instance>/<stamp>.manifest.json
-archives/<channel_id>/<name>/<stamp>.tar.zst
-archives/<channel_id>/<name>/<stamp>.manifest.json
+archives/<guild_id>/<name>/<stamp>.tar.zst
+archives/<guild_id>/<name>/<stamp>.manifest.json
 ```
 
-`<stamp>` is a sortable UTC segment (`20260707T143000Z`), so a prefix listing is chronological without parsing. Each `manifest.json` is schema-versioned and self-describing (game, original instance, channel, created-by, timestamp, tarball key, size) — enough to recreate the instance without any database. That makes the bucket the **durable source of truth**; the Postgres archive index is a rebuildable projection of it.
+`<stamp>` is a sortable UTC segment (`20260707T143000Z`), so a prefix listing is chronological without parsing. Each `manifest.json` is schema-versioned and self-describing (game, original instance, owning guild, created-by, timestamp, tarball key, size) — enough to recreate the instance without any database. That makes the bucket the **durable source of truth**; the Postgres archive index is a rebuildable projection of it.
 
 ## The two index strategies
 
 - **Backups** are snapshots of a *live* instance, so the instance itself is the index: `list_backups` is an S3 prefix listing of `backups/<instance>/`. **No database needed** — this is why backups and restore-from-backup keep working even without Postgres.
-- **Archives** destroy the instance, so there is no live object to hang them off. They are cataloged in the foundation Postgres (`archives` table, `crates/bot/src/backup/store.rs`) so `/archives` and `/recover` can answer "what does this channel have?". The catalog is a rebuildable cache of the manifests; **archive / recover-from-archive require the DB and degrade gracefully without it** (like no-mention home channels).
+- **Archives** destroy the instance, so there is no live object to hang them off. They are cataloged in the foundation Postgres (`archives` table, `crates/bot/src/backup/store.rs`) so `/archives` and `/recover` can answer "what does this guild have?". The catalog is a rebuildable cache of the manifests; **archive / recover-from-archive require the DB and degrade gracefully without it** (like no-mention home channels).
 
 ## Flows
 
 All flows live in `crates/bot/src/backup/orchestrate.rs`, composing existing Agones lifecycle actions with the supervisor tar routes and the S3 shell (`s3.rs`).
 
 - **Automatic backup cycle** — a Tokio interval task (spawned in `crate::run`) lists every live managed server and snapshots each to `backups/<instance>/`, quiescing running ones, then prunes to keep-N. Logs once per cycle, not per server.
-- **`archive`** — ensure a pod is up (cold-start a shut-down server) → `supervisor_stop` (graceful world save) → stream `GET /archive` to `archives/<channel>/<name>/` + manifest → insert the Postgres row → `destroy_instance` (releases GameServer + Service + PVC). Nothing is released until the archive is durably in S3 **and** Postgres.
+- **`archive`** — ensure a pod is up (cold-start a shut-down server) → `supervisor_stop` (graceful world save) → stream `GET /archive` to `archives/<guild>/<name>/` + manifest → insert the Postgres row → `destroy_instance` (releases GameServer + Service + PVC). Nothing is released until the archive is durably in S3 **and** Postgres.
 - **`restore` (backup → live server)** — take a safety backup of the current world → `supervisor_stop` → download the chosen backup → `POST /archive?purge=true` → `supervisor_start` → wait for ready.
 - **`recover` (archive → new server)** — read the manifest/row → `provision_paused_instance` (trio held down via `SUPERVISOR_START_PAUSED`) → wait for the control API → download → `POST /archive` into the fresh PVC → `supervisor_start` → wait for ready → return the new `IP:port`. On failure the half-built server is torn down so the name frees up; the archive is untouched.
 
@@ -74,7 +74,7 @@ Both a slash-command surface and Gary tools drive all four capabilities (`crates
 | `/restore <server>` | `restore_server` | yes | **yes** (overwrites the world) |
 | `/recover` | `recover_server` | yes | no (constructive) |
 
-Everything is channel-scoped like the rest of the shim: a server or archive in another channel reads as "not found." Destructive actions reuse the `/destroy` confirmation pattern; Gary's destructive tools post the same confirm buttons and require a human click even when the model requests them.
+Everything is guild-scoped like the rest of the shim: a server or archive in another guild reads as "not found." A recovered archive is recreated in its **own** owning guild (read from the archive record), so a cross-guild operator recovering it doesn't re-home it. Destructive actions reuse the `/destroy` confirmation pattern; Gary's destructive tools post the same confirm buttons and require a human click even when the model requests them.
 
 ## Guardrails & delivery
 
