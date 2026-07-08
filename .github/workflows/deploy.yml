@@ -84,7 +84,7 @@ jobs:
           # stream — the shell (as the runner user) owns the redirect, so there's
           # no mount and no uid coupling. set -e leaves values.yaml untouched if
           # yq fails (the temp is discarded before the mv).
-          docker run --rm -i -e DIGEST mikefarah/yq:4 \
+          docker run --rm -i -e DIGEST mikefarah/yq:4.53.3@sha256:11a1f0b604b13dbbdc662260d8db6f644b22d8553122a25c1b5b2e8713ca6977 \
             '.image.digest = strenv(DIGEST)' < deploy/values.yaml > deploy/values.yaml.tmp
           mv deploy/values.yaml.tmp deploy/values.yaml
           git config user.name "github-actions[bot]"
