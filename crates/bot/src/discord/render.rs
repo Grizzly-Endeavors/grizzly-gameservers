@@ -319,7 +319,7 @@ fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
     }
 }
 
-/// A list of a server's backups or a channel's archives, newest first.
+/// A list of a server's backups or a server's archives, newest first.
 fn artifact_list_spec(title: &str, artifacts: &[ArtifactSummary], empty: &str) -> EmbedSpec {
     if artifacts.is_empty() {
         return EmbedSpec {
