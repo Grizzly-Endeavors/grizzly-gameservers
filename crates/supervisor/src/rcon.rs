@@ -12,17 +12,24 @@
 
 use std::fmt;
 use std::fmt::Write as _;
+use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 /// Ceiling on a single connect+authenticate+command round trip, so a wedged game
 /// can't hang the control API handler indefinitely.
 const RCON_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Poll interval between RCON connect attempts while the game's listener is still
+/// coming up. A freshly created or just-restarted server accepts players on the
+/// game port slightly before its RCON port binds, so a command issued in that
+/// window would otherwise hit a connection-refused; we retry across it instead.
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Cap on the reply text returned to the bot. Console replies are normally short;
 /// this guards the Discord relay path against a pathological dump (e.g. `help`).
@@ -105,9 +112,7 @@ impl RconRuntime {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());
         }
-        let mut stream = TcpStream::connect(address)
-            .await
-            .context("failed to connect to the game rcon port")?;
+        let mut stream = connect_with_retry(address).await?;
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
         if self.minecraft_quirks {
@@ -140,6 +145,26 @@ struct Packet {
     id: i32,
     kind: i32,
     body: String,
+}
+
+/// Connect to the game's RCON port, retrying while the connection is refused —
+/// the listener may not have bound yet on a server that just (re)started, even
+/// though the game port is already accepting players. The caller's
+/// [`RCON_TIMEOUT`] bounds the loop, so a genuinely down console eventually
+/// surfaces as a timeout rather than looping forever. Any error other than
+/// connection-refused is a real fault and fails immediately.
+async fn connect_with_retry(address: SocketAddr) -> Result<TcpStream> {
+    loop {
+        match TcpStream::connect(address).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
+                sleep(CONNECT_RETRY_INTERVAL).await;
+            }
+            Err(err) => {
+                return Err(err).context("failed to connect to the game rcon port");
+            }
+        }
+    }
 }
 
 /// Send the auth packet and read until the server's auth response, failing if it

@@ -102,6 +102,32 @@ async fn read_packet_rejects_an_oversized_length_prefix() {
     );
 }
 
+#[tokio::test]
+async fn connect_with_retry_waits_out_a_late_binding_listener() {
+    // Reserve a port, then drop the listener so the address is refused, mirroring
+    // the boot window where RCON hasn't bound yet.
+    let probe = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = probe.local_addr().unwrap();
+    drop(probe);
+
+    // Bring the listener up after a couple of retry intervals; connect_with_retry
+    // should keep polling until it binds rather than failing on the refusal.
+    let binder = tokio::spawn(async move {
+        sleep(CONNECT_RETRY_INTERVAL * 3).await;
+        let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+        listener.accept().await.unwrap();
+    });
+
+    let connected = timeout(RCON_TIMEOUT, connect_with_retry(address)).await;
+    assert!(
+        matches!(connected, Ok(Ok(_))),
+        "connect should succeed once the listener binds, got {connected:?}"
+    );
+    binder.await.unwrap();
+}
+
 #[test]
 fn truncate_output_leaves_short_text_untouched() {
     let text = "There are 2 of a max of 20 players online".to_owned();
