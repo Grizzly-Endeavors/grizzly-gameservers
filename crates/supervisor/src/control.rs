@@ -216,7 +216,9 @@ async fn run_command(
         Ok(output) => (StatusCode::OK, Json(CommandResponse { output })).into_response(),
         Err(err) => {
             warn!(error = ?err, command = %body.command, "rcon command failed");
-            internal_error("couldn't reach the server's console")
+            internal_error(
+                "the server's console isn't responding yet — it may still be starting up, so try again in a moment",
+            )
         }
     }
 }
