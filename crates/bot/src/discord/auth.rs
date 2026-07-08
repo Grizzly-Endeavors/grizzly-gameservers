@@ -1,6 +1,7 @@
 use poise::serenity_prelude as serenity;
 use tracing::error;
 
+use super::render::guild_required_embed;
 use super::{Context, Error};
 use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
 use crate::store::GuildAdmins;
@@ -131,9 +132,10 @@ pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
         ctx.guild_id().map(serenity::GuildId::get),
         &data.operator_ids,
     ) else {
-        deny(
-            ctx,
-            "I manage servers inside a Discord server. Run this in a channel of the server you want to manage.",
+        ctx.send(
+            poise::CreateReply::default()
+                .embed(guild_required_embed())
+                .ephemeral(true),
         )
         .await?;
         return Ok(false);

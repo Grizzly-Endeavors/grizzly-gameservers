@@ -10,9 +10,9 @@ use super::auth::{require_admin, visibility_scope};
 use super::render::{
     archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
     backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
-    destroy_confirm_embed, destroy_result_embed, error_embed, neutral_embed, recover_result_embed,
-    restore_confirm_embed, restore_result_embed, server_list_embed, shutdown_result_embed,
-    start_result_embed, supervisor_result_embed, working_embed,
+    destroy_confirm_embed, destroy_result_embed, error_embed, guild_required_embed, neutral_embed,
+    recover_result_embed, restore_confirm_embed, restore_result_embed, server_list_embed,
+    shutdown_result_embed, start_result_embed, supervisor_result_embed, working_embed,
 };
 use super::{COMPONENT_TIMEOUT, Context, Error, backup_ctx};
 use crate::agones::{
@@ -52,14 +52,8 @@ fn truncate_option_label(label: &str) -> String {
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
     let Some(scope) = command_scope(ctx) else {
-        ctx.send(
-            reply_with(neutral_embed(
-                "Run this in a server",
-                "I manage servers inside a Discord server — run `/servers` in a channel there.",
-            ))
-            .ephemeral(true),
-        )
-        .await?;
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
@@ -139,12 +133,7 @@ pub(crate) async fn create(
         .await?;
 
     let message = reply.message().await?;
-    let Some(interaction) = serenity::ComponentInteractionCollector::new(ctx.serenity_context())
-        .author_id(ctx.author().id)
-        .message_id(message.id)
-        .timeout(COMPONENT_TIMEOUT)
-        .await
-    else {
+    let Some(interaction) = collect_component(ctx, message.id).await else {
         reply
             .edit(
                 ctx,
@@ -156,23 +145,9 @@ pub(crate) async fn create(
             .await?;
         return Ok(());
     };
+    acknowledge(ctx, &interaction).await?;
 
-    // Acknowledge the selection so Discord doesn't mark it failed; the actual
-    // result is written back by editing the original ephemeral reply.
-    interaction
-        .create_response(
-            ctx.serenity_context(),
-            CreateInteractionResponse::Acknowledge,
-        )
-        .await?;
-
-    let game = if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind
-    {
-        values.first().cloned()
-    } else {
-        None
-    };
-    let Some(game) = game else {
+    let Some(game) = string_select_value(&interaction) else {
         reply
             .edit(
                 ctx,
@@ -592,55 +567,11 @@ pub(crate) async fn destroy(
 ) -> Result<(), Error> {
     let data = ctx.data();
 
-    let buttons = CreateActionRow::Buttons(vec![
-        CreateButton::new("destroy_confirm")
-            .label("Delete it")
-            .style(ButtonStyle::Danger),
-        CreateButton::new("destroy_cancel")
-            .label("Cancel")
-            .style(ButtonStyle::Secondary),
-    ]);
-    let reply = ctx
-        .send(
-            poise::CreateReply::default()
-                .embed(destroy_confirm_embed(&server))
-                .components(vec![buttons])
-                .ephemeral(true),
-        )
-        .await?;
-
-    let message = reply.message().await?;
-    let Some(interaction) = serenity::ComponentInteractionCollector::new(ctx.serenity_context())
-        .author_id(ctx.author().id)
-        .message_id(message.id)
-        .timeout(COMPONENT_TIMEOUT)
-        .await
+    let Some(reply) =
+        confirm_action(ctx, destroy_confirm_embed(&server), "destroy_confirm").await?
     else {
-        reply
-            .edit(
-                ctx,
-                cleared(neutral_embed("Timed out", "Nothing was deleted.")),
-            )
-            .await?;
         return Ok(());
     };
-
-    interaction
-        .create_response(
-            ctx.serenity_context(),
-            CreateInteractionResponse::Acknowledge,
-        )
-        .await?;
-
-    if interaction.data.custom_id != "destroy_confirm" {
-        reply
-            .edit(
-                ctx,
-                cleared(neutral_embed("Cancelled", "Nothing was deleted.")),
-            )
-            .await?;
-        return Ok(());
-    }
 
     reply
         .edit(
@@ -782,7 +713,7 @@ async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
 #[poise::command(slash_command, rename = "view", check = "require_admin")]
 async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
-        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
             .await?;
         return Ok(());
     };
@@ -823,7 +754,7 @@ async fn config_admin_role_add(
     #[description = "Role to grant server-admin"] role: serenity::Role,
 ) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
-        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
             .await?;
         return Ok(());
     };
@@ -842,7 +773,7 @@ async fn config_admin_role_remove(
     #[description = "Role to revoke server-admin from"] role: serenity::Role,
 ) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
-        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
             .await?;
         return Ok(());
     };
@@ -871,7 +802,7 @@ async fn config_admin_user_add(
     #[description = "Person to grant server-admin"] user: serenity::User,
 ) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
-        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
             .await?;
         return Ok(());
     };
@@ -890,7 +821,7 @@ async fn config_admin_user_remove(
     #[description = "Person to revoke server-admin from"] user: serenity::User,
 ) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
-        ctx.send(reply_with(config_needs_guild_embed()).ephemeral(true))
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
             .await?;
         return Ok(());
     };
@@ -941,14 +872,6 @@ async fn respond_config_change(
     };
     ctx.send(reply_with(embed).ephemeral(true)).await?;
     Ok(())
-}
-
-/// The ephemeral reply when a `/config` subcommand is somehow run outside a guild.
-fn config_needs_guild_embed() -> CreateEmbed {
-    neutral_embed(
-        "Run this in a server",
-        "`/config` sets up admins for a Discord server — run it in a channel there.",
-    )
 }
 
 /// Take a backup of a running server's world to durable storage right now.
@@ -1054,14 +977,8 @@ pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     }
     let Some(scope) = command_scope(ctx) else {
-        ctx.send(
-            reply_with(neutral_embed(
-                "Run this in a server",
-                "Archives belong to a Discord server — run `/archives` in a channel there.",
-            ))
-            .ephemeral(true),
-        )
-        .await?;
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
@@ -1348,14 +1265,8 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     }
     let Some(scope) = command_scope(ctx) else {
-        ctx.send(
-            reply_with(neutral_embed(
-                "Run this in a server",
-                "Archives belong to a Discord server — run `/recover` in a channel there.",
-            ))
-            .ephemeral(true),
-        )
-        .await?;
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
         return Ok(());
     };
     let reply = ctx
