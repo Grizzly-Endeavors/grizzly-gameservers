@@ -29,6 +29,24 @@ use crate::store::{ConfigChange, HomeToggle};
 /// fall off the menu.
 const MAX_SELECT_OPTIONS: usize = 25;
 
+/// Discord's hard cap on a select-option label (and value). Labels are
+/// display-only, so an over-long one is truncated; values that must round-trip
+/// (e.g. the /restore pick) carry a short index instead of a long key.
+const MAX_SELECT_LABEL: usize = 100;
+
+/// Truncate a select-option label to Discord's 100-character cap, on a char
+/// boundary with an ellipsis, so an over-long label doesn't get the whole menu
+/// send rejected. Only for display-only labels — never for a value that must
+/// round-trip to identify the pick.
+fn truncate_option_label(label: &str) -> String {
+    if label.chars().count() <= MAX_SELECT_LABEL {
+        return label.to_owned();
+    }
+    let mut truncated: String = label.chars().take(MAX_SELECT_LABEL - 1).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
@@ -1187,7 +1205,16 @@ pub(crate) async fn restore(
     let options: Vec<CreateSelectMenuOption> = backups
         .iter()
         .take(MAX_SELECT_OPTIONS)
-        .map(|backup| CreateSelectMenuOption::new(backup.created_at.clone(), backup.key.clone()))
+        .enumerate()
+        // The value is the backup's index in `backups`, not its S3 key: a long
+        // instance name pushes the key past Discord's 100-char value cap.
+        // finish_restore resolves the index back to the key.
+        .map(|(index, backup)| {
+            CreateSelectMenuOption::new(
+                truncate_option_label(&backup.created_at),
+                index.to_string(),
+            )
+        })
         .collect();
     let menu = CreateSelectMenu::new("restore_pick", CreateSelectMenuKind::String { options })
         .placeholder("Pick a backup to restore");
@@ -1225,7 +1252,10 @@ async fn finish_restore(
         return Ok(());
     };
     acknowledge(ctx, &pick).await?;
-    let Some(key) = string_select_value(&pick) else {
+    let Some(backup) = string_select_value(&pick)
+        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|index| backups.get(index))
+    else {
         reply
             .edit(
                 ctx,
@@ -1236,10 +1266,8 @@ async fn finish_restore(
             .await?;
         return Ok(());
     };
-    let label = backups.iter().find(|backup| backup.key == key).map_or_else(
-        || "the selected backup".to_owned(),
-        |b| b.created_at.clone(),
-    );
+    let key = backup.key.clone();
+    let label = backup.created_at.clone();
 
     reply
         .edit(
@@ -1373,7 +1401,7 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
             // recreate it in its original tenant (a cross-guild operator may see
             // archives from several guilds at once).
             CreateSelectMenuOption::new(
-                format!("{} · {}", archive.name, archive.created_at),
+                truncate_option_label(&format!("{} · {}", archive.name, archive.created_at)),
                 format!("{}:{}", archive.guild, archive.name),
             )
         })
@@ -1586,3 +1614,7 @@ fn cleared(embed: serenity::CreateEmbed) -> poise::CreateReply {
         .embed(embed)
         .components(vec![])
 }
+
+#[cfg(test)]
+#[path = "tests/commands.rs"]
+mod tests;

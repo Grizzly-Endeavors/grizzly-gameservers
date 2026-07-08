@@ -11,6 +11,41 @@ use crate::backup::{
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
 
+/// Discord rejects an embed whose description exceeds 4096 characters. A busy
+/// guild's server list or a long backup list can blow past that.
+const EMBED_DESCRIPTION_LIMIT: usize = 4096;
+
+/// Join `lines` with newlines, capping the result at the embed-description
+/// limit. If the full list would overflow, keep as many whole lines as fit and
+/// append a "…and N more" tail, so an over-long list is clipped visibly instead
+/// of failing the whole edit. Length is measured in bytes — always ≥ the
+/// character count Discord actually caps on, so the bound stays conservative.
+fn join_within_embed_limit(lines: &[String]) -> String {
+    let full = lines.join("\n");
+    if full.len() <= EMBED_DESCRIPTION_LIMIT {
+        return full;
+    }
+    let mut out = String::new();
+    for (shown, line) in lines.iter().enumerate() {
+        let tail = format!("…and {} more", lines.len() - shown);
+        let separator = usize::from(!out.is_empty());
+        // Reserve room for this line and, after it, a newline + the tail.
+        let projected = out.len() + separator + line.len() + 1 + tail.len();
+        if projected > EMBED_DESCRIPTION_LIMIT {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&tail);
+            return out;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 // Outcome palette. Green = running/ready, amber = still coming up, red =
 // failure or destructive, slate = neutral/no-op so a plain "ok, nothing to do"
 // doesn't read as alarming.
@@ -68,7 +103,7 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
     EmbedSpec {
         title: "Game servers".to_owned(),
         colour: if any_ready { COLOUR_UP } else { COLOUR_NEUTRAL },
-        body: lines.join("\n"),
+        body: join_within_embed_limit(&lines),
     }
 }
 
@@ -342,7 +377,7 @@ fn artifact_list_spec(title: &str, artifacts: &[ArtifactSummary], empty: &str) -
     EmbedSpec {
         title: title.to_owned(),
         colour: COLOUR_NEUTRAL,
-        body: lines.join("\n"),
+        body: join_within_embed_limit(&lines),
     }
 }
 

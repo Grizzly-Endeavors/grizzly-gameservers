@@ -249,3 +249,50 @@ fn supervisor_rejection_is_an_error_naming_the_reason() {
         spec.body
     );
 }
+
+#[test]
+fn join_within_embed_limit_keeps_short_lists_intact() {
+    let lines = vec!["one".to_owned(), "two".to_owned(), "three".to_owned()];
+    assert_eq!(join_within_embed_limit(&lines), "one\ntwo\nthree");
+}
+
+#[test]
+fn join_within_embed_limit_clips_overflow_with_a_tail() {
+    // 400 lines of ~40 bytes each = ~16k bytes, well past the 4096 cap.
+    let lines: Vec<String> = (0..400)
+        .map(|i| format!("• line number {i:04} here"))
+        .collect();
+    let joined = join_within_embed_limit(&lines);
+
+    assert!(
+        joined.len() <= EMBED_DESCRIPTION_LIMIT,
+        "clipped body must stay within Discord's limit, got {} bytes",
+        joined.len()
+    );
+    assert!(
+        joined.contains("…and "),
+        "a clipped list should tell the friend how many were omitted, got tail: {:?}",
+        joined.rsplit('\n').next()
+    );
+    // The omitted count must be accurate: shown lines + omitted = total.
+    let tail = joined.rsplit('\n').next().unwrap();
+    let omitted: usize = tail
+        .trim_start_matches("…and ")
+        .trim_end_matches(" more")
+        .parse()
+        .unwrap();
+    let shown = joined.lines().count() - 1; // minus the tail line
+    assert_eq!(
+        shown + omitted,
+        lines.len(),
+        "shown + omitted should equal total"
+    );
+}
+
+#[test]
+fn join_within_embed_limit_handles_a_single_oversized_line() {
+    let lines = vec!["x".repeat(EMBED_DESCRIPTION_LIMIT + 100)];
+    let joined = join_within_embed_limit(&lines);
+    assert!(joined.len() <= EMBED_DESCRIPTION_LIMIT);
+    assert!(joined.contains("…and 1 more"));
+}
