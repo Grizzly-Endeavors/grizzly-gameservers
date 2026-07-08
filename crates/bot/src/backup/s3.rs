@@ -259,24 +259,40 @@ impl S3Store {
     ///
     /// Returns an error if the listing fails or can't be parsed.
     pub(crate) async fn list_tarballs(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
-        action.with_prefix(prefix);
-        let url = action.sign(SIGN_EXPIRY);
-        let response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("failed to list objects under {prefix}"))?;
-        let body = success_text(response).await?;
-        let parsed = ListObjectsV2::parse_response(&body)
-            .context("failed to parse list-objects response")?;
-        Ok(parsed
-            .contents
-            .into_iter()
-            .map(|object| object.key)
-            .filter(|key| key.ends_with(".tar.zst"))
-            .collect())
+        // S3/versitygw cap a page at 1000 keys, so a prefix that outgrows one page
+        // must be followed by continuation token — otherwise the tail is silently
+        // dropped and any "newest N"/retention logic operates on a partial view.
+        let mut keys: Vec<String> = Vec::new();
+        let mut continuation: Option<String> = None;
+        loop {
+            let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
+            action.with_prefix(prefix);
+            if let Some(token) = &continuation {
+                action.with_continuation_token(token.as_str());
+            }
+            let url = action.sign(SIGN_EXPIRY);
+            let response = self
+                .http
+                .get(url)
+                .send()
+                .await
+                .with_context(|| format!("failed to list objects under {prefix}"))?;
+            let body = success_text(response).await?;
+            let parsed = ListObjectsV2::parse_response(&body)
+                .context("failed to parse list-objects response")?;
+            keys.extend(
+                parsed
+                    .contents
+                    .into_iter()
+                    .map(|object| object.key)
+                    .filter(|key| key.ends_with(".tar.zst")),
+            );
+            match parsed.next_continuation_token {
+                Some(token) => continuation = Some(token),
+                None => break,
+            }
+        }
+        Ok(keys)
     }
 
     /// Delete a single object, tolerating an already-absent key.
