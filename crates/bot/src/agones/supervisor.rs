@@ -7,7 +7,7 @@ use grizzly_control_api::{
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::types::GameServer;
@@ -444,11 +444,15 @@ async fn poll_status(
             }
         }
         Ok(response) => {
-            warn!(status = %response.status(), url, "supervisor status route returned an error");
+            // Unreachable is the expected keep-polling state during a cold start
+            // (wait_for_ready / wait_for_control_reachable poll every few seconds
+            // for minutes), so a non-answer stays at debug — the terminal TimedOut
+            // outcome is what surfaces a server that genuinely never comes up.
+            debug!(status = %response.status(), url, "supervisor status route returned an error");
             Ok(StatusPoll::Unreachable)
         }
         Err(err) => {
-            warn!(error = ?err, url, "failed to reach supervisor status route");
+            debug!(error = ?err, url, "failed to reach supervisor status route");
             Ok(StatusPoll::Unreachable)
         }
     }

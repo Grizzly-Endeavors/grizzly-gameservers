@@ -71,8 +71,8 @@ Players inside a running server can address the agent directly, closing the reve
 
 1. The supervisor's chat watcher (`crates/supervisor/src/chat_watcher.rs`) taps the captured stdout line stream continuously.
 2. It pattern-matches genuine player chat (`<player> message`) in the game's chat dialect — selected per-game by `SUPERVISOR_CHAT_FORMAT` (Minecraft today) — for the trigger `@Gary` (`SUPERVISOR_CHAT_TRIGGER`, case-insensitive). Only the `<player>` shape matches, so the agent's own `tellraw` replies can't re-trigger it, and a per-player cooldown throttles spam.
-3. It POSTs `{server, player, message}` (`IngameTriggerRequest`) to the bot's agent endpoint (`SUPERVISOR_AGENT_URL`) with a shared bearer token (`SUPERVISOR_AGENT_TOKEN`). The GameServer name is included so the bot maps the trigger to a channel scope without a separate dock step.
-4. The bot's endpoint (`crates/bot/src/ingame/`) authenticates the token, returns `202` immediately, and runs a **read-only** tool-calling session (`list_servers`/`server_status` only, scoped to that server's channel) on Gary's shared core.
+3. It POSTs `{server, player, message}` (`IngameTriggerRequest`) to the bot's agent endpoint (`SUPERVISOR_AGENT_URL`) with a shared bearer token (`SUPERVISOR_AGENT_TOKEN`). The GameServer name is included so the bot maps the trigger to a guild scope without a separate dock step.
+4. The bot's endpoint (`crates/bot/src/ingame/`) authenticates the token, returns `202` immediately, and runs a **read-only** tool-calling session (`list_servers`/`server_status` only, scoped to that server's guild) on Gary's shared core.
 5. It routes the answer back in-game over the existing RCON `/announce` bridge (`tellraw @a`), so the whole world sees `Gary: …`.
 
 **Why this is simple:** The bot is a long-running container, so the endpoint just runs alongside the Discord gateway in the same process, sharing Gary's core and session store. The reply reuses the already-shipped `/announce` path — no new outbound plumbing.
