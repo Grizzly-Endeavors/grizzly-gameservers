@@ -54,7 +54,22 @@ spec:
           # (grizzly supervisor as PID 1, wrapping the game as its child). CI
           # replaces the tag with the gate-signed digest (ADR-020).
           image: REPLACE_IMAGE          # pin a tag/digest — no floating :latest
-          env: []                       # REPLACE with the game's config env
+          # REPLACE with the game's config env. If this game enables the in-game
+          # chat → Gary reverse loop (SUPERVISOR_CHAT_FORMAT in the Dockerfile),
+          # also wire these three, matching games/minecraft/gameserver.yaml:
+          #   - name: SUPERVISOR_GAMESERVER_NAME
+          #     valueFrom:
+          #       fieldRef:
+          #         fieldPath: metadata.labels['agones.dev/gameserver']
+          #   - name: SUPERVISOR_AGENT_URL
+          #     value: "http://grizzly-gameservers-agent.game-servers.svc.cluster.local:9360/ingame-trigger"
+          #   - name: SUPERVISOR_AGENT_TOKEN
+          #     valueFrom:
+          #       secretKeyRef:
+          #         name: grizzly-gameservers-ingame
+          #         key: ingame_token
+          #         optional: true
+          env: []
           ports:
             - name: REPLACE_GAME
               containerPort: 0          # REPLACE (match spec.ports.containerPort)

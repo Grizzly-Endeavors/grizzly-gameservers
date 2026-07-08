@@ -137,8 +137,25 @@ spec:
               value: {{ .Values.bot.backup.intervalHours | quote }}
             - name: GAMESERVERS_BACKUP_RETENTION
               value: {{ .Values.bot.backup.retention | quote }}
+            # In-game agent endpoint: game-pod supervisors POST player `@Gary`
+            # chat triggers here (the reverse loop). The token authenticates
+            # those POSTs; it's the same grizzly-gameservers-ingame Secret the
+            # game pods read (both live in this namespace), and optional so a
+            # missing token runs the endpoint open (NetworkPolicy-protected) —
+            # same graceful shape as DB/Ollama/S3.
+            - name: GAMESERVERS_INGAME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-ingame
+                  key: ingame_token
+                  optional: true
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
+          ports:
+            # The in-game agent endpoint the ClusterIP agent Service targets.
+            - name: agent
+              containerPort: 9360
+              protocol: TCP
           resources:
             {{- toYaml .Values.bot.resources | nindent 12 }}
           volumeMounts:
