@@ -11,7 +11,7 @@
 
 mod agent;
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -85,7 +85,7 @@ async fn serve(deps: IngameDeps, port: u16, token: Option<String>) -> Result<()>
         .layer(from_fn_with_state(state.clone(), require_token))
         .with_state(state);
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind in-game agent endpoint on {addr}"))?;

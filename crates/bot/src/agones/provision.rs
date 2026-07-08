@@ -164,7 +164,10 @@ async fn provision_under_lock(
         match services.create(&PostParams::default(), &service).await {
             Ok(_) => {}
             Err(err) if is_port_conflict(&err) => {
-                warn!(
+                // Concurrent /create calls racing for the same free port is the
+                // expected case this lease-and-retry loop exists to absorb, so it
+                // stays at debug — a normal race shouldn't read as an incident.
+                debug!(
                     port,
                     instance, "nodeport already taken, retrying with next free port"
                 );

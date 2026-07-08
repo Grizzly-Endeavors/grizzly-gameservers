@@ -295,8 +295,11 @@ fn admin_tools() -> Vec<ToolDef> {
 /// Before dispatching, any tool that targets an existing server by name is
 /// confined to the caller's [`ServerScope`](ToolCtx::scope): a server in another
 /// guild reads as "no such server", so Gary can neither see nor touch another
-/// group's servers. `list_servers` scopes itself in its query; `create_server`
-/// makes a new server and stamps the current guild, so neither is gated here.
+/// group's servers. The tools not gated here each enforce tenancy on their own:
+/// `list_servers` and `list_archives` scope-filter their own listing,
+/// `create_server` stamps the new server with the current guild, and
+/// `recover_server` resolves the archive within the caller's scope-filtered
+/// listing (see `exec_recover`).
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
     if targets_existing_server(call.function.name.as_str())
@@ -420,8 +423,10 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
 }
 
 /// Whether a tool acts on an *existing* server named in its arguments — the set
-/// the scope gate applies to. `list_servers` (no target) and `create_server`
-/// (makes a new one) are the only tools that don't, so they're excluded.
+/// the scope gate applies to. Excluded because they enforce tenancy themselves:
+/// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
+/// (no existing target — stamps the current guild), and `recover_server` (resolves
+/// the archive within the caller's scope). Keep this in sync with those tools.
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,

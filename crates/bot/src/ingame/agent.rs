@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
@@ -203,7 +203,10 @@ async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall
         LIST_SERVERS => exec_list_servers(deps, scope).await,
         SERVER_STATUS => match serde_json::from_str::<NameArg>(call.function.arguments.as_str()) {
             Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
-            Err(_) => "I couldn't tell which server you meant.".to_owned(),
+            Err(err) => {
+                debug!(error = ?err, "ingame: server_status args failed to parse");
+                "I couldn't tell which server you meant.".to_owned()
+            }
         },
         _ => "I can only look up server info from in-game — an admin can do the rest in Discord."
             .to_owned(),

@@ -24,6 +24,11 @@ use crate::agones::{
 use crate::backup::{ArtifactSummary, BackupService};
 use crate::store::{ConfigChange, HomeToggle};
 
+/// Maximum options a Discord string select menu accepts. Pickers that can exceed
+/// this show only the newest entries (they are built newest-first); older ones
+/// fall off the menu.
+const MAX_SELECT_OPTIONS: usize = 25;
+
 /// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
@@ -1162,7 +1167,7 @@ pub(crate) async fn restore(
 
     let options: Vec<CreateSelectMenuOption> = backups
         .iter()
-        .take(25)
+        .take(MAX_SELECT_OPTIONS)
         .map(|backup| CreateSelectMenuOption::new(backup.created_at.clone(), backup.key.clone()))
         .collect();
     let menu = CreateSelectMenu::new("restore_pick", CreateSelectMenuKind::String { options })
@@ -1341,7 +1346,7 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
 
     let options: Vec<CreateSelectMenuOption> = archives
         .iter()
-        .take(25)
+        .take(MAX_SELECT_OPTIONS)
         .map(|archive| {
             // The pick value carries the archive's owning guild so recover can
             // recreate it in its original tenant (a cross-guild operator may see

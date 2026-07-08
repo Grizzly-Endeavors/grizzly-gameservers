@@ -48,10 +48,18 @@ async fn connect_pool(config: &DbConfig, max_connections: u32) -> Result<PgPool>
 /// channel belongs to (nullable for rows written before the guild-tenancy model)
 /// so a guild's home channels can be listed; the per-message `is_home` check only
 /// needs the channel id.
-const HOME_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS home_channels (\
-    channel_id TEXT PRIMARY KEY, \
-    guild_id TEXT, \
-    added_at TIMESTAMPTZ NOT NULL DEFAULT now())";
+///
+/// The `ADD COLUMN IF NOT EXISTS` is a migration: `home_channels` predates the
+/// guild-tenancy model, so a database that ran the bot before `guild_id` was
+/// added still has the old two-column table. `CREATE TABLE IF NOT EXISTS` never
+/// alters an existing table, so without the explicit `ALTER` the `add` insert
+/// (which binds `guild_id`) fails at runtime on those deployments.
+const HOME_SCHEMA: &str = "\
+    CREATE TABLE IF NOT EXISTS home_channels (\
+        channel_id TEXT PRIMARY KEY, \
+        guild_id TEXT, \
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
+    ALTER TABLE home_channels ADD COLUMN IF NOT EXISTS guild_id TEXT";
 
 /// A connection pool for the home-channel registry, schema applied.
 struct HomeStore {
@@ -61,7 +69,8 @@ struct HomeStore {
 impl HomeStore {
     async fn connect(config: &DbConfig) -> Result<Self> {
         let pool = connect_pool(config, 4).await?;
-        sqlx::query(HOME_SCHEMA)
+        // raw_sql runs the create-plus-migrate batch as one call.
+        sqlx::raw_sql(HOME_SCHEMA)
             .execute(&pool)
             .await
             .context("failed to apply home_channels schema")?;
