@@ -1,0 +1,35 @@
+# Game-server pods → the bot's in-game agent endpoint (the reverse loop).
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) puts every pod in
+# this namespace into default-deny egress, with only kube-dns, the kube-apiserver,
+# and the public internet allowed. That deliberately blocks lateral game-pod →
+# game-pod traffic, and it also blocks a game pod's chat watcher from reaching the
+# bot to forward a player's `@Gary` question.
+#
+# Cilium policies are additive, so this widens game-pod egress by exactly one
+# path: game-server pods → the bot workload, TCP 9360 only (the agent endpoint /
+# its ClusterIP Service). Nothing else opens — game pods still can't reach each
+# other, and 9360 is never exposed through the NodePort edge.
+#
+# The reverse of bot-to-supervisor-egress.yaml: there the bot reaches into game
+# pods on 9359; here game pods reach the bot on 9360. Both rely on network
+# identity for authn; a shared bearer token on the agent endpoint adds
+# defense-in-depth (issue #2, same token pattern in both directions).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: game-to-bot-agent-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      agones.dev/role: gameserver
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: grizzly-gameservers
+            app.kubernetes.io/component: bot
+      toPorts:
+        - ports:
+            - port: "9360"
+              protocol: TCP

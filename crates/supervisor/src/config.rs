@@ -4,6 +4,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 
+use crate::chat_watcher::ChatFormat;
+
+/// Default trigger a player types in chat to address the ops agent. Overridable
+/// per game via `SUPERVISOR_CHAT_TRIGGER` if it collides with a game command.
+const DEFAULT_CHAT_TRIGGER: &str = "@Gary";
+
 /// Closure that resolves an environment variable to its raw value, mirroring
 /// `std::env::var_os`. Injected so config parsing is testable without the
 /// `unsafe` `set_var`/`remove_var` of Rust 2024.
@@ -71,6 +77,30 @@ pub struct SupervisorConfig {
     /// generates a throwaway fresh world). Off by default: a normal server starts
     /// its game immediately.
     pub start_paused: bool,
+    /// In-game chat watching, or `None` when the per-game template doesn't enable
+    /// it (no `SUPERVISOR_CHAT_FORMAT`). Its presence spawns the watcher that
+    /// forwards `@Gary` triggers to the bot.
+    pub chat_watch: Option<ChatWatchConfig>,
+}
+
+/// Configuration for the in-game chat watcher, present only when the game enables
+/// it. Built as a unit so the watcher gets every piece it needs or none at all —
+/// a half-configured watcher (a format but nowhere to POST) is a misconfiguration
+/// surfaced at parse time, not a silent no-op.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatWatchConfig {
+    /// How this game renders chat lines in its log stream.
+    pub format: ChatFormat,
+    /// The token a player types to address the agent (default [`DEFAULT_CHAT_TRIGGER`]).
+    pub trigger: String,
+    /// Full URL of the bot's agent endpoint to POST triggers to.
+    pub agent_url: String,
+    /// Shared bearer token authenticating the POST, or `None` when unset (the
+    /// watcher warns; the endpoint is then NetworkPolicy-protected only).
+    pub agent_token: Option<String>,
+    /// The Agones `GameServer` name, sent so the bot maps the trigger back to a
+    /// channel scope.
+    pub server: String,
 }
 
 impl SupervisorConfig {
@@ -121,6 +151,7 @@ impl SupervisorConfig {
         let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
             .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
+        let chat_watch = parse_chat_watch(lookup)?;
 
         Ok(Self {
             child_command,
@@ -136,8 +167,41 @@ impl SupervisorConfig {
             rcon_minecraft,
             rcon_password_env,
             start_paused,
+            chat_watch,
         })
     }
+}
+
+/// Assemble the chat-watch config, or `None` when the game doesn't opt in
+/// (`SUPERVISOR_CHAT_FORMAT` unset). Opting in but omitting the endpoint
+/// (`SUPERVISOR_AGENT_URL`) or the server identity (`SUPERVISOR_GAMESERVER_NAME`)
+/// is a hard error rather than a silent disable — a half-configured watcher would
+/// swallow every `@Gary` with no signal.
+fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
+    let Some(format_raw) = optional(lookup, "SUPERVISOR_CHAT_FORMAT") else {
+        return Ok(None);
+    };
+    let format = format_raw
+        .parse::<ChatFormat>()
+        .context("failed to parse SUPERVISOR_CHAT_FORMAT")?;
+    let agent_url = optional(lookup, "SUPERVISOR_AGENT_URL").context(
+        "SUPERVISOR_CHAT_FORMAT is set but SUPERVISOR_AGENT_URL is not; the watcher has \
+         nowhere to send triggers",
+    )?;
+    let server = optional(lookup, "SUPERVISOR_GAMESERVER_NAME").context(
+        "SUPERVISOR_CHAT_FORMAT is set but SUPERVISOR_GAMESERVER_NAME is not; the bot \
+         can't map the trigger to a server",
+    )?;
+    let trigger = optional(lookup, "SUPERVISOR_CHAT_TRIGGER")
+        .unwrap_or_else(|| DEFAULT_CHAT_TRIGGER.to_owned());
+    let agent_token = optional(lookup, "SUPERVISOR_AGENT_TOKEN");
+    Ok(Some(ChatWatchConfig {
+        format,
+        trigger,
+        agent_url,
+        agent_token,
+        server,
+    }))
 }
 
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {

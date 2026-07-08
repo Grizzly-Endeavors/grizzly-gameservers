@@ -62,6 +62,25 @@ spec:
               value: "TRUE"
             - name: MEMORY
               value: "2G"
+            # In-game chat → Gary reverse loop. The chat watcher forwards a
+            # player's `@Gary` message to the bot's agent endpoint, which answers
+            # read-only and broadcasts the reply back over RCON. The GameServer
+            # name (from the pod's Agones label) tells the bot which server —and so
+            # which channel scope— the question came from. The token authenticates
+            # the POST; it's optional so an unprovisioned secret leaves the watcher
+            # running unauthenticated (NetworkPolicy-protected) rather than failing.
+            - name: SUPERVISOR_GAMESERVER_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['agones.dev/gameserver']
+            - name: SUPERVISOR_AGENT_URL
+              value: "http://grizzly-gameservers-agent.game-servers.svc.cluster.local:9360/ingame-trigger"
+            - name: SUPERVISOR_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-ingame
+                  key: ingame_token
+                  optional: true
           ports:
             - name: minecraft
               containerPort: 25565

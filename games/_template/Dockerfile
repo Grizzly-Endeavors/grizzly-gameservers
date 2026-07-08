@@ -62,6 +62,13 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # worked example (ephemeral password minting, loopback-only port,
 # SUPERVISOR_RCON_MINECRAFT dialect flag).
 # ENV SUPERVISOR_RCON_PORT=REPLACE_PORT
+# REPLACE (optional): enable the in-game chat → Gary reverse loop. Set the chat
+# format for this game (the supervisor's chat-line dialect) and the trigger a
+# player types; the endpoint URL and shared token are wired in gameserver.yaml,
+# not baked here. Only `minecraft` is supported today — see games/minecraft for a
+# worked example. Leave unset to disable in-game triggers for this game.
+# ENV SUPERVISOR_CHAT_FORMAT=REPLACE_FORMAT
+# ENV SUPERVISOR_CHAT_TRIGGER=@Gary
 # REPLACE: does this base image's startup need root (e.g. to chown a fresh data
 # volume, like itzg's does)? If not, add `USER REPLACE_UID` here and keep
 # gameserver.yaml's pod hardening as-is — rootless is the security baseline's

@@ -72,6 +72,35 @@ pub(crate) async fn verify_scope(
     Ok(classify(channel, scope))
 }
 
+/// The Discord channel id that owns `instance`, read off its Service's channel
+/// label — or `None` when the server doesn't exist or carries no channel label
+/// (a pre-scoping or platform-managed object). Used by the in-game entrypoint,
+/// which has only a server name and must derive the channel scope from it.
+///
+/// # Errors
+///
+/// Returns an error if the Service cannot be read from the Kubernetes API.
+pub(crate) async fn channel_of(
+    client: &Client,
+    namespace: &str,
+    instance: &str,
+) -> Result<Option<String>> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let Some(service) = services
+        .get_opt(instance)
+        .await
+        .with_context(|| format!("failed to read service {instance} for channel lookup"))?
+    else {
+        return Ok(None);
+    };
+    Ok(service
+        .metadata
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.get(CHANNEL_KEY))
+        .cloned())
+}
+
 /// Decide the verdict for an instance whose owning channel label is `channel`
 /// (`None` when the label is absent — a pre-scoping or Flux-managed object).
 /// Pure so the tenancy policy is unit-tested without a live cluster.

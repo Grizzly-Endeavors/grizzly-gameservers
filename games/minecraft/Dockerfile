@@ -71,6 +71,12 @@ ENV SUPERVISOR_RCON_MINECRAFT=true
 # console commands itself as an attributed "Gary: …" tellraw, so the raw RCON echo
 # would just be duplicate, less-friendly noise.
 ENV BROADCAST_RCON_TO_OPS=false
+# Watch in-game chat for a player addressing Gary (`@Gary <question>`) and forward
+# it to the bot's agent endpoint (the reverse loop). SUPERVISOR_CHAT_FORMAT selects
+# the Minecraft chat-line dialect; the endpoint URL and shared token come from the
+# pod environment (gameserver.yaml), so a build carries no address or secret.
+ENV SUPERVISOR_CHAT_FORMAT=minecraft
+ENV SUPERVISOR_CHAT_TRIGGER=@Gary
 # No USER: the supervisor (PID 1) needs root to bootstrap itzg (chown /data, server
 # setup); rootless game-pod hardening is deferred (see the FROM note above, ADR-003).
 # nosemgrep: dockerfile.security.missing-user-entrypoint
