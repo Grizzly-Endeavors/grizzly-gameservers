@@ -18,7 +18,7 @@ use serenity::CreateMessage;
 use tokio::sync::watch;
 use tracing::{error, trace, warn};
 
-use super::auth::is_authorized;
+use super::auth::{AdminCheck, is_authorized};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
@@ -126,12 +126,23 @@ async fn handle_message(
         return;
     }
 
-    let is_admin = caller_is_admin(data, message);
-    let scope = super::auth::visibility_scope(
+    // Resolve the caller's tenant scope. A non-operator in a DM has no guild to
+    // scope to, so Gary can't act on any server — guide them to a guild channel.
+    // Operators keep the all-guilds view even in a DM (they can manage anything).
+    let Some(scope) = super::auth::visibility_scope(
         message.author.id.get(),
-        message.channel_id.get(),
-        &data.admin_user_ids,
-    );
+        message.guild_id.map(serenity::GuildId::get),
+        &data.operator_ids,
+    ) else {
+        reply(
+            ctx,
+            message,
+            "I manage servers inside a Discord server — mention me in a channel of the server you want to manage.",
+        )
+        .await;
+        return;
+    };
+    let is_admin = caller_is_admin(ctx, data, message).await;
     let tool_defs = tools::available_tools(is_admin);
     let games = game_catalog_list(data);
 
@@ -147,6 +158,7 @@ async fn handle_message(
         data,
         serenity: ctx,
         channel_id: message.channel_id,
+        guild: message.guild_id.map(serenity::GuildId::get),
         author_id: message.author.id,
         is_admin,
         scope,
@@ -260,19 +272,51 @@ fn extract_prompt(content: &str, bot_id: serenity::UserId) -> String {
 }
 
 /// Whether the message author may use the mutating tools — the same gate the
-/// slash commands enforce (explicit allowlist or the admin role).
-fn caller_is_admin(data: &Data, message: &serenity::Message) -> bool {
-    let role_ids: Vec<u64> = message
+/// slash commands enforce: a cross-guild operator, the guild owner, or a
+/// DB-configured admin (user or role) for this guild. A non-operator with no
+/// guild (a DM) is never an admin.
+async fn caller_is_admin(
+    ctx: &serenity::Context,
+    data: &Data,
+    message: &serenity::Message,
+) -> bool {
+    let user = message.author.id.get();
+    if data.operator_ids.contains(&user) {
+        return true;
+    }
+    let Some(guild_id) = message.guild_id else {
+        return false;
+    };
+    let roles: Vec<u64> = message
         .member
         .as_ref()
         .map(|member| member.roles.iter().map(|role| role.get()).collect())
         .unwrap_or_default();
-    is_authorized(
-        message.author.id.get(),
-        &role_ids,
-        data.admin_role_id,
-        &data.admin_user_ids,
-    )
+    let guild_owner = guild_owner_id(ctx, guild_id).await;
+    let guild_admins = data.guild_config.admins(guild_id.get()).await;
+    is_authorized(&AdminCheck {
+        user,
+        roles: &roles,
+        guild_owner,
+        operators: &data.operator_ids,
+        guild_admins: &guild_admins,
+    })
+}
+
+/// The guild's owner id, cache-first (the guild is cached from its `GuildCreate`),
+/// falling back to an HTTP fetch. `None` on a read failure — auth then fails
+/// closed to operators only for that check.
+async fn guild_owner_id(ctx: &serenity::Context, guild_id: serenity::GuildId) -> Option<u64> {
+    if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
+        return Some(guild.owner_id.get());
+    }
+    match guild_id.to_partial_guild(&ctx.http).await {
+        Ok(guild) => Some(guild.owner_id.get()),
+        Err(err) => {
+            error!(error = ?err, guild = guild_id.get(), "failed to read guild for owner check");
+            None
+        }
+    }
 }
 
 fn game_catalog_list(data: &Data) -> String {

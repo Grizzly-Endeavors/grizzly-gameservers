@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 
 /// Closure that resolves an environment variable to its raw value, mirroring
 /// `std::env::var_os`. Injected so config parsing is testable without the
@@ -46,16 +46,16 @@ const DEFAULT_BACKUP_RETENTION: usize = 7;
 #[derive(Clone, Debug)]
 pub struct BotConfig {
     pub(crate) token: String,
-    pub(crate) guild_id: u64,
     pub(crate) namespace: String,
     pub(crate) domain: String,
     pub(crate) catalog_dir: PathBuf,
     /// Port the in-pod supervisor's control API listens on.
     pub(crate) control_port: u16,
-    /// Discord role whose members may run the mutating commands.
-    pub(crate) admin_role_id: Option<u64>,
-    /// Explicit user-id allowlist for the mutating commands.
-    pub(crate) admin_user_ids: Vec<u64>,
+    /// Cross-guild operator seed: user ids that are admins in **every** guild and
+    /// carry the all-guilds visibility scope. Per-guild admins live in Postgres
+    /// (`GuildConfig`); this env allowlist is only the bootstrap operator(s).
+    /// Sourced from `GAMESERVERS_ADMIN_USER_IDS`.
+    pub(crate) operator_ids: Vec<u64>,
     /// Ollama Cloud API key for the agent ("Gary"). Absent disables the agent —
     /// mentions are answered with a "not configured" reply, slash commands still
     /// work. Sourced from the `ollama-api` Secret's `api_key` in-cluster.
@@ -110,21 +110,13 @@ impl BotConfig {
     ///
     /// # Errors
     ///
-    /// Returns an error if `DISCORD_BOT_TOKEN` or `DISCORD_GUILD_ID` is unset,
-    /// non-UTF-8, or (for the guild id) not a non-zero integer.
+    /// Returns an error if `DISCORD_BOT_TOKEN` is unset or non-UTF-8.
     pub fn from_env() -> Result<Self> {
         Self::from_env_with(&|key| std::env::var_os(key))
     }
 
     pub(crate) fn from_env_with(lookup: EnvLookup) -> Result<Self> {
         let token = required(lookup, "DISCORD_BOT_TOKEN")?;
-        let guild_raw = required(lookup, "DISCORD_GUILD_ID")?;
-        let guild_id = guild_raw.parse::<u64>().with_context(|| {
-            format!("DISCORD_GUILD_ID must be a positive integer, got {guild_raw:?}")
-        })?;
-        if guild_id == 0 {
-            bail!("DISCORD_GUILD_ID must be non-zero");
-        }
 
         let namespace = optional(lookup, "GAMESERVERS_NAMESPACE")
             .unwrap_or_else(|| DEFAULT_NAMESPACE.to_owned());
@@ -134,8 +126,7 @@ impl BotConfig {
             .map_or_else(|| PathBuf::from(DEFAULT_CATALOG_DIR), PathBuf::from);
         let control_port =
             optional_u16(lookup, "GAMESERVERS_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
-        let admin_role_id = optional_u64(lookup, "GAMESERVERS_ADMIN_ROLE_ID")?;
-        let admin_user_ids =
+        let operator_ids =
             parse_user_ids(optional(lookup, "GAMESERVERS_ADMIN_USER_IDS").as_deref())?;
 
         let ollama_api_key = optional(lookup, "OLLAMA_API_KEY").filter(|key| !key.is_empty());
@@ -160,13 +151,11 @@ impl BotConfig {
 
         Ok(Self {
             token,
-            guild_id,
             namespace,
             domain,
             catalog_dir,
             control_port,
-            admin_role_id,
-            admin_user_ids,
+            operator_ids,
             ollama_api_key,
             ollama_base_url,
             ollama_model,

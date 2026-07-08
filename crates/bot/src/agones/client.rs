@@ -8,7 +8,7 @@ use tracing::warn;
 
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
-use super::labels::{CHANNEL_KEY, GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
+use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, is_managed};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerSummary, summarize};
 
@@ -22,8 +22,8 @@ const PAUSED_STATE: &str = "Paused";
 
 /// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
 /// each to its `NodePort` Service to resolve a connection address under
-/// `domain`. A channel scope filters both lists to that channel's servers via
-/// the [`CHANNEL_KEY`](super::labels::CHANNEL_KEY) label; the super-admin scope
+/// `domain`. A guild scope filters both lists to that guild's servers via
+/// the [`GUILD_KEY`](super::labels::GUILD_KEY) label; the operator scope
 /// lists everything.
 ///
 /// # Errors
@@ -93,7 +93,7 @@ pub(crate) async fn list_active_servers(
 pub(crate) struct BackupTarget {
     pub(crate) instance: String,
     pub(crate) game: String,
-    pub(crate) channel: String,
+    pub(crate) guild: String,
     /// Whether the game process is up — drives whether the snapshot quiesces
     /// (flushes) first. A paused server's `/data` is already saved, and its RCON
     /// is down, so quiescing it would only log a spurious failure.
@@ -129,7 +129,7 @@ pub(crate) async fn list_backup_targets(
         targets.push(BackupTarget {
             instance,
             game: label_value(labels, GAME_KEY).unwrap_or_default().to_owned(),
-            channel: label_value(labels, CHANNEL_KEY)
+            guild: label_value(labels, GUILD_KEY)
                 .unwrap_or_default()
                 .to_owned(),
             running,

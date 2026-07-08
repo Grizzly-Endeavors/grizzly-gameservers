@@ -291,7 +291,7 @@ fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
         RecoverOutcome::NoSuchArchive => EmbedSpec {
             title: "No such archive".to_owned(),
             colour: COLOUR_ERROR,
-            body: format!("There's no archived server named **{name}** in this channel."),
+            body: format!("There's no archived server named **{name}** in this Discord server."),
         },
         RecoverOutcome::NameInUse => EmbedSpec {
             title: "Name in use".to_owned(),
@@ -463,7 +463,7 @@ pub(crate) fn archives_list_embed(artifacts: &[ArtifactSummary]) -> CreateEmbed 
     artifact_list_spec(
         "Archived servers",
         artifacts,
-        "No servers are archived in this channel. `/archive` puts one into cold storage.",
+        "No servers are archived in this Discord server. `/archive` puts one into cold storage.",
     )
     .into_embed()
 }

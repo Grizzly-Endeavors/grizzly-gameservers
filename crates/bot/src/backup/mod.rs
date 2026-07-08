@@ -7,7 +7,7 @@
 //! - **Automatic/manual backups** — periodic consistent snapshots of a *live*
 //!   server to `backups/<instance>/`, for point-in-time restore. The instance is
 //!   their index (a prefix listing), so they need no database.
-//! - **Archive** — stop a server, back it up to `archives/<channel>/<name>/`, then
+//! - **Archive** — stop a server, back it up to `archives/<guild>/<name>/`, then
 //!   release the whole trio (PVC included). Indexed in Postgres because the
 //!   instance is gone; the S3 manifest sidecar remains the durable source of truth.
 //! - **Restore** — roll a live server back to one of its backups, or recover an
@@ -136,7 +136,7 @@ pub(crate) enum RecoverOutcome {
         address: String,
         ready: bool,
     },
-    /// No archive by that name in this channel.
+    /// No archive by that name in this guild.
     NoSuchArchive,
     /// A live server already holds that name.
     NameInUse,
@@ -168,6 +168,9 @@ impl RecoverOutcome {
 pub(crate) struct ArtifactSummary {
     /// Server (instance) name.
     pub(crate) name: String,
+    /// Owning Discord guild id, from the artifact's manifest. The recover flow
+    /// uses it to recreate an archived server in its original guild.
+    pub(crate) guild: String,
     /// The S3 tarball key — the stable handle the restore/recover picks by.
     pub(crate) key: String,
     /// Compressed size in bytes.

@@ -4,7 +4,7 @@
 //! This mirrors the Discord shell's `handle_message`, but with no serenity: the
 //! input is untrusted player chat, so Gary gets only the read-only tools (never
 //! the mutating set that posts Discord confirmation buttons), scoped to the
-//! server's own channel. The reply travels back over the existing RCON
+//! server's own guild. The reply travels back over the existing RCON
 //! `/announce` broadcast, so everyone in the world sees it.
 
 use std::future::Future;
@@ -21,7 +21,7 @@ use crate::agent::{
     send_chat_completion,
 };
 use crate::agones::{
-    ServerScope, ServerSummary, channel_of, list_active_servers, supervisor_announce,
+    ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -37,7 +37,7 @@ type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// Answer one in-game `@Gary` question and broadcast the reply into the server.
-/// Runs the whole session — resolve the channel scope, run the read-only tool
+/// Runs the whole session — resolve the guild scope, run the read-only tool
 /// loop, then announce — so the caller only has to spawn it. Every failure is
 /// logged; a player just sees no reply rather than an error dump.
 pub(crate) async fn handle_ingame_question(
@@ -52,29 +52,29 @@ pub(crate) async fn handle_ingame_question(
         return;
     };
 
-    // A player has no Discord identity; the scope is the server's own channel,
-    // read off its labels. No channel means we can't bound what Gary may see, so
+    // A player has no Discord identity; the scope is the server's own guild,
+    // read off its labels. No guild means we can't bound what Gary may see, so
     // we decline rather than answer with an unscoped view.
-    let channel = match channel_of(&deps.client, &deps.namespace, server).await {
-        Ok(Some(channel)) => channel,
+    let guild = match guild_of(&deps.client, &deps.namespace, server).await {
+        Ok(Some(guild)) => guild,
         Ok(None) => {
             warn!(
                 server,
-                "in-game trigger for a server with no channel scope; ignoring"
+                "in-game trigger for a server with no guild scope; ignoring"
             );
             return;
         }
         Err(err) => {
-            error!(error = ?err, server, "failed to resolve channel for in-game trigger");
+            error!(error = ?err, server, "failed to resolve guild for in-game trigger");
             return;
         }
     };
-    let scope = ServerScope::Channel(channel.clone());
+    let scope = ServerScope::Guild(guild.clone());
 
     let games = deps.catalog.game_ids().collect::<Vec<_>>().join(", ");
     let tool_defs = ingame_tools();
 
-    let key = session_key(&channel, player);
+    let key = session_key(&guild, player);
     let mut messages = deps
         .sessions
         .checkout(key, Instant::now(), || build_ingame_system_prompt(&games));
@@ -139,13 +139,13 @@ fn framed_question(player: &str, question: &str) -> String {
     }
 }
 
-/// Session key for a `(channel, player)` pair. The channel is a numeric Discord
+/// Session key for a `(guild, player)` pair. The guild is a numeric Discord
 /// id (falling back to a hash if it somehow isn't), and the player name is
 /// hashed — so in-game sessions occupy a distinct key space from Discord's
 /// `(channel, user_id)` sessions in the same store.
-fn session_key(channel: &str, player: &str) -> (u64, u64) {
-    let channel_key = channel.parse::<u64>().unwrap_or_else(|_| hash(channel));
-    (channel_key, hash(player))
+fn session_key(guild: &str, player: &str) -> (u64, u64) {
+    let guild_key = guild.parse::<u64>().unwrap_or_else(|_| hash(guild));
+    (guild_key, hash(player))
 }
 
 fn hash(value: &str) -> u64 {
@@ -170,7 +170,7 @@ fn ingame_tools() -> Vec<ToolDef> {
     vec![
         ToolDef::function(
             LIST_SERVERS,
-            "List the game servers in this channel with their state and connection address.",
+            "List the running game servers with their state and connection address.",
             empty_schema(),
         ),
         ToolDef::function(
@@ -240,7 +240,7 @@ async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) 
 
 fn format_server_list(servers: &[ServerSummary]) -> String {
     if servers.is_empty() {
-        return "no game servers are running in this channel right now".to_owned();
+        return "no game servers are running right now".to_owned();
     }
     servers
         .iter()
@@ -256,7 +256,7 @@ fn format_summary(server: &ServerSummary) -> String {
 }
 
 fn no_such(server: &str) -> String {
-    format!("there's no server named {server} in this channel")
+    format!("there's no server named {server} here")
 }
 
 fn cluster_error() -> String {
@@ -278,7 +278,7 @@ fn build_ingame_system_prompt(games: &str) -> String {
          the question. If someone is just chatting or asking for game help (how to do something in \
          the game), answer from your own knowledge in the same flat voice.\n\nYou can look things \
          up but you cannot change anything from here: use list_servers and server_status to answer \
-         questions about the servers in this channel. If a player wants to create, restart, edit, \
+         questions about the servers. If a player wants to create, restart, edit, \
          or delete a server, tell them plainly that an admin has to do that from Discord — you \
          can't do it from in-game.",
     );

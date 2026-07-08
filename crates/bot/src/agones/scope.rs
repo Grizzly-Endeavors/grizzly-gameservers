@@ -2,18 +2,18 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
 use kube::{Api, Client};
 
-use super::labels::CHANNEL_KEY;
+use super::labels::GUILD_KEY;
 
 /// Which servers an operation may see or touch — the tenant boundary.
 ///
-/// [`Channel`](ServerScope::Channel) confines discovery and mutation to servers
-/// stamped with one Discord channel id (a DM being its own channel). [`All`](
-/// ServerScope::All) is the allowlisted super-admin's cross-channel view: every
-/// server, including pre-scoping ones that carry no channel label.
+/// [`Guild`](ServerScope::Guild) confines discovery and mutation to servers
+/// stamped with one Discord guild id. [`All`](ServerScope::All) is the
+/// allowlisted cross-guild operator's view: every server, across every guild,
+/// including pre-scoping ones that carry no guild label.
 #[derive(Clone, Debug)]
 pub(crate) enum ServerScope {
     All,
-    Channel(String),
+    Guild(String),
 }
 
 impl ServerScope {
@@ -22,14 +22,14 @@ impl ServerScope {
     pub(crate) fn label_selector(&self) -> Option<String> {
         match self {
             Self::All => None,
-            Self::Channel(id) => Some(format!("{CHANNEL_KEY}={id}")),
+            Self::Guild(id) => Some(format!("{GUILD_KEY}={id}")),
         }
     }
 }
 
 /// Whether a named instance is reachable under a [`ServerScope`], from the
 /// caller's point of view. [`Foreign`](ScopeVerdict::Foreign) — the server
-/// exists but belongs to another channel — is deliberately surfaced to callers
+/// exists but belongs to another guild — is deliberately surfaced to callers
 /// as the same "no such server" message as [`Absent`](ScopeVerdict::Absent), so
 /// scoping never leaks the existence of another tenant's servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +39,7 @@ pub(crate) enum ScopeVerdict {
     Absent,
 }
 
-/// Decide whether `instance` is visible to `scope`, reading the channel label
+/// Decide whether `instance` is visible to `scope`, reading the guild label
 /// off the instance's Service — the one object of the trio that survives both
 /// `/stop` and `/shutdown`, so the verdict holds in every lifecycle state.
 ///
@@ -63,24 +63,24 @@ pub(crate) async fn verify_scope(
     else {
         return Ok(ScopeVerdict::Absent);
     };
-    let channel = service
+    let guild = service
         .metadata
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(CHANNEL_KEY))
+        .and_then(|labels| labels.get(GUILD_KEY))
         .map(String::as_str);
-    Ok(classify(channel, scope))
+    Ok(classify(guild, scope))
 }
 
-/// The Discord channel id that owns `instance`, read off its Service's channel
-/// label — or `None` when the server doesn't exist or carries no channel label
+/// The Discord guild id that owns `instance`, read off its Service's guild
+/// label — or `None` when the server doesn't exist or carries no guild label
 /// (a pre-scoping or platform-managed object). Used by the in-game entrypoint,
-/// which has only a server name and must derive the channel scope from it.
+/// which has only a server name and must derive the guild scope from it.
 ///
 /// # Errors
 ///
 /// Returns an error if the Service cannot be read from the Kubernetes API.
-pub(crate) async fn channel_of(
+pub(crate) async fn guild_of(
     client: &Client,
     namespace: &str,
     instance: &str,
@@ -89,7 +89,7 @@ pub(crate) async fn channel_of(
     let Some(service) = services
         .get_opt(instance)
         .await
-        .with_context(|| format!("failed to read service {instance} for channel lookup"))?
+        .with_context(|| format!("failed to read service {instance} for guild lookup"))?
     else {
         return Ok(None);
     };
@@ -97,18 +97,18 @@ pub(crate) async fn channel_of(
         .metadata
         .labels
         .as_ref()
-        .and_then(|labels| labels.get(CHANNEL_KEY))
+        .and_then(|labels| labels.get(GUILD_KEY))
         .cloned())
 }
 
-/// Decide the verdict for an instance whose owning channel label is `channel`
+/// Decide the verdict for an instance whose owning guild label is `guild`
 /// (`None` when the label is absent — a pre-scoping or Flux-managed object).
 /// Pure so the tenancy policy is unit-tested without a live cluster.
-fn classify(channel: Option<&str>, scope: &ServerScope) -> ScopeVerdict {
+fn classify(guild: Option<&str>, scope: &ServerScope) -> ScopeVerdict {
     match scope {
         ServerScope::All => ScopeVerdict::InScope,
-        ServerScope::Channel(id) if channel == Some(id.as_str()) => ScopeVerdict::InScope,
-        ServerScope::Channel(_) => ScopeVerdict::Foreign,
+        ServerScope::Guild(id) if guild == Some(id.as_str()) => ScopeVerdict::InScope,
+        ServerScope::Guild(_) => ScopeVerdict::Foreign,
     }
 }
 

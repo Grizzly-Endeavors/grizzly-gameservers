@@ -55,19 +55,13 @@ spec:
                 secretKeyRef:
                   name: discord-bot
                   key: bot_token
-            - name: DISCORD_GUILD_ID
-              valueFrom:
-                secretKeyRef:
-                  name: discord-bot
-                  key: guild_id
             - name: GAMESERVERS_NAMESPACE
               value: {{ .Release.Namespace | quote }}
             - name: GAMESERVERS_DOMAIN
               value: {{ .Values.bot.domain | quote }}
-            {{- if .Values.bot.adminRoleId }}
-            - name: GAMESERVERS_ADMIN_ROLE_ID
-              value: {{ .Values.bot.adminRoleId | quote }}
-            {{- end }}
+            # Cross-guild operator seed: user ids that are admins in every guild.
+            # Per-guild admins are configured at runtime via /config (Postgres);
+            # there is no per-guild admin *role* env any more.
             - name: GAMESERVERS_ADMIN_USER_IDS
               valueFrom:
                 secretKeyRef:

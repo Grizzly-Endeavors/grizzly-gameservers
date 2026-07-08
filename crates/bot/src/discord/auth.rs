@@ -3,63 +3,116 @@ use tracing::error;
 
 use super::{Context, Error};
 use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
+use crate::store::GuildAdmins;
 
-/// Whether `user` may run the mutating commands: either they are on the explicit
-/// allowlist, or they hold the configured admin role. Pure so the policy is
-/// unit-tested without a live interaction.
-pub(crate) fn is_authorized(
-    user: u64,
-    roles: &[u64],
-    admin_role: Option<u64>,
-    allowlist: &[u64],
-) -> bool {
-    allowlist.contains(&user) || admin_role.is_some_and(|role| roles.contains(&role))
+/// Everything the admin policy weighs for one caller in one guild. Bundled so the
+/// decision is a pure function of explicit inputs, unit-testable without a live
+/// interaction. `guild_owner` and `guild_admins` are guild-specific; `operators`
+/// is the cross-guild seed.
+pub(crate) struct AdminCheck<'a> {
+    pub(crate) user: u64,
+    pub(crate) roles: &'a [u64],
+    /// The guild's owner id, when known. The owner is always an admin in their
+    /// own guild — this is the bootstrap path so a fresh guild is usable before
+    /// any `/config` is run.
+    pub(crate) guild_owner: Option<u64>,
+    /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
+    /// every guild.
+    pub(crate) operators: &'a [u64],
+    /// The guild's DB-configured admin roles and users.
+    pub(crate) guild_admins: &'a GuildAdmins,
 }
 
-/// Which servers `user` may see and act on. Only the explicit user-id allowlist
-/// grants the cross-channel super-admin view — deliberately *not* the admin
-/// role, so a friend-group admin can't reach another group's servers. Everyone
-/// else is confined to the channel they're speaking in (a DM being its own
-/// channel). Pure so the policy is unit-tested without a live interaction.
-pub(crate) fn visibility_scope(user: u64, channel: u64, allowlist: &[u64]) -> ServerScope {
-    if allowlist.contains(&user) {
-        ServerScope::All
+/// Whether `check.user` may run the mutating commands in their guild. The union
+/// of: cross-guild operators, the guild owner, DB-configured admin users, and
+/// members holding a DB-configured admin role. Pure so the policy is unit-tested
+/// without a live interaction. Fail-closed: with `guild_admins` empty (e.g. the
+/// config DB is down), only operators and the owner are admitted.
+pub(crate) fn is_authorized(check: &AdminCheck<'_>) -> bool {
+    check.operators.contains(&check.user)
+        || check.guild_owner == Some(check.user)
+        || check.guild_admins.users.contains(&check.user)
+        || check
+            .roles
+            .iter()
+            .any(|role| check.guild_admins.roles.contains(role))
+}
+
+/// Which servers `user` may see and act on. A cross-guild operator gets the
+/// all-guilds view (`All`) even in a DM; anyone else is confined to the guild
+/// they're speaking in. `None` — a non-operator with no guild (a DM) — has no
+/// tenant to scope to and must be refused. Pure so the policy is unit-tested
+/// without a live interaction.
+pub(crate) fn visibility_scope(
+    user: u64,
+    guild: Option<u64>,
+    operators: &[u64],
+) -> Option<ServerScope> {
+    if operators.contains(&user) {
+        Some(ServerScope::All)
     } else {
-        ServerScope::Channel(channel.to_string())
+        guild.map(|id| ServerScope::Guild(id.to_string()))
     }
 }
 
-/// poise check for `/create`, `/stop`, `/start`, `/destroy`. Denies with an
-/// ephemeral message (returning `false` alone would give the friend no feedback).
+/// poise check for the mutating commands (`/create`, `/stop`, `/config`, …).
+/// Denies with an ephemeral message (returning `false` alone would give the
+/// friend no feedback).
 ///
 /// # Errors
 ///
 /// Returns an error only if sending the denial reply to Discord fails.
 pub(crate) async fn require_admin(ctx: Context<'_>) -> Result<bool, Error> {
-    let data = ctx.data();
-    let roles: Vec<u64> = match ctx.author_member().await {
-        Some(member) => member.roles.iter().map(|role| role.get()).collect(),
-        None => Vec::new(),
-    };
-    if is_authorized(
-        ctx.author().id.get(),
-        &roles,
-        data.admin_role_id,
-        &data.admin_user_ids,
-    ) {
+    if is_admin(ctx).await {
         return Ok(true);
     }
     deny(ctx, "You're not allowed to do that.").await?;
     Ok(false)
 }
 
-/// poise global check that confines a server-targeting command to the caller's
-/// visibility scope. Commands with no `server` option — and non-slash contexts —
-/// pass straight through; a server in another channel is refused with the same
-/// ephemeral wording as a missing one, so scoping never reveals another
-/// channel's servers. Registered as `command_check`, so it runs before the
-/// per-command `require_admin` and any future `server`-targeting command inherits
-/// the gate without extra wiring.
+/// Whether the invoking user is an admin for the guild the command ran in.
+/// Operators are admins everywhere (including DMs); everyone else needs a guild
+/// and must be the owner or DB-configured. Cluster/Discord read failures fall
+/// through as "not admin" (fail-closed) after logging.
+async fn is_admin(ctx: Context<'_>) -> bool {
+    let data = ctx.data();
+    let user = ctx.author().id.get();
+    if data.operator_ids.contains(&user) {
+        return true;
+    }
+    let Some(guild_id) = ctx.guild_id() else {
+        // Non-operator in a DM: no guild to be an admin of.
+        return false;
+    };
+    let roles: Vec<u64> = match ctx.author_member().await {
+        Some(member) => member.roles.iter().map(|role| role.get()).collect(),
+        None => Vec::new(),
+    };
+    let guild_owner = if let Some(guild) = ctx.partial_guild().await {
+        Some(guild.owner_id.get())
+    } else {
+        error!(
+            guild = guild_id.get(),
+            "failed to read guild for owner check"
+        );
+        None
+    };
+    let guild_admins = data.guild_config.admins(guild_id.get()).await;
+    is_authorized(&AdminCheck {
+        user,
+        roles: &roles,
+        guild_owner,
+        operators: &data.operator_ids,
+        guild_admins: &guild_admins,
+    })
+}
+
+/// poise global `command_check` confining a server-targeting command to the
+/// caller's visibility scope. Commands with no `server` option — and non-slash
+/// contexts — pass straight through; a server in another guild is refused with
+/// the same ephemeral wording as a missing one, so scoping never reveals another
+/// guild's servers. A non-operator invoking a server command from a DM (no
+/// guild) is refused with guidance.
 ///
 /// # Errors
 ///
@@ -73,16 +126,23 @@ pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
         return Ok(true);
     };
     let data = ctx.data();
-    let scope = visibility_scope(
+    let Some(scope) = visibility_scope(
         ctx.author().id.get(),
-        ctx.channel_id().get(),
-        &data.admin_user_ids,
-    );
+        ctx.guild_id().map(serenity::GuildId::get),
+        &data.operator_ids,
+    ) else {
+        deny(
+            ctx,
+            "I manage servers inside a Discord server. Run this in a channel of the server you want to manage.",
+        )
+        .await?;
+        return Ok(false);
+    };
     match verify_scope(&data.kube_client, &data.namespace, server, &scope).await {
         Ok(ScopeVerdict::InScope) => Ok(true),
         Ok(ScopeVerdict::Foreign | ScopeVerdict::Absent) => {
             deny(ctx, &format!(
-                "There's no server called **{server}** here. Run `/servers` to see this channel's servers."
+                "There's no server called **{server}** in this Discord server. Run `/servers` to see the servers shared across the whole server."
             ))
             .await?;
             Ok(false)
