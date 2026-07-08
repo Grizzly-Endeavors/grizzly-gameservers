@@ -254,6 +254,15 @@ pub struct CommandResponse {
     pub output: String,
 }
 
+/// Body of `POST /announce`: a message to broadcast to everyone on the running
+/// server. The supervisor renders it with the game's own broadcast mechanism
+/// (Minecraft `tellraw`), so the bot stays free of per-game console syntax. Only
+/// served for games whose per-game template enables RCON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnounceRequest {
+    pub message: String,
+}
+
 /// Query for `GET /logs`: how many trailing lines of captured output to return.
 /// Absent means the supervisor's default tail length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

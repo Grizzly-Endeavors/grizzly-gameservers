@@ -108,6 +108,18 @@ impl RconRuntime {
         Ok(truncate_output(output))
     }
 
+    /// Broadcast `message` to everyone on the server, using the game's own
+    /// broadcast command so the caller never has to know per-game console syntax.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the console can't be reached or the command fails, same
+    /// as [`Self::run_command`].
+    pub async fn broadcast(&self, message: &str) -> Result<String> {
+        self.run_command(&broadcast_command(message, self.minecraft_quirks)?)
+            .await
+    }
+
     async fn exec(&self, address: SocketAddr, command: &str) -> Result<String> {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());
@@ -145,6 +157,27 @@ struct Packet {
     id: i32,
     kind: i32,
     body: String,
+}
+
+/// Build the console command that broadcasts `message` to all players. Minecraft
+/// uses `tellraw @a` with a JSON text component (built with `serde_json` so the
+/// message is escaped, never hand-quoted); other RCON games fall back to a
+/// Source-style `say`.
+///
+/// # Errors
+///
+/// Returns an error only if the message can't be encoded as JSON.
+fn broadcast_command(message: &str, minecraft: bool) -> Result<String> {
+    if minecraft {
+        let component = serde_json::to_string(&serde_json::json!({
+            "text": message,
+            "color": "yellow",
+        }))
+        .context("failed to encode the tellraw message")?;
+        Ok(format!("tellraw @a {component}"))
+    } else {
+        Ok(format!("say {message}"))
+    }
 }
 
 /// Connect to the game's RCON port, retrying while the connection is refused —

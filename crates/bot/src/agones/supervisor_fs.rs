@@ -9,12 +9,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use grizzly_control_api::{
-    CommandRequest, CommandResponse, ControlError, DirEntry, ListResponse, LogsQuery, LogsResponse,
-    PathQuery, ReadResponse, RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
+    AnnounceRequest, CommandRequest, CommandResponse, ControlError, DirEntry, ListResponse,
+    LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse,
+    WriteRequest, WriteResponse,
 };
 use kube::Client;
 use serde::de::DeserializeOwned;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::supervisor::{PodTarget, resolve_managed_pod};
 
@@ -337,6 +338,46 @@ pub(crate) async fn supervisor_send_command(
         .send()
         .await;
     Ok(finish(response, &url).await)
+}
+
+/// Broadcast a message to everyone on the instance's server, best-effort. This is
+/// the in-game audit trail for Gary's mutating actions, so a failure to deliver it
+/// must never block or fail the action that triggered it — every unhappy path is
+/// logged and swallowed rather than propagated. A paused or RCON-less server
+/// simply gets no broadcast.
+pub(crate) async fn supervisor_announce(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+    message: &str,
+) {
+    let pod_ip = match resolve_managed_pod(client, namespace, instance).await {
+        Ok(PodTarget::Ready(pod_ip)) => pod_ip,
+        Ok(_) => {
+            debug!(instance, "skipping in-game announce; pod not ready");
+            return;
+        }
+        Err(err) => {
+            warn!(error = ?err, instance, "failed to locate pod for in-game announce");
+            return;
+        }
+    };
+    let url = format!("http://{pod_ip}:{control_port}/announce");
+    match http
+        .post(&url)
+        .json(&AnnounceRequest {
+            message: message.to_owned(),
+        })
+        .timeout(FS_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(reply) if reply.status().is_success() => {}
+        Ok(reply) => debug!(status = %reply.status(), instance, "in-game announce not delivered"),
+        Err(err) => warn!(error = ?err, url, "failed to reach the announce route"),
+    }
 }
 
 /// The non-ready resolutions, separated from the pod IP so a caller can turn one

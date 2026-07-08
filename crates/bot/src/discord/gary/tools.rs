@@ -24,10 +24,10 @@ use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
     ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
     begin_start, build_instance_name, destroy_instance, instance_runtime_state,
-    list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_edit_file,
-    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
-    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
-    supervisor_write_file, verify_scope, wait_for_ready,
+    list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
+    supervisor_edit_file, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
+    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
+    supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -832,7 +832,10 @@ async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> St
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_command_output(server, command, &result),
+            Ok(result) => {
+                announce_action(ctx, server, &format!("ran `{command}`")).await;
+                format_command_output(server, command, &result)
+            }
             Err(problem) => problem,
         },
         Err(err) => {
@@ -858,6 +861,24 @@ async fn exec_wait_for_server(ctx: &ToolCtx<'_>, server: &str) -> String {
             cluster_error()
         }
     }
+}
+
+/// Broadcast to everyone in-game that Gary ran a console command, as
+/// `Gary: <phrase>`, best-effort. This is the attributed audit line that replaces
+/// Minecraft's `[Rcon]` op-broadcast (disabled at the image level) so players know
+/// when Gary is acting on the live server; delivery is fire-and-forget, so a
+/// paused or console-less server just gets no message and the command is
+/// unaffected.
+async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
+    supervisor_announce(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        &format!("Gary: {phrase}"),
+    )
+    .await;
 }
 
 /// Collapse a filesystem outcome into either its payload or a plain-language
