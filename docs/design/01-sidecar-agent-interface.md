@@ -1,6 +1,6 @@
 # Sidecar Agent Interface — Exploration
 
-**Status:** Partially implemented. The **process-supervision + lifecycle control**, the **file-mutation**, and the **RCON console-bridge (`send_command`)** portions have shipped (`crates/supervisor/`, `crates/control-api/`, and the bot's `crates/bot/src/agones/`); see "What shipped" below. The agent-facing **dock** framing and the **in-game-trigger** (reverse loop) surface remain exploratory.
+**Status:** Partially implemented. The **process-supervision + lifecycle control**, the **file-mutation**, the **RCON console-bridge (`send_command`)**, and now the **in-game-trigger (reverse loop)** have shipped (`crates/supervisor/`, `crates/control-api/`, and the bot's `crates/bot/src/agones/` + `crates/bot/src/ingame/`); see "What shipped" below. The agent-facing **dock** framing remains exploratory.
 
 ## What shipped
 
@@ -63,26 +63,33 @@ Two channels depending on what the game supports:
 
 The `send_command` tool signature is the same regardless — per-game sidecar config declares which channel to use.
 
-## In-game → agent triggers
+## In-game → agent triggers — **shipped**
 
-Players inside a running server can address the agent directly, closing the reverse loop.
+Players inside a running server can address the agent directly, closing the reverse loop. This is live for Minecraft.
 
-**Mechanism:**
+**Mechanism (as built):**
 
-1. Sidecar watches the log stream continuously.
-2. Pattern-matches player chat for a trigger prefix (e.g., `!agent <message>`).
-3. Parses the player name and message body; posts them as an HTTP request to the agent service endpoint.
-4. Agent handles it like any other request — server ID is included in the request body so the agent can look up the right Agones GameServer without needing a separate dock step.
-5. Sidecar routes the response back in-game via RCON (`say` or `tellraw`). For Minecraft, `tellraw` is preferred — it allows colored/formatted JSON chat so agent replies are visually distinct from player chat.
+1. The supervisor's chat watcher (`crates/supervisor/src/chat_watcher.rs`) taps the captured stdout line stream continuously.
+2. It pattern-matches genuine player chat (`<player> message`) in the game's chat dialect — selected per-game by `SUPERVISOR_CHAT_FORMAT` (Minecraft today) — for the trigger `@Gary` (`SUPERVISOR_CHAT_TRIGGER`, case-insensitive). Only the `<player>` shape matches, so the agent's own `tellraw` replies can't re-trigger it, and a per-player cooldown throttles spam.
+3. It POSTs `{server, player, message}` (`IngameTriggerRequest`) to the bot's agent endpoint (`SUPERVISOR_AGENT_URL`) with a shared bearer token (`SUPERVISOR_AGENT_TOKEN`). The GameServer name is included so the bot maps the trigger to a channel scope without a separate dock step.
+4. The bot's endpoint (`crates/bot/src/ingame/`) authenticates the token, returns `202` immediately, and runs a **read-only** tool-calling session (`list_servers`/`server_status` only, scoped to that server's channel) on Gary's shared core.
+5. It routes the answer back in-game over the existing RCON `/announce` bridge (`tellraw @a`), so the whole world sees `Gary: …`.
 
-**Why this is simple:** The bot is a long-running container, not an on-demand service. The agent is baked into the bot process. The sidecar just needs the bot's internal service endpoint — no new infrastructure, no ephemeral invocation.
+**Why this is simple:** The bot is a long-running container, so the endpoint just runs alongside the Discord gateway in the same process, sharing Gary's core and session store. The reply reuses the already-shipped `/announce` path — no new outbound plumbing.
 
-Friends watching the Discord server won't see in-game queries unless we explicitly mirror them. That's a product decision for later.
+**Resolved decisions:**
+
+- **Trigger:** `@Gary` (case-insensitive), matching Discord — not the `!agent` placeholder. Overridable per-game via `SUPERVISOR_CHAT_TRIGGER`.
+- **Authorization:** in-game askers have no Discord identity, so they get a strict **read-only** subset (lookups only — no file reads, since a game's config can hold secrets like the RCON password, and nothing mutating). Mutating requests are deflected to an admin in Discord. See ADR-005.
+- **Reply visibility:** broadcast to the whole world (`tellraw @a`). Mirroring in-game Q&A into the Discord channel is still a deferred product decision.
+- **Response length:** the prompt constrains Gary to one or two short plain-text sentences (game chat is cramped), with a defensive character cap on the broadcast.
+- **Endpoint authn:** a shared bearer token (advancing issue #2's token pattern in the reverse direction); the game-pod → bot path is also NetworkPolicy-scoped. An unprovisioned token degrades to NetworkPolicy-only.
 
 ## Open questions
 
 - ~~Should the sidecar be a sidecar container or baked into the game server image?~~ **Resolved: baked into the game image as the entrypoint.** A separate sidecar container can signal the game process but can't relaunch it — once the game (the container's PID 1) exits, the container exits and the pod reschedules (the slow cluster path). Making the supervisor PID 1, with the game as its child, is what enables in-place stop/start/restart while the pod, PVC and Agones allocation all survive. The cost is a custom image per game (`FROM <upstream>` + the binary), gate-signed in CI.
 - ~~Process supervisor model vs. log-file + RCON model?~~ **Resolved: process supervisor.** RCON can issue in-game commands but can't restart the server *process* — a Minecraft `/stop` just exits the process, which (without a supervisor) bounces the pod. The supervisor owns the child's lifecycle directly; graceful stop rides itzg's existing SIGTERM→world-save, so no RCON dependency for lifecycle. RCON is used, separately, for the *agent's* in-game `send_command` — now shipped via `POST /command` and Gary's `send_command` tool (see "What shipped").
-- In-game trigger prefix is TBD — `!agent` is a reasonable default but may conflict with game commands or other bots.
-- Response length and formatting: game chat has line-length limits. The agent prompt will need instructions to keep in-game responses short and plain-text.
-- Control-port authn is NetworkPolicy-only for now; a shared bearer token is tracked in issue #2.
+- ~~In-game trigger prefix is TBD.~~ **Resolved: `@Gary`** (case-insensitive), matching Discord, overridable per-game via `SUPERVISOR_CHAT_TRIGGER`.
+- ~~Response length and formatting.~~ **Resolved:** the in-game system prompt constrains Gary to one or two short plain-text sentences, with a defensive character cap on the broadcast.
+- Control-port authn is NetworkPolicy-only for the bot→supervisor direction; a shared bearer token is tracked in issue #2. The supervisor→bot reverse direction (the in-game endpoint) **does** carry a shared bearer token now — the same pattern issue #2 wants applied to the control port.
+- Whether to mirror in-game Q&A into the server's Discord channel is still open — a product decision, deferred.
