@@ -125,7 +125,7 @@ impl BotConfig {
         let catalog_dir = optional(lookup, "GAMESERVERS_CATALOG_DIR")
             .map_or_else(|| PathBuf::from(DEFAULT_CATALOG_DIR), PathBuf::from);
         let control_port =
-            optional_u16(lookup, "GAMESERVERS_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
+            optional_port(lookup, "GAMESERVERS_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
         let operator_ids =
             parse_user_ids(optional(lookup, "GAMESERVERS_ADMIN_USER_IDS").as_deref())?;
 
@@ -138,14 +138,14 @@ impl BotConfig {
         let db = db_config_from_env(lookup)?;
         let s3 = s3_config_from_env(lookup);
         let backup_interval = Duration::from_secs(
-            optional_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
+            optional_positive_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
                 .unwrap_or(DEFAULT_BACKUP_INTERVAL_HOURS)
                 .saturating_mul(3600),
         );
-        let backup_retention = optional_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
+        let backup_retention = optional_positive_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
             .unwrap_or(DEFAULT_BACKUP_RETENTION);
         let agent_port =
-            optional_u16(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
+            optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
         let ingame_token =
             optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.is_empty());
 
@@ -205,47 +205,55 @@ fn db_config_from_env(lookup: EnvLookup) -> Result<Option<DbConfig>> {
     };
     Ok(Some(DbConfig {
         host: optional(lookup, "DB_HOST").unwrap_or_else(|| DEFAULT_DB_HOST.to_owned()),
-        port: optional_u16(lookup, "DB_PORT")?.unwrap_or(DEFAULT_DB_PORT),
+        port: optional_port(lookup, "DB_PORT")?.unwrap_or(DEFAULT_DB_PORT),
         database: optional(lookup, "DB_NAME").unwrap_or_else(|| DEFAULT_DB_NAME.to_owned()),
         user: optional(lookup, "DB_USER").unwrap_or_else(|| DEFAULT_DB_USER.to_owned()),
         password,
     }))
 }
 
-fn optional_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
-    match optional(lookup, key) {
-        Some(raw) => {
-            let value = raw
-                .parse::<u64>()
-                .with_context(|| format!("{key} must be a positive integer, got {raw:?}"))?;
-            Ok(Some(value))
-        }
-        None => Ok(None),
-    }
+/// Parse an optional env var as a positive `u64` (>= 1). Rejects both non-numeric
+/// values and a degenerate `0`: a zero backup interval flows into
+/// `tokio::time::interval`, which panics on a zero period.
+fn optional_positive_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    let value = raw
+        .parse::<u64>()
+        .ok()
+        .filter(|&value| value != 0)
+        .with_context(|| format!("{key} must be a positive integer (>= 1), got {raw:?}"))?;
+    Ok(Some(value))
 }
 
-fn optional_usize(lookup: EnvLookup, key: &str) -> Result<Option<usize>> {
-    match optional(lookup, key) {
-        Some(raw) => {
-            let value = raw
-                .parse::<usize>()
-                .with_context(|| format!("{key} must be a non-negative integer, got {raw:?}"))?;
-            Ok(Some(value))
-        }
-        None => Ok(None),
-    }
+/// Parse an optional env var as a positive `usize` (>= 1). Rejects both
+/// non-numeric values and a degenerate `0`: a zero retention prunes every key
+/// each cycle, so backups appear to run but nothing is ever kept.
+fn optional_positive_usize(lookup: EnvLookup, key: &str) -> Result<Option<usize>> {
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    let value = raw
+        .parse::<usize>()
+        .ok()
+        .filter(|&value| value != 0)
+        .with_context(|| format!("{key} must be a positive integer (>= 1), got {raw:?}"))?;
+    Ok(Some(value))
 }
 
-fn optional_u16(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
-    match optional(lookup, key) {
-        Some(raw) => {
-            let value = raw
-                .parse::<u16>()
-                .with_context(|| format!("{key} must be a port number (1-65535), got {raw:?}"))?;
-            Ok(Some(value))
-        }
-        None => Ok(None),
-    }
+/// Parse an optional env var as a usable port (1-65535). Rejects `0`, which
+/// parses as a valid `u16` but is never a usable port to bind or connect to.
+fn optional_port(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    let port = raw
+        .parse::<u16>()
+        .ok()
+        .filter(|&port| port != 0)
+        .with_context(|| format!("{key} must be a port number (1-65535), got {raw:?}"))?;
+    Ok(Some(port))
 }
 
 /// Parse a comma-separated list of Discord user ids. Blank entries are ignored

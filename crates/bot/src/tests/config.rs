@@ -204,3 +204,68 @@ fn invalid_db_port_is_an_error() {
         "an out-of-range DB port should name the variable, got: {err}"
     );
 }
+
+#[test]
+fn zero_ports_are_rejected() {
+    for key in ["GAMESERVERS_CONTROL_PORT", "GAMESERVERS_AGENT_PORT"] {
+        let pairs = [("DISCORD_BOT_TOKEN", "secret"), (key, "0")];
+        let env = lookup_from(&pairs);
+        let err = BotConfig::from_env_with(&env).unwrap_err();
+        assert!(
+            err.to_string().contains(key),
+            "a zero {key} should be rejected and name the variable, got: {err}"
+        );
+    }
+
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("DB_PASSWORD", "pw"),
+        ("DB_PORT", "0"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("DB_PORT"),
+        "a zero DB_PORT should be rejected, got: {err}"
+    );
+}
+
+#[test]
+fn zero_backup_interval_is_rejected() {
+    // 0 would flow into tokio::time::interval, which panics on a zero period.
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_BACKUP_INTERVAL_HOURS", "0"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("GAMESERVERS_BACKUP_INTERVAL_HOURS"),
+        "a zero backup interval should be rejected, got: {err}"
+    );
+}
+
+#[test]
+fn zero_backup_retention_is_rejected() {
+    // 0 would prune every key each cycle — backups run but nothing is kept.
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_BACKUP_RETENTION", "0"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("GAMESERVERS_BACKUP_RETENTION"),
+        "a zero backup retention should be rejected, got: {err}"
+    );
+}
+
+#[test]
+fn positive_backup_settings_are_accepted() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_BACKUP_INTERVAL_HOURS", "6"),
+        ("GAMESERVERS_BACKUP_RETENTION", "3"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+    assert_eq!(config.backup_interval, std::time::Duration::from_hours(6));
+    assert_eq!(config.backup_retention, 3);
+}
