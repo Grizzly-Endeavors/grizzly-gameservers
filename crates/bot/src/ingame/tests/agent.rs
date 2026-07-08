@@ -15,27 +15,27 @@ fn ingame_tools_are_read_only_lookups() {
 }
 
 #[test]
-fn session_key_separates_players_and_channels() {
+fn session_key_separates_players_and_guilds() {
     let steve = session_key("123", "Steve");
     let alex = session_key("123", "Alex");
-    let other_channel = session_key("456", "Steve");
+    let other_guild = session_key("456", "Steve");
     assert_ne!(steve, alex, "different players get different sessions");
     assert_ne!(
-        steve, other_channel,
-        "same player in another channel is separate"
+        steve, other_guild,
+        "same player in another guild is separate"
     );
     assert_eq!(
         steve.0, 123,
-        "a numeric channel id is used directly as the channel key"
+        "a numeric guild id is used directly as the guild key"
     );
     assert_eq!(session_key("123", "Steve"), steve, "the key is stable");
 }
 
 #[test]
-fn session_key_hashes_non_numeric_channel() {
-    // A DM/odd channel id that doesn't parse still yields a stable key.
-    let key = session_key("dm-channel", "Steve");
-    assert_eq!(session_key("dm-channel", "Steve"), key);
+fn session_key_hashes_non_numeric_guild() {
+    // A guild id that somehow doesn't parse still yields a stable key.
+    let key = session_key("not-a-snowflake", "Steve");
+    assert_eq!(session_key("not-a-snowflake", "Steve"), key);
 }
 
 #[test]

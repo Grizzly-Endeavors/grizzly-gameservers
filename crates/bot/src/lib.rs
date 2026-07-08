@@ -22,6 +22,12 @@ use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
 use store::{GuildConfig, HomeChannels};
 
+/// Default timeout for supervisor control-API requests. The API is one in-cluster
+/// hop away, so a slow response usually means a stuck pod, not a far server. The
+/// mutating stop/restart calls override this per-request (they block on the in-pod
+/// graceful stop) — see `CONTROL_MUTATION_TIMEOUT` in `agones::supervisor`.
+const SUPERVISOR_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Start the Discord bot: connect to Kubernetes, register slash commands with
 /// each guild it's in, and run the gateway loop until a shutdown signal arrives.
 ///
@@ -45,12 +51,8 @@ pub async fn run(config: BotConfig) -> Result<()> {
             })?,
     );
 
-    // Short default: the supervisor control API is one in-cluster hop away, so a
-    // slow response usually means a stuck pod, not a far server. The mutating
-    // stop/restart calls override this per-request (they block on the in-pod
-    // graceful stop) — see CONTROL_MUTATION_TIMEOUT in agones::supervisor.
     let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(SUPERVISOR_HTTP_TIMEOUT)
         .build()
         .context("failed to build supervisor control http client")?;
 
@@ -165,10 +167,11 @@ async fn run_gateway(token: String, data: Data) -> Result<()> {
 }
 
 /// Framework event handler: register this guild's slash commands the moment the
-/// bot sees it (`GuildCreate` fires on startup for every guild and again on each
-/// new join), then forward every event to Gary's message handler. Registering
-/// per-guild keeps commands instantly available across any number of guilds,
-/// unlike global registration's ~1h propagation.
+/// bot sees it (`GuildCreate` fires for every guild on startup, on each new join,
+/// and again on every gateway reconnect/resume), then forward every event to
+/// Gary's message handler. Re-registering is idempotent, so the reconnect repeats
+/// are harmless. Registering per-guild keeps commands instantly available across
+/// any number of guilds, unlike global registration's ~1h propagation.
 async fn on_gateway_event(
     ctx: &serenity::Context,
     event: &serenity::FullEvent,
