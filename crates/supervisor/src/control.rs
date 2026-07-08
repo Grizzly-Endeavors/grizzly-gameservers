@@ -5,19 +5,25 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::Json;
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Query, Request, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
-    AnnounceRequest, CommandRequest, CommandResponse, ControlCommand, ControlError, ControlOk,
-    ListResponse, LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest,
-    RestoreResponse, ResultKind, RouteError, StatusResponse, WriteRequest, WriteResponse,
+    ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, CommandRequest, CommandResponse, ControlCommand,
+    ControlError, ControlOk, ExtractQuery, ListResponse, LogsQuery, LogsResponse, PathQuery,
+    ReadResponse, RestoreRequest, RestoreResponse, ResultKind, RouteError, StatusResponse,
+    WriteRequest, WriteResponse,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
+use tokio_stream::StreamExt as _;
+use tokio_util::io::ReaderStream;
 use tracing::{debug, error, warn};
 
+use crate::archive;
 use crate::fs::{self, FsError};
 use crate::logs::{DEFAULT_TAIL_LINES, LogBuffer};
 use crate::rcon::RconRuntime;
@@ -76,6 +82,7 @@ pub async fn serve(
         .route("/fs/read", get(fs_read))
         .route("/fs/write", post(fs_write))
         .route("/fs/restore", post(fs_restore))
+        .route(ARCHIVE_PATH, get(archive_out).post(archive_in))
         .route("/logs", get(logs_tail))
         .route("/command", post(run_command))
         .route("/announce", post(announce))
@@ -190,6 +197,153 @@ async fn fs_restore(
         Ok(()) => (StatusCode::OK, Json(RestoreResponse { path: body.path })).into_response(),
         Err(err) => fs_error("restore", &body.path, &err),
     }
+}
+
+/// Stream a zstd-compressed tar of the whole data root to the caller. When
+/// `quiesce` is set, world saves are flushed and paused before the snapshot and
+/// re-enabled once `tar` finishes (in the reaper task), so a *live* backup is
+/// internally consistent. The child is reaped — and saves re-enabled — off the
+/// response future so an early client disconnect still resolves cleanly.
+async fn archive_out(
+    State(state): State<ControlState>,
+    Query(query): Query<ArchiveQuery>,
+) -> Response {
+    let rcon = state.rcon.clone();
+    if query.quiesce
+        && let Some(runtime) = rcon.as_ref()
+        && let Err(err) = runtime.quiesce_for_snapshot().await
+    {
+        // Best-effort: an un-quiesced snapshot is still usable, and the reaper
+        // re-enables saving regardless of this outcome.
+        warn!(error = ?err, "failed to quiesce before snapshot; proceeding");
+    }
+
+    let mut child = match archive::spawn_create(&state.data_root) {
+        Ok(child) => child,
+        Err(err) => {
+            error!(error = ?err, "failed to start data archive");
+            resume_after_snapshot(query.quiesce, rcon.as_deref()).await;
+            return internal_error("failed to start the backup");
+        }
+    };
+    let Some(stdout) = child.stdout.take() else {
+        error!("tar create produced no stdout pipe");
+        resume_after_snapshot(query.quiesce, rcon.as_deref()).await;
+        return internal_error("failed to start the backup");
+    };
+    let stderr = child.stderr.take();
+    let quiesce = query.quiesce;
+
+    tokio::spawn(async move {
+        let stderr_tail = read_stderr_tail(stderr).await;
+        match child.wait().await {
+            Ok(status) if !status.success() => {
+                error!(?status, stderr = %stderr_tail, "tar create exited non-zero");
+            }
+            Err(err) => error!(error = ?err, "failed to reap tar create"),
+            Ok(_) => {}
+        }
+        resume_after_snapshot(quiesce, rcon.as_deref()).await;
+    });
+
+    (
+        [(header::CONTENT_TYPE, "application/x-tar+zst")],
+        Body::from_stream(ReaderStream::new(stdout)),
+    )
+        .into_response()
+}
+
+/// Extract an uploaded zstd tar stream into the data root, optionally purging it
+/// first (overwrite-restore). The body streams straight into `tar`'s stdin so a
+/// multi-gigabyte world never buffers in memory.
+async fn archive_in(
+    State(state): State<ControlState>,
+    Query(query): Query<ExtractQuery>,
+    request: Request,
+) -> Response {
+    if query.purge
+        && let Err(err) = archive::purge(&state.data_root)
+    {
+        error!(error = ?err, "failed to purge data root before restore");
+        return internal_error("failed to clear the server's data before restoring");
+    }
+
+    let mut child = match archive::spawn_extract(&state.data_root) {
+        Ok(child) => child,
+        Err(err) => {
+            error!(error = ?err, "failed to start data restore");
+            return internal_error("failed to start the restore");
+        }
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        error!("tar extract produced no stdin pipe");
+        return internal_error("failed to start the restore");
+    };
+    let stderr = child.stderr.take();
+
+    let mut body = request.into_body().into_data_stream();
+    let mut receive_error: Option<String> = None;
+    while let Some(chunk) = body.next().await {
+        match chunk {
+            Ok(bytes) => {
+                if let Err(err) = stdin.write_all(&bytes).await {
+                    receive_error = Some(err.to_string());
+                    break;
+                }
+            }
+            Err(err) => {
+                receive_error = Some(err.to_string());
+                break;
+            }
+        }
+    }
+    // Close stdin so tar sees EOF and finishes (or aborts, if we broke early).
+    drop(stdin);
+    let stderr_tail = read_stderr_tail(stderr).await;
+    let status = child.wait().await;
+
+    if let Some(err) = receive_error {
+        error!(error = %err, "failed streaming archive into tar");
+        return internal_error("failed to receive the backup data");
+    }
+    match status {
+        Ok(status) if status.success() => StatusCode::OK.into_response(),
+        Ok(status) => {
+            error!(?status, stderr = %stderr_tail, "tar extract exited non-zero");
+            internal_error("failed to unpack the backup")
+        }
+        Err(err) => {
+            error!(error = ?err, "failed to reap tar extract");
+            internal_error("failed to unpack the backup")
+        }
+    }
+}
+
+/// Re-enable world saves after a snapshot, undoing [`RconRuntime::quiesce_for_snapshot`].
+/// A no-op when the snapshot wasn't quiesced or the game has no RCON.
+async fn resume_after_snapshot(quiesced: bool, rcon: Option<&RconRuntime>) {
+    if quiesced
+        && let Some(runtime) = rcon
+        && let Err(err) = runtime.resume_saves().await
+    {
+        warn!(error = ?err, "failed to re-enable world saves after snapshot");
+    }
+}
+
+/// Drain a child's stderr to a string for diagnostics, so a failed `tar` reports
+/// why. Best-effort: a read failure logs at debug and yields what was read.
+async fn read_stderr_tail<R>(stderr: Option<R>) -> String
+where
+    R: AsyncReadExt + Unpin,
+{
+    let Some(mut stderr) = stderr else {
+        return String::new();
+    };
+    let mut buf = String::new();
+    if let Err(err) = stderr.read_to_string(&mut buf).await {
+        debug!(error = ?err, "failed reading tar stderr");
+    }
+    buf.trim().to_owned()
 }
 
 async fn logs_tail(State(state): State<ControlState>, Query(query): Query<LogsQuery>) -> Response {

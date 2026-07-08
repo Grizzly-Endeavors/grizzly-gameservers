@@ -87,17 +87,48 @@ pub(crate) async fn provision_instance(
     channel: &str,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
-    match provision_under_lock(client, namespace, domain, entry, instance, channel).await? {
-        Provisioned::Created(address) => Ok(ProvisionOutcome::Provisioned { address }),
-        Provisioned::AlreadyExists => Ok(ProvisionOutcome::AlreadyExists),
-        Provisioned::PortsExhausted => Ok(ProvisionOutcome::PortsExhausted),
-    }
+    let provisioned =
+        provision_under_lock(client, namespace, domain, entry, instance, channel, false).await?;
+    Ok(provisioned.into_outcome())
+}
+
+/// Provision an instance held down at boot (`SUPERVISOR_START_PAUSED`) so the
+/// caller can seed `/data` from an archive before the game first launches. Same
+/// contract as [`provision_instance`] otherwise; used only by recover-from-archive.
+///
+/// # Errors
+///
+/// Returns an error if the cluster cannot be reached or an object create fails
+/// for a reason other than a recoverable port clash.
+pub(crate) async fn provision_paused_instance(
+    client: &Client,
+    namespace: &str,
+    domain: &str,
+    lock: &Mutex<()>,
+    entry: &GameCatalogEntry,
+    instance: &str,
+    channel: &str,
+) -> Result<ProvisionOutcome> {
+    let _guard = lock.lock().await;
+    let provisioned =
+        provision_under_lock(client, namespace, domain, entry, instance, channel, true).await?;
+    Ok(provisioned.into_outcome())
 }
 
 enum Provisioned {
     Created(String),
     AlreadyExists,
     PortsExhausted,
+}
+
+impl Provisioned {
+    fn into_outcome(self) -> ProvisionOutcome {
+        match self {
+            Self::Created(address) => ProvisionOutcome::Provisioned { address },
+            Self::AlreadyExists => ProvisionOutcome::AlreadyExists,
+            Self::PortsExhausted => ProvisionOutcome::PortsExhausted,
+        }
+    }
 }
 
 async fn provision_under_lock(
@@ -107,6 +138,7 @@ async fn provision_under_lock(
     entry: &GameCatalogEntry,
     instance: &str,
     channel: &str,
+    start_paused: bool,
 ) -> Result<Provisioned> {
     if instance_exists(client, namespace, instance).await? {
         return Ok(Provisioned::AlreadyExists);
@@ -126,6 +158,7 @@ async fn provision_under_lock(
             namespace: namespace.to_owned(),
             node_port: port,
             channel: channel.to_owned(),
+            start_paused,
         };
         let service = render_service(entry, &identity)?;
         match services.create(&PostParams::default(), &service).await {
@@ -271,6 +304,8 @@ pub(crate) async fn begin_start(
         namespace: namespace.to_owned(),
         node_port,
         channel,
+        // A cold `/start` resumes a normal server; only recover-from-archive pauses.
+        start_paused: false,
     };
     let gameserver = render_gameserver(entry, &identity)?;
     match gameserver_api(client, namespace)

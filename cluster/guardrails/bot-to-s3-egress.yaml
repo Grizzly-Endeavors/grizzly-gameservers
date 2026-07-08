@@ -1,0 +1,32 @@
+# Bot → s3-bulk versitygw (world backups / archives).
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) default-denies
+# egress and, via the RFC1918 `except` on the internet rule, makes private LAN
+# hosts — including the foundation stores at 10.0.0.200 — unreachable, so a
+# confused or prompt-injected game pod can't pivot into the platform.
+#
+# The backup feature streams each server's /data (pulled from the in-pod
+# supervisor) up to the self-hosted versitygw s3-bulk gateway at 10.0.0.200:7072,
+# and reads it back for restore. Cilium policies are additive, so this widens the
+# bot's egress by exactly one path: the bot identity → 10.0.0.200/32, TCP 7072
+# only. It selects only the bot (not the untrusted game-server pods, which stay
+# fully leashed and never hold S3 credentials), and opens only the s3-bulk data
+# port — OpenBao (8200), Postgres (5432), and the s3-hot/admin ports stay closed
+# to it beyond their own dedicated carve-outs.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-to-s3-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  egress:
+    - toCIDRSet:
+        - cidr: 10.0.0.200/32
+      toPorts:
+        - ports:
+            - port: "7072"
+              protocol: TCP

@@ -9,6 +9,7 @@
 //! shell ([`process`], [`readiness`], [`sdk`], [`control`], [`runner`]) so the
 //! state machine is unit-testable without spawning processes or opening sockets.
 
+pub mod archive;
 pub mod config;
 pub mod control;
 pub mod fs;

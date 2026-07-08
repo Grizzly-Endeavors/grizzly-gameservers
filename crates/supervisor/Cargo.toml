@@ -41,6 +41,11 @@ libc = "0.2"
 # the game child's environment. The RCON protocol itself is hand-rolled in
 # src/rcon.rs (no client crate), keeping the dependency tree gate-clean.
 getrandom = "0.4.3"
+# Stream the whole-/data archive routes without buffering a multi-gigabyte world:
+# tokio-util's ReaderStream adapts `tar`'s stdout into the axum response body, and
+# tokio-stream drives the request body into `tar`'s stdin chunk by chunk.
+tokio-util = { version = "0.7.18", features = ["io"] }
+tokio-stream = "0.1.18"
 
 [dev-dependencies]
 # Scratch directories for the path-scoped filesystem tests (fs.rs).

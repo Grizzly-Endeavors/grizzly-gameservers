@@ -17,8 +17,11 @@ use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
-use super::super::render::{destroy_confirm_embed, destroy_result_embed, neutral_embed};
-use super::super::{COMPONENT_TIMEOUT, Data};
+use super::super::render::{
+    archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
+    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+};
+use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
@@ -28,6 +31,9 @@ use crate::agones::{
     supervisor_edit_file, supervisor_list_files, supervisor_read_file, supervisor_read_logs,
     supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
     supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
+};
+use crate::backup::{
+    ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
 };
 
 const LIST_SERVERS: &str = "list_servers";
@@ -46,6 +52,12 @@ const EDIT_FILE: &str = "edit_file";
 const RESTORE_FILE: &str = "restore_file";
 const SEND_COMMAND: &str = "send_command";
 const WAIT_FOR_SERVER: &str = "wait_for_server";
+const LIST_BACKUPS: &str = "list_backups";
+const LIST_ARCHIVES: &str = "list_archives";
+const BACKUP_SERVER: &str = "backup_server";
+const ARCHIVE_SERVER: &str = "archive_server";
+const RESTORE_SERVER: &str = "restore_server";
+const RECOVER_SERVER: &str = "recover_server";
 
 /// Returned to the model when a non-admin caller reaches a mutating tool. The
 /// model is only offered mutating tools for admins, so this is defense in depth.
@@ -159,82 +171,117 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
             "Look up one server's current state and address by name.",
             params_schema::<NameParams>(),
         ),
+        ToolDef::function(
+            LIST_BACKUPS,
+            "List a server's saved world backups (newest first), so you can see what points it could be restored to.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            LIST_ARCHIVES,
+            "List the servers archived in this channel — ones that were put into cold storage and can be recovered.",
+            empty_object_schema(),
+        ),
     ];
     if is_admin {
-        tools.extend([
-            ToolDef::function(
-                CREATE_SERVER,
-                "Launch a new game server for the given catalog game, with an optional world name.",
-                params_schema::<CreateParams>(),
-            ),
-            ToolDef::function(
-                STOP_SERVER,
-                "Pause a running server in place (world saved, kept warm for a fast start).",
-                params_schema::<NameParams>(),
-            ),
-            ToolDef::function(
-                START_SERVER,
-                "Start a server: resume a paused one or bring a stopped one back up.",
-                params_schema::<NameParams>(),
-            ),
-            ToolDef::function(
-                RESTART_SERVER,
-                "Restart a running server in place — a quick reboot that keeps its address.",
-                params_schema::<NameParams>(),
-            ),
-            ToolDef::function(
-                SHUTDOWN_SERVER,
-                "Fully shut a server down to free its slot, keeping the world so it can start later.",
-                params_schema::<NameParams>(),
-            ),
-            ToolDef::function(
-                DESTROY_SERVER,
-                "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
-                params_schema::<NameParams>(),
-            ),
-            ToolDef::function(
-                BROWSE_FILES,
-                "List the files and folders in a running server's data directory. Use \"\" for the top level, then descend. Start here to find which file holds a setting.",
-                params_schema::<PathParams>(),
-            ),
-            ToolDef::function(
-                READ_FILE,
-                "Read a config or text file from a running server's data directory.",
-                params_schema::<PathParams>(),
-            ),
-            ToolDef::function(
-                READ_LOGS,
-                "Read the most recent output from a running server — the first place to look when something is wrong or to confirm a change took effect.",
-                params_schema::<LogsParams>(),
-            ),
-            ToolDef::function(
-                EDIT_FILE,
-                "Change one setting in a config file in place: find old_text and replace it with new_text, leaving the rest of the file untouched. Prefer this over write_file for a targeted change — you don't rewrite the whole file, so you can't accidentally clobber other settings. old_text must match exactly once; if it's missing or ambiguous the edit is refused and nothing changes. Saves the previous version first (restore_file undoes it). Takes effect on the next restart.",
-                params_schema::<EditParams>(),
-            ),
-            ToolDef::function(
-                WRITE_FILE,
-                "Overwrite a config file in a running server's data directory with entirely new contents — use this to create a file or rewrite one wholesale; prefer edit_file to change one setting. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
-                params_schema::<WriteParams>(),
-            ),
-            ToolDef::function(
-                RESTORE_FILE,
-                "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
-                params_schema::<PathParams>(),
-            ),
-            ToolDef::function(
-                SEND_COMMAND,
-                "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
-                params_schema::<CommandParams>(),
-            ),
-            ToolDef::function(
-                WAIT_FOR_SERVER,
-                "Wait for a starting or restarting server to actually come back up and start accepting players, up to a few minutes. Use this after start_server, restart_server, or a config change plus restart instead of repeatedly checking status or logs — it blocks until the server is ready, has crashed, or the wait runs out, then tells you which.",
-                params_schema::<NameParams>(),
-            ),
-        ]);
+        tools.extend(admin_tools());
     }
     tools
+}
+
+/// The mutating tools offered only to admin callers.
+fn admin_tools() -> Vec<ToolDef> {
+    vec![
+        ToolDef::function(
+            CREATE_SERVER,
+            "Launch a new game server for the given catalog game, with an optional world name.",
+            params_schema::<CreateParams>(),
+        ),
+        ToolDef::function(
+            STOP_SERVER,
+            "Pause a running server in place (world saved, kept warm for a fast start).",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            START_SERVER,
+            "Start a server: resume a paused one or bring a stopped one back up.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            RESTART_SERVER,
+            "Restart a running server in place — a quick reboot that keeps its address.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            SHUTDOWN_SERVER,
+            "Fully shut a server down to free its slot, keeping the world so it can start later.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            DESTROY_SERVER,
+            "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            BROWSE_FILES,
+            "List the files and folders in a running server's data directory. Use \"\" for the top level, then descend. Start here to find which file holds a setting.",
+            params_schema::<PathParams>(),
+        ),
+        ToolDef::function(
+            READ_FILE,
+            "Read a config or text file from a running server's data directory.",
+            params_schema::<PathParams>(),
+        ),
+        ToolDef::function(
+            READ_LOGS,
+            "Read the most recent output from a running server — the first place to look when something is wrong or to confirm a change took effect.",
+            params_schema::<LogsParams>(),
+        ),
+        ToolDef::function(
+            EDIT_FILE,
+            "Change one setting in a config file in place: find old_text and replace it with new_text, leaving the rest of the file untouched. Prefer this over write_file for a targeted change — you don't rewrite the whole file, so you can't accidentally clobber other settings. old_text must match exactly once; if it's missing or ambiguous the edit is refused and nothing changes. Saves the previous version first (restore_file undoes it). Takes effect on the next restart.",
+            params_schema::<EditParams>(),
+        ),
+        ToolDef::function(
+            WRITE_FILE,
+            "Overwrite a config file in a running server's data directory with entirely new contents — use this to create a file or rewrite one wholesale; prefer edit_file to change one setting. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
+            params_schema::<WriteParams>(),
+        ),
+        ToolDef::function(
+            RESTORE_FILE,
+            "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
+            params_schema::<PathParams>(),
+        ),
+        ToolDef::function(
+            SEND_COMMAND,
+            "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
+            params_schema::<CommandParams>(),
+        ),
+        ToolDef::function(
+            WAIT_FOR_SERVER,
+            "Wait for a starting or restarting server to actually come back up and start accepting players, up to a few minutes. Use this after start_server, restart_server, or a config change plus restart instead of repeatedly checking status or logs — it blocks until the server is ready, has crashed, or the wait runs out, then tells you which.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            BACKUP_SERVER,
+            "Save a durable backup of a running server's world right now. Non-destructive — the server keeps running. Use before a risky change so restore_server can roll it back.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            ARCHIVE_SERVER,
+            "Archive a server: save a durable backup and then release its storage, freeing a slot. The world is kept safe and recover_server brings it back later. Posts a confirmation the user must approve before anything is released.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            RESTORE_SERVER,
+            "Roll a server back to its most recent backup, replacing the current world (a safety backup of the current world is taken first). Posts a confirmation the user must approve before the world is overwritten.",
+            params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            RECOVER_SERVER,
+            "Bring an archived server back: recreate it and restore its world from the archive. Use the name shown by list_archives. Constructive, so it runs without a confirmation.",
+            params_schema::<NameParams>(),
+        ),
+    ]
 }
 
 /// Run one tool call and return the text result to feed back to the model. Bad
@@ -254,12 +301,26 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     {
         return refusal;
     }
-    match call.function.name.as_str() {
+    let name = call.function.name.as_str();
+    match name {
         LIST_SERVERS => exec_list_servers(ctx).await,
         SERVER_STATUS => match parse::<NameParams>(args) {
             Ok(params) => exec_server_status(ctx, &params.name).await,
             Err(message) => message,
         },
+        LIST_BACKUPS => match parse::<NameParams>(args) {
+            Ok(params) => exec_list_backups(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        LIST_ARCHIVES => exec_list_archives(ctx).await,
+        _ => dispatch_admin(ctx, name, args).await,
+    }
+}
+
+/// Dispatch the admin-only (mutating) tools, refusing non-admins and rejecting
+/// unknown names. Split out of [`dispatch`] so each stays under the line cap.
+async fn dispatch_admin(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+    match name {
         CREATE_SERVER if ctx.is_admin => match parse::<CreateParams>(args) {
             Ok(params) => exec_create(ctx, &params.game, params.name.as_deref()).await,
             Err(message) => message,
@@ -325,9 +386,26 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_wait_for_server(ctx, &params.name).await,
             Err(message) => message,
         },
+        BACKUP_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_backup(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        ARCHIVE_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_archive(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        RESTORE_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_restore(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        RECOVER_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_recover(ctx, &params.name).await,
+            Err(message) => message,
+        },
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
         | DESTROY_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE
-        | RESTORE_FILE | SEND_COMMAND | WAIT_FOR_SERVER => NON_ADMIN_REFUSAL.to_owned(),
+        | RESTORE_FILE | SEND_COMMAND | WAIT_FOR_SERVER | BACKUP_SERVER | ARCHIVE_SERVER
+        | RESTORE_SERVER | RECOVER_SERVER => NON_ADMIN_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
 }
@@ -357,6 +435,10 @@ fn targets_existing_server(tool: &str) -> bool {
             | RESTORE_FILE
             | SEND_COMMAND
             | WAIT_FOR_SERVER
+            | LIST_BACKUPS
+            | BACKUP_SERVER
+            | ARCHIVE_SERVER
+            | RESTORE_SERVER
     )
 }
 
@@ -863,6 +945,255 @@ async fn exec_wait_for_server(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
+async fn exec_list_backups(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    match service.list_backups(server).await {
+        Ok(list) => format_backup_list(server, &list),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: list_backups failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    if !service.archives_enabled() {
+        return archives_unavailable_text();
+    }
+    match service
+        .list_archives(&ctx.channel_id.get().to_string())
+        .await
+    {
+        Ok(list) => format_archive_list(&list),
+        Err(err) => {
+            error!(error = ?err, "agent: list_archives failed");
+            cluster_error()
+        }
+    }
+}
+
+async fn exec_backup(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    match service
+        .backup_instance(
+            &backup_ctx(ctx.data),
+            server,
+            &ctx.author_id.get().to_string(),
+        )
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, %server, "agent: backup did not succeed");
+            }
+            format_backup(server, &outcome)
+        }
+        Err(err) => {
+            error!(error = ?err, %server, "agent: backup failed");
+            cluster_error()
+        }
+    }
+}
+
+/// Archiving releases the server's storage, so — like destroy — the model can
+/// request it but a human must click through before anything is released.
+async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    if !service.archives_enabled() {
+        return archives_unavailable_text();
+    }
+    match confirm_destructive(
+        ctx,
+        archive_confirm_embed(server),
+        "gary_archive_confirm",
+        format!("the user cancelled — {server} was not archived"),
+        format!("the confirmation timed out — {server} was not archived"),
+    )
+    .await
+    {
+        Confirm::Declined(text) => text,
+        Confirm::Confirmed(mut prompt) => {
+            match service
+                .archive_instance(
+                    &backup_ctx(ctx.data),
+                    server,
+                    &ctx.author_id.get().to_string(),
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.reason() {
+                        warn!(reason, %server, "agent: archive did not succeed");
+                    }
+                    edit_prompt(ctx, &mut prompt, archive_result_embed(&outcome)).await;
+                    format_archive(server, &outcome)
+                }
+                Err(err) => {
+                    error!(error = ?err, %server, "agent: archive failed");
+                    cluster_error()
+                }
+            }
+        }
+    }
+}
+
+/// Restoring overwrites the live world, so it too is gated behind a human click.
+async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    let backups = match service.list_backups(server).await {
+        Ok(backups) => backups,
+        Err(err) => {
+            error!(error = ?err, %server, "agent: restore listing failed");
+            return cluster_error();
+        }
+    };
+    let Some(latest) = backups.first() else {
+        return format!("{server} has no backups to restore from yet");
+    };
+    let key = latest.key.clone();
+    let label = latest.created_at.clone();
+    match confirm_destructive(
+        ctx,
+        restore_confirm_embed(server, &label),
+        "gary_restore_confirm",
+        format!("the user cancelled — {server} was not restored"),
+        format!("the confirmation timed out — {server} was not restored"),
+    )
+    .await
+    {
+        Confirm::Declined(text) => text,
+        Confirm::Confirmed(mut prompt) => {
+            match service
+                .restore_backup(&backup_ctx(ctx.data), server, &key)
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.reason() {
+                        warn!(reason, %server, "agent: restore did not succeed");
+                    }
+                    edit_prompt(ctx, &mut prompt, restore_result_embed(&outcome, server)).await;
+                    format_restore_outcome(server, &outcome)
+                }
+                Err(err) => {
+                    error!(error = ?err, %server, "agent: restore failed");
+                    cluster_error()
+                }
+            }
+        }
+    }
+}
+
+async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    if !service.archives_enabled() {
+        return archives_unavailable_text();
+    }
+    let channel = ctx.channel_id.get().to_string();
+    match service
+        .recover_archive(&backup_ctx(ctx.data), &channel, name)
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                warn!(reason, %name, "agent: recover did not succeed");
+            }
+            format_recover(name, &outcome)
+        }
+        Err(err) => {
+            error!(error = ?err, %name, "agent: recover failed");
+            cluster_error()
+        }
+    }
+}
+
+/// A human's decision on a Gary destructive backup-action prompt.
+enum Confirm {
+    /// Approved; carries the prompt message so the caller edits it with the result.
+    /// Boxed because a `Message` is far larger than the `Declined` string.
+    Confirmed(Box<serenity::Message>),
+    /// Declined or timed out; carries the text to report to the model.
+    Declined(String),
+}
+
+/// Post a Danger/Cancel confirmation in-channel and wait for the invoking user's
+/// click, mirroring the destroy-confirmation gate for archive/restore.
+async fn confirm_destructive(
+    ctx: &ToolCtx<'_>,
+    prompt: serenity::CreateEmbed,
+    confirm_id: &str,
+    cancel_line: String,
+    timeout_line: String,
+) -> Confirm {
+    let buttons = CreateActionRow::Buttons(vec![
+        CreateButton::new(confirm_id)
+            .label("Do it")
+            .style(ButtonStyle::Danger),
+        CreateButton::new("gary_backup_cancel")
+            .label("Cancel")
+            .style(ButtonStyle::Secondary),
+    ]);
+    let mut prompt_msg = match ctx
+        .channel_id
+        .send_message(
+            ctx.serenity,
+            CreateMessage::new().embed(prompt).components(vec![buttons]),
+        )
+        .await
+    {
+        Ok(message) => message,
+        Err(err) => {
+            error!(error = ?err, "agent: failed to post backup confirmation");
+            return Confirm::Declined(
+                "I couldn't post a confirmation prompt in this channel, so I didn't do anything."
+                    .to_owned(),
+            );
+        }
+    };
+    let decision = ComponentInteractionCollector::new(ctx.serenity)
+        .author_id(ctx.author_id)
+        .message_id(prompt_msg.id)
+        .timeout(COMPONENT_TIMEOUT)
+        .await;
+    let Some(interaction) = decision else {
+        edit_prompt(
+            ctx,
+            &mut prompt_msg,
+            neutral_embed("Timed out", "Nothing was changed."),
+        )
+        .await;
+        return Confirm::Declined(timeout_line);
+    };
+    if let Err(err) = interaction
+        .create_response(ctx.serenity, CreateInteractionResponse::Acknowledge)
+        .await
+    {
+        warn!(error = ?err, "agent: failed to acknowledge backup interaction");
+    }
+    if interaction.data.custom_id != confirm_id {
+        edit_prompt(
+            ctx,
+            &mut prompt_msg,
+            neutral_embed("Cancelled", "Nothing was changed."),
+        )
+        .await;
+        return Confirm::Declined(cancel_line);
+    }
+    Confirm::Confirmed(Box::new(prompt_msg))
+}
+
 /// Broadcast to everyone in-game that Gary ran a console command, as
 /// `Gary: <phrase>`, best-effort. This is the attributed audit line that replaces
 /// Minecraft's `[Rcon]` op-broadcast (disabled at the image level) so players know
@@ -1066,6 +1397,131 @@ fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
         DestroyOutcome::NotFound => no_such(server),
         DestroyOutcome::NotManaged => not_managed(server),
     }
+}
+
+fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
+    match outcome {
+        BackupOutcome::BackedUp { size_bytes } => format!(
+            "backed up {server} ({}); restore_server can roll it back to this point",
+            human_size(*size_bytes)
+        ),
+        BackupOutcome::NotRunning => {
+            format!("{server} isn't running, so there's nothing live to back up — start it first")
+        }
+        BackupOutcome::Unreachable(_) => {
+            format!("I couldn't reach {server} to back it up — worth trying again in a moment")
+        }
+        BackupOutcome::NotFound => no_such(server),
+        BackupOutcome::NotManaged => not_managed(server),
+    }
+}
+
+fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
+    match outcome {
+        ArchiveOutcome::Archived { name, size_bytes } => format!(
+            "archived {name} ({}) and released its storage; recover_server brings it back",
+            human_size(*size_bytes)
+        ),
+        ArchiveOutcome::Unavailable => archives_unavailable_text(),
+        ArchiveOutcome::Failed(_) => format!(
+            "I couldn't archive {server} cleanly, so nothing was released — worth trying again shortly"
+        ),
+        ArchiveOutcome::NotFound => no_such(server),
+        ArchiveOutcome::NotManaged => not_managed(server),
+    }
+}
+
+fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
+    match outcome {
+        RestoreOutcome::Restored { ready: true } => {
+            format!("restored {server} — it's back up on the restored world")
+        }
+        RestoreOutcome::Restored { ready: false } => {
+            format!("restored the world onto {server} — it'll be playable again in a minute")
+        }
+        RestoreOutcome::Failed(_) => {
+            format!("I couldn't restore {server} cleanly — worth trying again in a moment")
+        }
+        RestoreOutcome::NotFound => no_such(server),
+        RestoreOutcome::NotManaged => not_managed(server),
+    }
+}
+
+fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
+    match outcome {
+        RecoverOutcome::Recovered { address, ready } => {
+            if *ready {
+                format!("recovered {name} — it's back up at {address}")
+            } else {
+                format!(
+                    "recovering {name}; it'll be reachable at {address} once it finishes booting"
+                )
+            }
+        }
+        RecoverOutcome::NoSuchArchive => {
+            format!("there's no archived server named {name} in this channel — check list_archives")
+        }
+        RecoverOutcome::NameInUse => {
+            format!("a server named {name} is already running — use start_server instead")
+        }
+        RecoverOutcome::Unavailable => archives_unavailable_text(),
+        RecoverOutcome::UnknownGame(game) => {
+            format!("{name} ran '{game}', which isn't in the catalog anymore")
+        }
+        RecoverOutcome::PortsExhausted => {
+            "all server slots are in use right now — archive or destroy one first".to_owned()
+        }
+        RecoverOutcome::Failed(_) => {
+            format!("I couldn't bring {name} back cleanly — worth trying again in a moment")
+        }
+    }
+}
+
+fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
+    if artifacts.is_empty() {
+        return format!("{server} has no backups yet");
+    }
+    let lines = artifacts
+        .iter()
+        .map(|artifact| {
+            format!(
+                "{} ({})",
+                artifact.created_at,
+                human_size(artifact.size_bytes)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("backups of {server} (newest first):\n{lines}")
+}
+
+fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
+    if artifacts.is_empty() {
+        return "no servers are archived in this channel".to_owned();
+    }
+    let lines = artifacts
+        .iter()
+        .map(|artifact| {
+            format!(
+                "{} ({}, {})",
+                artifact.name,
+                human_size(artifact.size_bytes),
+                artifact.created_at
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("archived servers in this channel:\n{lines}")
+}
+
+fn backups_not_configured() -> String {
+    "backups aren't set up on this bot, so there's nothing to save or restore".to_owned()
+}
+
+fn archives_unavailable_text() -> String {
+    "I can't track archives right now — my long-term memory is offline. Backups and restore still \
+     work; try archiving again later"
+        .to_owned()
 }
 
 fn no_such(server: &str) -> String {

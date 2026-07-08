@@ -173,7 +173,7 @@ pub(crate) async fn instance_runtime_state(
 /// Where a managed instance's in-pod control API is, or why it can't be reached.
 /// Shared by the lifecycle actions here and the filesystem client so both run the
 /// same existence/managed/pod-IP gate before issuing an HTTP request.
-pub(super) enum PodTarget {
+pub(crate) enum PodTarget {
     /// The pod is up with an IP; its control API is at this address.
     Ready(String),
     /// No `GameServer` by that name.
@@ -189,7 +189,7 @@ pub(super) enum PodTarget {
 /// # Errors
 ///
 /// Returns an error if the cluster can't be queried for the gameserver or pod.
-pub(super) async fn resolve_managed_pod(
+pub(crate) async fn resolve_managed_pod(
     client: &Client,
     namespace: &str,
     instance: &str,
@@ -363,6 +363,54 @@ pub(crate) async fn wait_for_ready(
         }
         if tokio::time::Instant::now() >= deadline {
             return Ok(ReadyWait::TimedOut);
+        }
+    }
+}
+
+/// How a wait for a paused server's control API to become reachable resolved.
+/// Used by recover-from-archive, where the process is held down (never `Running`)
+/// until `/data` is seeded — so [`wait_for_ready`] would never return `Ready`.
+pub(crate) enum ControlReady {
+    /// The supervisor's control API answered; it's safe to seed `/data`.
+    Reachable,
+    /// No live `GameServer` by that name.
+    NotFound,
+    /// The instance exists but isn't shim-managed.
+    NotManaged,
+    /// The control API never answered within the budget.
+    TimedOut,
+}
+
+/// Block until a freshly (re)scheduled pod's supervisor control API answers a
+/// status poll, regardless of the game process phase. This is the paused-server
+/// analogue of [`wait_for_ready`]: the recover flow provisions a server held down
+/// via `SUPERVISOR_START_PAUSED`, waits here for the control API, seeds `/data`,
+/// then starts the game.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn wait_for_control_reachable(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+) -> Result<ControlReady> {
+    let deadline = tokio::time::Instant::now() + READY_WAIT_TIMEOUT;
+    let mut ticker = tokio::time::interval(READY_POLL_INTERVAL);
+
+    loop {
+        ticker.tick().await;
+        match poll_status(client, http, namespace, instance, control_port).await? {
+            StatusPoll::Ok(_) => return Ok(ControlReady::Reachable),
+            StatusPoll::NotFound => return Ok(ControlReady::NotFound),
+            StatusPoll::NotManaged => return Ok(ControlReady::NotManaged),
+            // Transient while the pod is still scheduling — keep waiting.
+            StatusPoll::PodNotReady | StatusPoll::Unreachable => {}
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(ControlReady::TimedOut);
         }
     }
 }

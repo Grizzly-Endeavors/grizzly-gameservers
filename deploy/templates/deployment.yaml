@@ -111,6 +111,32 @@ spec:
                   name: grizzly-gameservers-db
                   key: db_password
                   optional: true
+            # S3 (s3-bulk versitygw) for world backups/archives. Endpoint/bucket/
+            # region are plain config; only the keys are secret, marked optional so
+            # a missing secret leaves the backup feature disabled (graceful) rather
+            # than crash-looping — same shape as DB/Ollama above.
+            - name: GAMESERVERS_S3_ENDPOINT
+              value: {{ .Values.bot.s3.endpoint | quote }}
+            - name: GAMESERVERS_S3_BUCKET
+              value: {{ .Values.bot.s3.bucket | quote }}
+            - name: GAMESERVERS_S3_REGION
+              value: {{ .Values.bot.s3.region | quote }}
+            - name: GAMESERVERS_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-s3
+                  key: s3_access_key
+                  optional: true
+            - name: GAMESERVERS_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-s3
+                  key: s3_secret_key
+                  optional: true
+            - name: GAMESERVERS_BACKUP_INTERVAL_HOURS
+              value: {{ .Values.bot.backup.intervalHours | quote }}
+            - name: GAMESERVERS_BACKUP_RETENTION
+              value: {{ .Values.bot.backup.retention | quote }}
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           resources:

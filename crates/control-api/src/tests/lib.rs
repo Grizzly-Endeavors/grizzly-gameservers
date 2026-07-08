@@ -217,6 +217,26 @@ fn command_request_and_response_round_trip() {
 }
 
 #[test]
+fn archive_query_defaults_quiesce_to_false() {
+    let parsed: ArchiveQuery = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        parsed,
+        ArchiveQuery { quiesce: false },
+        "an absent quiesce field should default to false"
+    );
+}
+
+#[test]
+fn extract_query_defaults_purge_to_false() {
+    let parsed: ExtractQuery = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        parsed,
+        ExtractQuery { purge: false },
+        "an absent purge field should default to false"
+    );
+}
+
+#[test]
 fn logs_query_defaults_lines_to_none() {
     let parsed: LogsQuery = serde_json::from_str("{}").unwrap();
     assert_eq!(

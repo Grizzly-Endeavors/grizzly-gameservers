@@ -14,7 +14,10 @@ fn tool_names(is_admin: bool) -> Vec<String> {
 #[test]
 fn non_admins_get_only_read_only_tools() {
     let names = tool_names(false);
-    assert_eq!(names, vec![LIST_SERVERS, SERVER_STATUS]);
+    assert_eq!(
+        names,
+        vec![LIST_SERVERS, SERVER_STATUS, LIST_BACKUPS, LIST_ARCHIVES]
+    );
     assert!(
         !names
             .iter()
@@ -43,6 +46,12 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
         RESTORE_FILE,
         SEND_COMMAND,
         WAIT_FOR_SERVER,
+        LIST_BACKUPS,
+        LIST_ARCHIVES,
+        BACKUP_SERVER,
+        ARCHIVE_SERVER,
+        RESTORE_SERVER,
+        RECOVER_SERVER,
     ] {
         assert!(
             names.iter().any(|name| name == expected),
@@ -51,19 +60,23 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        16,
-        "eight lifecycle tools, six filesystem tools, send_command, and wait_for_server"
+        22,
+        "the two read tools, two backup listers, eight lifecycle, six filesystem, send_command, wait_for_server, and the four backup actions"
     );
 }
 
 #[test]
 fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // The gate must apply to every tool that names an existing server, and only
-    // to those — list_servers scopes its own query and create_server stamps the
-    // channel. Derived from the live tool set so a newly added tool can't slip
-    // past the gate without this failing.
+    // to those — list_servers/list_archives scope their own query, and
+    // create_server/recover_server make a new server stamped with the channel.
+    // Derived from the live tool set so a newly added tool can't slip past the
+    // gate without this failing.
     for name in tool_names(true) {
-        let should_gate = name != LIST_SERVERS && name != CREATE_SERVER;
+        let should_gate = name != LIST_SERVERS
+            && name != CREATE_SERVER
+            && name != LIST_ARCHIVES
+            && name != RECOVER_SERVER;
         assert_eq!(
             targets_existing_server(&name),
             should_gate,

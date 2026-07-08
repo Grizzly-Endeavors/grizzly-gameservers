@@ -8,7 +8,7 @@ use tracing::warn;
 
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
-use super::labels::{GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
+use super::labels::{CHANNEL_KEY, GAME_KEY, GAMESERVER_SELECTOR_KEY, is_managed};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerSummary, summarize};
 
@@ -86,6 +86,56 @@ pub(crate) async fn list_active_servers(
 
     append_stopped_instances(&svc_list.items, &live, domain, &mut summaries);
     Ok(summaries)
+}
+
+/// A managed server the scheduled backup cycle should snapshot: it has a live
+/// `GameServer` (pod up), so its supervisor is reachable to stream `/data`.
+pub(crate) struct BackupTarget {
+    pub(crate) instance: String,
+    pub(crate) game: String,
+    pub(crate) channel: String,
+    /// Whether the game process is up — drives whether the snapshot quiesces
+    /// (flushes) first. A paused server's `/data` is already saved, and its RCON
+    /// is down, so quiescing it would only log a spurious failure.
+    pub(crate) running: bool,
+}
+
+/// The managed `GameServer`s with a live pod, for the scheduled backup cycle.
+/// Shut-down instances (Service only, no pod) are absent — there is no supervisor
+/// to stream from — and are recovered via archive, not backed up.
+///
+/// # Errors
+///
+/// Returns an error if the gameservers can't be listed from the Kubernetes API.
+pub(crate) async fn list_backup_targets(
+    client: &Client,
+    namespace: &str,
+) -> Result<Vec<BackupTarget>> {
+    let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
+    let list = gameservers
+        .list(&ListParams::default())
+        .await
+        .with_context(|| format!("failed to list gameservers in namespace {namespace}"))?;
+    let mut targets = Vec::new();
+    for gameserver in &list.items {
+        let labels = gameserver.metadata.labels.as_ref();
+        if !is_managed(labels) {
+            continue;
+        }
+        let Some(instance) = gameserver.metadata.name.clone() else {
+            continue;
+        };
+        let running = label_value(labels, PROCESS_LABEL_KEY) != Some(PROCESS_LABEL_STOPPED);
+        targets.push(BackupTarget {
+            instance,
+            game: label_value(labels, GAME_KEY).unwrap_or_default().to_owned(),
+            channel: label_value(labels, CHANNEL_KEY)
+                .unwrap_or_default()
+                .to_owned(),
+            running,
+        });
+    }
+    Ok(targets)
 }
 
 /// A `/shutdown` deletes the `GameServer` but keeps its Service, so a managed Service

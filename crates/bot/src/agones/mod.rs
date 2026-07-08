@@ -16,17 +16,18 @@ mod supervisor_fs;
 mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
-pub(crate) use client::list_active_servers;
+pub(crate) use client::{BackupTarget, list_active_servers, list_backup_targets};
 pub(crate) use naming::{build_instance_name, now_entropy};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,
-    begin_start, destroy_instance, list_instance_names, provision_instance, shutdown_instance,
-    wait_for_instance_ready,
+    begin_start, destroy_instance, list_instance_names, provision_instance,
+    provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
 pub(crate) use scope::{ScopeVerdict, ServerScope, verify_scope};
 pub(crate) use supervisor::{
-    ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state, supervisor_restart,
-    supervisor_start, supervisor_stop, wait_for_ready,
+    ControlReady, PodTarget, ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state,
+    resolve_managed_pod, supervisor_restart, supervisor_start, supervisor_stop,
+    wait_for_control_reachable, wait_for_ready,
 };
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,
