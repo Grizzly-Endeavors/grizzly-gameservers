@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 
 use crate::chat_watcher::ChatFormat;
+use crate::rcon::RconDialect;
 
 /// Default trigger a player types in chat to address the ops agent. Overridable
 /// per game via `SUPERVISOR_CHAT_TRIGGER` if it collides with a game command.
@@ -73,9 +74,10 @@ pub struct SupervisorConfig {
     /// Localhost port the game's RCON listens on, or `None` when the per-game
     /// template doesn't enable RCON. Its presence turns on the `/command` route.
     pub rcon_port: Option<u16>,
-    /// Whether the RCON client runs in Minecraft-quirks mode (Minecraft's RCON
-    /// diverges from the base Source protocol). Ignored when `rcon_port` is `None`.
-    pub rcon_minecraft: bool,
+    /// Which console dialect the game speaks over RCON (reply framing + command
+    /// vocabulary). Defaults to [`RconDialect::Source`]. Ignored when `rcon_port`
+    /// is `None`.
+    pub rcon_dialect: RconDialect,
     /// Child env var the minted RCON password is injected under. Ignored when
     /// `rcon_port` is `None`.
     pub rcon_password_env: String,
@@ -91,6 +93,15 @@ pub struct SupervisorConfig {
     /// (Valheim) that never open a TCP port the probe could reach: readiness is
     /// then signalled on the first captured line containing this string.
     pub ready_log_pattern: Option<String>,
+    /// Path to a Palworld `PalWorldSettings.ini` the supervisor seeds with the
+    /// RCON keys (enabled/port/`AdminPassword`) before each launch, or `None` for
+    /// games that don't need it. Present only for Palworld, whose upstream image
+    /// regenerates the whole ini from env on every boot: the image sets
+    /// `DISABLE_GENERATE_SETTINGS=true` so the on-PVC ini is authoritative (the
+    /// friend's/Gary's per-instance edits persist), and the supervisor owns just
+    /// the RCON keys here so RCON still comes up on the minted password. Ignored
+    /// when `rcon_port` is `None` — there's no password to seed without RCON.
+    pub palworld_ini_path: Option<PathBuf>,
     /// Boot the control API but hold the game process down until a `/start` — set
     /// by the bot when it provisions a server to restore from an archive, so it
     /// can seed `/data` over the control API before the game ever launches (and
@@ -171,11 +182,17 @@ impl SupervisorConfig {
         let crash_threshold = optional_parse(lookup, "SUPERVISOR_CRASH_THRESHOLD")?
             .unwrap_or(DEFAULT_CRASH_THRESHOLD);
         let rcon_port = optional_parse(lookup, "SUPERVISOR_RCON_PORT")?;
-        let rcon_minecraft = optional_flag(lookup, "SUPERVISOR_RCON_MINECRAFT");
+        let rcon_dialect = match optional(lookup, "SUPERVISOR_RCON_DIALECT") {
+            Some(raw) => raw
+                .parse::<RconDialect>()
+                .context("failed to parse SUPERVISOR_RCON_DIALECT")?,
+            None => RconDialect::Source,
+        };
         let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
             .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
         let rcon_password_max_len = optional_parse(lookup, "SUPERVISOR_RCON_PASSWORD_MAX_LEN")?;
         let ready_log_pattern = optional(lookup, "SUPERVISOR_READY_LOG_PATTERN");
+        let palworld_ini_path = optional(lookup, "SUPERVISOR_PALWORLD_INI").map(PathBuf::from);
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
 
@@ -191,10 +208,11 @@ impl SupervisorConfig {
             crash_window,
             crash_threshold,
             rcon_port,
-            rcon_minecraft,
+            rcon_dialect,
             rcon_password_env,
             rcon_password_max_len,
             ready_log_pattern,
+            palworld_ini_path,
             start_paused,
             chat_watch,
         })

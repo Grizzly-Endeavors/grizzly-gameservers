@@ -19,7 +19,7 @@ use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
-use crate::{chat_watcher, process, readiness};
+use crate::{chat_watcher, palworld, process, readiness};
 
 /// Brief pause before relaunching a crashed child, so a hard crash-loop backs
 /// off rather than spinning the CPU until escalation.
@@ -52,7 +52,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     // across in-place restarts; `None` leaves the /command route disabled.
     let rcon = match cfg.rcon_port {
         Some(port) => Some(Arc::new(
-            RconRuntime::new(port, cfg.rcon_minecraft, cfg.rcon_password_max_len)
+            RconRuntime::new(port, cfg.rcon_dialect, cfg.rcon_password_max_len)
                 .context("failed to initialize rcon client")?,
         )),
         None => None,
@@ -159,7 +159,7 @@ async fn supervise(
         publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
         None
     } else {
-        let mut spawned = process::spawn(&cfg, rcon).context("failed to spawn initial child")?;
+        let mut spawned = spawn_child(&cfg, rcon).context("failed to spawn initial child")?;
         let ready_watch = start_readiness(&cfg, &ready_tx);
         process::capture_output(&mut spawned, &logs, chat_tx.as_ref(), ready_watch.as_ref());
         let running = Some(spawned);
@@ -372,6 +372,26 @@ async fn do_restart(
     }
 }
 
+/// Seed any config the supervisor owns into place, then launch the game child.
+/// Today only Palworld needs seeding — its RCON keys written into the on-PVC ini
+/// before the game reads it, since the image disables the upstream's destructive
+/// env-driven regeneration (see [`palworld`]). Every other game passes straight
+/// through to [`process::spawn`]. Runs before each launch so a fresh PVC and a
+/// per-pod-rotated password both converge before the child starts.
+///
+/// # Errors
+///
+/// Returns an error if the config seed or the child spawn fails.
+fn spawn_child(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child> {
+    if let (Some(rcon), Some(port), Some(ini)) =
+        (rcon, cfg.rcon_port, cfg.palworld_ini_path.as_deref())
+    {
+        palworld::seed_rcon(ini, port, rcon.password())
+            .context("failed to seed palworld rcon settings")?;
+    }
+    process::spawn(cfg, rcon)
+}
+
 /// Spawn a fresh child, record it, kick off a readiness probe, and assert the
 /// running label. `action` names the operation in logs. On spawn failure `child`
 /// is left empty so the caller reports the failure.
@@ -381,7 +401,7 @@ async fn relaunch(
     child: &mut Option<Child>,
     action: &str,
 ) {
-    match process::spawn(deps.cfg, deps.rcon) {
+    match spawn_child(deps.cfg, deps.rcon) {
         Ok(spawned) => {
             *child = Some(spawned);
             let ready_watch = start_readiness(deps.cfg, deps.ready_tx);

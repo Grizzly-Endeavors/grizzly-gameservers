@@ -15,6 +15,7 @@ pub mod config;
 pub mod control;
 pub mod fs;
 pub mod logs;
+pub mod palworld;
 pub mod process;
 pub mod rcon;
 pub mod readiness;

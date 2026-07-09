@@ -23,8 +23,8 @@ fn generate_password_is_not_constant() {
 
 #[test]
 fn new_truncates_the_password_to_the_cap() {
-    let full = RconRuntime::new(25575, false, None).unwrap();
-    let capped = RconRuntime::new(25575, false, Some(30)).unwrap();
+    let full = RconRuntime::new(25575, RconDialect::Source, None).unwrap();
+    let capped = RconRuntime::new(25575, RconDialect::Source, Some(30)).unwrap();
     assert!(
         full.password().len() > 30,
         "the default password should exceed Palworld's cap"
@@ -34,7 +34,7 @@ fn new_truncates_the_password_to_the_cap() {
         30,
         "a cap shorter than the minted length truncates it"
     );
-    let generous = RconRuntime::new(25575, false, Some(4096)).unwrap();
+    let generous = RconRuntime::new(25575, RconDialect::Source, Some(4096)).unwrap();
     assert_eq!(
         generous.password().len(),
         full.password().len(),
@@ -44,7 +44,7 @@ fn new_truncates_the_password_to_the_cap() {
 
 #[test]
 fn debug_redacts_the_password() {
-    let runtime = RconRuntime::new(25575, true, None).unwrap();
+    let runtime = RconRuntime::new(25575, RconDialect::Minecraft, None).unwrap();
     let rendered = format!("{runtime:?}");
     assert!(
         rendered.contains("<redacted>"),
@@ -151,7 +151,7 @@ async fn connect_with_retry_waits_out_a_late_binding_listener() {
 
 #[test]
 fn broadcast_command_builds_a_minecraft_tellraw() {
-    let command = broadcast_command("Gary: ran `op Bear`", true).unwrap();
+    let command = broadcast_command("Gary: ran `op Bear`", RconDialect::Minecraft).unwrap();
     assert!(
         command.starts_with("tellraw @a "),
         "minecraft broadcast should use tellraw, got {command:?}"
@@ -166,16 +166,49 @@ fn broadcast_command_builds_a_minecraft_tellraw() {
 #[test]
 fn broadcast_command_escapes_message_json() {
     // A quote in the message must not break out of the JSON string.
-    let command = broadcast_command(r#"Gary: said "hi""#, true).unwrap();
+    let command = broadcast_command(r#"Gary: said "hi""#, RconDialect::Minecraft).unwrap();
     let json = command.strip_prefix("tellraw @a ").unwrap();
     let value: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(value.get("text").unwrap(), r#"Gary: said "hi""#);
 }
 
 #[test]
-fn broadcast_command_falls_back_to_say_for_non_minecraft() {
-    let command = broadcast_command("Gary: heads up", false).unwrap();
+fn broadcast_command_falls_back_to_say_for_source() {
+    let command = broadcast_command("Gary: heads up", RconDialect::Source).unwrap();
     assert_eq!(command, "say Gary: heads up");
+}
+
+#[test]
+fn broadcast_command_uses_palworld_broadcast_verb() {
+    let command = broadcast_command("Gary: heads up", RconDialect::Palworld).unwrap();
+    assert_eq!(command, "Broadcast Gary: heads up");
+}
+
+#[test]
+fn dialect_parses_case_insensitively_and_rejects_unknown() {
+    assert_eq!(
+        "Minecraft".parse::<RconDialect>().unwrap(),
+        RconDialect::Minecraft
+    );
+    assert_eq!(
+        "source".parse::<RconDialect>().unwrap(),
+        RconDialect::Source
+    );
+    assert_eq!(
+        " palworld ".parse::<RconDialect>().unwrap(),
+        RconDialect::Palworld
+    );
+    assert!("halflife".parse::<RconDialect>().is_err());
+}
+
+#[test]
+fn single_packet_reply_covers_minecraft_and_palworld_only() {
+    assert!(RconDialect::Minecraft.single_packet_reply());
+    assert!(RconDialect::Palworld.single_packet_reply());
+    assert!(
+        !RconDialect::Source.single_packet_reply(),
+        "a correct Source server fragments; it must use the sentinel read"
+    );
 }
 
 #[test]

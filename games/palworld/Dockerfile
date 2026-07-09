@@ -58,17 +58,35 @@ ENV PUID=1000
 ENV PGID=1000
 # Palworld's save data lives under /palworld; scope Gary's file tools there.
 ENV SUPERVISOR_DATA_DIR=/palworld
-# Enable Palworld's native RCON (base Source protocol, no Minecraft quirks) so
-# Gary's send_command tool can issue console commands. Palworld reuses the admin
-# password as the RCON password and caps it at 30 characters, so the supervisor
-# mints the password, truncates it to 30, and injects it as ADMIN_PASSWORD — the
-# same value the game writes to PalWorldSettings.ini and authenticates RCON with.
-# The RCON port stays pod-internal (never added to a NodePort Service).
+# Enable Palworld's native RCON so Gary's send_command tool can issue console
+# commands. Palworld reuses the admin password as the RCON password and caps it at
+# 30 characters, so the supervisor mints the password, truncates it to 30, and
+# injects it as ADMIN_PASSWORD (which the upstream entrypoint also writes to its
+# own rcon.yaml). The RCON port stays pod-internal (never added to a NodePort
+# Service).
+#
+# SUPERVISOR_RCON_DIALECT=palworld is load-bearing, not cosmetic: Palworld's RCON
+# is a *partial* Source implementation — it replies in a single packet and never
+# mirrors the sentinel a correct Source server does. Read as base Source, every
+# command would hang until timeout/EOF and surface a false failure even though it
+# ran. The palworld dialect reads a single packet (like Minecraft) and uses
+# Palworld's own Broadcast verb.
 ENV RCON_ENABLED=true
 ENV RCON_PORT=25575
 ENV SUPERVISOR_RCON_PORT=25575
+ENV SUPERVISOR_RCON_DIALECT=palworld
 ENV SUPERVISOR_RCON_PASSWORD_ENV=ADMIN_PASSWORD
 ENV SUPERVISOR_RCON_PASSWORD_MAX_LEN=30
+# Make the on-PVC ini authoritative. The upstream entrypoint otherwise rewrites the
+# whole PalWorldSettings.ini from env on every boot (via compile-settings.sh), which
+# wipes any per-instance edit the friend or Gary makes — e.g. an unset SERVER_PASSWORD
+# resets the join password to blank on each restart. DISABLE_GENERATE_SETTINGS=true
+# stops that; in exchange the supervisor owns just the RCON keys, seeding
+# RCONEnabled/RCONPort/AdminPassword into the ini at SUPERVISOR_PALWORLD_INI before
+# each launch so RCON still comes up on the minted password while every other
+# setting is left as the ini has it.
+ENV DISABLE_GENERATE_SETTINGS=true
+ENV SUPERVISOR_PALWORLD_INI=/palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
 # Readiness: Palworld opens its RCON TCP port once the server is up, so the
 # supervisor's default TCP connect probe on this port is a clean "ready" signal
 # (the game port itself is UDP and can't be TCP-probed).
