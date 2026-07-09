@@ -71,6 +71,11 @@ pub struct SupervisorConfig {
     /// Child env var the minted RCON password is injected under. Ignored when
     /// `rcon_port` is `None`.
     pub rcon_password_env: String,
+    /// Substring that marks the game as ready in its log output, or `None` when
+    /// the game uses the TCP connect probe instead. Set for UDP-only games
+    /// (Valheim) that never open a TCP port the probe could reach: readiness is
+    /// then signalled on the first captured line containing this string.
+    pub ready_log_pattern: Option<String>,
     /// Boot the control API but hold the game process down until a `/start` — set
     /// by the bot when it provisions a server to restore from an archive, so it
     /// can seed `/data` over the control API before the game ever launches (and
@@ -150,6 +155,7 @@ impl SupervisorConfig {
         let rcon_minecraft = optional_flag(lookup, "SUPERVISOR_RCON_MINECRAFT");
         let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
             .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
+        let ready_log_pattern = optional(lookup, "SUPERVISOR_READY_LOG_PATTERN");
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
 
@@ -166,6 +172,7 @@ impl SupervisorConfig {
             rcon_port,
             rcon_minecraft,
             rcon_password_env,
+            ready_log_pattern,
             start_paused,
             chat_watch,
         })

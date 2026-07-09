@@ -16,6 +16,7 @@ use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
+use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
 use crate::{chat_watcher, process, readiness};
@@ -162,10 +163,10 @@ async fn supervise(
         None
     } else {
         let mut spawned = process::spawn(&cfg, rcon).context("failed to spawn initial child")?;
-        process::capture_output(&mut spawned, &logs, chat_tx.as_ref());
+        let ready_watch = start_readiness(&cfg, &ready_tx);
+        process::capture_output(&mut spawned, &logs, chat_tx.as_ref(), ready_watch.as_ref());
         let running = Some(spawned);
         note_started(&mut state, running.as_ref())?;
-        spawn_readiness_probe(cfg.game_port, ready_tx.clone());
         running
     };
 
@@ -248,6 +249,21 @@ fn note_started(state: &mut SupervisorState, child: Option<&Child>) -> Result<()
         .context("spawned child has no pid")?;
     state.on_started(pid, Instant::now());
     Ok(())
+}
+
+/// Wire readiness for a freshly launched child. A game that declares a log
+/// marker (`ready_log_pattern`) gets a [`LogReadyWatch`] the line pumps signal
+/// through — needed for UDP-only games (Valheim) the TCP connect probe can never
+/// reach. Every other game gets the background TCP connect probe on `game_port`.
+/// Returns the watch to hand to `capture_output`, or `None` when the TCP probe is
+/// in use.
+fn start_readiness(cfg: &SupervisorConfig, ready_tx: &mpsc::Sender<()>) -> Option<LogReadyWatch> {
+    if let Some(pattern) = cfg.ready_log_pattern.as_deref() {
+        Some(LogReadyWatch::new(Arc::from(pattern), ready_tx.clone()))
+    } else {
+        spawn_readiness_probe(cfg.game_port, ready_tx.clone());
+        None
+    }
 }
 
 /// Probe for the game accepting connections in the background, signalling the
@@ -371,13 +387,13 @@ async fn relaunch(
     match process::spawn(deps.cfg, deps.rcon) {
         Ok(spawned) => {
             *child = Some(spawned);
+            let ready_watch = start_readiness(deps.cfg, deps.ready_tx);
             if let Some(running) = child.as_mut() {
-                process::capture_output(running, deps.logs, deps.chat_tx);
+                process::capture_output(running, deps.logs, deps.chat_tx, ready_watch.as_ref());
             }
             if let Err(err) = note_started(state, child.as_ref()) {
                 error!(error = ?err, action, "failed to record (re)launch");
             }
-            spawn_readiness_probe(deps.cfg.game_port, deps.ready_tx.clone());
             publish_label(deps.sdk, PROCESS_LABEL_RUNNING).await;
         }
         Err(err) => {
