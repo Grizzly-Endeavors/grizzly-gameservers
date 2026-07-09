@@ -93,16 +93,22 @@ pub(crate) fn now_entropy() -> u64 {
         })
 }
 
-/// Pick the lowest port in `range` that is neither in `used` nor `excluded`.
-/// Returns `None` when every port in the range is taken.
-pub(crate) fn select_free_port(
+/// Pick the `n` lowest ports in `range` that are neither in `used` nor
+/// `excluded`, in ascending order. The ports need not be contiguous — a
+/// multi-port game's ports are independent. Returns `None` when the range can't
+/// satisfy `n` free ports.
+pub(crate) fn select_free_ports(
+    n: usize,
     used: &BTreeSet<i32>,
     excluded: &BTreeSet<i32>,
     range: RangeInclusive<i32>,
-) -> Option<i32> {
-    range
+) -> Option<Vec<i32>> {
+    let free: Vec<i32> = range
         .into_iter()
-        .find(|port| !used.contains(port) && !excluded.contains(port))
+        .filter(|port| !used.contains(port) && !excluded.contains(port))
+        .take(n)
+        .collect();
+    (free.len() == n).then_some(free)
 }
 
 #[cfg(test)]

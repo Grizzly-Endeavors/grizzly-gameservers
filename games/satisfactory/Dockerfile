@@ -7,14 +7,15 @@
 # HTTPS admin API), so this game runs *without* live console commands: Gary
 # operates it via file edits and stop/start/restart.
 #
-# KNOWN LIMITATION (tracked as a follow-up): a 1.1+ Satisfactory server needs two
-# ports reachable — the game port (7777) and a Reliable Messaging port (8888) it
-# *advertises* to clients via -ExternalReliablePort. The on-demand provisioner
-# leases a single NodePort and remaps it (external 700x -> container 7777), which
-# a port-advertising, two-port game can't fully use. This image therefore comes up
-# and is manageable, but full internet multiplayer needs the provisioner to lease
-# two ports AND match the container's advertised port numbers to them. See
-# issue #29. Single-port games (the other four) are unaffected.
+# A 1.1+ Satisfactory server needs two ports reachable — the game port (7777/udp)
+# and a Reliable Messaging port (8888/tcp) — and it advertises both to clients.
+# The provisioner leases one edge-band port per port (nodePort == targetPort, no
+# remap) and injects the leased numbers via SERVERGAMEPORT / SERVERMESSAGINGPORT
+# (which set both the bind and the advertised port in the wolveix image), so the
+# server binds and advertises exactly the ports a client dials. The port model is
+# declared on the Service annotations (games/satisfactory/service.yaml); the
+# SUPERVISOR_GAME_PORT default below is overridden per instance to the leased game
+# port so the readiness probe targets it. See issue #29.
 #
 # The build context is the repository ROOT (the supervisor is a workspace crate):
 #

@@ -5,17 +5,20 @@
 # Satisfactory has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates it
 # via file edits + restart, not live console commands.
 #
-# KNOWN LIMITATION: only the game port (7777/udp) is exposed. A 1.1+ server also
-# needs its Reliable Messaging port (8888) reachable, and it advertises that port
-# to clients — which the single-NodePort remap can't satisfy. The server comes up
-# and is manageable; full internet multiplayer needs the two-port + port-matching
-# provisioner follow-up (see games/satisfactory/Dockerfile and issue #29).
+# Two-port advertising game: the game port (7777/udp) carries gameplay and the
+# Reliable Messaging port (8888/tcp) carries the connection handshake, and the
+# server advertises both to the client. The provisioner leases one edge-band port
+# per named port (nodePort == targetPort, no remap) and injects the leased numbers
+# into the game's env so it binds/advertises the external ports — the port names
+# here (`game`, `messaging`) are the join key to the Service annotations that
+# drive that (see service.yaml and issue #29). The renderer rewrites these
+# containerPorts to the leased numbers per instance.
 #
 # The image bakes in the grizzly supervisor as its entrypoint (games/satisfactory/
 # Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle
-# (calls /ready once the game's TCP port accepts connections on 7777, then keeps
-# /health pinged), and serves an in-pod control API on 9359 that the bot drives
-# for in-place stop/start/restart and Gary's file tools.
+# (calls /ready once the game's TCP port accepts connections on the leased game
+# port, then keeps /health pinged), and serves an in-pod control API on 9359 that
+# the bot drives for in-place stop/start/restart and Gary's file tools.
 #
 # portPolicy: None — reachability is via the NodePort Service the bot leases per
 # instance.
@@ -27,10 +30,14 @@ metadata:
 spec:
   container: satisfactory
   ports:
-    - name: satisfactory
+    - name: game
       portPolicy: None
       containerPort: 7777
       protocol: UDP
+    - name: messaging
+      portPolicy: None
+      containerPort: 8888
+      protocol: TCP
   health:
     # First boot downloads ~15 GB via SteamCMD before the server binds; give it
     # generous room before Agones health-gates it.
@@ -56,9 +63,12 @@ spec:
           # under the default IfNotPresent. Always re-pull so a fresh push lands.
           imagePullPolicy: Always
           ports:
-            - name: satisfactory
+            - name: game
               containerPort: 7777
               protocol: UDP
+            - name: messaging
+              containerPort: 8888
+              protocol: TCP
             # Pod-internal control API the bot reaches over the cluster network.
             - name: control
               containerPort: 9359

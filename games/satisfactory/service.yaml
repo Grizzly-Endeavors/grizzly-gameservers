@@ -1,25 +1,43 @@
 # On-demand NodePort template. The bot renders this per `/create`: it overrides
 # metadata.name, points the selector at the instance's GameServer, and replaces
-# the nodePort below with a port leased from the 7000-7010 edge-forwarded band
-# (the literal value here is only a placeholder). externalTrafficPolicy: Cluster
-# is required so a node without the pod still forwards. Satisfactory's game
-# protocol is UDP.
+# each nodePort below with a port leased from the 7000-7010 edge-forwarded band
+# (the literal values here are only placeholders). externalTrafficPolicy: Cluster
+# is required so a node without the pod still forwards.
 #
-# Only the game port is exposed — see the note in gameserver.yaml about the
-# Reliable Messaging port (8888) needing the two-port provisioner follow-up.
+# Satisfactory is a two-port advertising game: the game port (UDP) carries
+# gameplay and the Reliable Messaging port (TCP) carries the connection handshake,
+# and the server advertises both to the client. The game port cannot be
+# redirected (external must equal the number the server binds), so the annotations
+# below put the provisioner on the advertise path: each named port gets its own
+# leased band port with nodePort == targetPort (no remap), and the leased number
+# is injected into the game's env (see the port-env annotations) so the server
+# binds and advertises exactly the external ports. The `game` port is the one
+# reported to the friend. See issue #29.
 apiVersion: v1
 kind: Service
 metadata:
   name: satisfactory
   namespace: game-servers
+  annotations:
+    grizzly-gameservers.grizzly-endeavors.com/advertised-ports: "game,messaging"
+    grizzly-gameservers.grizzly-endeavors.com/friend-facing-port: "game"
+    grizzly-gameservers.grizzly-endeavors.com/port-env.game: "SERVERGAMEPORT,SUPERVISOR_GAME_PORT"
+    grizzly-gameservers.grizzly-endeavors.com/port-env.messaging: "SERVERMESSAGINGPORT"
 spec:
   type: NodePort
   externalTrafficPolicy: Cluster
   selector:
     agones.dev/gameserver: satisfactory
   ports:
-    - name: satisfactory
+    # nodePort/port/targetPort are placeholders; the renderer sets all three to
+    # the same leased band port per named port (no remap for an advertising game).
+    - name: game
       port: 7777
       targetPort: 7777
-      nodePort: 7005
+      nodePort: 7000
       protocol: UDP
+    - name: messaging
+      port: 8888
+      targetPort: 8888
+      nodePort: 7001
+      protocol: TCP

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::Service;
 
@@ -46,8 +46,9 @@ pub(crate) fn label_value<'a>(
     labels.and_then(|map| map.get(key)).map(String::as_str)
 }
 
-/// The first `NodePort` a Service exposes, if any. Each managed instance's
-/// Service leases exactly one, so "first" is the instance's node port.
+/// The first `NodePort` a Service exposes, if any. A single-port (remap) instance
+/// leases exactly one, so "first" is its node port; multi-port instances resolve
+/// their friend-facing port through [`super::ports::friend_facing_node_port`].
 pub(crate) fn service_node_port(service: &Service) -> Option<i32> {
     service
         .spec
@@ -56,6 +57,46 @@ pub(crate) fn service_node_port(service: &Service) -> Option<i32> {
         .as_ref()?
         .iter()
         .find_map(|port| port.node_port)
+}
+
+/// The `NodePort` of the Service port named `name`, if any. The join key for
+/// resolving a specific advertised port's leased number off a live Service.
+pub(crate) fn node_port_named(service: &Service, name: &str) -> Option<i32> {
+    service
+        .spec
+        .as_ref()?
+        .ports
+        .as_ref()?
+        .iter()
+        .find(|port| port.name.as_deref() == Some(name))
+        .and_then(|port| port.node_port)
+}
+
+/// Every `NodePort` a Service exposes. A multi-port advertised instance leases
+/// one per port, so occupancy accounting must count them all, not just the first.
+pub(crate) fn all_node_ports(service: &Service) -> Vec<i32> {
+    service
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.ports.as_ref())
+        .map(|ports| ports.iter().filter_map(|port| port.node_port).collect())
+        .unwrap_or_default()
+}
+
+/// The names of the ports a Service exposes, for cross-checking an advertise
+/// plan against the ports actually declared.
+pub(crate) fn service_port_names(service: &Service) -> Vec<&str> {
+    service
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.ports.as_ref())
+        .map(|ports| {
+            ports
+                .iter()
+                .filter_map(|port| port.name.as_deref())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The `GameServer` a `NodePort` Service targets, via its `agones.dev/gameserver`
@@ -68,20 +109,6 @@ pub(crate) fn service_gameserver_target(service: &Service) -> Option<&str> {
         .as_ref()?
         .get(GAMESERVER_SELECTOR_KEY)
         .map(String::as_str)
-}
-
-/// Map each `NodePort` Service's targeted gameserver to its first `NodePort`, so
-/// a gameserver listing can resolve each server's address in one pass.
-pub(crate) fn node_ports_by_gameserver(services: &[Service]) -> HashMap<String, i32> {
-    services
-        .iter()
-        .filter_map(|service| {
-            Some((
-                service_gameserver_target(service)?.to_owned(),
-                service_node_port(service)?,
-            ))
-        })
-        .collect()
 }
 
 #[cfg(test)]
