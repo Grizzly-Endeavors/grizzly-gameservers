@@ -1,0 +1,78 @@
+# Factorio catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/factorio/
+# Dockerfile): it launches the factoriotools headless server as a child, owns the
+# Agones SDK lifecycle (calls /ready once the game's RCON port accepts connections
+# on 27015, then keeps /health pinged), and serves an in-pod control API on 9359
+# that the bot drives for in-place stop/start/restart and Gary's file/RCON tools.
+#
+# portPolicy: None — Agones does not manage a hostPort; reachability is via the
+# NodePort Service in service.yaml (kube-proxy routes to the pod on whatever node
+# it lands, so no node-pinning is needed).
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: factorio
+  namespace: game-servers
+spec:
+  container: factorio
+  ports:
+    - name: factorio
+      portPolicy: None
+      containerPort: 34197
+      protocol: UDP
+  health:
+    # Factorio loads its map before it starts hosting; give it room before Agones
+    # health-gates it (the supervisor only starts pinging /health once the game is
+    # accepting connections).
+    initialDelaySeconds: 180
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: factorio
+    # Pod hardening (runAsNonRoot / readOnlyRootFilesystem / allowPrivilegeEscalation)
+    # is deliberately deferred for the game pod, matching minecraft: the composite
+    # image runs the supervisor as PID 1 wrapping factoriotools' entrypoint, which
+    # bootstraps as root (chowns /factorio, drops to the factorio user) and would
+    # break under a read-only root or forced non-root user without live validation.
+    # This pod is NOT in the bot deploy path; rootless hardening is tracked
+    # alongside game-image CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        - name: factorio
+          # Composite image: grizzly supervisor (PID 1) wrapping factoriotools'
+          # server. CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-factorio:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          # Superseded once CI pins a gate-signed digest (digests are immutable).
+          imagePullPolicy: Always
+          ports:
+            - name: factorio
+              containerPort: 34197
+              protocol: UDP
+            # Pod-internal control API the bot reaches over the cluster network.
+            # Deliberately not exposed via the NodePort Service.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /factorio
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: factorio-data
