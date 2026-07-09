@@ -82,13 +82,18 @@ pub enum RconDialect {
     /// failure even though the command ran — read one packet like Minecraft.
     /// Broadcasts use Palworld's own `Broadcast` verb; no quiesce verbs.
     Palworld,
+    /// Valheim via the `ValheimRcon` `BepInEx` mod: standard Source packet framing but
+    /// a single response packet with no sentinel mirror (like Minecraft/Palworld,
+    /// so the fragmented read would hang). Broadcasts with `say`; the `players`
+    /// command opens with an "Online N" line; no quiesce verbs.
+    Valheim,
 }
 
 impl RconDialect {
     /// Whether a command reply arrives as one packet (read it and stop) rather than
     /// a sentinel-terminated multi-packet Source stream.
     fn single_packet_reply(self) -> bool {
-        matches!(self, Self::Minecraft | Self::Palworld)
+        matches!(self, Self::Minecraft | Self::Palworld | Self::Valheim)
     }
 
     /// Whether this dialect understands Minecraft's `save-*` quiesce verbs.
@@ -110,6 +115,8 @@ impl RconDialect {
             Self::Source => "/players",
             // CSV: a "name,playeruid,steamid" header then one row per player.
             Self::Palworld => "ShowPlayers",
+            // ValheimRcon: the reply's first line is "Online N".
+            Self::Valheim => "players",
         }
     }
 
@@ -120,7 +127,8 @@ impl RconDialect {
     fn parse_player_count(self, reply: &str) -> Option<u32> {
         match self {
             // "There are N of a max of M players online: ..." — N is the count.
-            Self::Minecraft => first_integer(reply),
+            // Valheim's ValheimRcon opens its reply with "Online N" — same shape.
+            Self::Minecraft | Self::Valheim => first_integer(reply),
             // Count the online-suffixed rows of `/players`, matching upstream's
             // `grep -c " (online)$"`. More robust than trusting a header tally.
             Self::Source => Some(count_online_suffixed(reply)),
@@ -171,8 +179,11 @@ impl std::str::FromStr for RconDialect {
             "minecraft" => Ok(Self::Minecraft),
             "source" => Ok(Self::Source),
             "palworld" => Ok(Self::Palworld),
+            "valheim" => Ok(Self::Valheim),
             other => {
-                bail!("unknown rcon dialect {other:?}; expected minecraft, source, or palworld")
+                bail!(
+                    "unknown rcon dialect {other:?}; expected minecraft, source, palworld, or valheim"
+                )
             }
         }
     }
@@ -406,7 +417,8 @@ fn broadcast_command(message: &str, dialect: RconDialect) -> Result<String> {
         // Palworld's Broadcast is known to mangle spaces in some client builds; the
         // verb itself is still correct and the bot's messages are short.
         RconDialect::Palworld => Ok(format!("Broadcast {message}")),
-        RconDialect::Source => Ok(format!("say {message}")),
+        // ValheimRcon and plain Source both broadcast to global chat with `say`.
+        RconDialect::Source | RconDialect::Valheim => Ok(format!("say {message}")),
     }
 }
 
