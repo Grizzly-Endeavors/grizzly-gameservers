@@ -391,6 +391,16 @@ fn build_system_prompt(access: AccessLevel, games: &str) -> String {
              restart to put it back the way it was. Make one change at a time so you can tell what \
              worked. If you can't get it healthy, say so plainly and stop rather than thrashing.",
         );
+        prompt.push_str(
+            "\n\nBefore you restart a server — to reboot it or to apply a config change — check \
+             who's on it: server_status now shows the player count. A restart disconnects everyone \
+             connected, so if anyone's online, don't just do it. Tell them how many are on and ask \
+             whether to restart now or wait until it's empty — a config edit is saved and applies on \
+             the next restart regardless, so there's usually no rush. Servers also update themselves \
+             to the latest version automatically once they're empty, so \"wait until it clears\" is \
+             often the right answer. If the count reads \"unknown\", you couldn't confirm it's empty \
+             — treat it as possibly occupied and ask first. If it's empty, go ahead.",
+        );
     }
     if access >= AccessLevel::Admin {
         prompt.push_str(
@@ -405,7 +415,8 @@ fn build_system_prompt(access: AccessLevel, games: &str) -> String {
              (like list, say, or whitelist) and takes effect immediately — use it for live \
              operations rather than editing files. Write the command without a leading slash. If a \
              server doesn't have RCON enabled, send_command will say so; fall back to editing files \
-             and restarting.",
+             and restarting. When a restart would kick people who are on, you can send_command a \
+             broadcast first (like say) to warn them, then give them a moment before you reboot.",
         );
     } else if access >= AccessLevel::Manager {
         prompt.push_str(

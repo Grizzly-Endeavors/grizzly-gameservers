@@ -165,6 +165,17 @@ impl std::str::FromStr for RconDialect {
     }
 }
 
+/// How [`RconRuntime::run`] handles a not-yet-bound RCON port.
+#[derive(Clone, Copy)]
+enum ConnectMode {
+    /// Retry connection-refused across the just-(re)started window — an
+    /// operator-issued command should land once the console comes up.
+    Retry,
+    /// Single attempt; a refused connection fails immediately. For polls and
+    /// status reads that must not block on a stopped or still-starting console.
+    Once,
+}
+
 /// What the control layer needs to speak RCON to the local game: the loopback
 /// port, the minted password, and the game's console [`RconDialect`].
 pub struct RconRuntime {
@@ -215,8 +226,15 @@ impl RconRuntime {
     /// exceeds [`RCON_TIMEOUT`], so the control layer can surface it as an HTTP
     /// error rather than hang.
     pub async fn run_command(&self, command: &str) -> Result<String> {
+        self.run(command, ConnectMode::Retry).await
+    }
+
+    /// Run a command, choosing whether to wait out the just-(re)started window
+    /// where the RCON port hasn't bound yet ([`ConnectMode::Retry`]) or fail fast
+    /// on a refused connection ([`ConnectMode::Once`]).
+    async fn run(&self, command: &str, connect: ConnectMode) -> Result<String> {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, self.port));
-        let output = timeout(RCON_TIMEOUT, self.exec(address, command))
+        let output = timeout(RCON_TIMEOUT, self.exec(address, command, connect))
             .await
             .with_context(|| {
                 format!("rcon command timed out after {}s", RCON_TIMEOUT.as_secs())
@@ -246,7 +264,9 @@ impl RconRuntime {
     /// masquerade as an empty server and kick a live session.
     pub async fn player_count(&self) -> Option<u32> {
         let command = self.dialect.player_count_command();
-        match self.run_command(command).await {
+        // Fast-fail: a poll or a status check must not hang on a stopped/starting
+        // console the way an operator-issued command deliberately waits it out.
+        match self.run(command, ConnectMode::Once).await {
             Ok(reply) => {
                 let count = self.dialect.parse_player_count(&reply);
                 if count.is_none() {
@@ -300,11 +320,21 @@ impl RconRuntime {
         Ok(())
     }
 
-    async fn exec(&self, address: SocketAddr, command: &str) -> Result<String> {
+    async fn exec(
+        &self,
+        address: SocketAddr,
+        command: &str,
+        connect: ConnectMode,
+    ) -> Result<String> {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());
         }
-        let mut stream = connect_with_retry(address).await?;
+        let mut stream = match connect {
+            ConnectMode::Retry => connect_with_retry(address).await?,
+            ConnectMode::Once => TcpStream::connect(address)
+                .await
+                .context("failed to connect to the game rcon port")?,
+        };
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
         if self.dialect.single_packet_reply() {

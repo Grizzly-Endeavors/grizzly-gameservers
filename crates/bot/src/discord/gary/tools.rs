@@ -31,9 +31,9 @@ use crate::agones::{
     ScopeVerdict, ServerScope, ShutdownOutcome, StartBegin, SupervisorOutcome, begin_start,
     build_instance_name, destroy_instance, instance_runtime_state, list_active_servers,
     now_entropy, provision_instance, shutdown_instance, supervisor_announce, supervisor_edit_file,
-    supervisor_list_files, supervisor_read_file, supervisor_read_logs, supervisor_restart,
-    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_stop,
-    supervisor_write_file, verify_scope, wait_for_ready,
+    supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,
+    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
+    supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
 };
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
@@ -224,7 +224,7 @@ fn manager_tools() -> Vec<ToolDef> {
         ),
         ToolDef::function(
             RESTART_SERVER,
-            "Restart a running server in place — a quick reboot that keeps its address.",
+            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. It disconnects everyone currently on, so check server_status for the player count first: if anyone's online, warn them and/or ask before rebooting rather than kicking a live session. Config edits also take effect on the next restart, so the same check applies when you restart to apply a change.",
             params_schema::<NameParams>(),
         ),
         ToolDef::function(
@@ -541,7 +541,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
 }
 
 async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
-    match list_active_servers(
+    let summaries = match list_active_servers(
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
         &ctx.data.domain,
@@ -549,18 +549,44 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(summaries) => summaries
-            .iter()
-            .find(|summary| summary.name == server)
-            .map_or_else(
-                || no_such(server),
-                |summary| format_summary(GarySurface::Discord, summary),
-            ),
+        Ok(summaries) => summaries,
         Err(err) => {
             error!(error = ?err, "agent: server_status failed");
-            cluster_error()
+            return cluster_error();
         }
-    }
+    };
+    let Some(summary) = summaries.iter().find(|summary| summary.name == server) else {
+        return no_such(server);
+    };
+    let mut out = format_summary(GarySurface::Discord, summary);
+    out.push_str(&occupancy_line(ctx, server).await);
+    out
+}
+
+/// A "Players online" line appended to `server_status` so Gary always sees
+/// occupancy before deciding whether a restart would kick anyone. The count is a
+/// live RCON read; games with no RCON (or a console that isn't up yet) report
+/// `unknown`, which means "can't confirm it's empty" — never treat it as empty.
+async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let reason = match supervisor_occupancy(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await
+    {
+        Ok(FsOutcome::Ok(Some(count))) => return format!("\nPlayers online: {count}"),
+        Ok(FsOutcome::Ok(None)) => "this game doesn't report a live player count",
+        Ok(FsOutcome::PodNotReady) => "the server isn't fully up yet",
+        Ok(_) => "the console didn't answer",
+        Err(err) => {
+            error!(error = ?err, %server, "agent: occupancy lookup failed");
+            "the count couldn't be read"
+        }
+    };
+    format!("\nPlayers online: unknown ({reason})")
 }
 
 async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> String {
