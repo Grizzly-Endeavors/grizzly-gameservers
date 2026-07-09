@@ -56,6 +56,14 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # Gary's file tools (browse_files/read_file/write_file/restore_file) scope to
 # the right place. Defaults to /data if unset.
 # ENV SUPERVISOR_DATA_DIR=/data
+# REPLACE (optional): how the supervisor decides the game is Ready (which gates
+# the one-shot Agones /ready call). By default it waits for a TCP connect on
+# SUPERVISOR_GAME_PORT — correct for games that listen on TCP (Terraria) or whose
+# RCON/query port opens once the game is up (point SUPERVISOR_GAME_PORT at it).
+# A UDP-only game that never opens *any* TCP port (Valheim) would never go Ready
+# that way, so instead set a substring that appears in the game's "server
+# started" log line; readiness fires on the first captured line containing it.
+# ENV SUPERVISOR_READY_LOG_PATTERN=REPLACE_READY_MARKER
 # REPLACE (optional): enable only if the game speaks RCON (or an equivalent
 # console protocol the supervisor supports) and Gary's send_command tool should
 # be able to issue console commands. See games/minecraft/Dockerfile for a

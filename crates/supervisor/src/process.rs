@@ -12,6 +12,7 @@ use tracing::warn;
 use crate::config::SupervisorConfig;
 use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
+use crate::readiness::LogReadyWatch;
 
 /// Launch the supervised game-server process. Inherits the environment so the
 /// itzg image reads its `EULA`/`MEMORY`/etc. knobs, and `kill_on_drop` so a
@@ -49,16 +50,34 @@ pub fn spawn(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child
 /// non-blocking (a lagging or absent watcher never stalls log capture), so a
 /// backed-up watcher drops chat lines rather than applying backpressure to the
 /// game's output.
-pub fn capture_output(
+///
+/// When `ready` is set (a game using log-pattern readiness instead of the TCP
+/// connect probe), the pump signals Agones `Ready` the first time a line matches
+/// the marker. Both pumps share the watch; the first to match wins and the signal
+/// is idempotent, so the marker landing on stderr rather than stdout is fine.
+pub(crate) fn capture_output(
     child: &mut Child,
     logs: &Arc<LogBuffer>,
     chat_tx: Option<&mpsc::Sender<String>>,
+    ready: Option<&LogReadyWatch>,
 ) {
     if let Some(stdout) = child.stdout.take() {
-        spawn_line_pump(stdout, Arc::clone(logs), Stream::Stdout, chat_tx.cloned());
+        spawn_line_pump(
+            stdout,
+            Arc::clone(logs),
+            Stream::Stdout,
+            chat_tx.cloned(),
+            ready.cloned(),
+        );
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_line_pump(stderr, Arc::clone(logs), Stream::Stderr, chat_tx.cloned());
+        spawn_line_pump(
+            stderr,
+            Arc::clone(logs),
+            Stream::Stderr,
+            chat_tx.cloned(),
+            ready.cloned(),
+        );
     }
 }
 
@@ -75,10 +94,14 @@ fn spawn_line_pump<R>(
     logs: Arc<LogBuffer>,
     stream: Stream,
     chat_tx: Option<mpsc::Sender<String>>,
+    ready: Option<LogReadyWatch>,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
+        // Latch so the readiness marker is acted on once per pump, not re-checked
+        // for every line after the game is already up.
+        let mut ready_signalled = false;
         let mut lines = BufReader::new(reader).lines();
         loop {
             match lines.next_line().await {
@@ -86,6 +109,16 @@ fn spawn_line_pump<R>(
                     match stream {
                         Stream::Stdout => println!("{line}"),
                         Stream::Stderr => eprintln!("{line}"),
+                    }
+                    if let Some(watch) = ready.as_ref()
+                        && !ready_signalled
+                        && watch.matches(&line)
+                    {
+                        ready_signalled = true;
+                        if watch.try_signal().is_err() {
+                            // Already latched or the runner is gone; readiness is
+                            // idempotent, so a dropped signal is benign.
+                        }
                     }
                     if let Some(tx) = chat_tx.as_ref()
                         && tx.try_send(line.clone()).is_err()

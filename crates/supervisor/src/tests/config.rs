@@ -44,6 +44,21 @@ fn applies_defaults_with_empty_environment() {
     );
     assert!(!config.start_paused, "starts unpaused by default");
     assert_eq!(config.chat_watch, None, "chat watching off by default");
+    assert_eq!(
+        config.ready_log_pattern, None,
+        "TCP connect probe by default (no log-pattern readiness)"
+    );
+}
+
+#[test]
+fn parses_ready_log_pattern_when_set() {
+    let env = lookup_from(&[("SUPERVISOR_READY_LOG_PATTERN", "Game server connected")]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.ready_log_pattern.as_deref(),
+        Some("Game server connected"),
+        "the readiness marker is read verbatim from the environment"
+    );
 }
 
 #[test]
