@@ -35,7 +35,11 @@ push_through_registry_forward() {
     pf_log="$(mktemp)"
     kubectl port-forward -n registry svc/registry 5000:5000 >"$pf_log" 2>&1 &
     local pf=$!
-    trap 'kill "$pf" 2>/dev/null || true; rm -f "$pf_log"' EXIT
+    # Bake pf/pf_log into the trap now (double quotes) rather than expanding them
+    # at EXIT: both are function-local, so under `set -u` the trap would hit them
+    # out of scope once this function has returned and abort with "unbound
+    # variable" — turning a successful push into a non-zero exit.
+    trap "kill ${pf} 2>/dev/null || true; rm -f ${pf_log@Q}" EXIT
 
     local ready=""
     for _ in $(seq 1 20); do
