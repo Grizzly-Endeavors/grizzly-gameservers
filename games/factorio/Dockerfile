@@ -64,8 +64,11 @@ ENV SUPERVISOR_DATA_DIR=/factorio
 # supervisor mints the password at pod startup and injects it as RCON_PASSWORD;
 # our wrapper writes it to /factorio/config/rconpw, which the upstream entrypoint
 # passes to `factorio --rcon-password`. The port stays pod-internal — never added
-# to a NodePort Service.
+# to a NodePort Service. Factorio is a correct Source RCON implementation, so the
+# default `source` dialect (fragmented sentinel-terminated replies) fits; it's set
+# explicitly here as documentation.
 ENV SUPERVISOR_RCON_PORT=27015
+ENV SUPERVISOR_RCON_DIALECT=source
 # Readiness: Factorio opens its RCON TCP port only once the server is hosting, so
 # the supervisor's default TCP connect probe on this port is a clean "ready"
 # signal (the game port itself is UDP and can't be TCP-probed).

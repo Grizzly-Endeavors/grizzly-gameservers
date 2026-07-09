@@ -1,8 +1,10 @@
 //! RCON client for the in-pod `POST /command` route: connects to the game's
-//! localhost RCON port and runs a single console command per call, in the dialect
-//! the per-game config selects. Minecraft's RCON returns a single response packet
-//! (`minecraft_quirks`); Source-engine servers may fragment a large reply across
-//! packets, terminated here with the Valve mirror-packet sentinel.
+//! localhost RCON port and runs a single console command per call, in the
+//! [`RconDialect`] the per-game config selects. Minecraft and Palworld return a
+//! single response packet; a correct Source-engine server (Factorio) may fragment
+//! a large reply across packets, terminated here with the Valve mirror-packet
+//! sentinel. Palworld advertises Source but doesn't mirror the sentinel — so it
+//! reads as single-packet, not fragmented (see [`RconDialect::Palworld`]).
 //!
 //! The password is minted once at pod startup ([`RconRuntime::new`]) from the
 //! system CSPRNG and injected into the game child's environment by the runner, so
@@ -61,26 +63,75 @@ const MAX_PACKET_LEN: usize = 64 * 1024;
 /// Source caps a request packet near 4 KiB; keep command bodies well under it.
 const MAX_COMMAND_LEN: usize = 4000;
 
+/// Which console dialect a game speaks over RCON. Bundles two traits that a game
+/// fixes together: how a command reply is framed on the wire, and which command
+/// vocabulary the game understands. Selected per game via `SUPERVISOR_RCON_DIALECT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RconDialect {
+    /// itzg Minecraft: a single response packet, `tellraw` broadcasts, and
+    /// `save-off`/`save-all`/`save-on` quiescing for consistent snapshots.
+    Minecraft,
+    /// A correct Source RCON implementation (Factorio): a large reply may fragment
+    /// across packets, ended by mirroring an empty sentinel; `say` broadcasts; no
+    /// snapshot-quiesce verbs.
+    Source,
+    /// Palworld's partial Source implementation: it replies in a single packet and
+    /// does NOT mirror the sentinel (and drops the socket after replying), so the
+    /// Source fragmented read would hang until timeout/EOF and surface a false
+    /// failure even though the command ran — read one packet like Minecraft.
+    /// Broadcasts use Palworld's own `Broadcast` verb; no quiesce verbs.
+    Palworld,
+}
+
+impl RconDialect {
+    /// Whether a command reply arrives as one packet (read it and stop) rather than
+    /// a sentinel-terminated multi-packet Source stream.
+    fn single_packet_reply(self) -> bool {
+        matches!(self, Self::Minecraft | Self::Palworld)
+    }
+
+    /// Whether this dialect understands Minecraft's `save-*` quiesce verbs.
+    fn supports_save_quiesce(self) -> bool {
+        matches!(self, Self::Minecraft)
+    }
+}
+
+impl std::str::FromStr for RconDialect {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "minecraft" => Ok(Self::Minecraft),
+            "source" => Ok(Self::Source),
+            "palworld" => Ok(Self::Palworld),
+            other => {
+                bail!("unknown rcon dialect {other:?}; expected minecraft, source, or palworld")
+            }
+        }
+    }
+}
+
 /// What the control layer needs to speak RCON to the local game: the loopback
-/// port, the minted password, and whether to run in Minecraft-quirks mode.
+/// port, the minted password, and the game's console [`RconDialect`].
 pub struct RconRuntime {
     port: u16,
     password: String,
-    minecraft_quirks: bool,
+    dialect: RconDialect,
 }
 
 impl RconRuntime {
-    /// Build a runtime for `port`, minting a fresh random password. When
-    /// `max_password_len` is `Some(n)`, the minted password is truncated to `n`
-    /// characters — for games that cap their RCON/admin password (Palworld's
-    /// 30-char `ADMIN_PASSWORD`). The password is lowercase hex (ASCII), so
-    /// truncating at any character index stays on a valid boundary, and the same
-    /// truncated value is both injected into the game and used to authenticate.
+    /// Build a runtime for `port` speaking `dialect`, minting a fresh random
+    /// password. When `max_password_len` is `Some(n)`, the minted password is
+    /// truncated to `n` characters — for games that cap their RCON/admin password
+    /// (Palworld's 30-char `ADMIN_PASSWORD`). The password is lowercase hex
+    /// (ASCII), so truncating at any character index stays on a valid boundary, and
+    /// the same truncated value is both injected into the game and used to
+    /// authenticate.
     ///
     /// # Errors
     ///
     /// Returns an error if the system random source can't be read.
-    pub fn new(port: u16, minecraft_quirks: bool, max_password_len: Option<usize>) -> Result<Self> {
+    pub fn new(port: u16, dialect: RconDialect, max_password_len: Option<usize>) -> Result<Self> {
         let mut password = generate_password()?;
         if let Some(max) = max_password_len
             && password.len() > max
@@ -90,7 +141,7 @@ impl RconRuntime {
         Ok(Self {
             port,
             password,
-            minecraft_quirks,
+            dialect,
         })
     }
 
@@ -127,7 +178,7 @@ impl RconRuntime {
     /// Returns an error if the console can't be reached or the command fails, same
     /// as [`Self::run_command`].
     pub async fn broadcast(&self, message: &str) -> Result<String> {
-        self.run_command(&broadcast_command(message, self.minecraft_quirks)?)
+        self.run_command(&broadcast_command(message, self.dialect)?)
             .await
     }
 
@@ -141,7 +192,7 @@ impl RconRuntime {
     ///
     /// Returns an error if a save command can't be delivered to the console.
     pub async fn quiesce_for_snapshot(&self) -> Result<()> {
-        if !self.minecraft_quirks {
+        if !self.dialect.supports_save_quiesce() {
             return Ok(());
         }
         self.run_command("save-off").await?;
@@ -157,7 +208,7 @@ impl RconRuntime {
     ///
     /// Returns an error if the `save-on` command can't be delivered.
     pub async fn resume_saves(&self) -> Result<()> {
-        if !self.minecraft_quirks {
+        if !self.dialect.supports_save_quiesce() {
             return Ok(());
         }
         self.run_command("save-on").await?;
@@ -171,8 +222,11 @@ impl RconRuntime {
         let mut stream = connect_with_retry(address).await?;
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
-        if self.minecraft_quirks {
-            // Minecraft replies with a single response packet; read just that.
+        if self.dialect.single_packet_reply() {
+            // Minecraft and Palworld reply with a single response packet; read just
+            // that. Palworld additionally never mirrors the sentinel, so attempting
+            // the fragmented read would hang until timeout/EOF on a command that
+            // already ran — the false "communication hiccup" this avoids.
             let packet = read_packet(&mut stream)
                 .await
                 .context("failed to read rcon command response")?;
@@ -189,7 +243,7 @@ impl fmt::Debug for RconRuntime {
         f.debug_struct("RconRuntime")
             .field("port", &self.port)
             .field("password", &"<redacted>")
-            .field("minecraft_quirks", &self.minecraft_quirks)
+            .field("dialect", &self.dialect)
             .finish()
     }
 }
@@ -203,24 +257,28 @@ struct Packet {
     body: String,
 }
 
-/// Build the console command that broadcasts `message` to all players. Minecraft
-/// uses `tellraw @a` with a JSON text component (built with `serde_json` so the
-/// message is escaped, never hand-quoted); other RCON games fall back to a
-/// Source-style `say`.
+/// Build the console command that broadcasts `message` to all players, in the
+/// game's dialect. Minecraft uses `tellraw @a` with a JSON text component (built
+/// with `serde_json` so the message is escaped, never hand-quoted); Palworld uses
+/// its own `Broadcast` verb; a plain Source game falls back to `say`.
 ///
 /// # Errors
 ///
-/// Returns an error only if the message can't be encoded as JSON.
-fn broadcast_command(message: &str, minecraft: bool) -> Result<String> {
-    if minecraft {
-        let component = serde_json::to_string(&serde_json::json!({
-            "text": message,
-            "color": "yellow",
-        }))
-        .context("failed to encode the tellraw message")?;
-        Ok(format!("tellraw @a {component}"))
-    } else {
-        Ok(format!("say {message}"))
+/// Returns an error only if the Minecraft message can't be encoded as JSON.
+fn broadcast_command(message: &str, dialect: RconDialect) -> Result<String> {
+    match dialect {
+        RconDialect::Minecraft => {
+            let component = serde_json::to_string(&serde_json::json!({
+                "text": message,
+                "color": "yellow",
+            }))
+            .context("failed to encode the tellraw message")?;
+            Ok(format!("tellraw @a {component}"))
+        }
+        // Palworld's Broadcast is known to mangle spaces in some client builds; the
+        // verb itself is still correct and the bot's messages are short.
+        RconDialect::Palworld => Ok(format!("Broadcast {message}")),
+        RconDialect::Source => Ok(format!("say {message}")),
     }
 }
 

@@ -71,12 +71,15 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # REPLACE (optional): enable only if the game speaks RCON (or an equivalent
 # console protocol the supervisor supports) and Gary's send_command tool should
 # be able to issue console commands. See games/minecraft/Dockerfile for a
-# worked example (ephemeral password minting, loopback-only port,
-# SUPERVISOR_RCON_MINECRAFT dialect flag). SUPERVISOR_RCON_PASSWORD_ENV picks the
-# child env var the minted password is injected under (default RCON_PASSWORD;
-# Palworld uses ADMIN_PASSWORD). SUPERVISOR_RCON_PASSWORD_MAX_LEN caps the minted
-# password for games that limit it (Palworld's admin password maxes at 30 chars).
+# worked example (ephemeral password minting, loopback-only port). Pick the RCON
+# dialect with SUPERVISOR_RCON_DIALECT: `source` (default; correct Source servers
+# like Factorio), `minecraft` (itzg), or `palworld` (partial Source impl that
+# needs single-packet reads). SUPERVISOR_RCON_PASSWORD_ENV picks the child env var
+# the minted password is injected under (default RCON_PASSWORD; Palworld uses
+# ADMIN_PASSWORD). SUPERVISOR_RCON_PASSWORD_MAX_LEN caps the minted password for
+# games that limit it (Palworld's admin password maxes at 30 chars).
 # ENV SUPERVISOR_RCON_PORT=REPLACE_PORT
+# ENV SUPERVISOR_RCON_DIALECT=source
 # REPLACE (optional): enable the in-game chat → Gary reverse loop. Set the chat
 # format for this game (the supervisor's chat-line dialect) and the trigger a
 # player types; the endpoint URL and shared token are wired in gameserver.yaml,

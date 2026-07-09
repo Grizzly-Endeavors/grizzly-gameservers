@@ -61,12 +61,13 @@ ENV SUPERVISOR_CHILD_CMD=/start
 # itzg binds RCON on loopback; the supervisor mints the password at pod startup
 # and injects it (RCON_PASSWORD) into itzg's environment, so no secret is baked
 # into the image or any Kubernetes object. The port stays pod-internal — it is
-# never added to a NodePort Service — and SUPERVISOR_RCON_MINECRAFT selects the
-# Minecraft RCON dialect for the supervisor's client.
+# never added to a NodePort Service — and SUPERVISOR_RCON_DIALECT=minecraft selects
+# the Minecraft RCON dialect (single-packet replies, tellraw broadcasts, save-*
+# quiesce verbs) for the supervisor's client.
 ENV ENABLE_RCON=true
 ENV RCON_PORT=25575
 ENV SUPERVISOR_RCON_PORT=25575
-ENV SUPERVISOR_RCON_MINECRAFT=true
+ENV SUPERVISOR_RCON_DIALECT=minecraft
 # Suppress Minecraft's built-in [Rcon: …] op-broadcast: the bot announces Gary's
 # console commands itself as an attributed "Gary: …" tellraw, so the raw RCON echo
 # would just be duplicate, less-friendly noise.
