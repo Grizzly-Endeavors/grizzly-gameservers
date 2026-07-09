@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use grizzly_control_api::{
-    ControlCommand, PROCESS_LABEL_RUNNING, PROCESS_LABEL_STOPPED, ResultKind,
+    ControlCommand, PROCESS_LABEL_RUNNING, PROCESS_LABEL_STOPPED, ProcessPhase, ResultKind,
 };
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
@@ -12,6 +12,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::autoupdate::{AutoUpdater, RelaunchReason};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::logs::LogBuffer;
@@ -33,6 +34,11 @@ const CHAT_CHANNEL_DEPTH: usize = 128;
 /// Timeout for the trigger POST to the bot's agent endpoint. The reply returns
 /// asynchronously over RCON, so this only bounds the handoff, not Gary's turn.
 const CHAT_POST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Broadcast to players before a backstop auto-update relaunch (the rare case
+/// where a server has stayed busy long enough that its build is past the hard age
+/// cap). Friend-facing: plain language, no version numbers or internals.
+const AUTO_UPDATE_WARNING: &str =
+    "Heads up — restarting in a moment to apply a game update. You'll be able to rejoin shortly.";
 
 /// Boot the control server and health heartbeat, then run the supervision loop
 /// until a shutdown signal.
@@ -145,6 +151,9 @@ async fn supervise(
     rcon: Option<Arc<RconRuntime>>,
     chat_tx: Option<mpsc::Sender<String>>,
 ) -> Result<()> {
+    // A cloneable handle for the occupancy poll's spawned queries; the borrowed
+    // `rcon` below still drives the control paths.
+    let rcon_poll = rcon.clone();
     let rcon = rcon.as_deref();
     let mut state = SupervisorState::new();
     let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
@@ -182,6 +191,15 @@ async fn supervise(
         chat_tx: chat_tx.as_ref(),
     };
 
+    // Update-on-empty: poll occupancy on a cadence and, when the game has been
+    // idle long enough on an old-enough build, bounce it to re-pull the latest.
+    // Only meaningful when the game speaks RCON (needed for the player count).
+    let auto_update_active = cfg.auto_update_enabled && rcon_poll.is_some();
+    let mut auto_updater = AutoUpdater::new(cfg.auto_update_policy);
+    let (occupancy_tx, mut occupancy_rx) = mpsc::channel::<Option<u32>>(1);
+    let mut occupancy_ticker = tokio::time::interval(cfg.auto_update_poll_interval);
+    occupancy_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             Some(request) = control_rx.recv() => {
@@ -192,6 +210,12 @@ async fn supervise(
             }
             Some(()) = ready_rx.recv() => {
                 settle_ready(&sdk, &mut state).await;
+            }
+            _ = occupancy_ticker.tick(), if auto_update_active => {
+                spawn_occupancy_poll(&state, rcon_poll.as_ref(), &occupancy_tx);
+            }
+            Some(players) = occupancy_rx.recv() => {
+                maybe_auto_update(&deps, &mut state, &mut child, &mut auto_updater, players).await;
             }
             _ = sigterm.recv() => {
                 info!("received SIGTERM; draining");
@@ -452,4 +476,73 @@ async fn handle_unexpected_exit(
             publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
         }
     }
+}
+
+/// Fire off a one-shot occupancy query for the auto-updater, off the supervision
+/// loop so a slow or wedged RCON console can't stall it. Only polls while the
+/// game is actually up and accepting connections — a stopped or still-starting
+/// console would just report `None` (unknown) anyway. The result flows back on
+/// `occupancy_tx` for the loop's `maybe_auto_update` arm.
+fn spawn_occupancy_poll(
+    state: &SupervisorState,
+    rcon: Option<&Arc<RconRuntime>>,
+    occupancy_tx: &mpsc::Sender<Option<u32>>,
+) {
+    if state.status(Instant::now()).process != ProcessPhase::Running {
+        return;
+    }
+    let Some(rcon) = rcon.cloned() else {
+        return;
+    };
+    let tx = occupancy_tx.clone();
+    tokio::spawn(async move {
+        let players = rcon.player_count().await;
+        if tx.send(players).await.is_err() {
+            debug!("occupancy reading dropped; runner is gone");
+        }
+    });
+}
+
+/// Fold one occupancy reading into the auto-updater and, when it decides a build
+/// is due for a refresh, bounce the game in place — the relaunch re-runs the
+/// entrypoint, which re-pulls the latest server build. An idle bounce is silent
+/// (nobody's connected); the rare backstop bounce warns players over RCON first.
+async fn maybe_auto_update(
+    deps: &RunDeps<'_>,
+    state: &mut SupervisorState,
+    child: &mut Option<Child>,
+    updater: &mut AutoUpdater,
+    players: Option<u32>,
+) {
+    let now = Instant::now();
+    let version_age = Duration::from_secs(state.status(now).uptime_seconds);
+    let Some(reason) = updater.observe(players, version_age, now) else {
+        return;
+    };
+    match reason {
+        RelaunchReason::Idle => info!(
+            version_age_secs = version_age.as_secs(),
+            "auto-updating idle server to the latest build"
+        ),
+        RelaunchReason::Backstop => {
+            warn!(
+                version_age_secs = version_age.as_secs(),
+                players = ?players,
+                "auto-updating busy server: build past the max-age cap, warning players first"
+            );
+            if let Some(rcon) = deps.rcon
+                && let Err(err) = rcon.broadcast(AUTO_UPDATE_WARNING).await
+            {
+                warn!(error = ?err, "failed to warn players before the auto-update relaunch");
+            }
+        }
+    }
+    state.on_restart_requested();
+    if let Some(mut running) = child.take()
+        && let Err(err) = process::graceful_stop(&mut running, deps.cfg.graceful_timeout).await
+    {
+        error!(error = ?err, "failed to stop child during auto-update relaunch");
+    }
+    relaunch(deps, state, child, "auto-update").await;
+    updater.note_relaunched();
 }

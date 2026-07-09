@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 
+use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
 use crate::rcon::RconDialect;
 
@@ -44,6 +45,15 @@ const DEFAULT_CRASH_THRESHOLD: u32 = 5;
 /// Child env var the minted RCON password is injected under. Matches itzg's
 /// `RCON_PASSWORD`; a Source game overrides it to whatever its entrypoint reads.
 const DEFAULT_RCON_PASSWORD_ENV: &str = "RCON_PASSWORD";
+/// How often the update-on-empty loop polls occupancy. Well under the empty-grace
+/// window so a short idle streak is still sampled several times before it acts.
+const DEFAULT_AUTO_UPDATE_POLL_SECS: u64 = 120;
+/// How long a server must stay empty before an idle update-relaunch fires.
+const DEFAULT_AUTO_UPDATE_EMPTY_GRACE_SECS: u64 = 300;
+/// Minimum build age before an idle server is worth bouncing to re-pull (24h).
+const DEFAULT_AUTO_UPDATE_INTERVAL_SECS: u64 = 86_400;
+/// Hard cap on build age: past this, relaunch even while occupied (3 days).
+const DEFAULT_AUTO_UPDATE_MAX_UPTIME_SECS: u64 = 259_200;
 
 /// Runtime configuration for the supervisor, sourced from the process
 /// environment. Every knob has a default so the container can run with no env.
@@ -112,6 +122,15 @@ pub struct SupervisorConfig {
     /// it (no `SUPERVISOR_CHAT_FORMAT`). Its presence spawns the watcher that
     /// forwards `@Gary` triggers to the bot.
     pub chat_watch: Option<ChatWatchConfig>,
+    /// Whether the update-on-empty auto-updater runs. On by default; it only has
+    /// any effect when the game enables RCON (the loop needs a player count), so a
+    /// no-RCON game is reactive-only regardless. Set `SUPERVISOR_AUTO_UPDATE` to a
+    /// falsy value to pin a server to its current build.
+    pub auto_update_enabled: bool,
+    /// How often the auto-updater polls occupancy.
+    pub auto_update_poll_interval: Duration,
+    /// Thresholds the auto-updater applies to decide when to relaunch for an update.
+    pub auto_update_policy: AutoUpdatePolicy,
 }
 
 /// Configuration for the in-game chat watcher, present only when the game enables
@@ -195,6 +214,25 @@ impl SupervisorConfig {
         let palworld_ini_path = optional(lookup, "SUPERVISOR_PALWORLD_INI").map(PathBuf::from);
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
+        let auto_update_enabled = optional_flag_or(lookup, "SUPERVISOR_AUTO_UPDATE", true);
+        let auto_update_poll_interval = Duration::from_secs(
+            optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_POLL_SECS")?
+                .unwrap_or(DEFAULT_AUTO_UPDATE_POLL_SECS),
+        );
+        let auto_update_policy = AutoUpdatePolicy {
+            empty_grace: Duration::from_secs(
+                optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_EMPTY_GRACE_SECS")?
+                    .unwrap_or(DEFAULT_AUTO_UPDATE_EMPTY_GRACE_SECS),
+            ),
+            update_interval: Duration::from_secs(
+                optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_INTERVAL_SECS")?
+                    .unwrap_or(DEFAULT_AUTO_UPDATE_INTERVAL_SECS),
+            ),
+            max_uptime: Duration::from_secs(
+                optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_MAX_UPTIME_SECS")?
+                    .unwrap_or(DEFAULT_AUTO_UPDATE_MAX_UPTIME_SECS),
+            ),
+        };
 
         Ok(Self {
             child_command,
@@ -215,6 +253,9 @@ impl SupervisorConfig {
             palworld_ini_path,
             start_paused,
             chat_watch,
+            auto_update_enabled,
+            auto_update_poll_interval,
+            auto_update_policy,
         })
     }
 }
@@ -264,6 +305,20 @@ fn optional_flag(lookup: EnvLookup, key: &str) -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
+}
+
+/// Interpret an optional flag variable as a boolean, falling back to `default`
+/// when it's absent (so a flag that ships enabled can still be turned off). A set
+/// value is read with the same truthy spellings as [`optional_flag`]; anything
+/// else reads as `false`.
+fn optional_flag_or(lookup: EnvLookup, key: &str, default: bool) -> bool {
+    match optional(lookup, key) {
+        Some(raw) => matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => default,
+    }
 }
 
 /// Parse an optional variable into any `FromStr` numeric type, surfacing both
