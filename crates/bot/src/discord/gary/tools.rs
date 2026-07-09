@@ -17,6 +17,7 @@ use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
+use super::super::auth::AccessLevel;
 use super::super::render::{
     archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
     human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
@@ -61,14 +62,18 @@ const ARCHIVE_SERVER: &str = "archive_server";
 const RESTORE_SERVER: &str = "restore_server";
 const RECOVER_SERVER: &str = "recover_server";
 
-/// Returned to the model when a non-admin caller reaches a mutating tool. The
-/// model is only offered mutating tools for admins, so this is defense in depth.
-const NON_ADMIN_REFUSAL: &str =
-    "that action needs an admin — I can only look things up for you here.";
+/// Returned to the model when a caller reaches an admin-only tool without admin
+/// rights. The model is only offered these tools to admins, so this is defense
+/// in depth.
+const NON_ADMIN_REFUSAL: &str = "that action needs an admin — I can only look things up or run day-to-day changes for you here.";
+
+/// Returned to the model when a read-only caller reaches a manager-tier tool.
+const NON_MANAGER_REFUSAL: &str =
+    "that action needs a manager or an admin — I can only look things up for you here.";
 
 /// Everything a tool executor needs: the shared bot state plus the Discord
-/// handles the destructive-confirmation flow uses, and whether the caller is an
-/// admin (so mutating tools can refuse at execution time as defense in depth).
+/// handles the destructive-confirmation flow uses, and the caller's access tier
+/// (so mutating tools can refuse at execution time as defense in depth).
 pub(crate) struct ToolCtx<'a> {
     pub(crate) data: &'a Data,
     pub(crate) serenity: &'a serenity::Context,
@@ -78,7 +83,7 @@ pub(crate) struct ToolCtx<'a> {
     /// left unlabeled (operator-only), matching the pre-scoping convention.
     pub(crate) guild: Option<u64>,
     pub(crate) author_id: serenity::UserId,
-    pub(crate) is_admin: bool,
+    pub(crate) access: AccessLevel,
     /// The servers this caller may see and act on — every tool that targets an
     /// existing server by name is gated on it in [`dispatch`], and the listing
     /// tools query within it.
@@ -164,8 +169,9 @@ struct CommandParams {
 }
 
 /// The tools advertised to the model for a given caller. Everyone gets the
-/// read-only pair; admins additionally get the mutating set.
-pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
+/// read-only set; managers additionally get the lifecycle and file-tuning tools;
+/// admins additionally get the destructive tools and console commands.
+pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
     let mut tools = vec![
         ToolDef::function(
             LIST_SERVERS,
@@ -188,14 +194,18 @@ pub(crate) fn available_tools(is_admin: bool) -> Vec<ToolDef> {
             empty_object_schema(),
         ),
     ];
-    if is_admin {
-        tools.extend(admin_tools());
+    if access >= AccessLevel::Manager {
+        tools.extend(manager_tools());
+    }
+    if access >= AccessLevel::Admin {
+        tools.extend(admin_only_tools());
     }
     tools
 }
 
-/// The mutating tools offered only to admin callers.
-fn admin_tools() -> Vec<ToolDef> {
+/// The lifecycle and file-tuning tools offered to managers and admins — the
+/// day-to-day operations, none of which permanently destroy a world.
+fn manager_tools() -> Vec<ToolDef> {
     vec![
         ToolDef::function(
             CREATE_SERVER,
@@ -220,15 +230,6 @@ fn admin_tools() -> Vec<ToolDef> {
         ToolDef::function(
             SHUTDOWN_SERVER,
             "Fully shut a server down to free its slot, keeping the world so it can start later.",
-            params_schema::<NameParams>(),
-        ),
-        // "do not confirm" is deliberate and unlike archive/restore's phrasing:
-        // the tool itself posts the Discord Danger/Cancel prompt, so telling Gary
-        // not to seek his own confirmation avoids a redundant chat loop ("are you
-        // sure?" / "yes" / "are you really sure?") stacked in front of that prompt.
-        ToolDef::function(
-            DESTROY_SERVER,
-            "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
             params_schema::<NameParams>(),
         ),
         ToolDef::function(
@@ -262,11 +263,6 @@ fn admin_tools() -> Vec<ToolDef> {
             params_schema::<PathParams>(),
         ),
         ToolDef::function(
-            SEND_COMMAND,
-            "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
-            params_schema::<CommandParams>(),
-        ),
-        ToolDef::function(
             WAIT_FOR_SERVER,
             "Wait for a starting or restarting server to actually come back up and start accepting players, up to a few minutes. Use this after start_server, restart_server, or a config change plus restart instead of repeatedly checking status or logs — it blocks until the server is ready, has crashed, or the wait runs out, then tells you which.",
             params_schema::<NameParams>(),
@@ -274,6 +270,22 @@ fn admin_tools() -> Vec<ToolDef> {
         ToolDef::function(
             BACKUP_SERVER,
             "Save a durable backup of a running server's world right now. Non-destructive — the server keeps running. Use before a risky change so restore_server can roll it back.",
+            params_schema::<NameParams>(),
+        ),
+    ]
+}
+
+/// The destructive and heavy-handed tools offered only to admin callers:
+/// permanent deletion, world overwrites, archival, and live console commands.
+fn admin_only_tools() -> Vec<ToolDef> {
+    vec![
+        // "do not confirm" is deliberate and unlike archive/restore's phrasing:
+        // the tool itself posts the Discord Danger/Cancel prompt, so telling Gary
+        // not to seek his own confirmation avoids a redundant chat loop ("are you
+        // sure?" / "yes" / "are you really sure?") stacked in front of that prompt.
+        ToolDef::function(
+            DESTROY_SERVER,
+            "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
             params_schema::<NameParams>(),
         ),
         ToolDef::function(
@@ -290,6 +302,11 @@ fn admin_tools() -> Vec<ToolDef> {
             RECOVER_SERVER,
             "Bring an archived server back: recreate it and restore its world from the archive. Use the name shown by list_archives. Constructive, so it runs without a confirmation.",
             params_schema::<NameParams>(),
+        ),
+        ToolDef::function(
+            SEND_COMMAND,
+            "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
+            params_schema::<CommandParams>(),
         ),
     ]
 }
@@ -326,55 +343,56 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         LIST_ARCHIVES => exec_list_archives(ctx).await,
-        _ => dispatch_admin(ctx, name, args).await,
+        _ => dispatch_mutating(ctx, name, args).await,
     }
 }
 
-/// Dispatch the admin-only (mutating) tools, refusing non-admins and rejecting
+/// Dispatch the mutating tools — the manager-tier lifecycle/file set and the
+/// admin-only destructive set — gating each on the caller's tier and rejecting
 /// unknown names. Split out of [`dispatch`] so each stays under the line cap.
-async fn dispatch_admin(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+/// The tier guards mirror [`available_tools`]: a tool the caller couldn't be
+/// offered falls through to the tier-appropriate refusal (defense in depth).
+async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+    let manager = ctx.access >= AccessLevel::Manager;
+    let admin = ctx.access >= AccessLevel::Admin;
     match name {
-        CREATE_SERVER if ctx.is_admin => match parse::<CreateParams>(args) {
+        CREATE_SERVER if manager => match parse::<CreateParams>(args) {
             Ok(params) => exec_create(ctx, &params.game, params.name.as_deref()).await,
             Err(message) => message,
         },
-        STOP_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        STOP_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_stop(ctx, &params.name).await,
             Err(message) => message,
         },
-        START_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        START_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_start(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTART_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        RESTART_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_restart(ctx, &params.name).await,
             Err(message) => message,
         },
-        SHUTDOWN_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        SHUTDOWN_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        DESTROY_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
-            Ok(params) => exec_destroy(ctx, &params.name).await,
-            Err(message) => message,
-        },
-        BROWSE_FILES if ctx.is_admin => match parse::<PathParams>(args) {
+        BROWSE_FILES if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_FILE if ctx.is_admin => match parse::<PathParams>(args) {
+        READ_FILE if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_LOGS if ctx.is_admin => match parse::<LogsParams>(args) {
+        READ_LOGS if manager => match parse::<LogsParams>(args) {
             Ok(params) => exec_read_logs(ctx, &params.name, params.lines).await,
             Err(message) => message,
         },
-        WRITE_FILE if ctx.is_admin => match parse::<WriteParams>(args) {
+        WRITE_FILE if manager => match parse::<WriteParams>(args) {
             Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
             Err(message) => message,
         },
-        EDIT_FILE if ctx.is_admin => match parse::<EditParams>(args) {
+        EDIT_FILE if manager => match parse::<EditParams>(args) {
             Ok(params) => {
                 exec_edit_file(
                     ctx,
@@ -387,38 +405,47 @@ async fn dispatch_admin(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
             }
             Err(message) => message,
         },
-        RESTORE_FILE if ctx.is_admin => match parse::<PathParams>(args) {
+        RESTORE_FILE if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        SEND_COMMAND if ctx.is_admin => match parse::<CommandParams>(args) {
-            Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
-            Err(message) => message,
-        },
-        WAIT_FOR_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        WAIT_FOR_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_wait_for_server(ctx, &params.name).await,
             Err(message) => message,
         },
-        BACKUP_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        BACKUP_SERVER if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_backup(ctx, &params.name).await,
             Err(message) => message,
         },
-        ARCHIVE_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        DESTROY_SERVER if admin => match parse::<NameParams>(args) {
+            Ok(params) => exec_destroy(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        SEND_COMMAND if admin => match parse::<CommandParams>(args) {
+            Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
+            Err(message) => message,
+        },
+        ARCHIVE_SERVER if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_archive(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTORE_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        RESTORE_SERVER if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_restore(ctx, &params.name).await,
             Err(message) => message,
         },
-        RECOVER_SERVER if ctx.is_admin => match parse::<NameParams>(args) {
+        RECOVER_SERVER if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_recover(ctx, &params.name).await,
             Err(message) => message,
         },
+        // Admin-only tools reached without admin rights (a manager or read-only
+        // caller): they need an admin.
+        DESTROY_SERVER | SEND_COMMAND | ARCHIVE_SERVER | RESTORE_SERVER | RECOVER_SERVER => {
+            NON_ADMIN_REFUSAL.to_owned()
+        }
+        // Manager tools reached without manager rights (a read-only caller).
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
-        | DESTROY_SERVER | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE
-        | RESTORE_FILE | SEND_COMMAND | WAIT_FOR_SERVER | BACKUP_SERVER | ARCHIVE_SERVER
-        | RESTORE_SERVER | RECOVER_SERVER => NON_ADMIN_REFUSAL.to_owned(),
+        | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE | RESTORE_FILE
+        | WAIT_FOR_SERVER | BACKUP_SERVER => NON_MANAGER_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
 }

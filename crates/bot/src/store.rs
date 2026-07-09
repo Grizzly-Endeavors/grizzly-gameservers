@@ -1,20 +1,22 @@
 //! The bot's durable state on foundation Postgres: the registry of no-mention
 //! "home" channels where Gary answers without being `@`-mentioned, and the
-//! per-guild admin config (admin roles and users) set at runtime via `/config`.
+//! per-guild access config (admin and manager roles and users) set at runtime
+//! via `/config`.
 //!
 //! [`HomeChannels`] and [`GuildConfig`] are the façades the rest of the bot
 //! uses. Each keeps its state in memory (loaded once at startup, updated on each
 //! mutation) so the per-message hot paths never touch the database, and each
 //! **degrades gracefully**: if Postgres is unconfigured or unreachable at
 //! startup, the bot still runs — mentions and slash commands work — and only the
-//! DB-backed features (no-mention home channels, DB-configured guild admins) go
-//! dark until a restart reconnects. Auth degrades **fail-closed**: with
-//! `GuildConfig` unavailable, only the implicit admins (operators, guild owner)
-//! are recognized; nobody new is admitted.
+//! DB-backed features (no-mention home channels, DB-configured guild admins and
+//! managers) go dark until a restart reconnects. Auth degrades **fail-closed**:
+//! with `GuildConfig` unavailable, only the implicit admins (operators, guild
+//! owner) are recognized; nobody new — admin or manager — is admitted.
 
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
+use sqlx::AssertSqlSafe;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
@@ -204,9 +206,10 @@ impl HomeChannels {
     }
 }
 
-/// Schema for the per-guild admin config. Two tables — one row per (guild, role)
-/// and per (guild, user) — so add/remove is a plain insert/delete without array
-/// columns. These sit *alongside* the operator seed (env `GAMESERVERS_ADMIN_USER_IDS`)
+/// Schema for the per-guild access config. Each tier (admin, manager) gets a
+/// roles table and a users table — one row per (guild, role) and per (guild,
+/// user) — so add/remove is a plain insert/delete without array columns. The
+/// admin tables sit *alongside* the operator seed (env `GAMESERVERS_ADMIN_USER_IDS`)
 /// and the guild owner, all of which are admins regardless of these tables.
 const GUILD_CONFIG_SCHEMA: &str = "\
     CREATE TABLE IF NOT EXISTS guild_admin_roles (\
@@ -218,15 +221,101 @@ const GUILD_CONFIG_SCHEMA: &str = "\
         guild_id TEXT NOT NULL, \
         user_id TEXT NOT NULL, \
         added_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+        PRIMARY KEY (guild_id, user_id)); \
+    CREATE TABLE IF NOT EXISTS guild_manager_roles (\
+        guild_id TEXT NOT NULL, \
+        role_id TEXT NOT NULL, \
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
+        PRIMARY KEY (guild_id, role_id)); \
+    CREATE TABLE IF NOT EXISTS guild_manager_users (\
+        guild_id TEXT NOT NULL, \
+        user_id TEXT NOT NULL, \
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
         PRIMARY KEY (guild_id, user_id))";
 
-/// The admin roles and users configured for one guild. Empty when the guild has
+/// Which access tier a `/config` grant targets. The two tiers share identical
+/// storage shape (a roles table + a users table), so the CRUD is generic over
+/// this — only the table name differs.
+#[derive(Clone, Copy)]
+pub(crate) enum GrantTier {
+    Admin,
+    Manager,
+}
+
+/// Whether a grant names a Discord role or a user — selects the id column.
+#[derive(Clone, Copy)]
+pub(crate) enum Principal {
+    Role,
+    User,
+}
+
+impl GrantTier {
+    /// The table holding this tier's grants for the given principal kind. All
+    /// four are compile-time constants from closed enums — never user input, so
+    /// interpolating them into SQL is safe.
+    fn table(self, principal: Principal) -> &'static str {
+        match (self, principal) {
+            (Self::Admin, Principal::Role) => "guild_admin_roles",
+            (Self::Admin, Principal::User) => "guild_admin_users",
+            (Self::Manager, Principal::Role) => "guild_manager_roles",
+            (Self::Manager, Principal::User) => "guild_manager_users",
+        }
+    }
+
+    /// This tier's grant set within a guild's grants.
+    fn set(self, grants: &GuildGrants) -> &GrantSet {
+        match self {
+            Self::Admin => &grants.admins,
+            Self::Manager => &grants.managers,
+        }
+    }
+
+    fn set_mut(self, grants: &mut GuildGrants) -> &mut GrantSet {
+        match self {
+            Self::Admin => &mut grants.admins,
+            Self::Manager => &mut grants.managers,
+        }
+    }
+}
+
+impl Principal {
+    fn column(self) -> &'static str {
+        match self {
+            Self::Role => "role_id",
+            Self::User => "user_id",
+        }
+    }
+
+    /// The role or user set within a grant set.
+    fn ids(self, grants: &GrantSet) -> &HashSet<u64> {
+        match self {
+            Self::Role => &grants.roles,
+            Self::User => &grants.users,
+        }
+    }
+
+    fn ids_mut(self, grants: &mut GrantSet) -> &mut HashSet<u64> {
+        match self {
+            Self::Role => &mut grants.roles,
+            Self::User => &mut grants.users,
+        }
+    }
+}
+
+/// The roles and users granted one tier for one guild. Empty when the guild has
 /// no DB config yet (or persistence is down) — callers still admit the implicit
 /// admins (operators, guild owner) on top of this.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct GuildAdmins {
+pub(crate) struct GrantSet {
     pub(crate) roles: HashSet<u64>,
     pub(crate) users: HashSet<u64>,
+}
+
+/// Both access tiers' grants for one guild, as cached and loaded together.
+#[derive(Clone, Debug, Default)]
+struct GuildGrants {
+    admins: GrantSet,
+    managers: GrantSet,
 }
 
 /// What a `/config` admin mutation did, for the command to report back.
@@ -257,75 +346,67 @@ impl GuildConfigStore {
         Ok(Self { pool })
     }
 
-    /// Load every guild's admin roles and users into one map.
-    async fn load_all(&self) -> Result<HashMap<u64, GuildAdmins>> {
-        let mut map: HashMap<u64, GuildAdmins> = HashMap::new();
-        let roles: Vec<(String, String)> =
-            sqlx::query_as("SELECT guild_id, role_id FROM guild_admin_roles")
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to load guild admin roles")?;
-        for (guild, role) in roles {
-            if let (Ok(guild), Ok(role)) = (guild.parse(), role.parse()) {
-                map.entry(guild).or_default().roles.insert(role);
-            }
-        }
-        let users: Vec<(String, String)> =
-            sqlx::query_as("SELECT guild_id, user_id FROM guild_admin_users")
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to load guild admin users")?;
-        for (guild, user) in users {
-            if let (Ok(guild), Ok(user)) = (guild.parse(), user.parse()) {
-                map.entry(guild).or_default().users.insert(user);
+    /// Load every guild's grants (both tiers, roles and users) into one map.
+    async fn load_all(&self) -> Result<HashMap<u64, GuildGrants>> {
+        let mut map: HashMap<u64, GuildGrants> = HashMap::new();
+        for tier in [GrantTier::Admin, GrantTier::Manager] {
+            for principal in [Principal::Role, Principal::User] {
+                let table = tier.table(principal);
+                let column = principal.column();
+                // table/column come from closed enums (never user input), so the
+                // interpolation is injection-safe — hence AssertSqlSafe.
+                let select = format!("SELECT guild_id, {column} FROM {table}");
+                let rows: Vec<(String, String)> = sqlx::query_as(AssertSqlSafe(select))
+                    .fetch_all(&self.pool)
+                    .await
+                    .with_context(|| format!("failed to load {table}"))?;
+                for (guild, id) in rows {
+                    if let (Ok(guild), Ok(id)) = (guild.parse::<u64>(), id.parse::<u64>()) {
+                        principal
+                            .ids_mut(tier.set_mut(map.entry(guild).or_default()))
+                            .insert(id);
+                    }
+                }
             }
         }
         Ok(map)
     }
 
-    async fn add_role(&self, guild: u64, role: u64) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO guild_admin_roles (guild_id, role_id) VALUES ($1, $2) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(guild.to_string())
-        .bind(role.to_string())
-        .execute(&self.pool)
-        .await
-        .with_context(|| format!("failed to add admin role {role} to guild {guild}"))?;
-        Ok(())
-    }
-
-    async fn remove_role(&self, guild: u64, role: u64) -> Result<()> {
-        sqlx::query("DELETE FROM guild_admin_roles WHERE guild_id = $1 AND role_id = $2")
+    /// Grant `id` (a role or user) the given tier in `guild`. Idempotent.
+    async fn add(&self, tier: GrantTier, principal: Principal, guild: u64, id: u64) -> Result<()> {
+        let table = tier.table(principal);
+        let column = principal.column();
+        // table/column come from closed enums (never user input) — injection-safe.
+        let insert = format!(
+            "INSERT INTO {table} (guild_id, {column}) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+        );
+        sqlx::query(AssertSqlSafe(insert))
             .bind(guild.to_string())
-            .bind(role.to_string())
+            .bind(id.to_string())
             .execute(&self.pool)
             .await
-            .with_context(|| format!("failed to remove admin role {role} from guild {guild}"))?;
+            .with_context(|| format!("failed to add {id} to {table} for guild {guild}"))?;
         Ok(())
     }
 
-    async fn add_user(&self, guild: u64, user: u64) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO guild_admin_users (guild_id, user_id) VALUES ($1, $2) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(guild.to_string())
-        .bind(user.to_string())
-        .execute(&self.pool)
-        .await
-        .with_context(|| format!("failed to add admin user {user} to guild {guild}"))?;
-        Ok(())
-    }
-
-    async fn remove_user(&self, guild: u64, user: u64) -> Result<()> {
-        sqlx::query("DELETE FROM guild_admin_users WHERE guild_id = $1 AND user_id = $2")
+    /// Revoke `id`'s grant of the given tier in `guild`. Idempotent.
+    async fn remove(
+        &self,
+        tier: GrantTier,
+        principal: Principal,
+        guild: u64,
+        id: u64,
+    ) -> Result<()> {
+        let table = tier.table(principal);
+        let column = principal.column();
+        // table/column come from closed enums (never user input) — injection-safe.
+        let delete = format!("DELETE FROM {table} WHERE guild_id = $1 AND {column} = $2");
+        sqlx::query(AssertSqlSafe(delete))
             .bind(guild.to_string())
-            .bind(user.to_string())
+            .bind(id.to_string())
             .execute(&self.pool)
             .await
-            .with_context(|| format!("failed to remove admin user {user} from guild {guild}"))?;
+            .with_context(|| format!("failed to remove {id} from {table} for guild {guild}"))?;
         Ok(())
     }
 }
@@ -337,7 +418,7 @@ impl GuildConfigStore {
 /// admins only (see module docs).
 pub(crate) struct GuildConfig {
     store: Option<GuildConfigStore>,
-    cache: RwLock<HashMap<u64, GuildAdmins>>,
+    cache: RwLock<HashMap<u64, GuildGrants>>,
 }
 
 impl GuildConfig {
@@ -388,22 +469,38 @@ impl GuildConfig {
 
     /// The admin roles and users configured for `guild` (empty when none, or when
     /// persistence is down). Cloned out so the auth check holds no lock.
-    pub(crate) async fn admins(&self, guild: u64) -> GuildAdmins {
+    pub(crate) async fn admins(&self, guild: u64) -> GrantSet {
+        self.grants(GrantTier::Admin, guild).await
+    }
+
+    /// The manager roles and users configured for `guild` (empty when none, or
+    /// when persistence is down). Cloned out so the auth check holds no lock.
+    pub(crate) async fn managers(&self, guild: u64) -> GrantSet {
+        self.grants(GrantTier::Manager, guild).await
+    }
+
+    async fn grants(&self, tier: GrantTier, guild: u64) -> GrantSet {
         self.cache
             .read()
             .await
             .get(&guild)
-            .cloned()
+            .map(|g| tier.set(g).clone())
             .unwrap_or_default()
     }
 
-    /// Add an admin role for `guild`.
+    /// Grant `id` (a role or user) the given tier in `guild`.
     ///
     /// # Errors
     ///
     /// Returns an error only if the database write fails; the cache is left
     /// untouched in that case so it never drifts from what was persisted.
-    pub(crate) async fn add_admin_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+    async fn add_grant(
+        &self,
+        tier: GrantTier,
+        principal: Principal,
+        guild: u64,
+        id: u64,
+    ) -> Result<ConfigChange> {
         let Some(store) = &self.store else {
             return Ok(ConfigChange::Unavailable);
         };
@@ -412,19 +509,56 @@ impl GuildConfig {
             .read()
             .await
             .get(&guild)
-            .is_some_and(|a| a.roles.contains(&role))
+            .is_some_and(|g| principal.ids(tier.set(g)).contains(&id))
         {
             return Ok(ConfigChange::Unchanged);
         }
-        store.add_role(guild, role).await?;
-        self.cache
-            .write()
-            .await
-            .entry(guild)
-            .or_default()
-            .roles
-            .insert(role);
+        store.add(tier, principal, guild, id).await?;
+        principal
+            .ids_mut(tier.set_mut(self.cache.write().await.entry(guild).or_default()))
+            .insert(id);
         Ok(ConfigChange::Added)
+    }
+
+    /// Revoke `id`'s grant of the given tier in `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    async fn remove_grant(
+        &self,
+        tier: GrantTier,
+        principal: Principal,
+        guild: u64,
+        id: u64,
+    ) -> Result<ConfigChange> {
+        let Some(store) = &self.store else {
+            return Ok(ConfigChange::Unavailable);
+        };
+        if !self
+            .cache
+            .read()
+            .await
+            .get(&guild)
+            .is_some_and(|g| principal.ids(tier.set(g)).contains(&id))
+        {
+            return Ok(ConfigChange::Unchanged);
+        }
+        store.remove(tier, principal, guild, id).await?;
+        if let Some(grants) = self.cache.write().await.get_mut(&guild) {
+            principal.ids_mut(tier.set_mut(grants)).remove(&id);
+        }
+        Ok(ConfigChange::Removed)
+    }
+
+    /// Add an admin role for `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn add_admin_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+        self.add_grant(GrantTier::Admin, Principal::Role, guild, role)
+            .await
     }
 
     /// Remove an admin role from `guild`.
@@ -433,23 +567,8 @@ impl GuildConfig {
     ///
     /// Returns an error only if the database write fails.
     pub(crate) async fn remove_admin_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
-        let Some(store) = &self.store else {
-            return Ok(ConfigChange::Unavailable);
-        };
-        if !self
-            .cache
-            .read()
+        self.remove_grant(GrantTier::Admin, Principal::Role, guild, role)
             .await
-            .get(&guild)
-            .is_some_and(|a| a.roles.contains(&role))
-        {
-            return Ok(ConfigChange::Unchanged);
-        }
-        store.remove_role(guild, role).await?;
-        if let Some(admins) = self.cache.write().await.get_mut(&guild) {
-            admins.roles.remove(&role);
-        }
-        Ok(ConfigChange::Removed)
     }
 
     /// Add an admin user for `guild`.
@@ -458,27 +577,8 @@ impl GuildConfig {
     ///
     /// Returns an error only if the database write fails.
     pub(crate) async fn add_admin_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
-        let Some(store) = &self.store else {
-            return Ok(ConfigChange::Unavailable);
-        };
-        if self
-            .cache
-            .read()
+        self.add_grant(GrantTier::Admin, Principal::User, guild, user)
             .await
-            .get(&guild)
-            .is_some_and(|a| a.users.contains(&user))
-        {
-            return Ok(ConfigChange::Unchanged);
-        }
-        store.add_user(guild, user).await?;
-        self.cache
-            .write()
-            .await
-            .entry(guild)
-            .or_default()
-            .users
-            .insert(user);
-        Ok(ConfigChange::Added)
     }
 
     /// Remove an admin user from `guild`.
@@ -487,23 +587,48 @@ impl GuildConfig {
     ///
     /// Returns an error only if the database write fails.
     pub(crate) async fn remove_admin_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
-        let Some(store) = &self.store else {
-            return Ok(ConfigChange::Unavailable);
-        };
-        if !self
-            .cache
-            .read()
+        self.remove_grant(GrantTier::Admin, Principal::User, guild, user)
             .await
-            .get(&guild)
-            .is_some_and(|a| a.users.contains(&user))
-        {
-            return Ok(ConfigChange::Unchanged);
-        }
-        store.remove_user(guild, user).await?;
-        if let Some(admins) = self.cache.write().await.get_mut(&guild) {
-            admins.users.remove(&user);
-        }
-        Ok(ConfigChange::Removed)
+    }
+
+    /// Add a manager role for `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn add_manager_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+        self.add_grant(GrantTier::Manager, Principal::Role, guild, role)
+            .await
+    }
+
+    /// Remove a manager role from `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn remove_manager_role(&self, guild: u64, role: u64) -> Result<ConfigChange> {
+        self.remove_grant(GrantTier::Manager, Principal::Role, guild, role)
+            .await
+    }
+
+    /// Add a manager user for `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn add_manager_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
+        self.add_grant(GrantTier::Manager, Principal::User, guild, user)
+            .await
+    }
+
+    /// Remove a manager user from `guild`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the database write fails.
+    pub(crate) async fn remove_manager_user(&self, guild: u64, user: u64) -> Result<ConfigChange> {
+        self.remove_grant(GrantTier::Manager, Principal::User, guild, user)
+            .await
     }
 }
 

@@ -4,13 +4,28 @@ use tracing::error;
 use super::render::guild_required_embed;
 use super::{Context, Error};
 use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
-use crate::store::GuildAdmins;
+use crate::store::GrantSet;
 
-/// Everything the admin policy weighs for one caller in one guild. Bundled so the
-/// decision is a pure function of explicit inputs, unit-testable without a live
-/// interaction. `guild_owner` and `guild_admins` are guild-specific; `operators`
-/// is the cross-guild seed.
-pub(crate) struct AdminCheck<'a> {
+/// A caller's access tier in one guild. Ordered low→high so `>=` expresses "at
+/// least this tier": `Admin` implies every `Manager` privilege, which implies
+/// every read-only one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum AccessLevel {
+    /// Look-up only — the default for anyone not granted a higher tier.
+    ReadOnly,
+    /// Day-to-day server operation (lifecycle + backups + Gary file edits), but
+    /// not destructive or governance actions.
+    Manager,
+    /// Full control, including destroy, restore, `/config`, and Gary console
+    /// commands.
+    Admin,
+}
+
+/// Everything the access policy weighs for one caller in one guild. Bundled so
+/// the decision is a pure function of explicit inputs, unit-testable without a
+/// live interaction. `guild_owner`, `guild_admins`, and `guild_managers` are
+/// guild-specific; `operators` is the cross-guild seed.
+pub(crate) struct AccessCheck<'a> {
     pub(crate) user: u64,
     pub(crate) roles: &'a [u64],
     /// The guild's owner id, when known. The owner is always an admin in their
@@ -21,22 +36,35 @@ pub(crate) struct AdminCheck<'a> {
     /// every guild.
     pub(crate) operators: &'a [u64],
     /// The guild's DB-configured admin roles and users.
-    pub(crate) guild_admins: &'a GuildAdmins,
+    pub(crate) guild_admins: &'a GrantSet,
+    /// The guild's DB-configured manager roles and users.
+    pub(crate) guild_managers: &'a GrantSet,
 }
 
-/// Whether `check.user` may run the mutating commands in their guild. The union
-/// of: cross-guild operators, the guild owner, DB-configured admin users, and
-/// members holding a DB-configured admin role. Pure so the policy is unit-tested
-/// without a live interaction. Fail-closed: with `guild_admins` empty (e.g. the
-/// config DB is down), only operators and the owner are admitted.
-pub(crate) fn is_authorized(check: &AdminCheck<'_>) -> bool {
+/// The highest tier `check.user` holds in their guild. Admins are the union of:
+/// cross-guild operators, the guild owner, DB-configured admin users, and
+/// members holding a DB-configured admin role; managers are the DB-configured
+/// manager users and role-holders. Pure so the policy is unit-tested without a
+/// live interaction. Fail-closed: with the grant sets empty (e.g. the config DB
+/// is down), only operators and the owner are admitted — as `Admin` — and
+/// everyone else falls to `ReadOnly`.
+pub(crate) fn access_level(check: &AccessCheck<'_>) -> AccessLevel {
+    if is_granted(check, check.guild_admins) {
+        AccessLevel::Admin
+    } else if is_granted(check, check.guild_managers) {
+        AccessLevel::Manager
+    } else {
+        AccessLevel::ReadOnly
+    }
+}
+
+/// Whether `check.user` is an operator/owner (always admin) or is named — as a
+/// user or via a held role — in `grants`.
+fn is_granted(check: &AccessCheck<'_>, grants: &GrantSet) -> bool {
     check.operators.contains(&check.user)
         || check.guild_owner == Some(check.user)
-        || check.guild_admins.users.contains(&check.user)
-        || check
-            .roles
-            .iter()
-            .any(|role| check.guild_admins.roles.contains(role))
+        || grants.users.contains(&check.user)
+        || check.roles.iter().any(|role| grants.roles.contains(role))
 }
 
 /// Which servers `user` may see and act on. A cross-guild operator gets the
@@ -56,7 +84,7 @@ pub(crate) fn visibility_scope(
     }
 }
 
-/// poise check for the mutating commands (`/create`, `/stop`, `/config`, …).
+/// poise check for the admin-only commands (`/destroy`, `/config`, `/restore`, …).
 /// Denies with an ephemeral message (returning `false` alone would give the
 /// friend no feedback).
 ///
@@ -64,26 +92,62 @@ pub(crate) fn visibility_scope(
 ///
 /// Returns an error only if sending the denial reply to Discord fails.
 pub(crate) async fn require_admin(ctx: Context<'_>) -> Result<bool, Error> {
-    if is_admin(ctx).await {
+    require_at_least(
+        ctx,
+        AccessLevel::Admin,
+        "You need to be an admin to do that.",
+    )
+    .await
+}
+
+/// poise check for the manager-tier commands — the day-to-day lifecycle
+/// (`/create`, `/start`, `/stop`, `/backup`, …). Admins pass too (they outrank
+/// managers).
+///
+/// # Errors
+///
+/// Returns an error only if sending the denial reply to Discord fails.
+pub(crate) async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
+    require_at_least(
+        ctx,
+        AccessLevel::Manager,
+        "You need to be a manager or admin to do that. Ask an admin to grant you access with `/config manager-user add`.",
+    )
+    .await
+}
+
+/// Pass the check when the caller's tier is at least `needed`, else deny with
+/// `message`.
+///
+/// # Errors
+///
+/// Returns an error only if sending the denial reply to Discord fails.
+async fn require_at_least(
+    ctx: Context<'_>,
+    needed: AccessLevel,
+    message: &str,
+) -> Result<bool, Error> {
+    if access_level_of(ctx).await >= needed {
         return Ok(true);
     }
-    deny(ctx, "You're not allowed to do that.").await?;
+    deny(ctx, message).await?;
     Ok(false)
 }
 
-/// Whether the invoking user is an admin for the guild the command ran in.
-/// Operators are admins everywhere (including DMs); everyone else needs a guild
-/// and must be the owner or DB-configured. Cluster/Discord read failures fall
-/// through as "not admin" (fail-closed) after logging.
-async fn is_admin(ctx: Context<'_>) -> bool {
+/// The invoking user's access tier in the guild the command ran in. Operators
+/// are admins everywhere (including DMs); everyone else needs a guild and is
+/// scored against the owner check plus the DB-configured admin/manager grants.
+/// Cluster/Discord read failures fall through as the weaker tier (fail-closed)
+/// after logging.
+pub(crate) async fn access_level_of(ctx: Context<'_>) -> AccessLevel {
     let data = ctx.data();
     let user = ctx.author().id.get();
     if data.operator_ids.contains(&user) {
-        return true;
+        return AccessLevel::Admin;
     }
     let Some(guild_id) = ctx.guild_id() else {
-        // Non-operator in a DM: no guild to be an admin of.
-        return false;
+        // Non-operator in a DM: no guild to hold a tier in.
+        return AccessLevel::ReadOnly;
     };
     let roles: Vec<u64> = match ctx.author_member().await {
         Some(member) => member.roles.iter().map(|role| role.get()).collect(),
@@ -99,12 +163,14 @@ async fn is_admin(ctx: Context<'_>) -> bool {
         None
     };
     let guild_admins = data.guild_config.admins(guild_id.get()).await;
-    is_authorized(&AdminCheck {
+    let guild_managers = data.guild_config.managers(guild_id.get()).await;
+    access_level(&AccessCheck {
         user,
         roles: &roles,
         guild_owner,
         operators: &data.operator_ids,
         guild_admins: &guild_admins,
+        guild_managers: &guild_managers,
     })
 }
 
