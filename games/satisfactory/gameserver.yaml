@@ -1,0 +1,81 @@
+# Satisfactory catalog entry — an on-demand GameServer template. The bot renders
+# it per `/create` into a uniquely-named instance (this name/labels are
+# placeholders the renderer overrides); nothing here runs until a friend asks.
+#
+# Satisfactory has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates it
+# via file edits + restart, not live console commands.
+#
+# KNOWN LIMITATION: only the game port (7777/udp) is exposed. A 1.1+ server also
+# needs its Reliable Messaging port (8888) reachable, and it advertises that port
+# to clients — which the single-NodePort remap can't satisfy. The server comes up
+# and is manageable; full internet multiplayer needs the two-port + port-matching
+# provisioner follow-up (see games/satisfactory/Dockerfile and issue #29).
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/satisfactory/
+# Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle
+# (calls /ready once the game's TCP port accepts connections on 7777, then keeps
+# /health pinged), and serves an in-pod control API on 9359 that the bot drives
+# for in-place stop/start/restart and Gary's file tools.
+#
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance.
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: satisfactory
+  namespace: game-servers
+spec:
+  container: satisfactory
+  ports:
+    - name: satisfactory
+      portPolicy: None
+      containerPort: 7777
+      protocol: UDP
+  health:
+    # First boot downloads ~15 GB via SteamCMD before the server binds; give it
+    # generous room before Agones health-gates it.
+    initialDelaySeconds: 600
+    periodSeconds: 15
+    failureThreshold: 8
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: satisfactory
+    # Pod hardening deferred, matching the other game pods (supervisor as PID 1,
+    # root at startup). NOT in the bot deploy path; rootless hardening is tracked
+    # with game-image CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        - name: satisfactory
+          # Composite image: grizzly supervisor (PID 1) wrapping wolveix's server.
+          # CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-satisfactory:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          imagePullPolicy: Always
+          ports:
+            - name: satisfactory
+              containerPort: 7777
+              protocol: UDP
+            # Pod-internal control API the bot reaches over the cluster network.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /config
+          resources:
+            # Satisfactory is heavy (large factories chew CPU and RAM); size
+            # generously.
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "8"
+              memory: 16Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: satisfactory-data

@@ -1,0 +1,25 @@
+# On-demand NodePort template. The bot renders this per `/create`: it overrides
+# metadata.name, points the selector at the instance's GameServer, and replaces
+# the nodePort below with a port leased from the 7000-7010 edge-forwarded band
+# (the literal value here is only a placeholder). externalTrafficPolicy: Cluster
+# is required so a node without the pod still forwards. Satisfactory's game
+# protocol is UDP.
+#
+# Only the game port is exposed — see the note in gameserver.yaml about the
+# Reliable Messaging port (8888) needing the two-port provisioner follow-up.
+apiVersion: v1
+kind: Service
+metadata:
+  name: satisfactory
+  namespace: game-servers
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: satisfactory
+  ports:
+    - name: satisfactory
+      port: 7777
+      targetPort: 7777
+      nodePort: 7005
+      protocol: UDP

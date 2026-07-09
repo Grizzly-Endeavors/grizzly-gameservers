@@ -64,11 +64,18 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # that way, so instead set a substring that appears in the game's "server
 # started" log line; readiness fires on the first captured line containing it.
 # ENV SUPERVISOR_READY_LOG_PATTERN=REPLACE_READY_MARKER
+# REPLACE (optional): raise the readiness probe's give-up (default 10 min) when
+# the game's first boot is slow — e.g. a large SteamCMD download must finish
+# before the port opens (Satisfactory pulls ~15 GB). Unused on the log-pattern path.
+# ENV SUPERVISOR_READINESS_TIMEOUT_SECS=1800
 # REPLACE (optional): enable only if the game speaks RCON (or an equivalent
 # console protocol the supervisor supports) and Gary's send_command tool should
 # be able to issue console commands. See games/minecraft/Dockerfile for a
 # worked example (ephemeral password minting, loopback-only port,
-# SUPERVISOR_RCON_MINECRAFT dialect flag).
+# SUPERVISOR_RCON_MINECRAFT dialect flag). SUPERVISOR_RCON_PASSWORD_ENV picks the
+# child env var the minted password is injected under (default RCON_PASSWORD;
+# Palworld uses ADMIN_PASSWORD). SUPERVISOR_RCON_PASSWORD_MAX_LEN caps the minted
+# password for games that limit it (Palworld's admin password maxes at 30 chars).
 # ENV SUPERVISOR_RCON_PORT=REPLACE_PORT
 # REPLACE (optional): enable the in-game chat → Gary reverse loop. Set the chat
 # format for this game (the supervisor's chat-line dialect) and the trigger a
