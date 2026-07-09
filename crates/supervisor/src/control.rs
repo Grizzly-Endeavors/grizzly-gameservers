@@ -12,9 +12,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
     ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, CommandRequest, CommandResponse, ControlCommand,
-    ControlError, ControlOk, ExtractQuery, ListResponse, LogsQuery, LogsResponse, PathQuery,
-    ReadResponse, RestoreRequest, RestoreResponse, ResultKind, RouteError, StatusResponse,
-    WriteRequest, WriteResponse,
+    ControlError, ControlOk, ExtractQuery, ListResponse, LogsQuery, LogsResponse, OCCUPANCY_PATH,
+    OccupancyResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse, ResultKind,
+    RouteError, StatusResponse, WriteRequest, WriteResponse,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -84,6 +84,7 @@ pub async fn serve(
         .route("/fs/restore", post(fs_restore))
         .route(ARCHIVE_PATH, get(archive_out).post(archive_in))
         .route("/logs", get(logs_tail))
+        .route(OCCUPANCY_PATH, get(occupancy))
         .route("/command", post(run_command))
         .route("/announce", post(announce))
         .fallback(any(handle))
@@ -350,6 +351,18 @@ async fn logs_tail(State(state): State<ControlState>, Query(query): Query<LogsQu
     let count = query.lines.unwrap_or(DEFAULT_TAIL_LINES);
     let lines = state.logs.tail(count);
     (StatusCode::OK, Json(LogsResponse { lines })).into_response()
+}
+
+/// Report the current connected-player count over RCON. Always 200: `players` is
+/// `null` when the game has no RCON or the console can't be reached, which the bot
+/// reads as "unknown" (never as an empty server). Powers Gary's check-before-restart
+/// and mirrors the signal the in-pod auto-updater acts on.
+async fn occupancy(State(state): State<ControlState>) -> Response {
+    let players = match state.rcon.as_ref() {
+        Some(rcon) => rcon.player_count().await,
+        None => None,
+    };
+    (StatusCode::OK, Json(OccupancyResponse { players })).into_response()
 }
 
 /// Run one in-game console command over RCON. Returns 409 when the game doesn't
