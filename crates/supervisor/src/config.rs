@@ -29,6 +29,10 @@ const DEFAULT_DATA_DIR: &str = "/data";
 /// 5s gives a 3× margin against the catalog health budget
 /// (periodSeconds 15 × failureThreshold 5 = 75s).
 const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 5;
+/// How long the TCP readiness probe waits for the game to bind before giving up.
+/// Generous: a first-boot `SteamCMD` download (Satisfactory pulls ~15 GB) plus
+/// world generation can run for many minutes before the port opens.
+const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 600;
 /// Generous relative to a Minecraft world-save before we SIGKILL.
 const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
 /// Sliding window over which repeated crashes count toward escalation.
@@ -56,6 +60,10 @@ pub struct SupervisorConfig {
     pub data_dir: PathBuf,
     /// How often to ping the SDK `/health` endpoint.
     pub health_interval: Duration,
+    /// How long the TCP readiness probe waits for the game to bind before giving
+    /// up (and thus never signalling Agones `Ready`). Raise it for games with a
+    /// long first-boot `SteamCMD` download. Unused on the log-pattern readiness path.
+    pub readiness_timeout: Duration,
     /// How long to wait for a graceful child exit before SIGKILL.
     pub graceful_timeout: Duration,
     /// Sliding window for crash-rate escalation.
@@ -148,6 +156,10 @@ impl SupervisorConfig {
             optional_parse(lookup, "SUPERVISOR_HEALTH_INTERVAL_SECS")?
                 .unwrap_or(DEFAULT_HEALTH_INTERVAL_SECS),
         );
+        let readiness_timeout = Duration::from_secs(
+            optional_parse(lookup, "SUPERVISOR_READINESS_TIMEOUT_SECS")?
+                .unwrap_or(DEFAULT_READINESS_TIMEOUT_SECS),
+        );
         let graceful_timeout = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_GRACEFUL_TIMEOUT_SECS")?
                 .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
@@ -174,6 +186,7 @@ impl SupervisorConfig {
             sdk_base_url,
             data_dir,
             health_interval,
+            readiness_timeout,
             graceful_timeout,
             crash_window,
             crash_threshold,
