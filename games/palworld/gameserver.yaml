@@ -1,0 +1,74 @@
+# Palworld catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/palworld/
+# Dockerfile): it launches the palworld server as a child, owns the Agones SDK
+# lifecycle (calls /ready once the game's RCON port accepts connections on 25575,
+# then keeps /health pinged), and serves an in-pod control API on 9359 that the
+# bot drives for in-place stop/start/restart and Gary's file/RCON tools.
+#
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance (kube-proxy routes to the pod on whatever node it lands).
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: palworld
+  namespace: game-servers
+spec:
+  container: palworld
+  ports:
+    - name: palworld
+      portPolicy: None
+      containerPort: 8211
+      protocol: UDP
+  health:
+    # Palworld downloads/updates its server via SteamCMD on first boot and loads
+    # the world before hosting; give it room before Agones health-gates it.
+    initialDelaySeconds: 300
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: palworld
+    # Pod hardening deferred, matching minecraft: the composite image runs the
+    # supervisor as PID 1 wrapping palworld's entrypoint, which bootstraps as root
+    # (usermod/chown, then drops to the steam user) and would break under a
+    # read-only root or forced non-root user without live validation. This pod is
+    # NOT in the bot deploy path; rootless hardening is tracked alongside
+    # game-image CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        - name: palworld
+          # Composite image: grizzly supervisor (PID 1) wrapping palworld's server.
+          # CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-palworld:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          imagePullPolicy: Always
+          ports:
+            - name: palworld
+              containerPort: 8211
+              protocol: UDP
+            # Pod-internal control API the bot reaches over the cluster network.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /palworld
+          resources:
+            # Palworld is memory-hungry (multiple GB per player); size generously.
+            requests:
+              cpu: "2"
+              memory: 8Gi
+            limits:
+              cpu: "6"
+              memory: 16Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: palworld-data

@@ -1,0 +1,79 @@
+# Valheim catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
+#
+# Valheim has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates it via
+# file edits + restart, not live console commands. It's also UDP-only, so the
+# supervisor signals Agones Ready off a log marker (SUPERVISOR_READY_LOG_PATTERN
+# in the Dockerfile) rather than a TCP connect probe.
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/valheim/
+# Dockerfile): it launches lloesche's server as a child, owns the Agones SDK
+# lifecycle, and serves an in-pod control API on 9359 that the bot drives for
+# in-place stop/start/restart and Gary's file tools.
+#
+# Only the game port (2456/udp) is exposed. Friends join by direct connect
+# (IP:port), which uses the game port; the +1 query port only matters for the
+# Steam server browser, which the NodePort remap wouldn't satisfy anyway.
+#
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance.
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: valheim
+  namespace: game-servers
+spec:
+  container: valheim
+  ports:
+    - name: valheim
+      portPolicy: None
+      containerPort: 2456
+      protocol: UDP
+  health:
+    # Valheim installs its server via SteamCMD on first boot and generates the
+    # world before it's joinable; give it room before Agones health-gates it.
+    initialDelaySeconds: 300
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: valheim
+    # Pod hardening deferred, matching the other game pods (supervisor as PID 1,
+    # root at startup). NOT in the bot deploy path; rootless hardening is tracked
+    # with game-image CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        - name: valheim
+          # Composite image: grizzly supervisor (PID 1) wrapping lloesche's server.
+          # CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-valheim:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          imagePullPolicy: Always
+          ports:
+            - name: valheim
+              containerPort: 2456
+              protocol: UDP
+            # Pod-internal control API the bot reaches over the cluster network.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /config
+          resources:
+            # Valheim wants a couple of cores and a few GB; size generously.
+            requests:
+              cpu: "1"
+              memory: 3Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: valheim-data

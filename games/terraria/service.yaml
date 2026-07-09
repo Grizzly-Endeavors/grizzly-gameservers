@@ -1,0 +1,22 @@
+# On-demand NodePort template. The bot renders this per `/create`: it overrides
+# metadata.name, points the selector at the instance's GameServer, and replaces
+# the nodePort below with a port leased from the 7000-7010 edge-forwarded band
+# (the literal value here is only a placeholder). externalTrafficPolicy: Cluster
+# is required so a node without the pod still forwards. Terraria's game protocol
+# is TCP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: terraria
+  namespace: game-servers
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: terraria
+  ports:
+    - name: terraria
+      port: 7777
+      targetPort: 7777
+      nodePort: 7003
+      protocol: TCP

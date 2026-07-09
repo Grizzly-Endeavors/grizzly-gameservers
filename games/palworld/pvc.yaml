@@ -1,0 +1,17 @@
+# Per-instance Palworld state (server install + world saves) under /palworld. The
+# ops agent mutates files here live; it is friend state, not infra, and is never
+# committed to git. iscsi-zfs (default, RWO) is network block storage, so it
+# reattaches across nodes and the pod can still land anywhere. Sized for the
+# SteamCMD-downloaded server plus saves.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: palworld-data
+  namespace: game-servers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-zfs
+  resources:
+    requests:
+      storage: 15Gi

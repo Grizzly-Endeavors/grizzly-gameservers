@@ -1,0 +1,25 @@
+# On-demand NodePort template. The bot renders this per `/create`: it overrides
+# metadata.name, points the selector at the instance's GameServer, and replaces
+# the nodePort below with a port leased from the 7000-7010 edge-forwarded band
+# (the literal value here is only a placeholder). kube-proxy opens the leased
+# nodePort on every node and routes to the pod wherever it's scheduled, so the
+# static edge (which DNATs 7000-7010 to a single node) reaches it without
+# node-pinning. externalTrafficPolicy: Cluster is required so a node without the
+# pod still forwards — it SNATs, so the pod sees a node IP not the real client.
+# Factorio's game protocol is UDP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: factorio
+  namespace: game-servers
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: factorio
+  ports:
+    - name: factorio
+      port: 34197
+      targetPort: 34197
+      nodePort: 7001
+      protocol: UDP

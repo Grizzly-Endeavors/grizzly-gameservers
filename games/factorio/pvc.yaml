@@ -1,0 +1,16 @@
+# Per-instance Factorio state (saves, config, mods) under /factorio. The ops
+# agent mutates files here live; it is friend state, not infra, and is never
+# committed to git. iscsi-zfs (default, RWO) is network block storage, so it
+# reattaches across nodes and the pod can still land anywhere.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: factorio-data
+  namespace: game-servers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-zfs
+  resources:
+    requests:
+      storage: 5Gi

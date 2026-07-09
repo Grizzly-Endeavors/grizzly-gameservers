@@ -21,9 +21,6 @@ use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
 use crate::{chat_watcher, process, readiness};
 
-/// How long the readiness probe waits for the game to bind before giving up.
-/// Generous: first-boot Minecraft world generation can run for minutes.
-const READINESS_GIVE_UP: Duration = Duration::from_mins(10);
 /// Brief pause before relaunching a crashed child, so a hard crash-loop backs
 /// off rather than spinning the CPU until escalation.
 const RELAUNCH_BACKOFF: Duration = Duration::from_secs(2);
@@ -55,7 +52,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     // across in-place restarts; `None` leaves the /command route disabled.
     let rcon = match cfg.rcon_port {
         Some(port) => Some(Arc::new(
-            RconRuntime::new(port, cfg.rcon_minecraft)
+            RconRuntime::new(port, cfg.rcon_minecraft, cfg.rcon_password_max_len)
                 .context("failed to initialize rcon client")?,
         )),
         None => None,
@@ -261,16 +258,16 @@ fn start_readiness(cfg: &SupervisorConfig, ready_tx: &mpsc::Sender<()>) -> Optio
     if let Some(pattern) = cfg.ready_log_pattern.as_deref() {
         Some(LogReadyWatch::new(Arc::from(pattern), ready_tx.clone()))
     } else {
-        spawn_readiness_probe(cfg.game_port, ready_tx.clone());
+        spawn_readiness_probe(cfg.game_port, cfg.readiness_timeout, ready_tx.clone());
         None
     }
 }
 
 /// Probe for the game accepting connections in the background, signalling the
 /// runner once it does. Re-spawned on every (re)launch.
-fn spawn_readiness_probe(port: u16, ready_tx: mpsc::Sender<()>) {
+fn spawn_readiness_probe(port: u16, give_up: Duration, ready_tx: mpsc::Sender<()>) {
     tokio::spawn(async move {
-        if readiness::wait_accepting(port, READINESS_GIVE_UP).await {
+        if readiness::wait_accepting(port, give_up).await {
             if ready_tx.send(()).await.is_err() {
                 debug!("readiness signal dropped; runner is gone");
             }

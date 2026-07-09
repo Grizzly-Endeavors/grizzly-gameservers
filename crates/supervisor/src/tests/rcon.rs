@@ -22,8 +22,29 @@ fn generate_password_is_not_constant() {
 }
 
 #[test]
+fn new_truncates_the_password_to_the_cap() {
+    let full = RconRuntime::new(25575, false, None).unwrap();
+    let capped = RconRuntime::new(25575, false, Some(30)).unwrap();
+    assert!(
+        full.password().len() > 30,
+        "the default password should exceed Palworld's cap"
+    );
+    assert_eq!(
+        capped.password().len(),
+        30,
+        "a cap shorter than the minted length truncates it"
+    );
+    let generous = RconRuntime::new(25575, false, Some(4096)).unwrap();
+    assert_eq!(
+        generous.password().len(),
+        full.password().len(),
+        "a cap longer than the minted length leaves it untouched"
+    );
+}
+
+#[test]
 fn debug_redacts_the_password() {
-    let runtime = RconRuntime::new(25575, true).unwrap();
+    let runtime = RconRuntime::new(25575, true, None).unwrap();
     let rendered = format!("{runtime:?}");
     assert!(
         rendered.contains("<redacted>"),

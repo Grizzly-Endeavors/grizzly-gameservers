@@ -1,0 +1,18 @@
+# Per-instance Valheim state (worlds + config) under /config. The ops agent
+# mutates files here live; it is friend state, not infra, and is never committed
+# to git. iscsi-zfs (default, RWO) is network block storage, so it reattaches
+# across nodes and the pod can still land anywhere. The server install lives in
+# the image's ephemeral /opt/valheim (re-fetched on a cold reschedule), so only
+# world state needs a volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valheim-data
+  namespace: game-servers
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: iscsi-zfs
+  resources:
+    requests:
+      storage: 5Gi
