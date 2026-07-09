@@ -9,6 +9,7 @@ mod client;
 mod instance;
 mod labels;
 mod naming;
+mod ports;
 mod provision;
 mod scope;
 mod supervisor;

@@ -12,13 +12,15 @@ use tracing::{debug, error, warn};
 
 use super::catalog::{GameCatalog, GameCatalogEntry};
 use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
-use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_node_port};
-use super::naming::{pvc_name, select_free_port};
+use super::labels::{GAME_KEY, GUILD_KEY, all_node_ports, is_managed, label_value};
+use super::naming::{pvc_name, select_free_ports};
+use super::ports::{assign, assignment_from_service, port_plan_from_service, ports_needed};
 use super::scope::ServerScope;
 use super::types::{GameServer, server_address};
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
-/// Services lease a port from here; the range bounds how many servers can run.
+/// Services lease their port(s) from here; the range bounds the **total** ports
+/// in use, so a multi-port (advertising) game consumes more than one of the slots.
 const PORT_RANGE: RangeInclusive<i32> = 7000..=7010;
 
 /// How long `/create` and `/start` wait for a server to report Ready before
@@ -148,15 +150,23 @@ async fn provision_under_lock(
     let mut excluded = BTreeSet::new();
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
 
+    // The game's Service template decides its port model: how many edge-band
+    // ports to lease and how each maps into the game's env. Parsed once up front.
+    let template: Service = serde_yaml_ng::from_str(&entry.service_yaml)
+        .with_context(|| format!("failed to parse service template for game {}", entry.id))?;
+    let plan = port_plan_from_service(&template)
+        .with_context(|| format!("invalid port plan for game {}", entry.id))?;
+    let needed = ports_needed(&plan);
+
     loop {
-        let Some(port) = select_free_port(&used, &excluded, PORT_RANGE) else {
+        let Some(leased) = select_free_ports(needed, &used, &excluded, PORT_RANGE) else {
             return Ok(Provisioned::PortsExhausted);
         };
         let identity = InstanceIdentity {
             name: instance.to_owned(),
             game: entry.id.clone(),
             namespace: namespace.to_owned(),
-            node_port: port,
+            ports: assign(plan.clone(), &leased)?,
             guild: guild.to_owned(),
             start_paused,
         };
@@ -167,11 +177,14 @@ async fn provision_under_lock(
                 // Concurrent /create calls racing for the same free port is the
                 // expected case this lease-and-retry loop exists to absorb, so it
                 // stays at debug — a normal race shouldn't read as an incident.
+                // The 422 doesn't say which of the leased ports collided, so
+                // exclude them all and retry higher; at friends-scale the 11-port
+                // band easily absorbs the occasional over-exclusion.
                 debug!(
-                    port,
-                    instance, "nodeport already taken, retrying with next free port"
+                    ?leased,
+                    instance, "nodeport already taken, retrying with next free ports"
                 );
-                excluded.insert(port);
+                excluded.extend(leased.iter().copied());
                 continue;
             }
             // A cross-replica race can slip past the upfront instance_exists check
@@ -184,12 +197,13 @@ async fn provision_under_lock(
             }
         }
 
+        let address = server_address(instance, domain, identity.ports.friend_facing_port());
         if let Err(err) = create_storage_and_server(client, namespace, entry, &identity).await {
             error!(error = ?err, instance, "create failed after service; rolling back");
             best_effort_remove(client, namespace, instance).await;
             return Err(err);
         }
-        return Ok(Provisioned::Created(server_address(instance, domain, port)));
+        return Ok(Provisioned::Created(address));
     }
 }
 
@@ -288,8 +302,11 @@ pub(crate) async fn begin_start(
     let Some(entry) = catalog.get(&game) else {
         return Ok(StartBegin::UnknownGame(game));
     };
-    let node_port = service_node_port(&service)
-        .with_context(|| format!("managed service {instance} has no nodeport"))?;
+    // Re-derive the port model straight off the surviving Service: its
+    // annotations carry the plan and its ports carry the leased numbers, so a
+    // stopped instance keeps its exact ports and env injection across a start.
+    let ports = assignment_from_service(&service)
+        .with_context(|| format!("managed service {instance} has an unusable port assignment"))?;
     // Carry the owning guild from the surviving Service so the recreated
     // GameServer keeps its scope; empty for a pre-scoping instance (label
     // absent), which leaves the guild label off rather than stamping "".
@@ -301,7 +318,7 @@ pub(crate) async fn begin_start(
         name: instance.to_owned(),
         game,
         namespace: namespace.to_owned(),
-        node_port,
+        ports,
         guild,
         // A cold `/start` resumes a normal server; only recover-from-archive pauses.
         start_paused: false,
@@ -318,7 +335,7 @@ pub(crate) async fn begin_start(
         }
     }
     Ok(StartBegin::Starting {
-        address: server_address(instance, domain, node_port),
+        address: server_address(instance, domain, identity.ports.friend_facing_port()),
     })
 }
 
@@ -414,12 +431,15 @@ async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
         .await
         .with_context(|| format!("failed to list services in namespace {namespace}"))?;
 
+    // Count every leased band port on every managed Service, not just the first —
+    // a multi-port advertised instance leases one per port, and missing its second
+    // would hand it out again to the next create.
     let mut ports = BTreeSet::new();
     for service in &list.items {
-        if let Some(port) = service_node_port(service)
-            && PORT_RANGE.contains(&port)
-        {
-            ports.insert(port);
+        for port in all_node_ports(service) {
+            if PORT_RANGE.contains(&port) {
+                ports.insert(port);
+            }
         }
     }
     Ok(ports)

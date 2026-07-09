@@ -54,30 +54,45 @@ fn overlong_name_is_rejected() {
 }
 
 #[test]
-fn select_free_port_returns_lowest_available() {
+fn select_one_free_port_returns_lowest_available() {
     let used = ports(&[7000, 7001, 7003]);
-    let port = select_free_port(&used, &BTreeSet::new(), 7000..=7010);
-    assert_eq!(port, Some(7002));
+    let port = select_free_ports(1, &used, &BTreeSet::new(), 7000..=7010);
+    assert_eq!(port, Some(vec![7002]));
 }
 
 #[test]
-fn select_free_port_skips_excluded_ports() {
+fn select_free_ports_skips_excluded_ports() {
     let used = ports(&[7000]);
     let excluded = ports(&[7001, 7002]);
-    let port = select_free_port(&used, &excluded, 7000..=7010);
-    assert_eq!(port, Some(7003));
+    let port = select_free_ports(1, &used, &excluded, 7000..=7010);
+    assert_eq!(port, Some(vec![7003]));
 }
 
 #[test]
-fn select_free_port_returns_none_when_range_is_full() {
+fn select_free_ports_returns_none_when_range_is_full() {
     let used: BTreeSet<i32> = (7000..=7010).collect();
-    let port = select_free_port(&used, &BTreeSet::new(), 7000..=7010);
+    let port = select_free_ports(1, &used, &BTreeSet::new(), 7000..=7010);
     assert_eq!(port, None);
 }
 
 #[test]
-fn select_free_port_ignores_out_of_range_used_ports() {
+fn select_free_ports_ignores_out_of_range_used_ports() {
     let used = ports(&[80, 443, 30000]);
-    let port = select_free_port(&used, &BTreeSet::new(), 7000..=7010);
-    assert_eq!(port, Some(7000));
+    let port = select_free_ports(1, &used, &BTreeSet::new(), 7000..=7010);
+    assert_eq!(port, Some(vec![7000]));
+}
+
+#[test]
+fn select_two_free_ports_returns_the_lowest_available_pair() {
+    let used = ports(&[7000, 7002]);
+    let picked = select_free_ports(2, &used, &BTreeSet::new(), 7000..=7010);
+    assert_eq!(picked, Some(vec![7001, 7003]));
+}
+
+#[test]
+fn select_free_ports_returns_none_when_band_cannot_satisfy_count() {
+    // Only one slot left (7010) but a two-port game needs two.
+    let used: BTreeSet<i32> = (7000..=7009).collect();
+    let picked = select_free_ports(2, &used, &BTreeSet::new(), 7000..=7010);
+    assert_eq!(picked, None);
 }

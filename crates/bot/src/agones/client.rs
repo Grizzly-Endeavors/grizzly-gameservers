@@ -8,10 +8,8 @@ use tracing::warn;
 
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
-use super::labels::{
-    GAME_KEY, GUILD_KEY, is_managed, label_value, node_ports_by_gameserver,
-    service_gameserver_target, service_node_port,
-};
+use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_gameserver_target};
+use super::ports::{friend_facing_node_port, node_ports_by_gameserver};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerSummary, summarize};
 
@@ -166,7 +164,7 @@ fn append_stopped_instances(
         if live.contains(target) {
             continue;
         }
-        let node_port = service_node_port(service);
+        let node_port = friend_facing_node_port(service);
         let game = label_value(service.metadata.labels.as_ref(), GAME_KEY);
         summaries.push(summarize(
             target,

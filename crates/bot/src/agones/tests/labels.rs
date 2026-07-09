@@ -26,6 +26,26 @@ fn service(gameserver: &str, node_port: Option<i32>) -> Service {
     }
 }
 
+/// A named Service port with an optional node port.
+fn named_port(name: &str, node_port: Option<i32>) -> ServicePort {
+    ServicePort {
+        name: Some(name.to_owned()),
+        node_port,
+        ..Default::default()
+    }
+}
+
+/// A multi-port Service exposing the given named node ports.
+fn multi_port_service(ports: &[(&str, Option<i32>)]) -> Service {
+    Service {
+        spec: Some(ServiceSpec {
+            ports: Some(ports.iter().map(|(n, np)| named_port(n, *np)).collect()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 #[test]
 fn managed_label_is_recognized() {
     let map = labels(&[(MANAGED_BY_KEY, MANAGED_BY_VALUE)]);
@@ -75,16 +95,26 @@ fn service_gameserver_target_reads_the_selector() {
 }
 
 #[test]
-fn node_ports_by_gameserver_maps_only_complete_services() {
-    let services = [
-        service("mc-one", Some(30001)),
-        service("mc-two", Some(30002)),
-        service("mc-noport", None), // dropped: no node port
-        Service::default(),         // dropped: no selector
-    ];
-    let map = node_ports_by_gameserver(&services);
-    assert_eq!(map.get("mc-one"), Some(&30001));
-    assert_eq!(map.get("mc-two"), Some(&30002));
-    assert_eq!(map.get("mc-noport"), None);
-    assert_eq!(map.len(), 2);
+fn node_port_named_finds_the_matching_port() {
+    let svc = multi_port_service(&[("game", Some(7003)), ("messaging", Some(7004))]);
+    assert_eq!(node_port_named(&svc, "game"), Some(7003));
+    assert_eq!(node_port_named(&svc, "messaging"), Some(7004));
+    assert_eq!(node_port_named(&svc, "absent"), None);
+    assert_eq!(node_port_named(&Service::default(), "game"), None);
+}
+
+#[test]
+fn all_node_ports_collects_every_leased_port() {
+    let svc = multi_port_service(&[("game", Some(7003)), ("messaging", Some(7004))]);
+    assert_eq!(all_node_ports(&svc), vec![7003, 7004]);
+    let partial = multi_port_service(&[("game", Some(7003)), ("control", None)]);
+    assert_eq!(all_node_ports(&partial), vec![7003]);
+    assert!(all_node_ports(&Service::default()).is_empty());
+}
+
+#[test]
+fn service_port_names_lists_named_ports() {
+    let svc = multi_port_service(&[("game", Some(7003)), ("messaging", Some(7004))]);
+    assert_eq!(service_port_names(&svc), vec!["game", "messaging"]);
+    assert!(service_port_names(&Service::default()).is_empty());
 }

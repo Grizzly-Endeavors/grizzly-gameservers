@@ -61,7 +61,108 @@ fn identity() -> InstanceIdentity {
         name: "minecraft-ab12".to_owned(),
         game: "minecraft".to_owned(),
         namespace: "game-servers".to_owned(),
-        node_port: 7003,
+        ports: PortAssignment::Remap(7003),
+        guild: "555".to_owned(),
+        start_paused: false,
+    }
+}
+
+const ADVERTISED_GAMESERVER_TEMPLATE: &str = "
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: satisfactory
+  namespace: game-servers
+spec:
+  container: satisfactory
+  ports:
+    - name: game
+      portPolicy: None
+      containerPort: 7777
+      protocol: UDP
+    - name: messaging
+      portPolicy: None
+      containerPort: 8888
+      protocol: TCP
+  template:
+    spec:
+      containers:
+        - name: satisfactory
+          ports:
+            - name: game
+              containerPort: 7777
+              protocol: UDP
+            - name: messaging
+              containerPort: 8888
+              protocol: TCP
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: satisfactory-data
+";
+
+const ADVERTISED_SERVICE_TEMPLATE: &str = "
+apiVersion: v1
+kind: Service
+metadata:
+  name: satisfactory
+  namespace: game-servers
+  annotations:
+    grizzly-gameservers.grizzly-endeavors.com/advertised-ports: game,messaging
+    grizzly-gameservers.grizzly-endeavors.com/friend-facing-port: game
+    grizzly-gameservers.grizzly-endeavors.com/port-env.game: SERVERGAMEPORT,SUPERVISOR_GAME_PORT
+    grizzly-gameservers.grizzly-endeavors.com/port-env.messaging: SERVERMESSAGINGPORT
+spec:
+  type: NodePort
+  selector:
+    agones.dev/gameserver: satisfactory
+  ports:
+    - name: game
+      port: 7777
+      targetPort: 7777
+      nodePort: 7777
+      protocol: UDP
+    - name: messaging
+      port: 8888
+      targetPort: 8888
+      nodePort: 8888
+      protocol: TCP
+";
+
+fn advertised_entry() -> GameCatalogEntry {
+    GameCatalogEntry {
+        id: "satisfactory".to_owned(),
+        gameserver_yaml: ADVERTISED_GAMESERVER_TEMPLATE.to_owned(),
+        service_yaml: ADVERTISED_SERVICE_TEMPLATE.to_owned(),
+        pvc_yaml: PVC_TEMPLATE.to_owned(),
+    }
+}
+
+fn advertised_identity() -> InstanceIdentity {
+    InstanceIdentity {
+        name: "satisfactory-xy99".to_owned(),
+        game: "satisfactory".to_owned(),
+        namespace: "game-servers".to_owned(),
+        ports: PortAssignment::Advertised(vec![
+            AssignedPort {
+                name: "game".to_owned(),
+                number: 7003,
+                env: vec![
+                    "SERVERGAMEPORT".to_owned(),
+                    "SUPERVISOR_GAME_PORT".to_owned(),
+                ],
+                friend_facing: true,
+            },
+            AssignedPort {
+                name: "messaging".to_owned(),
+                number: 7004,
+                env: vec!["SERVERMESSAGINGPORT".to_owned()],
+                friend_facing: false,
+            },
+        ]),
         guild: "555".to_owned(),
         start_paused: false,
     }
@@ -157,6 +258,85 @@ fn service_selects_instance_and_takes_leased_port() {
     );
     let port = spec.ports.as_ref().unwrap().first().unwrap();
     assert_eq!(port.node_port, Some(7003));
+}
+
+#[test]
+fn advertised_service_sets_nodeport_equal_to_targetport_per_named_port() {
+    let svc = render_service(&advertised_entry(), &advertised_identity()).unwrap();
+    let ports = svc.spec.as_ref().unwrap().ports.as_ref().unwrap();
+
+    let game = ports
+        .iter()
+        .find(|p| p.name.as_deref() == Some("game"))
+        .unwrap();
+    assert_eq!(game.node_port, Some(7003));
+    assert_eq!(game.port, 7003);
+    assert_eq!(
+        game.target_port,
+        Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(7003))
+    );
+
+    let messaging = ports
+        .iter()
+        .find(|p| p.name.as_deref() == Some("messaging"))
+        .unwrap();
+    assert_eq!(messaging.node_port, Some(7004));
+    assert_eq!(messaging.port, 7004);
+    assert_eq!(
+        messaging.target_port,
+        Some(k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(7004))
+    );
+}
+
+#[test]
+fn advertised_gameserver_rewrites_container_ports_and_injects_env() {
+    let gs = render_gameserver(&advertised_entry(), &advertised_identity()).unwrap();
+
+    // Agones spec.ports rewritten by name.
+    let agones_ports = gs
+        .data
+        .pointer("/spec/ports")
+        .and_then(Value::as_array)
+        .unwrap();
+    let agones_game = agones_ports
+        .iter()
+        .find(|p| p.get("name").and_then(Value::as_str) == Some("game"))
+        .unwrap();
+    assert_eq!(
+        agones_game.get("containerPort").and_then(Value::as_i64),
+        Some(7003)
+    );
+
+    // Pod container ports rewritten by name; the control port is left alone.
+    let container_ports = gs
+        .data
+        .pointer("/spec/template/spec/containers/0/ports")
+        .and_then(Value::as_array)
+        .unwrap();
+    let by_name = |name: &str| {
+        container_ports
+            .iter()
+            .find(|p| p.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(|p| p.get("containerPort").and_then(Value::as_i64))
+    };
+    assert_eq!(by_name("game"), Some(7003));
+    assert_eq!(by_name("messaging"), Some(7004));
+    assert_eq!(by_name("control"), Some(9359), "control port must not move");
+
+    // Env injected with the leased numbers as strings.
+    let env = gs
+        .data
+        .pointer("/spec/template/spec/containers/0/env")
+        .and_then(Value::as_array)
+        .unwrap();
+    let env_val = |key: &str| {
+        env.iter()
+            .find(|e| e.get("name").and_then(Value::as_str) == Some(key))
+            .and_then(|e| e.get("value").and_then(Value::as_str))
+    };
+    assert_eq!(env_val("SERVERGAMEPORT"), Some("7003"));
+    assert_eq!(env_val("SUPERVISOR_GAME_PORT"), Some("7003"));
+    assert_eq!(env_val("SERVERMESSAGINGPORT"), Some("7004"));
 }
 
 #[test]
