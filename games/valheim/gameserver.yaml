@@ -2,15 +2,16 @@
 # per `/create` into a uniquely-named instance (this name/labels are placeholders
 # the renderer overrides); nothing here runs until a friend asks for it.
 #
-# Valheim has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates it via
-# file edits + restart, not live console commands. It's also UDP-only, so the
-# supervisor signals Agones Ready off a log marker (SUPERVISOR_READY_LOG_PATTERN
-# in the Dockerfile) rather than a TCP connect probe.
+# Valheim has no native RCON, so the image bakes in BepInEx + the ValheimRcon mod
+# (Dockerfile) to give Gary live console commands and the supervisor a player count.
+# The RCON port is pod-internal (loopback) and never added to a NodePort Service.
+# Valheim is UDP-only for the game itself, so the supervisor still signals Agones
+# Ready off a log marker (SUPERVISOR_READY_LOG_PATTERN) rather than a TCP probe.
 #
 # The image bakes in the grizzly supervisor as its entrypoint (games/valheim/
 # Dockerfile): it launches lloesche's server as a child, owns the Agones SDK
 # lifecycle, and serves an in-pod control API on 9359 that the bot drives for
-# in-place stop/start/restart and Gary's file tools.
+# in-place stop/start/restart, Gary's file + console tools, and the auto-updater.
 #
 # Only the game port (2456/udp) is exposed. Friends join by direct connect
 # (IP:port), which uses the game port; the +1 query port only matters for the

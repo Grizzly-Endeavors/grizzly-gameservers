@@ -101,10 +101,37 @@ fn palworld_counts_showplayers_rows() {
 }
 
 #[test]
+fn valheim_parses_online_count_from_players_reply() {
+    let dialect = RconDialect::Valheim;
+    // ValheimRcon's `players` opens with "Online N", then one line per player.
+    assert_eq!(dialect.parse_player_count("Online 0\n"), Some(0));
+    assert_eq!(
+        dialect.parse_player_count("Online 2\nAlice (10,-5) Meadows\nBob (30,12) BlackForest\n"),
+        Some(2)
+    );
+}
+
+#[test]
+fn valheim_broadcasts_with_say() {
+    let command = broadcast_command("restarting soon", RconDialect::Valheim).unwrap();
+    assert_eq!(command, "say restarting soon");
+}
+
+#[test]
+fn valheim_dialect_parses_from_str() {
+    assert_eq!(
+        "valheim".parse::<RconDialect>().unwrap(),
+        RconDialect::Valheim
+    );
+    assert!("bogus".parse::<RconDialect>().is_err());
+}
+
+#[test]
 fn player_count_command_matches_dialect() {
     assert_eq!(RconDialect::Minecraft.player_count_command(), "list");
     assert_eq!(RconDialect::Source.player_count_command(), "/players");
     assert_eq!(RconDialect::Palworld.player_count_command(), "ShowPlayers");
+    assert_eq!(RconDialect::Valheim.player_count_command(), "players");
 }
 
 #[test]

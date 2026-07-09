@@ -2,9 +2,10 @@
 # valheim-server as its child. Lets /stop, /restart and crash-relaunch act on the
 # game *process* in place. See games/minecraft/Dockerfile for the worked reference.
 #
-# Valheim has no RCON or any console protocol the supervisor speaks, so this game
-# runs *without* live console commands: Gary operates it via file edits and
-# stop/start/restart, not in-game commands.
+# Valheim has no native RCON, so this image bakes in BepInEx + the ValheimRcon mod
+# (see the modfetch stage and valheim-seed-rcon.sh) to give the supervisor a real
+# console: Gary can run in-game commands and broadcasts, and the update-on-empty
+# loop reads the live player count — the same capabilities the RCON games have.
 #
 # The build context is the repository ROOT (the supervisor is a workspace crate):
 #
@@ -34,6 +35,23 @@ RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-supe
 COPY . .
 RUN cargo build --release --locked -p grizzly-supervisor
 
+# Fetch the ValheimRcon BepInEx plugin at build time, pinned by version + sha256 so
+# the baked DLL is reproducible and tamper-evident (it's an unsigned third-party
+# artifact, like the game base itself — ADR-003 carve-out). Reuses the pinned rust
+# base rather than pulling a second image just for curl/unzip. Bump the version and
+# hash together; latest is published on Thunderstore.
+# nosemgrep: dockerfile.best-practice.missing-image-version -- reuses the digest-pinned chef stage.
+FROM chef AS modfetch
+ARG VALHEIM_RCON_VERSION=1.5.1
+ARG VALHEIM_RCON_SHA256=0f74ec85f07ec7c1a4c8e97e29ee86b11ed0a186a17d6f698da089ab4f74012a
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL -o /tmp/rcon.zip \
+        "https://thunderstore.io/package/download/Tristan/ValheimRcon/${VALHEIM_RCON_VERSION}/" \
+    && printf '%s  /tmp/rcon.zip\n' "$VALHEIM_RCON_SHA256" | sha256sum -c - \
+    && mkdir -p /out && unzip -j /tmp/rcon.zip ValheimRcon.dll -d /out \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/rcon.zip
+
 # Upstream lloesche valheim-server pinned by digest (tag: latest). Its bootstrap
 # runs as root then execs `tini -- supervisord`, which manages the valheim-server
 # process and stops it gracefully (world save) on SIGTERM — tini forwards the
@@ -47,14 +65,36 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends zstd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
+# Baked ValheimRcon plugin + the hook that installs it. The hook (a lloesche
+# PRE_SERVER_RUN_HOOK) runs after BepInEx is set up on the PVC and before each
+# server start, dropping the DLL into the plugins dir and seeding its RCON config.
+COPY --from=modfetch /out/ValheimRcon.dll /opt/valheim-plugins/ValheimRcon.dll
+COPY games/valheim/valheim-seed-rcon.sh /usr/local/bin/valheim-seed-rcon
+RUN chmod +x /usr/local/bin/valheim-seed-rcon
 # The supervisor launches lloesche's bootstrap (which execs supervisord).
 ENV SUPERVISOR_CHILD_CMD=/usr/local/sbin/bootstrap
 # Valheim's worlds and config live under /config; scope Gary's file tools there.
 ENV SUPERVISOR_DATA_DIR=/config
-# Readiness: Valheim is UDP-only and never opens a TCP port the connect probe
-# could reach, so readiness is signalled off the server's log instead — this
-# marker is what the Valheim server prints once it's registered and joinable.
-# Tune it here if a Valheim update changes the wording.
+# Load BepInEx so the baked ValheimRcon plugin runs; lloesche installs BepInExPack
+# onto the /config PVC on boot (config in /config/bepinex, plugins in
+# /config/bepinex/plugins). Cannot be combined with VALHEIM_PLUS.
+ENV BEPINEX=true
+# Install + configure the RCON plugin at the correct point in lloesche's start
+# sequence (after BepInEx, before the server). See valheim-seed-rcon.sh.
+ENV PRE_SERVER_RUN_HOOK=/usr/local/bin/valheim-seed-rcon
+# RCON via the ValheimRcon mod: the supervisor speaks the `valheim` dialect (Source
+# framing, single-packet replies, `say` broadcasts, `players` for the online count)
+# to the mod's loopback port. The seed hook writes this port + the minted password
+# (injected as VALHEIM_RCON_PASSWORD) into the plugin's BepInEx config, so RCON
+# comes up on exactly what the supervisor authenticates with. The port is
+# pod-internal — never added to a NodePort Service.
+ENV SUPERVISOR_RCON_PORT=27015
+ENV SUPERVISOR_RCON_DIALECT=valheim
+ENV SUPERVISOR_RCON_PASSWORD_ENV=VALHEIM_RCON_PASSWORD
+# Readiness stays on the log marker: the RCON port binds during mod init, which can
+# lead the world actually being joinable, so the log line remains the truthful
+# "players can connect now" signal. This marker is what the Valheim server prints
+# once it's registered and joinable; tune it here if a Valheim update changes it.
 ENV SUPERVISOR_READY_LOG_PATTERN="Game server connected"
 # Valheim's graceful save can run past the 90s default; give it room before SIGKILL.
 ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=120
