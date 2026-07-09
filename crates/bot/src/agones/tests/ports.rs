@@ -199,3 +199,25 @@ fn node_ports_by_gameserver_uses_the_friend_facing_port() {
     let map = node_ports_by_gameserver(&[svc]);
     assert_eq!(map.get("sf-abc"), Some(&7003));
 }
+
+/// Guards the contract between the real `games/satisfactory/service.yaml`
+/// annotations and this parser, so a manifest typo (or a renamed port) is caught
+/// here rather than only at `/create` time.
+#[test]
+fn real_satisfactory_manifest_is_on_the_advertise_path() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../games/satisfactory/service.yaml"
+    );
+    let yaml = std::fs::read_to_string(path).unwrap();
+    let svc: Service = serde_yaml_ng::from_str(&yaml).unwrap();
+    let PortPlan::Advertised(ports) = port_plan_from_service(&svc).unwrap() else {
+        panic!("satisfactory should be on the advertise path");
+    };
+    let names: Vec<&str> = ports.iter().map(|port| port.name.as_str()).collect();
+    assert_eq!(names, ["game", "messaging"]);
+    let game = ports.iter().find(|port| port.name == "game").unwrap();
+    assert!(game.friend_facing, "game is the friend-facing port");
+    assert!(game.env.contains(&"SERVERGAMEPORT".to_owned()));
+    assert!(game.env.contains(&"SUPERVISOR_GAME_PORT".to_owned()));
+}
