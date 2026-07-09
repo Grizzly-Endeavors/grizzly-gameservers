@@ -1,7 +1,19 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Rendered by the grizzly-gameservers-games Flux Kustomization (path ./games),
-# which dependsOn grizzly-gameservers-cluster so Agones CRDs exist before these
-# GameServer CRs apply. _template/ is a doc skeleton, not a kustomize resource.
-resources:
-  - minecraft
+# Rendered by the grizzly-gameservers-games Flux Kustomization (path ./games,
+# prune: true). This is the *always-on* set — GameServers Flux stands up and
+# keeps running regardless of demand.
+#
+# It is intentionally empty: every game in this project is provisioned on demand.
+# A friend issues a Discord command, the bot renders that game's templates from
+# games/<id>/ into a uniquely-named instance on a leased NodePort, and tears it
+# down when they're done. Nothing is meant to run 24/7. The always-on minecraft
+# server that used to live here was bring-up test cruft; it was decommissioned
+# once dynamic provisioning was proven (Flux pruned its GameServer, Service and
+# world PVC when this list was emptied).
+#
+# games/<id>/ directories still exist and are the on-demand catalog: the bot
+# reads every one of them from the copy baked into its image, so a game is
+# provisionable whether or not it is listed here. Add an entry here only to
+# resurrect a genuinely always-on server.
+resources: []
