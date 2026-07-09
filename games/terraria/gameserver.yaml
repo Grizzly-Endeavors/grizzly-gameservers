@@ -1,0 +1,74 @@
+# Terraria catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
+#
+# Vanilla Terraria has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates
+# it via file edits + restart, not live console commands.
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/terraria/
+# Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle
+# (calls /ready once the game's TCP port accepts connections on 7777, then keeps
+# /health pinged), and serves an in-pod control API on 9359 that the bot drives
+# for in-place stop/start/restart and Gary's file tools.
+#
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance.
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: terraria
+  namespace: game-servers
+spec:
+  container: terraria
+  ports:
+    - name: terraria
+      portPolicy: None
+      containerPort: 7777
+      protocol: TCP
+  health:
+    # First boot generates the world before the server binds; give it room before
+    # Agones health-gates it.
+    initialDelaySeconds: 180
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: terraria
+    # Pod hardening deferred, matching the other game pods (supervisor as PID 1,
+    # root at startup). NOT in the bot deploy path; rootless hardening is tracked
+    # with game-image CI signing and the Agones carve-out (ADR-003).
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        - name: terraria
+          # Composite image: grizzly supervisor (PID 1) wrapping Terraria's server.
+          # CI replaces the tag with the gate-signed digest (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-terraria:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          imagePullPolicy: Always
+          ports:
+            - name: terraria
+              containerPort: 7777
+              protocol: TCP
+            # Pod-internal control API the bot reaches over the cluster network.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            # Terraria is light relative to the other games.
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: terraria-data
