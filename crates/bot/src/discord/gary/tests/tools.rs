@@ -2,55 +2,81 @@ use crate::agones::{DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, Superviso
 
 use super::*;
 
-fn tool_names(is_admin: bool) -> Vec<String> {
-    available_tools(is_admin)
+fn tool_names(access: AccessLevel) -> Vec<String> {
+    available_tools(access)
         .into_iter()
         .map(|tool| tool.function.name)
         .collect()
 }
 
+/// The tools reserved for admins — never offered to a manager or read-only
+/// caller. Kept next to the tier tests so a newly added admin tool is checked.
+const ADMIN_ONLY: [&str; 5] = [
+    DESTROY_SERVER,
+    SEND_COMMAND,
+    ARCHIVE_SERVER,
+    RESTORE_SERVER,
+    RECOVER_SERVER,
+];
+
+/// The lifecycle and file tools a manager gets on top of the read-only set.
+const MANAGER_ADDED: [&str; 13] = [
+    CREATE_SERVER,
+    STOP_SERVER,
+    START_SERVER,
+    RESTART_SERVER,
+    SHUTDOWN_SERVER,
+    BROWSE_FILES,
+    READ_FILE,
+    READ_LOGS,
+    WRITE_FILE,
+    EDIT_FILE,
+    RESTORE_FILE,
+    WAIT_FOR_SERVER,
+    BACKUP_SERVER,
+];
+
 #[test]
-fn non_admins_get_only_read_only_tools() {
-    let names = tool_names(false);
+fn read_only_callers_get_only_the_read_only_tools() {
+    let names = tool_names(AccessLevel::ReadOnly);
     assert_eq!(
         names,
         vec![LIST_SERVERS, SERVER_STATUS, LIST_BACKUPS, LIST_ARCHIVES]
     );
-    assert!(
-        !names
-            .iter()
-            .any(|name| name == CREATE_SERVER || name == DESTROY_SERVER),
-        "read-only tier must not expose any mutating tool"
+    for reserved in MANAGER_ADDED.iter().chain(ADMIN_ONLY.iter()) {
+        assert!(
+            !names.iter().any(|name| name == reserved),
+            "read-only tier must not expose {reserved}"
+        );
+    }
+}
+
+#[test]
+fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
+    let names = tool_names(AccessLevel::Manager);
+    for expected in MANAGER_ADDED {
+        assert!(
+            names.iter().any(|name| name == expected),
+            "managers should get {expected}"
+        );
+    }
+    for reserved in ADMIN_ONLY {
+        assert!(
+            !names.iter().any(|name| name == reserved),
+            "{reserved} must not be offered to managers"
+        );
+    }
+    assert_eq!(
+        names.len(),
+        17,
+        "four read tools plus the thirteen manager lifecycle/file tools"
     );
 }
 
 #[test]
 fn admins_get_the_full_lifecycle_and_filesystem_set() {
-    let names = tool_names(true);
-    for expected in [
-        LIST_SERVERS,
-        SERVER_STATUS,
-        CREATE_SERVER,
-        STOP_SERVER,
-        START_SERVER,
-        RESTART_SERVER,
-        SHUTDOWN_SERVER,
-        DESTROY_SERVER,
-        BROWSE_FILES,
-        READ_FILE,
-        READ_LOGS,
-        WRITE_FILE,
-        EDIT_FILE,
-        RESTORE_FILE,
-        SEND_COMMAND,
-        WAIT_FOR_SERVER,
-        LIST_BACKUPS,
-        LIST_ARCHIVES,
-        BACKUP_SERVER,
-        ARCHIVE_SERVER,
-        RESTORE_SERVER,
-        RECOVER_SERVER,
-    ] {
+    let names = tool_names(AccessLevel::Admin);
+    for expected in MANAGER_ADDED.iter().chain(ADMIN_ONLY.iter()) {
         assert!(
             names.iter().any(|name| name == expected),
             "missing {expected}"
@@ -59,7 +85,7 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     assert_eq!(
         names.len(),
         22,
-        "the two read tools, two backup listers, eight lifecycle, six filesystem, send_command, wait_for_server, and the four backup actions"
+        "the four read tools, thirteen manager tools, and five admin-only tools"
     );
 }
 
@@ -70,7 +96,7 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // create_server/recover_server make a new server stamped with the channel.
     // Derived from the live tool set so a newly added tool can't slip past the
     // gate without this failing.
-    for name in tool_names(true) {
+    for name in tool_names(AccessLevel::Admin) {
         let should_gate = name != LIST_SERVERS
             && name != CREATE_SERVER
             && name != LIST_ARCHIVES
@@ -89,8 +115,11 @@ fn unknown_tool_is_not_scope_gated() {
 }
 
 #[test]
-fn filesystem_tools_are_admin_only() {
-    let names = tool_names(false);
+fn filesystem_tools_are_manager_and_up() {
+    // File tools power day-to-day troubleshooting, so managers get them — but
+    // read-only callers never do.
+    let read_only = tool_names(AccessLevel::ReadOnly);
+    let managers = tool_names(AccessLevel::Manager);
     for tool in [
         BROWSE_FILES,
         READ_FILE,
@@ -101,20 +130,28 @@ fn filesystem_tools_are_admin_only() {
         WAIT_FOR_SERVER,
     ] {
         assert!(
-            !names.iter().any(|name| name == tool),
-            "{tool} must not be offered to non-admins"
+            !read_only.iter().any(|name| name == tool),
+            "{tool} must not be offered to read-only callers"
+        );
+        assert!(
+            managers.iter().any(|name| name == tool),
+            "{tool} should be offered to managers"
         );
     }
 }
 
 #[test]
 fn send_command_is_admin_only() {
+    for tier in [AccessLevel::ReadOnly, AccessLevel::Manager] {
+        assert!(
+            !tool_names(tier).iter().any(|name| name == SEND_COMMAND),
+            "send_command must not be offered below the admin tier"
+        );
+    }
     assert!(
-        !tool_names(false).iter().any(|name| name == SEND_COMMAND),
-        "send_command must not be offered to non-admins"
-    );
-    assert!(
-        tool_names(true).iter().any(|name| name == SEND_COMMAND),
+        tool_names(AccessLevel::Admin)
+            .iter()
+            .any(|name| name == SEND_COMMAND),
         "send_command must be offered to admins"
     );
 }

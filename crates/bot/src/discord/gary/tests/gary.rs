@@ -35,25 +35,47 @@ fn empty_after_stripping_is_empty() {
 
 #[test]
 fn admin_prompt_describes_mutations_and_confirmation() {
-    let prompt = build_system_prompt(true, "minecraft, valheim");
+    let prompt = build_system_prompt(AccessLevel::Admin, "minecraft, valheim");
     assert!(prompt.contains("admin"));
     assert!(
         prompt.contains("confirm"),
         "destructive guardrail must be stated"
     );
+    assert!(
+        prompt.contains("send_command"),
+        "admins get the console-command tool"
+    );
     assert!(prompt.contains("minecraft") && prompt.contains("valheim"));
 }
 
 #[test]
+fn manager_prompt_grants_lifecycle_and_files_but_reserves_destruction() {
+    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft");
+    assert!(prompt.contains("day-to-day"), "manager can operate servers");
+    assert!(
+        prompt.contains("edit_file"),
+        "manager gets the file-editing troubleshooting tools"
+    );
+    assert!(
+        prompt.contains("reserved for admins"),
+        "manager must be told destructive actions need an admin"
+    );
+    assert!(
+        !prompt.contains("send_command"),
+        "manager must not be offered console commands"
+    );
+}
+
+#[test]
 fn read_only_prompt_scopes_to_lookups() {
-    let prompt = build_system_prompt(false, "minecraft");
-    assert!(prompt.contains("cannot"), "non-admin can't mutate");
-    assert!(prompt.contains("admin has to"));
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft");
+    assert!(prompt.contains("cannot"), "read-only caller can't mutate");
+    assert!(prompt.contains("manager or admin has to"));
 }
 
 #[test]
 fn empty_catalog_renders_as_none() {
-    let prompt = build_system_prompt(false, "");
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "");
     assert!(prompt.contains("(none)"));
 }
 

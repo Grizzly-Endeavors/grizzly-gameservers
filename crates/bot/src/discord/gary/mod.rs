@@ -1,9 +1,12 @@
 //! Gary, the Discord-facing ops agent. An `@mention` runs a tool-calling session
 //! against the configured model — continuing this person's recent conversation
 //! in the channel when one is still live (see [`crate::agent::SessionStore`]),
-//! else starting fresh. Anyone may ask, but only admins are handed the mutating
-//! tools. This is the Discord shell — the model client and loop live in
-//! `crate::agent`, the tool executors in [`tools`].
+//! else starting fresh. Anyone may ask, but the tools handed to the model are
+//! scoped to the caller's tier (see [`super::auth::AccessLevel`]): read-only
+//! lookups for everyone, the day-to-day lifecycle and file-editing set for
+//! managers, and the destructive tools plus console commands for admins. This is
+//! the Discord shell — the model client and loop live in `crate::agent`, the
+//! tool executors in [`tools`].
 
 mod tools;
 
@@ -18,7 +21,7 @@ use serenity::CreateMessage;
 use tokio::sync::watch;
 use tracing::{error, trace, warn};
 
-use super::auth::{AdminCheck, is_authorized};
+use super::auth::{AccessCheck, AccessLevel, access_level};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
@@ -160,16 +163,16 @@ async fn handle_message(
         .await;
         return;
     };
-    let is_admin = caller_is_admin(ctx, data, message).await;
-    let tool_defs = tools::available_tools(is_admin);
+    let access = caller_access_level(ctx, data, message).await;
+    let tool_defs = tools::available_tools(access);
     let games = game_catalog_list(data);
 
     // Continue this person's conversation in this channel if it's still live,
     // else start fresh; the appended user turn is what the model answers.
     let key = (message.channel_id.get(), message.author.id.get());
-    let mut messages = data.sessions.checkout(key, Instant::now(), || {
-        build_system_prompt(is_admin, &games)
-    });
+    let mut messages = data
+        .sessions
+        .checkout(key, Instant::now(), || build_system_prompt(access, &games));
     messages.push(ChatMessage::user(prompt));
 
     let tool_ctx = tools::ToolCtx {
@@ -178,7 +181,7 @@ async fn handle_message(
         channel_id: message.channel_id,
         guild: message.guild_id.map(serenity::GuildId::get),
         author_id: message.author.id,
-        is_admin,
+        access,
         scope,
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the
@@ -289,21 +292,20 @@ fn extract_prompt(content: &str, bot_id: serenity::UserId) -> String {
         .to_owned()
 }
 
-/// Whether the message author may use the mutating tools — the same gate the
-/// slash commands enforce: a cross-guild operator, the guild owner, or a
-/// DB-configured admin (user or role) for this guild. A non-operator with no
-/// guild (a DM) is never an admin.
-async fn caller_is_admin(
+/// The message author's access tier — the same policy the slash commands
+/// enforce (see [`access_level`]). A cross-guild operator is admin everywhere; a
+/// non-operator with no guild (a DM) is read-only.
+async fn caller_access_level(
     ctx: &serenity::Context,
     data: &Data,
     message: &serenity::Message,
-) -> bool {
+) -> AccessLevel {
     let user = message.author.id.get();
     if data.operator_ids.contains(&user) {
-        return true;
+        return AccessLevel::Admin;
     }
     let Some(guild_id) = message.guild_id else {
-        return false;
+        return AccessLevel::ReadOnly;
     };
     let roles: Vec<u64> = message
         .member
@@ -312,12 +314,14 @@ async fn caller_is_admin(
         .unwrap_or_default();
     let guild_owner = guild_owner_id(ctx, guild_id).await;
     let guild_admins = data.guild_config.admins(guild_id.get()).await;
-    is_authorized(&AdminCheck {
+    let guild_managers = data.guild_config.managers(guild_id.get()).await;
+    access_level(&AccessCheck {
         user,
         roles: &roles,
         guild_owner,
         operators: &data.operator_ids,
         guild_admins: &guild_admins,
+        guild_managers: &guild_managers,
     })
 }
 
@@ -341,9 +345,11 @@ fn game_catalog_list(data: &Data) -> String {
     data.catalog.game_ids().collect::<Vec<_>>().join(", ")
 }
 
-/// Gary's instructions. The admin variant mentions the mutating tools and the
-/// confirm-before-destroy contract; the read-only variant scopes him to lookups.
-fn build_system_prompt(is_admin: bool, games: &str) -> String {
+/// Gary's instructions, tailored to the caller's tier. Managers and admins both
+/// get the lifecycle and file-tuning tools; admins additionally get the
+/// destructive tools and console commands; read-only callers are scoped to
+/// lookups.
+fn build_system_prompt(access: AccessLevel, games: &str) -> String {
     let mut prompt = String::from(
         "You are Gary, an automaton that manages game servers for a group of friends on Discord. \
          You speak with stark, literal directness in a flat, even tone — no flattery, no pretense, \
@@ -365,12 +371,11 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
     );
     prompt.push_str("\n\nAvailable games to launch: ");
     prompt.push_str(if games.is_empty() { "(none)" } else { games });
-    if is_admin {
+    if access >= AccessLevel::Manager {
         prompt.push_str(
-            "\n\nThis person is an admin: you may create, stop, start, restart, and shut down \
-             servers for them. Deleting a server (destroy) destroys its world permanently and \
-             always asks them to confirm with a button first — describe what you're about to \
-             delete before you call it, and respect their answer.",
+            "\n\nThis person can run this server day-to-day: you may create, stop, start, \
+             restart, and shut down servers for them, and take a backup (backup_server) before a \
+             risky change.",
         );
         prompt.push_str(
             "\n\nYou can also reach inside a running server to inspect and tune it. Every game \
@@ -386,6 +391,15 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
              restart to put it back the way it was. Make one change at a time so you can tell what \
              worked. If you can't get it healthy, say so plainly and stop rather than thrashing.",
         );
+    }
+    if access >= AccessLevel::Admin {
+        prompt.push_str(
+            "\n\nThis person is an admin, so you can also do the destructive and heavy-handed \
+             things. Deleting a server (destroy) destroys its world permanently and always asks \
+             them to confirm with a button first — describe what you're about to delete before you \
+             call it, and respect their answer. archive_server and restore_server likewise post a \
+             confirmation the user must approve; recover_server brings an archived server back.",
+        );
         prompt.push_str(
             "\n\nOn games that support it, send_command runs an in-game console command over RCON \
              (like list, say, or whitelist) and takes effect immediately — use it for live \
@@ -393,11 +407,17 @@ fn build_system_prompt(is_admin: bool, games: &str) -> String {
              server doesn't have RCON enabled, send_command will say so; fall back to editing files \
              and restarting.",
         );
+    } else if access >= AccessLevel::Manager {
+        prompt.push_str(
+            "\n\nSome things are reserved for admins: deleting a server (destroy), archiving or \
+             restoring a world, and running in-game console commands. If they ask for one of those, \
+             state plainly that an admin has to do it.",
+        );
     } else {
         prompt.push_str(
-            "\n\nThis person is not an admin: you can look up servers and their status for them, \
-             but you cannot create, change, or delete anything. If they ask for one of those, \
-             state plainly that an admin has to do it.",
+            "\n\nThis person can look up servers and their status, but cannot create, change, or \
+             delete anything. If they ask for one of those, state plainly that a manager or admin \
+             has to do it.",
         );
     }
     prompt

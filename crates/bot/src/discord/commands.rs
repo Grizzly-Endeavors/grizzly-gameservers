@@ -6,7 +6,7 @@ use serenity::{
 };
 use tracing::{error, warn};
 
-use super::auth::{require_admin, visibility_scope};
+use super::auth::{require_admin, require_manager, visibility_scope};
 use super::render::{
     archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
     backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
@@ -93,7 +93,7 @@ pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// Spin up a new game server. Pick the game from the menu that appears.
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn create(
     ctx: Context<'_>,
     #[description = "Optional name for this world"] name: Option<String>,
@@ -300,7 +300,7 @@ async fn await_ready(
 }
 
 /// Pause a server — keep it warm so /start resumes in seconds. World is saved.
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn stop(
     ctx: Context<'_>,
     #[description = "Which server to pause"]
@@ -344,7 +344,7 @@ pub(crate) async fn stop(
 }
 
 /// Fully shut a server down to free the slot, keeping the world so /start can bring it back.
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn shutdown(
     ctx: Context<'_>,
     #[description = "Which server to shut down"]
@@ -380,7 +380,7 @@ pub(crate) async fn shutdown(
 }
 
 /// Restart a running server in place — a quick reboot that keeps the world and address.
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn restart(
     ctx: Context<'_>,
     #[description = "Which server to restart"]
@@ -424,7 +424,7 @@ pub(crate) async fn restart(
 }
 
 /// Start a server: a paused one resumes in seconds, a shut-down one is rescheduled (slower).
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn start(
     ctx: Context<'_>,
     #[description = "Which server to start"]
@@ -685,10 +685,17 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Configure who can manage this Discord server's game servers.
+/// Configure who can administer and who can operate this Discord server's game
+/// servers.
 #[poise::command(
     slash_command,
-    subcommands("config_view", "config_admin_role", "config_admin_user")
+    subcommands(
+        "config_view",
+        "config_admin_role",
+        "config_admin_user",
+        "config_manager_role",
+        "config_manager_user"
+    )
 )]
 pub(crate) async fn config(ctx: Context<'_>) -> Result<(), Error> {
     // Discord always resolves a subcommand, so this parent body is defensive.
@@ -701,7 +708,8 @@ async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
     ctx.send(
         reply_with(neutral_embed(
             "Pick an option",
-            "Use `/config view`, `/config admin-role`, or `/config admin-user`.",
+            "Use `/config view`, `/config admin-role`, `/config admin-user`, \
+             `/config manager-role`, or `/config manager-user`.",
         ))
         .ephemeral(true),
     )
@@ -709,7 +717,8 @@ async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Show this Discord server's admins (roles and users) and config status.
+/// Show this Discord server's admins and managers (roles and users) and config
+/// status.
 #[poise::command(slash_command, rename = "view", check = "require_admin")]
 async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
@@ -719,12 +728,19 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     };
     let config = &ctx.data().guild_config;
     let admins = config.admins(guild.get()).await;
-    let roles = mention_list(&admins.roles, |id| format!("<@&{id}>"));
-    let users = mention_list(&admins.users, |id| format!("<@{id}>"));
+    let managers = config.managers(guild.get()).await;
+    let admin_roles = mention_list(&admins.roles, |id| format!("<@&{id}>"));
+    let admin_users = mention_list(&admins.users, |id| format!("<@{id}>"));
+    let manager_roles = mention_list(&managers.roles, |id| format!("<@&{id}>"));
+    let manager_users = mention_list(&managers.users, |id| format!("<@{id}>"));
     let mut body = format!(
-        "**Admin roles:** {roles}\n**Admin users:** {users}\n\n\
-         The Discord server's owner and the bot operator can always manage servers. \
-         Game servers are shared across the whole Discord server, not per-channel.",
+        "**Admin roles:** {admin_roles}\n**Admin users:** {admin_users}\n\
+         **Manager roles:** {manager_roles}\n**Manager users:** {manager_users}\n\n\
+         Admins can do everything, including deleting servers and changing this config. \
+         Managers can run servers day-to-day — create, start, stop, restart, and back up — \
+         but can't delete a server or change who has access. The Discord server's owner and \
+         the bot operator are always admins. Game servers are shared across the whole Discord \
+         server, not per-channel.",
     );
     if !config.is_available() {
         body.push_str(
@@ -732,12 +748,12 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
              are recognized until it reconnects.",
         );
     }
-    ctx.send(reply_with(neutral_embed("Server admins", &body)).ephemeral(true))
+    ctx.send(reply_with(neutral_embed("Server access", &body)).ephemeral(true))
         .await?;
     Ok(())
 }
 
-/// Manage which roles can administer this server's game servers.
+/// Manage which roles can administer this server's game servers (full control).
 #[poise::command(
     slash_command,
     rename = "admin-role",
@@ -747,7 +763,7 @@ async fn config_admin_role(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a role manage this Discord server's game servers.
+/// Let a role administer this Discord server's game servers (full control).
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_admin_role_add(
     ctx: Context<'_>,
@@ -763,10 +779,16 @@ async fn config_admin_role_add(
         .guild_config
         .add_admin_role(guild.get(), role.id.get())
         .await;
-    respond_config_change(ctx, change, &format!("The **{}** role", role.name)).await
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Admin,
+        &format!("The **{}** role", role.name),
+    )
+    .await
 }
 
-/// Stop letting a role manage this Discord server's game servers.
+/// Stop letting a role administer this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_admin_role_remove(
     ctx: Context<'_>,
@@ -782,10 +804,16 @@ async fn config_admin_role_remove(
         .guild_config
         .remove_admin_role(guild.get(), role.id.get())
         .await;
-    respond_config_change(ctx, change, &format!("The **{}** role", role.name)).await
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Admin,
+        &format!("The **{}** role", role.name),
+    )
+    .await
 }
 
-/// Manage which people can administer this server's game servers.
+/// Manage which people can administer this server's game servers (full control).
 #[poise::command(
     slash_command,
     rename = "admin-user",
@@ -795,7 +823,7 @@ async fn config_admin_user(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a person manage this Discord server's game servers.
+/// Let a person administer this Discord server's game servers (full control).
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_admin_user_add(
     ctx: Context<'_>,
@@ -811,10 +839,10 @@ async fn config_admin_user_add(
         .guild_config
         .add_admin_user(guild.get(), user.id.get())
         .await;
-    respond_config_change(ctx, change, &format!("**{}**", user.name)).await
+    respond_grant_change(ctx, change, GrantRole::Admin, &format!("**{}**", user.name)).await
 }
 
-/// Stop letting a person manage this Discord server's game servers.
+/// Stop letting a person administer this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_admin_user_remove(
     ctx: Context<'_>,
@@ -830,7 +858,127 @@ async fn config_admin_user_remove(
         .guild_config
         .remove_admin_user(guild.get(), user.id.get())
         .await;
-    respond_config_change(ctx, change, &format!("**{}**", user.name)).await
+    respond_grant_change(ctx, change, GrantRole::Admin, &format!("**{}**", user.name)).await
+}
+
+/// Manage which roles can operate this server's game servers day-to-day.
+#[poise::command(
+    slash_command,
+    rename = "manager-role",
+    subcommands("config_manager_role_add", "config_manager_role_remove")
+)]
+async fn config_manager_role(ctx: Context<'_>) -> Result<(), Error> {
+    config_group_hint(ctx).await
+}
+
+/// Let a role operate this Discord server's game servers day-to-day.
+#[poise::command(slash_command, rename = "add", check = "require_admin")]
+async fn config_manager_role_add(
+    ctx: Context<'_>,
+    #[description = "Role to grant server-manager"] role: serenity::Role,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .add_manager_role(guild.get(), role.id.get())
+        .await;
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Manager,
+        &format!("The **{}** role", role.name),
+    )
+    .await
+}
+
+/// Stop letting a role operate this Discord server's game servers.
+#[poise::command(slash_command, rename = "remove", check = "require_admin")]
+async fn config_manager_role_remove(
+    ctx: Context<'_>,
+    #[description = "Role to revoke server-manager from"] role: serenity::Role,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .remove_manager_role(guild.get(), role.id.get())
+        .await;
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Manager,
+        &format!("The **{}** role", role.name),
+    )
+    .await
+}
+
+/// Manage which people can operate this server's game servers day-to-day.
+#[poise::command(
+    slash_command,
+    rename = "manager-user",
+    subcommands("config_manager_user_add", "config_manager_user_remove")
+)]
+async fn config_manager_user(ctx: Context<'_>) -> Result<(), Error> {
+    config_group_hint(ctx).await
+}
+
+/// Let a person operate this Discord server's game servers day-to-day.
+#[poise::command(slash_command, rename = "add", check = "require_admin")]
+async fn config_manager_user_add(
+    ctx: Context<'_>,
+    #[description = "Person to grant server-manager"] user: serenity::User,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .add_manager_user(guild.get(), user.id.get())
+        .await;
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Manager,
+        &format!("**{}**", user.name),
+    )
+    .await
+}
+
+/// Stop letting a person operate this Discord server's game servers.
+#[poise::command(slash_command, rename = "remove", check = "require_admin")]
+async fn config_manager_user_remove(
+    ctx: Context<'_>,
+    #[description = "Person to revoke server-manager from"] user: serenity::User,
+) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let change = ctx
+        .data()
+        .guild_config
+        .remove_manager_user(guild.get(), user.id.get())
+        .await;
+    respond_grant_change(
+        ctx,
+        change,
+        GrantRole::Manager,
+        &format!("**{}**", user.name),
+    )
+    .await
 }
 
 /// Join a set of ids into a Discord mention list, or an em dash when empty.
@@ -844,20 +992,47 @@ fn mention_list(ids: &std::collections::HashSet<u64>, mention: impl Fn(u64) -> S
         .join(", ")
 }
 
-/// The reply for a `/config` mutation, mapping the store outcome to plain text.
-async fn respond_config_change(
+/// Which access tier a `/config` grant mutation targets — picks the wording of
+/// the confirmation reply.
+#[derive(Clone, Copy)]
+enum GrantRole {
+    Admin,
+    Manager,
+}
+
+impl GrantRole {
+    /// What the grant lets the subject do, for the "Added" reply.
+    fn can_now(self) -> &'static str {
+        match self {
+            Self::Admin => "administer this Discord server's game servers (full control)",
+            Self::Manager => "run this Discord server's game servers day-to-day",
+        }
+    }
+
+    /// The revoked capability, for the "Removed" reply.
+    fn can_no_longer(self) -> &'static str {
+        match self {
+            Self::Admin => "administer this Discord server's game servers",
+            Self::Manager => "run this Discord server's game servers",
+        }
+    }
+}
+
+/// The reply for a `/config` grant mutation, mapping the store outcome to plain
+/// text tailored to the tier being changed.
+async fn respond_grant_change(
     ctx: Context<'_>,
     change: Result<ConfigChange, anyhow::Error>,
+    role: GrantRole,
     subject: &str,
 ) -> Result<(), Error> {
     let embed = match change {
-        Ok(ConfigChange::Added) => neutral_embed(
-            "Added",
-            &format!("{subject} can now manage this Discord server's game servers."),
-        ),
+        Ok(ConfigChange::Added) => {
+            neutral_embed("Added", &format!("{subject} can now {}.", role.can_now()))
+        }
         Ok(ConfigChange::Removed) => neutral_embed(
             "Removed",
-            &format!("{subject} can no longer manage this Discord server's game servers."),
+            &format!("{subject} can no longer {}.", role.can_no_longer()),
         ),
         Ok(ConfigChange::Unchanged) => {
             neutral_embed("No change", &format!("{subject} was already set that way."))
@@ -866,7 +1041,7 @@ async fn respond_config_change(
             "I can't save that right now — my long-term memory is offline. Try again later.",
         ),
         Err(err) => {
-            error!(error = ?err, "failed to update guild admin config");
+            error!(error = ?err, "failed to update guild access config");
             error_embed("Something went wrong saving that. Try again in a moment.")
         }
     };
@@ -875,7 +1050,7 @@ async fn respond_config_change(
 }
 
 /// Take a backup of a running server's world to durable storage right now.
-#[poise::command(slash_command, check = "require_admin")]
+#[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn backup(
     ctx: Context<'_>,
     #[description = "Which server to back up"]

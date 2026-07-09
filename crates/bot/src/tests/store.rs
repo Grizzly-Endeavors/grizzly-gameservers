@@ -11,11 +11,14 @@ async fn disabled_guild_config_is_unavailable() {
 }
 
 #[tokio::test]
-async fn disabled_guild_config_reports_no_admins() {
+async fn disabled_guild_config_reports_no_admins_or_managers() {
     let config = GuildConfig::connect(None).await;
     let admins = config.admins(42).await;
     assert!(admins.roles.is_empty());
     assert!(admins.users.is_empty());
+    let managers = config.managers(42).await;
+    assert!(managers.roles.is_empty());
+    assert!(managers.users.is_empty());
 }
 
 #[tokio::test]
@@ -35,6 +38,22 @@ async fn disabled_guild_config_refuses_mutations() {
     ));
     assert!(matches!(
         config.remove_admin_role(42, 100).await.unwrap(),
+        ConfigChange::Unavailable
+    ));
+    assert!(matches!(
+        config.add_manager_user(42, 7).await.unwrap(),
+        ConfigChange::Unavailable
+    ));
+    assert!(matches!(
+        config.add_manager_role(42, 100).await.unwrap(),
+        ConfigChange::Unavailable
+    ));
+    assert!(matches!(
+        config.remove_manager_user(42, 7).await.unwrap(),
+        ConfigChange::Unavailable
+    ));
+    assert!(matches!(
+        config.remove_manager_role(42, 100).await.unwrap(),
         ConfigChange::Unavailable
     ));
 }
