@@ -55,7 +55,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     // across in-place restarts; `None` leaves the /command route disabled.
     let rcon = match cfg.rcon_port {
         Some(port) => Some(Arc::new(
-            RconRuntime::new(port, cfg.rcon_minecraft)
+            RconRuntime::new(port, cfg.rcon_minecraft, cfg.rcon_password_max_len)
                 .context("failed to initialize rcon client")?,
         )),
         None => None,

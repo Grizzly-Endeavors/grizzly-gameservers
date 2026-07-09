@@ -71,6 +71,13 @@ pub struct SupervisorConfig {
     /// Child env var the minted RCON password is injected under. Ignored when
     /// `rcon_port` is `None`.
     pub rcon_password_env: String,
+    /// Cap on the minted RCON password length (in characters), or `None` for the
+    /// full-length default. Set for games that constrain their RCON/admin
+    /// password — Palworld caps `ADMIN_PASSWORD` at 30 characters, and the
+    /// supervisor must authenticate with exactly what the game accepts, so it
+    /// truncates the minted password to this length on both sides. Ignored when
+    /// `rcon_port` is `None`.
+    pub rcon_password_max_len: Option<usize>,
     /// Substring that marks the game as ready in its log output, or `None` when
     /// the game uses the TCP connect probe instead. Set for UDP-only games
     /// (Valheim) that never open a TCP port the probe could reach: readiness is
@@ -155,6 +162,7 @@ impl SupervisorConfig {
         let rcon_minecraft = optional_flag(lookup, "SUPERVISOR_RCON_MINECRAFT");
         let rcon_password_env = optional(lookup, "SUPERVISOR_RCON_PASSWORD_ENV")
             .unwrap_or_else(|| DEFAULT_RCON_PASSWORD_ENV.to_owned());
+        let rcon_password_max_len = optional_parse(lookup, "SUPERVISOR_RCON_PASSWORD_MAX_LEN")?;
         let ready_log_pattern = optional(lookup, "SUPERVISOR_READY_LOG_PATTERN");
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
@@ -172,6 +180,7 @@ impl SupervisorConfig {
             rcon_port,
             rcon_minecraft,
             rcon_password_env,
+            rcon_password_max_len,
             ready_log_pattern,
             start_paused,
             chat_watch,

@@ -70,15 +70,26 @@ pub struct RconRuntime {
 }
 
 impl RconRuntime {
-    /// Build a runtime for `port`, minting a fresh random password.
+    /// Build a runtime for `port`, minting a fresh random password. When
+    /// `max_password_len` is `Some(n)`, the minted password is truncated to `n`
+    /// characters — for games that cap their RCON/admin password (Palworld's
+    /// 30-char `ADMIN_PASSWORD`). The password is lowercase hex (ASCII), so
+    /// truncating at any character index stays on a valid boundary, and the same
+    /// truncated value is both injected into the game and used to authenticate.
     ///
     /// # Errors
     ///
     /// Returns an error if the system random source can't be read.
-    pub fn new(port: u16, minecraft_quirks: bool) -> Result<Self> {
+    pub fn new(port: u16, minecraft_quirks: bool, max_password_len: Option<usize>) -> Result<Self> {
+        let mut password = generate_password()?;
+        if let Some(max) = max_password_len
+            && password.len() > max
+        {
+            password.truncate(max);
+        }
         Ok(Self {
             port,
-            password: generate_password()?,
+            password,
             minecraft_quirks,
         })
     }

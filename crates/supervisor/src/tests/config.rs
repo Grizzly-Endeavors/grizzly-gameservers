@@ -42,11 +42,26 @@ fn applies_defaults_with_empty_environment() {
         config.rcon_password_env, "RCON_PASSWORD",
         "default rcon password env"
     );
+    assert_eq!(
+        config.rcon_password_max_len, None,
+        "full-length rcon password by default"
+    );
     assert!(!config.start_paused, "starts unpaused by default");
     assert_eq!(config.chat_watch, None, "chat watching off by default");
     assert_eq!(
         config.ready_log_pattern, None,
         "TCP connect probe by default (no log-pattern readiness)"
+    );
+}
+
+#[test]
+fn parses_rcon_password_max_len_when_set() {
+    let env = lookup_from(&[("SUPERVISOR_RCON_PASSWORD_MAX_LEN", "30")]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.rcon_password_max_len,
+        Some(30),
+        "the password cap is read from the environment"
     );
 }
 
