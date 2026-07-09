@@ -57,6 +57,59 @@ fn debug_redacts_the_password() {
 }
 
 #[test]
+fn minecraft_parses_online_count_from_list_reply() {
+    let dialect = RconDialect::Minecraft;
+    assert_eq!(
+        dialect.parse_player_count("There are 3 of a max of 20 players online: a, b, c"),
+        Some(3)
+    );
+    assert_eq!(
+        dialect.parse_player_count("There are 0 of a max of 20 players online:"),
+        Some(0)
+    );
+}
+
+#[test]
+fn source_parses_factorio_online_count() {
+    let dialect = RconDialect::Source;
+    // The exact wording of `/players online count` is lenient-parsed: the first
+    // integer is the tally whether it's bare or wrapped like "Online players (2):".
+    assert_eq!(dialect.parse_player_count("2"), Some(2));
+    assert_eq!(dialect.parse_player_count("Online players (2):"), Some(2));
+    assert_eq!(dialect.parse_player_count("Online players: 0\n"), Some(0));
+    assert_eq!(dialect.parse_player_count("no players here"), None);
+}
+
+#[test]
+fn palworld_counts_showplayers_rows() {
+    let dialect = RconDialect::Palworld;
+    // Header only -> empty server.
+    assert_eq!(
+        dialect.parse_player_count("name,playeruid,steamid"),
+        Some(0)
+    );
+    assert_eq!(
+        dialect.parse_player_count("name,playeruid,steamid\nAlice,1,7656\nBob,2,7657"),
+        Some(2)
+    );
+    // Trailing blank lines are not players.
+    assert_eq!(
+        dialect.parse_player_count("name,playeruid,steamid\nAlice,1,7656\n\n"),
+        Some(1)
+    );
+}
+
+#[test]
+fn player_count_command_matches_dialect() {
+    assert_eq!(RconDialect::Minecraft.player_count_command(), "list");
+    assert_eq!(
+        RconDialect::Source.player_count_command(),
+        "/players online count"
+    );
+    assert_eq!(RconDialect::Palworld.player_count_command(), "ShowPlayers");
+}
+
+#[test]
 fn encode_packet_frames_length_id_type_and_terminators() {
     let bytes = encode_packet(ID_EXEC, TYPE_EXECCOMMAND, "list").unwrap();
     // length field counts everything after itself: id + type + body + 2 nulls = 14.

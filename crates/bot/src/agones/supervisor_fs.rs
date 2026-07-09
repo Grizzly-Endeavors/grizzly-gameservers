@@ -10,8 +10,8 @@ use std::time::Duration;
 use anyhow::Result;
 use grizzly_control_api::{
     AnnounceRequest, CommandRequest, CommandResponse, ControlError, DirEntry, ListResponse,
-    LogsQuery, LogsResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse,
-    WriteRequest, WriteResponse,
+    LogsQuery, LogsResponse, OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse,
+    RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
 };
 use kube::Client;
 use serde::de::DeserializeOwned;
@@ -338,6 +338,32 @@ pub(crate) async fn supervisor_send_command(
         .send()
         .await;
     Ok(finish(response, &url).await)
+}
+
+/// Read the instance's live connected-player count over the control API.
+/// `Ok(FsOutcome::Ok(None))` means the count is *unknown* — the game has no RCON,
+/// or its console couldn't be reached — which the caller must treat as "can't
+/// tell", never as an empty server. Used to check occupancy before a disruptive
+/// action so a restart never silently kicks a live session.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn supervisor_occupancy(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+) -> Result<FsOutcome<Option<u32>>> {
+    let pod_ip = match target_pod(client, namespace, instance).await? {
+        Ok(pod_ip) => pod_ip,
+        Err(not_ready) => return Ok(not_ready.into_outcome()),
+    };
+    let url = format!("http://{pod_ip}:{control_port}{OCCUPANCY_PATH}");
+    let response = http.get(&url).timeout(FS_TIMEOUT).send().await;
+    let outcome: FsOutcome<OccupancyResponse> = finish(response, &url).await;
+    Ok(map_payload(outcome, |occupancy| occupancy.players))
 }
 
 /// Broadcast a message to everyone on the instance's server, best-effort. This is

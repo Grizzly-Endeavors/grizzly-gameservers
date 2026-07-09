@@ -22,6 +22,7 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
+use tracing::debug;
 
 /// Ceiling on a single connect+authenticate+command round trip, so a wedged game
 /// can't hang the control API handler indefinitely.
@@ -94,6 +95,59 @@ impl RconDialect {
     fn supports_save_quiesce(self) -> bool {
         matches!(self, Self::Minecraft)
     }
+
+    /// The console command that lists online players. Every RCON dialect the
+    /// supervisor speaks can report its player count; this drives the
+    /// update-on-empty occupancy poll and Gary's check-before-restart. (Games with
+    /// no RCON at all simply have no [`RconRuntime`], so the count is unavailable
+    /// upstream of here.)
+    fn player_count_command(self) -> &'static str {
+        match self {
+            // "There are N of a max of M players online: ..."
+            Self::Minecraft => "list",
+            // Factorio: the `count` subcommand replies with just the tally.
+            Self::Source => "/players online count",
+            // CSV: a "name,playeruid,steamid" header then one row per player.
+            Self::Palworld => "ShowPlayers",
+        }
+    }
+
+    /// Parse the online player count out of a [`Self::player_count_command`]
+    /// reply. `None` means the reply couldn't be understood — the caller treats
+    /// that as "occupancy unknown", never as "empty", so a garbled reply can't
+    /// trigger a disruptive action.
+    fn parse_player_count(self, reply: &str) -> Option<u32> {
+        match self {
+            // Both replies carry the online count as their first integer:
+            // Minecraft's "There are N of ..." and Factorio's bare tally.
+            Self::Minecraft | Self::Source => first_integer(reply),
+            Self::Palworld => Some(parse_palworld_player_count(reply)),
+        }
+    }
+}
+
+/// The first run of ASCII digits in `text`, parsed as a count. Deliberately
+/// lenient so minor upstream wording changes ("Online players (2):" vs "... : 2")
+/// still read a count rather than failing closed.
+fn first_integer(text: &str) -> Option<u32> {
+    let digits: String = text
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// Count the data rows in Palworld's `ShowPlayers` CSV: the first line is the
+/// `name,playeruid,steamid` header, and each non-empty line after it is one
+/// connected player. An empty server replies with just the header (count 0).
+fn parse_palworld_player_count(reply: &str) -> u32 {
+    let rows = reply
+        .lines()
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    u32::try_from(rows).unwrap_or(u32::MAX)
 }
 
 impl std::str::FromStr for RconDialect {
@@ -109,6 +163,17 @@ impl std::str::FromStr for RconDialect {
             }
         }
     }
+}
+
+/// How [`RconRuntime::run`] handles a not-yet-bound RCON port.
+#[derive(Clone, Copy)]
+enum ConnectMode {
+    /// Retry connection-refused across the just-(re)started window — an
+    /// operator-issued command should land once the console comes up.
+    Retry,
+    /// Single attempt; a refused connection fails immediately. For polls and
+    /// status reads that must not block on a stopped or still-starting console.
+    Once,
 }
 
 /// What the control layer needs to speak RCON to the local game: the loopback
@@ -161,8 +226,15 @@ impl RconRuntime {
     /// exceeds [`RCON_TIMEOUT`], so the control layer can surface it as an HTTP
     /// error rather than hang.
     pub async fn run_command(&self, command: &str) -> Result<String> {
+        self.run(command, ConnectMode::Retry).await
+    }
+
+    /// Run a command, choosing whether to wait out the just-(re)started window
+    /// where the RCON port hasn't bound yet ([`ConnectMode::Retry`]) or fail fast
+    /// on a refused connection ([`ConnectMode::Once`]).
+    async fn run(&self, command: &str, connect: ConnectMode) -> Result<String> {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, self.port));
-        let output = timeout(RCON_TIMEOUT, self.exec(address, command))
+        let output = timeout(RCON_TIMEOUT, self.exec(address, command, connect))
             .await
             .with_context(|| {
                 format!("rcon command timed out after {}s", RCON_TIMEOUT.as_secs())
@@ -180,6 +252,39 @@ impl RconRuntime {
     pub async fn broadcast(&self, message: &str) -> Result<String> {
         self.run_command(&broadcast_command(message, self.dialect)?)
             .await
+    }
+
+    /// How many players are currently connected, or `None` when the count can't
+    /// be determined — the dialect has no player-list command, the console is
+    /// unreachable (a stopped or still-starting game), or the reply doesn't parse.
+    ///
+    /// `None` always means *unknown*, never *empty*: a caller gating a disruptive
+    /// action (an auto-update relaunch, a restart-on-config-change) on emptiness
+    /// must treat unknown as "don't act", so a transient console hiccup can never
+    /// masquerade as an empty server and kick a live session.
+    pub async fn player_count(&self) -> Option<u32> {
+        let command = self.dialect.player_count_command();
+        // Fast-fail: a poll or a status check must not hang on a stopped/starting
+        // console the way an operator-issued command deliberately waits it out.
+        match self.run(command, ConnectMode::Once).await {
+            Ok(reply) => {
+                let count = self.dialect.parse_player_count(&reply);
+                if count.is_none() {
+                    debug!(
+                        dialect = ?self.dialect,
+                        reply = %reply,
+                        "could not parse a player count from the rcon reply"
+                    );
+                }
+                count
+            }
+            Err(err) => {
+                // A down/starting console is a routine, recoverable condition, not
+                // an error path — the caller just skips this poll.
+                debug!(error = ?err, "rcon player-count query did not complete");
+                None
+            }
+        }
     }
 
     /// Flush pending world state and pause further saves so a live snapshot is
@@ -215,11 +320,21 @@ impl RconRuntime {
         Ok(())
     }
 
-    async fn exec(&self, address: SocketAddr, command: &str) -> Result<String> {
+    async fn exec(
+        &self,
+        address: SocketAddr,
+        command: &str,
+        connect: ConnectMode,
+    ) -> Result<String> {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());
         }
-        let mut stream = connect_with_retry(address).await?;
+        let mut stream = match connect {
+            ConnectMode::Retry => connect_with_retry(address).await?,
+            ConnectMode::Once => TcpStream::connect(address)
+                .await
+                .context("failed to connect to the game rcon port")?,
+        };
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
         if self.dialect.single_packet_reply() {

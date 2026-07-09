@@ -127,6 +127,15 @@ pub struct StatusResponse {
     pub restarts: u32,
 }
 
+/// Body of `GET /occupancy`: how many players are currently connected, read live
+/// over RCON. `players` is `null` when the count couldn't be determined — the
+/// game has no RCON, or its console is unreachable/still starting. `None` always
+/// means *unknown*, never a definite zero, so a caller must not read it as "empty".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccupancyResponse {
+    pub players: Option<u32>,
+}
+
 /// The outcome of a control action, distinguishing a state change from a no-op
 /// so the bot can phrase the friend-facing reply accurately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +294,12 @@ pub struct AnnounceRequest {
 /// deliberately do not apply here. Shared so the bot's client and the
 /// supervisor's server build and match the same path.
 pub const ARCHIVE_PATH: &str = "/archive";
+
+/// `GET /occupancy` reports the live connected-player count ([`OccupancyResponse`]).
+/// Handled directly in the supervisor's control layer (an RCON read), independent
+/// of the process-lifecycle state machine that answers `/status`. Shared so the
+/// bot's client and the supervisor's server build and match the same path.
+pub const OCCUPANCY_PATH: &str = "/occupancy";
 
 /// Query for `GET /archive`. `quiesce` asks the supervisor to flush game state to
 /// disk before the snapshot (e.g. Minecraft `save-off` + `save-all flush`, then
