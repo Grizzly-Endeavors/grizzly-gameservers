@@ -70,14 +70,15 @@ fn minecraft_parses_online_count_from_list_reply() {
 }
 
 #[test]
-fn source_parses_factorio_online_count() {
+fn source_counts_factorio_online_rows() {
     let dialect = RconDialect::Source;
-    // The exact wording of `/players online count` is lenient-parsed: the first
-    // integer is the tally whether it's bare or wrapped like "Online players (2):".
-    assert_eq!(dialect.parse_player_count("2"), Some(2));
-    assert_eq!(dialect.parse_player_count("Online players (2):"), Some(2));
-    assert_eq!(dialect.parse_player_count("Online players: 0\n"), Some(0));
-    assert_eq!(dialect.parse_player_count("no players here"), None);
+    // `/players` lists everyone; only connected players carry the " (online)"
+    // suffix, and offline rows must not be counted.
+    let reply = "Online players (2):\n  Alice (online)\n  Bob (online)\n  Carol (offline)\n";
+    assert_eq!(dialect.parse_player_count(reply), Some(2));
+    // Empty server: header only, no online rows.
+    assert_eq!(dialect.parse_player_count("Online players (0):\n"), Some(0));
+    assert_eq!(dialect.parse_player_count(""), Some(0));
 }
 
 #[test]
@@ -102,10 +103,7 @@ fn palworld_counts_showplayers_rows() {
 #[test]
 fn player_count_command_matches_dialect() {
     assert_eq!(RconDialect::Minecraft.player_count_command(), "list");
-    assert_eq!(
-        RconDialect::Source.player_count_command(),
-        "/players online count"
-    );
+    assert_eq!(RconDialect::Source.player_count_command(), "/players");
     assert_eq!(RconDialect::Palworld.player_count_command(), "ShowPlayers");
 }
 

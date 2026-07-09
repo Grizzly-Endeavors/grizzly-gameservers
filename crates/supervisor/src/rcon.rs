@@ -105,8 +105,9 @@ impl RconDialect {
         match self {
             // "There are N of a max of M players online: ..."
             Self::Minecraft => "list",
-            // Factorio: the `count` subcommand replies with just the tally.
-            Self::Source => "/players online count",
+            // Factorio: `/players` lists everyone; the online ones carry an
+            // " (online)" suffix (mirrors upstream's players-online.sh).
+            Self::Source => "/players",
             // CSV: a "name,playeruid,steamid" header then one row per player.
             Self::Palworld => "ShowPlayers",
         }
@@ -118,17 +119,18 @@ impl RconDialect {
     /// trigger a disruptive action.
     fn parse_player_count(self, reply: &str) -> Option<u32> {
         match self {
-            // Both replies carry the online count as their first integer:
-            // Minecraft's "There are N of ..." and Factorio's bare tally.
-            Self::Minecraft | Self::Source => first_integer(reply),
+            // "There are N of a max of M players online: ..." — N is the count.
+            Self::Minecraft => first_integer(reply),
+            // Count the online-suffixed rows of `/players`, matching upstream's
+            // `grep -c " (online)$"`. More robust than trusting a header tally.
+            Self::Source => Some(count_online_suffixed(reply)),
             Self::Palworld => Some(parse_palworld_player_count(reply)),
         }
     }
 }
 
-/// The first run of ASCII digits in `text`, parsed as a count. Deliberately
-/// lenient so minor upstream wording changes ("Online players (2):" vs "... : 2")
-/// still read a count rather than failing closed.
+/// The first run of ASCII digits in `text`, parsed as a count. Used for
+/// Minecraft's `list`, whose reply opens with "There are N of ...".
 fn first_integer(text: &str) -> Option<u32> {
     let digits: String = text
         .chars()
@@ -136,6 +138,17 @@ fn first_integer(text: &str) -> Option<u32> {
         .take_while(char::is_ascii_digit)
         .collect();
     digits.parse().ok()
+}
+
+/// Count the rows of Factorio's `/players` output that end in " (online)". Only
+/// connected players carry that suffix, so this is the live count regardless of
+/// how many players have ever joined.
+fn count_online_suffixed(reply: &str) -> u32 {
+    let count = reply
+        .lines()
+        .filter(|line| line.trim_end().ends_with("(online)"))
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 /// Count the data rows in Palworld's `ShowPlayers` CSV: the first line is the
