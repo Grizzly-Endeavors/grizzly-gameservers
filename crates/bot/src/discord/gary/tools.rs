@@ -11,11 +11,13 @@ use serenity::{
     ButtonStyle, ComponentInteractionCollector, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateMessage, EditMessage,
 };
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
+
+use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::AccessLevel;
 use super::super::render::{
@@ -92,6 +94,58 @@ pub(crate) struct ToolCtx<'a> {
     /// existing server by name is gated on it in [`dispatch`], and the listing
     /// tools query within it.
     pub(crate) scope: ServerScope,
+    /// The last config edit that saved a snapshot and hasn't been verified by a
+    /// restart yet, tracked for the duration of one Gary turn. When a restart
+    /// applies this change, [`exec_restart`] watches it come back up and rolls it
+    /// back on a crash — deterministic recovery that doesn't depend on the model.
+    /// Guarded by a plain mutex because dispatch runs the tools one at a time and
+    /// never holds the lock across an await.
+    pub(crate) pending_change: std::sync::Mutex<Option<PendingChange>>,
+}
+
+impl ToolCtx<'_> {
+    /// Record that `path` on `server` was just edited with a snapshot saved, so a
+    /// following restart knows there's a change to verify and, if it crashes, undo.
+    /// The last edit wins, mirroring `restore_file`'s own last-write-per-file model.
+    fn note_pending_change(&self, server: &str, path: &str) {
+        *self.pending_lock() = Some(PendingChange {
+            server: server.to_owned(),
+            path: path.to_owned(),
+        });
+    }
+
+    /// Take the pending change if it targets `server`, leaving an edit awaiting a
+    /// different server's restart in place. `Some` means this restart is the one
+    /// that applies a tracked change and should be watched for a crash.
+    fn take_pending_change(&self, server: &str) -> Option<PendingChange> {
+        let mut guard = self.pending_lock();
+        if guard.as_ref().is_some_and(|change| change.server == server) {
+            guard.take()
+        } else {
+            None
+        }
+    }
+
+    /// Drop any pending change for `path` on `server` — the model restored the file
+    /// itself, so there's no longer an unverified edit for a later restart to undo.
+    fn drop_pending_change(&self, server: &str, path: &str) {
+        let mut guard = self.pending_lock();
+        if guard
+            .as_ref()
+            .is_some_and(|change| change.server == server && change.path == path)
+        {
+            *guard = None;
+        }
+    }
+
+    /// Lock the pending-change slot, recovering from a poisoned mutex rather than
+    /// panicking — a poison here would only mean a prior panic while the lock was
+    /// held, and the tracked state is advisory, so the last value is safe to reuse.
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, Option<PendingChange>> {
+        self.pending_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// Just the `name` field, pulled from any targeted tool's arguments (they all
@@ -726,6 +780,138 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let outcome = match supervisor_restart(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            error!(error = ?err, %server, "agent: restart failed");
+            return cluster_error();
+        }
+    };
+    // Only a server that genuinely bounced applies a pending config change, so only
+    // then is there something to verify. Any other outcome (already paused,
+    // unreachable, gone) reports as before and leaves the pending change in place
+    // for the restart that eventually applies it.
+    let change = match &outcome {
+        SupervisorOutcome::Restarted => ctx.take_pending_change(server),
+        SupervisorOutcome::Paused
+        | SupervisorOutcome::Resumed
+        | SupervisorOutcome::AlreadyStopped
+        | SupervisorOutcome::AlreadyRunning
+        | SupervisorOutcome::PodNotReady
+        | SupervisorOutcome::Unreachable
+        | SupervisorOutcome::Failed(_)
+        | SupervisorOutcome::NotFound
+        | SupervisorOutcome::NotManaged => None,
+    };
+    // With a tracked change, the loop — not the model — watches it come back up and
+    // rolls a crash back. A plain reboot reports immediately without blocking.
+    match change {
+        Some(change) => verify_change(ctx, change).await,
+        None => format_supervisor(server, &outcome),
+    }
+}
+
+/// Watch a restart that applied a config change and enforce the design's
+/// snapshot→apply→restart→verify→auto-rollback guardrail deterministically: poll
+/// until the server is up or crashed, and on a crash restore the pre-edit snapshot
+/// and restart once more. Bounded to a single automatic rollback — a server still
+/// crashing after that escalates rather than looping. Returns the system-generated
+/// account of what happened for the model to relay; the model never has to reason
+/// its way back to `restore_file` on its own.
+async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
+    let server = change.server.as_str();
+    let mut rollback_spent = false;
+    loop {
+        let outcome = match wait_for_ready(
+            &ctx.data.kube_client,
+            &ctx.data.http,
+            &ctx.data.namespace,
+            server,
+            ctx.data.control_port,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                error!(error = ?err, %server, "agent: post-restart readiness check failed");
+                // Can't confirm health either way — leave the change in place and
+                // tell the model plainly, rather than rolling back a maybe-fine server.
+                return format!(
+                    "restarted {server}, but I couldn't tell whether it came back up — check its logs"
+                );
+            }
+        };
+        match next_step(&outcome, rollback_spent) {
+            RecoveryStep::Healthy => {
+                return if rollback_spent {
+                    warn!(%server, path = %change.path, "agent: rolled a crashing config change back and the server recovered");
+                    format!(
+                        "the change to {} crashed {server} on restart, so I rolled it back to the previous version and restarted — it's healthy again now",
+                        change.path
+                    )
+                } else {
+                    info!(%server, path = %change.path, "agent: config change verified healthy after restart");
+                    format!("restarted {server} and it came back up healthy — the change is good")
+                };
+            }
+            RecoveryStep::RollBack => match roll_back(ctx, &change).await {
+                Ok(()) => {
+                    rollback_spent = true;
+                }
+                Err(message) => return message,
+            },
+            RecoveryStep::Escalate => {
+                error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
+                return format!(
+                    "the change to {} crashed {server}, and rolling it back didn't bring it up either — I've flagged this for an operator to look at",
+                    change.path
+                );
+            }
+            RecoveryStep::Inconclusive => return format_ready_wait(server, &outcome),
+        }
+    }
+}
+
+/// Restore the pre-edit snapshot and restart, the mechanical half of an automatic
+/// rollback. `Ok` means the world is back on the old config and restarting, so the
+/// caller re-polls readiness; `Err` carries the escalation text for a rollback that
+/// couldn't even be issued (nothing left to do automatically).
+async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), String> {
+    let server = change.server.as_str();
+    let restore = supervisor_restore_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        &change.path,
+    )
+    .await;
+    match restore {
+        Ok(FsOutcome::Ok(_)) => {}
+        Ok(
+            FsOutcome::NotFound
+            | FsOutcome::NotManaged
+            | FsOutcome::PodNotReady
+            | FsOutcome::Unreachable
+            | FsOutcome::Rejected(_),
+        ) => {
+            warn!(%server, path = %change.path, "agent: auto-rollback restore could not be served");
+            return Err(rollback_failed(server, &change.path));
+        }
+        Err(err) => {
+            error!(error = ?err, %server, path = %change.path, "agent: auto-rollback restore failed");
+            return Err(rollback_failed(server, &change.path));
+        }
+    }
     match supervisor_restart(
         &ctx.data.kube_client,
         &ctx.data.http,
@@ -735,12 +921,34 @@ async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(outcome) => format_supervisor(server, &outcome),
-        Err(err) => {
-            error!(error = ?err, %server, "agent: restart failed");
-            cluster_error()
+        Ok(SupervisorOutcome::Restarted) => Ok(()),
+        Ok(
+            SupervisorOutcome::Paused
+            | SupervisorOutcome::Resumed
+            | SupervisorOutcome::AlreadyStopped
+            | SupervisorOutcome::AlreadyRunning
+            | SupervisorOutcome::PodNotReady
+            | SupervisorOutcome::Unreachable
+            | SupervisorOutcome::Failed(_)
+            | SupervisorOutcome::NotFound
+            | SupervisorOutcome::NotManaged,
+        )
+        | Err(_) => {
+            warn!(%server, path = %change.path, "agent: restart after auto-rollback did not bounce the server");
+            Err(format!(
+                "the change to {} crashed {server}; I put the previous version back but couldn't restart it cleanly — I've flagged this for an operator to look at",
+                change.path
+            ))
         }
     }
+}
+
+/// Escalation text when an automatic rollback couldn't even be issued — nothing
+/// more the loop can do on its own.
+fn rollback_failed(server: &str, path: &str) -> String {
+    format!(
+        "the change to {path} crashed {server} and I couldn't roll it back automatically — I've flagged this for an operator to look at"
+    )
 }
 
 /// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in
@@ -993,7 +1201,12 @@ async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_write(&result),
+            Ok(result) => {
+                if result.backed_up {
+                    ctx.note_pending_change(server, &result.path);
+                }
+                format_write(&result)
+            }
             Err(problem) => problem,
         },
         Err(err) => {
@@ -1024,7 +1237,14 @@ async fn exec_edit_file(
     )
     .await
     {
-        Ok(outcome) => format_edit(server, path, outcome),
+        Ok(outcome) => {
+            if let EditOutcome::Edited(result) = &outcome
+                && result.backed_up
+            {
+                ctx.note_pending_change(server, &result.path);
+            }
+            format_edit(server, path, outcome)
+        }
         Err(err) => {
             error!(error = ?err, %server, "agent: edit_file failed");
             cluster_error()
@@ -1044,7 +1264,10 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_restore(&result),
+            Ok(result) => {
+                ctx.drop_pending_change(server, &result.path);
+                format_restore(&result)
+            }
             Err(problem) => problem,
         },
         Err(err) => {
