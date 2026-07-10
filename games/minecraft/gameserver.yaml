@@ -1,18 +1,16 @@
-# First catalog entry + the bring-up validation server. A single standalone
-# GameServer (fixed name so the NodePort Service selector can target it) rather
-# than a Fleet — promoting to Fleet + shim-managed per-instance Services is a
-# follow-up once the shim exists (docs/design/00-overview.md open decisions).
+# Minecraft catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
 #
 # The image bakes in the grizzly supervisor as its entrypoint (games/minecraft/
 # Dockerfile): it launches itzg's server as a child, owns the Agones SDK
 # lifecycle (calls /ready once the game accepts connections on 25565, then keeps
 # /health pinged — including while the game is paused), and serves an in-pod
-# control API on 9359 that the bot drives for in-place stop/start/restart. This
-# replaces the old busybox readiness sidecar.
+# control API on 9359 that the bot drives for in-place stop/start/restart and
+# Gary's file/RCON tools.
 #
-# portPolicy: None — Agones does not manage a hostPort; reachability is via the
-# NodePort Service in service.yaml (kube-proxy routes to the pod on whatever
-# node it lands, so no node-pinning is needed).
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance (kube-proxy routes to the pod on whatever node it lands).
 apiVersion: agones.dev/v1
 kind: GameServer
 metadata:
