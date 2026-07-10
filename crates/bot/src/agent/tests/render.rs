@@ -1,10 +1,11 @@
 use super::*;
+use crate::agones::ServerState;
 
 fn summary(name: &str, game: Option<&str>, state: &str, address: Option<&str>) -> ServerSummary {
     ServerSummary {
         name: name.to_owned(),
         game: game.map(str::to_owned),
-        state: state.to_owned(),
+        state: ServerState::from_agones(state),
         address: address.map(str::to_owned),
     }
 }

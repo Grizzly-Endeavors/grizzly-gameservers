@@ -11,15 +11,7 @@ use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_gameserver_target};
 use super::ports::{friend_facing_node_port, node_ports_by_gameserver};
 use super::scope::ServerScope;
-use super::types::{GameServer, ServerSummary, summarize};
-
-/// State label shown for a managed instance whose Service (and leased port)
-/// still exist but whose `GameServer` has been torn down by `/shutdown`.
-const STOPPED_STATE: &str = "Stopped";
-
-/// State shown for a server whose pod is up but whose game process the
-/// supervisor has paused (`/stop`). Distinct from `Stopped` (= shut down).
-const PAUSED_STATE: &str = "Paused";
+use super::types::{GameServer, ServerState, ServerSummary, summarize};
 
 /// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
 /// each to its `NodePort` Service to resolve a connection address under
@@ -67,18 +59,18 @@ pub(crate) async fn list_active_servers(
         }
         let instance = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
         live.insert(instance);
-        let agones_state = gameserver
-            .status
-            .as_ref()
-            .and_then(|status| status.state.as_deref());
         // The supervisor publishes a paused process as a GameServer label, which
         // takes precedence over the (still Ready/Allocated) Agones state.
         let paused = label_value(gameserver.metadata.labels.as_ref(), PROCESS_LABEL_KEY)
             == Some(PROCESS_LABEL_STOPPED);
         let state = if paused {
-            Some(PAUSED_STATE)
+            ServerState::Paused
         } else {
-            agones_state
+            gameserver
+                .status
+                .as_ref()
+                .and_then(|status| status.state.as_deref())
+                .map_or(ServerState::Unknown, ServerState::from_agones)
         };
         let node_port = node_port_by_server.get(instance).copied();
         if node_port.is_none() {
@@ -169,7 +161,7 @@ fn append_stopped_instances(
         summaries.push(summarize(
             target,
             game,
-            Some(STOPPED_STATE),
+            ServerState::Stopped,
             node_port,
             domain,
         ));

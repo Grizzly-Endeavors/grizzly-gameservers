@@ -28,14 +28,75 @@ pub(crate) struct GameServerStatus {
     pub(crate) state: Option<String>,
 }
 
+/// The lifecycle state of a managed game server as the bot presents it: the
+/// Agones `GameServer` state parsed once at the k8s boundary, plus the two
+/// synthetic states the bot overlays — `Paused` (pod up, process quiesced by
+/// `/stop`) and `Stopped` (Service retained, `GameServer` torn down by
+/// `/shutdown`) — and `Unknown` when Agones reports no state yet. Any Agones
+/// state the bot doesn't reason about is preserved verbatim in `Other` so it
+/// still renders truthfully.
+///
+/// Parsing string states into this closed set at the edge means downstream code
+/// matches variants instead of comparing string literals, so a typo can't
+/// silently misclassify a server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ServerState {
+    Ready,
+    Allocated,
+    Paused,
+    Stopped,
+    Unknown,
+    Other(String),
+}
+
+impl ServerState {
+    /// Map a raw Agones `GameServer` state into a [`ServerState`]. Only the
+    /// states the bot reasons about get their own variant; anything else is
+    /// carried verbatim in `Other` so display stays truthful. The bot-synthetic
+    /// `Paused`/`Stopped`/`Unknown` are set directly by the lister, never parsed
+    /// from Agones (which never emits them).
+    pub(crate) fn from_agones(state: &str) -> Self {
+        match state {
+            "Ready" => Self::Ready,
+            "Allocated" => Self::Allocated,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    /// Whether the server is up and joinable — the states the friend-facing
+    /// listing treats as "online".
+    pub(crate) fn is_online(&self) -> bool {
+        matches!(self, Self::Ready | Self::Allocated)
+    }
+
+    /// The label rendered to friends. Round-trips the original string for
+    /// `Other`, so an unmodelled Agones state shows exactly what Agones reported.
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Ready => "Ready",
+            Self::Allocated => "Allocated",
+            Self::Paused => "Paused",
+            Self::Stopped => "Stopped",
+            Self::Unknown => "Unknown",
+            Self::Other(state) => state,
+        }
+    }
+}
+
+impl std::fmt::Display for ServerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Friend-facing summary of one game server: its name, the catalog game it runs
-/// (absent only if the label is somehow missing), current Agones state, and the
-/// address to connect to (absent when no `NodePort` is exposed yet).
+/// (absent only if the label is somehow missing), current state, and the address
+/// to connect to (absent when no `NodePort` is exposed yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ServerSummary {
     pub(crate) name: String,
     pub(crate) game: Option<String>,
-    pub(crate) state: String,
+    pub(crate) state: ServerState,
     pub(crate) address: Option<String>,
 }
 
@@ -50,14 +111,14 @@ pub(crate) fn server_address(instance: &str, domain: &str, node_port: i32) -> St
 pub(crate) fn summarize(
     instance: &str,
     game: Option<&str>,
-    state: Option<&str>,
+    state: ServerState,
     node_port: Option<i32>,
     domain: &str,
 ) -> ServerSummary {
     ServerSummary {
         name: instance.to_owned(),
         game: game.map(str::to_owned),
-        state: state.unwrap_or("Unknown").to_owned(),
+        state,
         address: node_port.map(|port| server_address(instance, domain, port)),
     }
 }

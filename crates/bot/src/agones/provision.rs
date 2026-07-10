@@ -16,7 +16,7 @@ use super::labels::{GAME_KEY, GUILD_KEY, all_node_ports, is_managed, label_value
 use super::naming::{pvc_name, select_free_ports};
 use super::ports::{assign, assignment_from_service, port_plan_from_service, ports_needed};
 use super::scope::ServerScope;
-use super::types::{GameServer, server_address};
+use super::types::{GameServer, ServerState, server_address};
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
 /// Services lease their port(s) from here; the range bounds the **total** ports
@@ -481,13 +481,12 @@ pub(crate) async fn wait_for_instance_ready(
 }
 
 fn is_ready(gameserver: &GameServer) -> bool {
-    matches!(
-        gameserver
-            .status
-            .as_ref()
-            .and_then(|status| status.state.as_deref()),
-        Some("Ready" | "Allocated")
-    )
+    gameserver
+        .status
+        .as_ref()
+        .and_then(|status| status.state.as_deref())
+        .map(ServerState::from_agones)
+        .is_some_and(|state| state.is_online())
 }
 
 async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {

@@ -82,9 +82,7 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
         };
     }
 
-    let any_ready = servers
-        .iter()
-        .any(|server| matches!(server.state.as_str(), "Ready" | "Allocated"));
+    let any_ready = servers.iter().any(|server| server.state.is_online());
     let lines: Vec<String> = servers
         .iter()
         .map(|server| {
