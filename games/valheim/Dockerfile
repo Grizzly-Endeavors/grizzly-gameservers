@@ -48,9 +48,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl unzip ca-certificates \
     && curl -fsSL -o /tmp/rcon.zip \
         "https://thunderstore.io/package/download/Tristan/ValheimRcon/${VALHEIM_RCON_VERSION}/" \
-    && printf '%s  /tmp/rcon.zip\n' "$VALHEIM_RCON_SHA256" | sha256sum -c - \
+    && printf '%s  /tmp/rcon.zip\n' "$VALHEIM_RCON_SHA256" > /tmp/rcon.sha256 \
+    && sha256sum -c /tmp/rcon.sha256 \
     && mkdir -p /out && unzip -j /tmp/rcon.zip ValheimRcon.dll -d /out \
-    && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/rcon.zip
+    && apt-get clean && rm -rf /var/lib/apt/lists/* && rm -f /tmp/rcon.zip /tmp/rcon.sha256
 
 # Upstream lloesche valheim-server pinned by digest (tag: latest). Its bootstrap
 # runs as root then execs `tini -- supervisord`, which manages the valheim-server
