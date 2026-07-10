@@ -97,7 +97,7 @@ Topology (from `grizzly-platform`): VPS `10.200.0.1` ↔ R730xd `10.200.0.2` ove
 
 Game forwarding mirrors this: the VPS DNATs the **7000–7010** UDP+TCP range over `wg0` to R730xd, which re-DNATs the range to the K8s node — 1:1, no port remap, so an Agones-allocated port is consistent end-to-end. The range is opened **once**; per-server port assignment happens inside Agones, so the edge never changes per spin-up.
 
-**Node-pin constraint (open):** R730xd forwards the range to a single node IP, but Agones schedules a GameServer pod onto whichever node it picks, exposing a `hostPort` there. So either game-server pods are pinned to the forwarding-target node (`nodeSelector`), or game servers use a NodePort Service (reachable on any node, kube-proxy routes) and the edge targets any one node. **Decision pending** — see Open Decisions.
+**Node-pin constraint:** R730xd forwards the range to a single node IP, but Agones schedules a GameServer pod onto whichever node it picks, exposing a `hostPort` there. So either game-server pods are pinned to the forwarding-target node (`nodeSelector`), or game servers use a NodePort Service (reachable on any node, kube-proxy routes) and the edge targets any one node. **Resolved: NodePort, no node-pinning** ([ADR-002](../decisions/002-nodeport-no-node-pin.md)).
 
 ## Gate + Flux integration
 
@@ -122,7 +122,7 @@ Only two things — everything else is here:
 - ~~**Agones packaging**~~ — resolved: standalone gated HelmRelease ([ADR-001](../decisions/001-agones-packaging.md)).
 - ~~**NL front door**~~ — resolved: Gary, the `@mention`-triggered tool-calling LLM agent (`crates/bot/src/discord/gary/`), sits alongside the deterministic slash commands rather than replacing them.
 - ~~**Image admission carve-out**~~ — resolved for the current phase: bot-scoped gate enforcement ([ADR-003](../decisions/003-bot-scoped-gate-enforcement.md)); full-namespace enforcement is a documented follow-up.
-- **Per-game catalog format** — how `games/<game>/` expresses image + defaults + port shape + persistence. Seeded by `games/minecraft/`; not yet generalized.
+- ~~**Per-game catalog format**~~ — resolved: generalized into `games/_template/` (skeleton + security baseline) with a documented onboarding flow; six games now follow one `GameServer` + `Service` + PVC + `Dockerfile` shape.
 
 ## Rejected alternatives (brief)
 

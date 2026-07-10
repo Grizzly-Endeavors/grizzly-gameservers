@@ -523,14 +523,27 @@ impl BackupService {
     }
 
     /// Read each tarball's manifest to build display summaries, newest-first order
-    /// preserved from the caller.
+    /// preserved from the caller. A tarball whose manifest can't be read is skipped
+    /// with a warning rather than failing the whole listing — one corrupt or
+    /// missing manifest must not hide a friend's other, healthy backups.
     async fn summaries(&self, tarballs: Vec<String>) -> Result<Vec<ArtifactSummary>> {
         let mut summaries = Vec::with_capacity(tarballs.len());
         for tarball in tarballs {
             let Some(manifest_key) = manifest_key_for(&tarball) else {
                 continue;
             };
-            let manifest = self.s3.get_manifest(&manifest_key).await?;
+            let manifest = match self.s3.get_manifest(&manifest_key).await {
+                Ok(manifest) => manifest,
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        manifest_key,
+                        tarball,
+                        "skipping a backup whose manifest couldn't be read"
+                    );
+                    continue;
+                }
+            };
             summaries.push(ArtifactSummary {
                 name: manifest.instance,
                 guild: manifest.guild,

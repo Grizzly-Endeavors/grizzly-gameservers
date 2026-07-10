@@ -4,7 +4,7 @@
 //! text on purpose — Gary composes the friendly Discord reply himself.
 
 use poise::serenity_prelude as serenity;
-use schemars::{JsonSchema, SchemaGenerator};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serenity::{
@@ -24,7 +24,8 @@ use super::super::render::{
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::{
-    GarySurface, ToolCall, ToolDef, cluster_error, format_server_list, format_summary, no_such,
+    GarySurface, NameParams, ToolCall, ToolDef, cluster_error, format_server_list, format_summary,
+    no_args_schema, no_such, params_schema,
 };
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
@@ -91,12 +92,6 @@ pub(crate) struct ToolCtx<'a> {
     /// existing server by name is gated on it in [`dispatch`], and the listing
     /// tools query within it.
     pub(crate) scope: ServerScope,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct NameParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
 }
 
 /// Just the `name` field, pulled from any targeted tool's arguments (they all
@@ -197,7 +192,7 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
         ToolDef::function(
             LIST_SERVERS,
             "List every game server and its state and connection address.",
-            empty_object_schema(),
+            no_args_schema(),
         ),
         ToolDef::function(
             SERVER_STATUS,
@@ -212,7 +207,7 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
         ToolDef::function(
             LIST_ARCHIVES,
             "List the servers archived in this Discord server — ones that were put into cold storage and can be recovered.",
-            empty_object_schema(),
+            no_args_schema(),
         ),
     ];
     if access >= AccessLevel::Manager {
@@ -245,7 +240,7 @@ fn manager_tools() -> Vec<ToolDef> {
         ),
         ToolDef::function(
             RESTART_SERVER,
-            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. It disconnects everyone currently on, so check server_status for the player count first: if anyone's online, warn them and/or ask before rebooting rather than kicking a live session. Config edits also take effect on the next restart, so the same check applies when you restart to apply a change.",
+            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. Disconnects everyone currently connected.",
             params_schema::<NameParams>(),
         ),
         ToolDef::function(
@@ -505,8 +500,11 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
 }
 
 fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
-    serde_json::from_str(args)
-        .map_err(|err| format!("I couldn't read the arguments for that tool: {err}"))
+    serde_json::from_str(args).map_err(|err| {
+        format!(
+            "the arguments for that tool weren't valid JSON ({err}); check the argument names and types and call it again"
+        )
+    })
 }
 
 /// Whether a tool acts on an *existing* server named in its arguments — the set
@@ -557,24 +555,6 @@ async fn scope_refusal(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
             Some(cluster_error())
         }
     }
-}
-
-/// The parameter schema for a tool that takes no arguments.
-fn empty_object_schema() -> serde_json::Value {
-    serde_json::json!({ "type": "object", "properties": {} })
-}
-
-/// JSON Schema for a tool's parameters, trimmed of the metadata keys some
-/// providers reject (`$schema`, `title`).
-fn params_schema<T: JsonSchema>() -> serde_json::Value {
-    let mut value = SchemaGenerator::default()
-        .into_root_schema_for::<T>()
-        .to_value();
-    if let Some(object) = value.as_object_mut() {
-        object.remove("$schema");
-        object.remove("title");
-    }
-    value
 }
 
 async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
@@ -1685,7 +1665,7 @@ fn backups_not_configured() -> String {
 }
 
 fn archives_unavailable_text() -> String {
-    "I can't track archives right now — my long-term memory is offline. Backups and restore still \
+    "I can't track archives right now — my archive records are offline. Backups and restore still \
      work; try archiving again later"
         .to_owned()
 }

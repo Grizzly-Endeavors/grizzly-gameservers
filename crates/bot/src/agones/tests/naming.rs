@@ -16,6 +16,17 @@ fn supplied_name_is_sanitized_and_used_without_game_prefix() {
 }
 
 #[test]
+fn validate_world_name_normalizes_the_same_way_the_up_front_check_relies_on() {
+    // The `/create` command calls this before the game picker; it must yield the
+    // identical normalization build_instance_name would for the same input.
+    assert_eq!(validate_world_name("Bob's World!").unwrap(), "bob-s-world");
+    assert_eq!(
+        build_instance_name("minecraft", Some("Bob's World!"), 0).unwrap(),
+        validate_world_name("Bob's World!").unwrap()
+    );
+}
+
+#[test]
 fn generated_name_uses_game_prefix_and_fixed_length_id() {
     let name = build_instance_name("valheim", None, 123_456_789).unwrap();
     let id = name.strip_prefix("valheim-").unwrap();

@@ -19,7 +19,8 @@ use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
     begin_start, build_instance_name, destroy_instance, instance_runtime_state,
     list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
-    supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
+    supervisor_restart, supervisor_start, supervisor_stop, validate_world_name,
+    wait_for_instance_ready,
 };
 use crate::backup::{ArtifactSummary, BackupService};
 use crate::memory::{ForgetOutcome, Memory};
@@ -100,6 +101,17 @@ pub(crate) async fn create(
     #[description = "Optional name for this world"] name: Option<String>,
 ) -> Result<(), Error> {
     let data = ctx.data();
+
+    // Validate a supplied name before the game picker so a bad one fails fast
+    // rather than after the friend has already picked a game (the check is
+    // game-independent — build_instance_name uses the same validation).
+    if let Some(supplied) = name.as_deref()
+        && let Err(err) = validate_world_name(supplied)
+    {
+        ctx.send(reply_with(error_embed(&format!("That name won't work: {err}"))).ephemeral(true))
+            .await?;
+        return Ok(());
+    }
 
     let options: Vec<CreateSelectMenuOption> = data
         .catalog
@@ -657,7 +669,7 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
             "I'll only answer here when you @mention me now.",
         ),
         Ok(HomeToggle::Unavailable) => error_embed(
-            "I can't remember that right now — my long-term memory is offline. \
+            "I couldn't set that right now — home-channel settings are unavailable. \
              You can still @mention me. Try again later.",
         ),
         Err(err) => {
@@ -830,8 +842,8 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     );
     if !config.is_available() {
         body.push_str(
-            "\n\n⚠️ My long-term memory is offline right now, so only the owner and operator \
-             are recognized until it reconnects.",
+            "\n\n⚠️ Access settings are unavailable right now, so only the owner and operator \
+             are recognized until they're back.",
         );
     }
     ctx.send(reply_with(neutral_embed("Server access", &body)).ephemeral(true))
@@ -1124,7 +1136,7 @@ async fn respond_grant_change(
             neutral_embed("No change", &format!("{subject} was already set that way."))
         }
         Ok(ConfigChange::Unavailable) => error_embed(
-            "I can't save that right now — my long-term memory is offline. Try again later.",
+            "I couldn't save that right now — access settings are unavailable. Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, "failed to update guild access config");

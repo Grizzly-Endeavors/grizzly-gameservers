@@ -96,6 +96,29 @@ fn read_file_truncates_past_the_cap() {
 }
 
 #[test]
+fn read_file_truncation_keeps_valid_text_when_a_char_straddles_the_cap() {
+    // A genuinely-UTF-8 file whose multibyte char sits astride READ_CAP_BYTES must
+    // still read as (truncated) text, not be mislabeled binary. Place a 3-byte '€'
+    // so its first byte is the last inside the cap and the rest spills past it.
+    let dir = seed();
+    let mut content = "a".repeat(READ_CAP_BYTES - 1);
+    content.push('€');
+    content.push_str("tail");
+    std::fs::write(dir.path().join("unicode.txt"), &content).unwrap();
+    let (text, truncated) = read_file(dir.path(), "unicode.txt").unwrap();
+    assert!(truncated, "an oversized file should report truncation");
+    assert_eq!(
+        text.len(),
+        READ_CAP_BYTES - 1,
+        "the prefix stops at the last whole char before the cap"
+    );
+    assert!(
+        text.bytes().all(|b| b == b'a'),
+        "only the valid ascii prefix survives; the split char is dropped"
+    );
+}
+
+#[test]
 fn read_file_rejects_non_utf8() {
     let dir = seed();
     std::fs::write(dir.path().join("world.dat"), [0xff, 0xfe, 0x00]).unwrap();

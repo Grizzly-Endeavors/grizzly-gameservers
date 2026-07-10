@@ -10,6 +10,7 @@
 use std::path::{Component, Path, PathBuf};
 
 use grizzly_control_api::{DirEntry, EntryKind};
+use tracing::debug;
 
 /// Cap on bytes returned by [`read_file`]; larger files come back truncated so a
 /// multi-megabyte world or log file can't blow up the agent's context window.
@@ -150,12 +151,21 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
     for entry in std::fs::read_dir(&canonical).map_err(|err| io(&err))? {
         let entry = entry.map_err(|err| io(&err))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        // file_type avoids following symlinks; size comes from the same call.
+        // `file_type()` reads the dir entry itself, so it doesn't follow symlinks.
         let file_type = entry.file_type().map_err(|err| io(&err))?;
         let (kind, size) = if file_type.is_dir() {
             (EntryKind::Dir, 0)
         } else if file_type.is_file() {
-            let len = entry.metadata().map_or(0, |m| m.len());
+            // Size comes from a separate stat. If the file vanishes between the
+            // read_dir and this call (a concurrent delete), degrade to 0 and log
+            // rather than fail the whole listing over one racing entry.
+            let len = match entry.metadata() {
+                Ok(entry_meta) => entry_meta.len(),
+                Err(err) => {
+                    debug!(error = ?err, name, "could not stat directory entry; reporting size 0");
+                    0
+                }
+            };
             (EntryKind::File, len)
         } else {
             (EntryKind::Other, 0)
@@ -186,6 +196,14 @@ pub fn read_file(root: &Path, rel: &str) -> Result<(String, bool), FsError> {
     let slice = bytes.get(..READ_CAP_BYTES).unwrap_or(&bytes);
     let content = match std::str::from_utf8(slice) {
         Ok(text) => text.to_owned(),
+        // Truncating at the cap can split a multibyte char, which surfaces as an
+        // *incomplete* trailing sequence (`error_len() == None`). Keep the valid
+        // prefix rather than mislabel a real UTF-8 file as binary — a genuine
+        // invalid byte (`error_len() == Some`) is really not text.
+        Err(err) if truncated && err.error_len().is_none() => {
+            let valid = slice.get(..err.valid_up_to()).unwrap_or(slice);
+            String::from_utf8_lossy(valid).into_owned()
+        }
         Err(_) => return Err(FsError::NotText),
     };
     Ok((content, truncated))

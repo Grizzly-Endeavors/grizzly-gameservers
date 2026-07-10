@@ -93,9 +93,3 @@ fn ingame_prompt_hardens_against_injection_and_scopes_read_only() {
     );
     assert!(lowered.contains("in-game chat"), "sets the in-game context");
 }
-
-#[test]
-fn name_arg_parses_server_name() {
-    let arg: NameArg = serde_json::from_str(r#"{"name":"mc-one"}"#).unwrap();
-    assert_eq!(arg.name, "mc-one");
-}

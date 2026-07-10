@@ -396,7 +396,7 @@ fn backups_db_disabled_spec() -> EmbedSpec {
     EmbedSpec {
         title: "Archives aren't available".to_owned(),
         colour: COLOUR_ERROR,
-        body: "I can't track archives right now — my long-term memory is offline. \
+        body: "I can't track archives right now — my archive records are offline. \
                Backups and restore still work; try archiving again later."
             .to_owned(),
     }

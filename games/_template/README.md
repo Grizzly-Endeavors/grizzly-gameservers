@@ -1,13 +1,13 @@
 # games/_template
 
-Skeleton for onboarding a new game. The manifests here carry a deliberate security baseline so a new game is **gate-clean and PodSecurity "restricted"-compatible by default** — don't strip it without a reason. Every game's image bakes in the grizzly supervisor as PID 1 (wrapping the game as its child), which owns the Agones SDK lifecycle and serves the in-pod control API the bot/Gary drive. `minecraft/` is the worked example (its `gameserver.yaml` documents one deliberate exception to the baseline — root at startup — that predates and doesn't apply to a fresh game).
+Skeleton for onboarding a new game. The manifests here carry a deliberate security baseline so a new game is **gate-clean and PodSecurity "restricted"-compatible by default** — don't strip it without a reason. Every game's image bakes in the grizzly supervisor as PID 1 (wrapping the game as its child), which owns the Agones SDK lifecycle and serves the in-pod control API the bot/Gary drive. `minecraft/` is the worked example. Note that most upstream game bases bootstrap as root (they chown a data dir, then drop privileges), so **every current game defers the *rootless* part of the baseline** (`runAsNonRoot` / `readOnlyRootFilesystem`) through a documented `nosemgrep` block — that's the norm, not a minecraft-only exception. If your game's base does the same, follow that pattern (see the security-baseline notes below and `minecraft`/`factorio`'s `gameserver.yaml`); the rest of the baseline (seccomp, dropped caps, no privilege escalation) still applies.
 
 ## Onboarding a game
 
 1. Copy this directory: `games/_template/` → `games/<game>/`.
 2. Fill in `Dockerfile`: `REPLACE_BASE_IMAGE`/`REPLACE_DIGEST` (the game's own upstream image, pinned), `REPLACE_CHILD_CMD` (the command the supervisor launches), and the optional `SUPERVISOR_DATA_DIR`/`SUPERVISOR_RCON_PORT` env vars if they apply. See `games/minecraft/Dockerfile` for a filled-in example.
 3. Replace every `REPLACE_*` placeholder in the manifests: `REPLACE_GAME` (name/selector/labels), `REPLACE_IMAGE` (the image this directory's `Dockerfile` builds — a tag or digest, never floating `:latest`), `REPLACE_PORT` / the `containerPort` / `nodePort` (a free port in **7000–7010**, the edge-forwarded band), the data `mountPath`, env, and resource sizing.
-4. Add `<game>` to `games/kustomization.yaml` so Flux renders it.
+4. That's all the wiring — do **not** add `<game>` to `games/kustomization.yaml`. The catalog is all-dynamic: the bot renders each `games/<id>/` into a uniquely-named instance on demand per `/create`, so a new game is picked up automatically. `games/kustomization.yaml` is the always-on set (deliberately empty); adding a game there would run it 24/7. See `games/README.md`.
 5. Validate against the live Agones webhook before pushing: `kubectl apply --dry-run=server -k games/<game>/`.
 
 ## The security baseline (why each piece is here)

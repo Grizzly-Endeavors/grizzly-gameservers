@@ -210,7 +210,7 @@ pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
         Ok(ScopeVerdict::InScope) => Ok(true),
         Ok(ScopeVerdict::Foreign | ScopeVerdict::Absent) => {
             deny(ctx, &format!(
-                "There's no server called **{server}** in this Discord server. Run `/servers` to see the servers shared across the whole server."
+                "There's no game server called **{server}** in this Discord server. Run `/servers` to see the game servers shared here."
             ))
             .await?;
             Ok(false)

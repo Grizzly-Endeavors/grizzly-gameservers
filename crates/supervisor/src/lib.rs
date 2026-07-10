@@ -5,9 +5,11 @@
 //! relaunch), keeps the Agones SDK health heartbeat alive even while the game is
 //! intentionally paused, and exposes an HTTP control API the Discord bot drives.
 //!
-//! The pure decision logic ([`config`], [`state`]) is separated from the IO
-//! shell ([`process`], [`readiness`], [`sdk`], [`control`], [`runner`]) so the
-//! state machine is unit-testable without spawning processes or opening sockets.
+//! The pure decision logic ([`config`], [`state`], [`autoupdate`], [`palworld`])
+//! is separated from the IO shell ([`process`], [`readiness`], [`sdk`],
+//! [`control`], [`runner`], [`rcon`], [`archive`], [`chat_watcher`], [`fs`],
+//! [`logs`]) so the state machine is unit-testable without spawning processes or
+//! opening sockets.
 
 pub mod archive;
 pub mod autoupdate;

@@ -76,7 +76,10 @@ async fn ensure_success(response: reqwest::Response, url: &str) -> Result<()> {
     if status.is_success() {
         return Ok(());
     }
-    let body = response.text().await.unwrap_or_default();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(err) => format!("(could not read error body: {err})"),
+    };
     bail!("agones SDK call to {url} returned {status}: {body}");
 }
 

@@ -76,9 +76,11 @@ RUN chmod +x /usr/local/bin/valheim-seed-rcon
 ENV SUPERVISOR_CHILD_CMD=/usr/local/sbin/bootstrap
 # Valheim's worlds and config live under /config; scope Gary's file tools there.
 ENV SUPERVISOR_DATA_DIR=/config
-# Load BepInEx so the baked ValheimRcon plugin runs; lloesche installs BepInExPack
-# onto the /config PVC on boot (config in /config/bepinex, plugins in
-# /config/bepinex/plugins). Cannot be combined with VALHEIM_PLUS.
+# Load BepInEx so the baked ValheimRcon plugin runs. lloesche installs BepInExPack
+# on boot and symlinks only BepInEx/config to /config/bepinex — plugins are NOT on
+# the PVC, so the pre-server hook re-places the baked plugin into BepInEx's real
+# plugins dir (/opt/valheim/bepinex/BepInEx/plugins) each boot. Cannot be combined
+# with VALHEIM_PLUS.
 ENV BEPINEX=true
 # Install + configure the RCON plugin at the correct point in lloesche's start
 # sequence (after BepInEx, before the server). See valheim-seed-rcon.sh.
@@ -93,7 +95,7 @@ ENV SUPERVISOR_RCON_PORT=27015
 ENV SUPERVISOR_RCON_DIALECT=valheim
 ENV SUPERVISOR_RCON_PASSWORD_ENV=VALHEIM_RCON_PASSWORD
 # Readiness stays on the log marker: the RCON port binds during mod init, which can
-# lead the world actually being joinable, so the log line remains the truthful
+# precede the world actually being joinable, so the log line remains the truthful
 # "players can connect now" signal. This marker is what the Valheim server prints
 # once it's registered and joinable; tune it here if a Valheim update changes it.
 ENV SUPERVISOR_READY_LOG_PATTERN="Game server connected"
