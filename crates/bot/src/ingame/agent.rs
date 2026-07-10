@@ -17,8 +17,9 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, GarySurface, SessionEvent, SessionOutcome, ToolCall, ToolDef,
-    cluster_error, format_server_list, format_summary, no_such, run_session, send_chat_completion,
+    ChatMessage, DEFAULT_MAX_ROUNDS, GarySurface, NameParams, SessionEvent, SessionOutcome,
+    ToolCall, ToolDef, cluster_error, format_server_list, format_summary, no_args_schema, no_such,
+    params_schema, run_session, send_chat_completion,
 };
 use crate::agones::{ServerScope, guild_of, list_active_servers, supervisor_announce};
 
@@ -169,28 +170,14 @@ fn ingame_tools() -> Vec<ToolDef> {
         ToolDef::function(
             LIST_SERVERS,
             "List the running game servers with their state and connection address.",
-            empty_schema(),
+            no_args_schema(),
         ),
         ToolDef::function(
             SERVER_STATUS,
             "Look up one server's current state and address by its exact name.",
-            name_schema(),
+            params_schema::<NameParams>(),
         ),
     ]
-}
-
-fn empty_schema() -> serde_json::Value {
-    serde_json::json!({ "type": "object", "properties": {} })
-}
-
-fn name_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "name": { "type": "string", "description": "exact server name from list_servers" }
-        },
-        "required": ["name"]
-    })
 }
 
 /// Run one read-only tool call within `scope` and render a terse text result.
@@ -199,7 +186,8 @@ fn name_schema() -> serde_json::Value {
 async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall) -> String {
     match call.function.name.as_str() {
         LIST_SERVERS => exec_list_servers(deps, scope).await,
-        SERVER_STATUS => match serde_json::from_str::<NameArg>(call.function.arguments.as_str()) {
+        SERVER_STATUS => match serde_json::from_str::<NameParams>(call.function.arguments.as_str())
+        {
             Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
             Err(err) => {
                 debug!(error = ?err, "ingame: server_status args failed to parse");
@@ -209,11 +197,6 @@ async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall
         _ => "I can only look up server info from in-game — an admin can do the rest in Discord."
             .to_owned(),
     }
-}
-
-#[derive(serde::Deserialize)]
-struct NameArg {
-    name: String,
 }
 
 async fn exec_list_servers(deps: &IngameDeps, scope: &ServerScope) -> String {

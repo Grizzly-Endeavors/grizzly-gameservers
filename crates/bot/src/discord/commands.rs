@@ -657,8 +657,8 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
             "I'll only answer here when you @mention me now.",
         ),
         Ok(HomeToggle::Unavailable) => error_embed(
-            "I can't remember that right now — my long-term memory is offline. \
-             You can still @mention me. Try again later.",
+            "I couldn't set that right now — home-channel settings are unavailable at the \
+             moment. You can still @mention me. Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, channel = ctx.channel_id().get(), "failed to toggle home channel");
@@ -830,8 +830,8 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     );
     if !config.is_available() {
         body.push_str(
-            "\n\n⚠️ My long-term memory is offline right now, so only the owner and operator \
-             are recognized until it reconnects.",
+            "\n\n⚠️ Access settings are unavailable right now, so only the owner and operator \
+             are recognized until they're back.",
         );
     }
     ctx.send(reply_with(neutral_embed("Server access", &body)).ephemeral(true))
@@ -1124,7 +1124,8 @@ async fn respond_grant_change(
             neutral_embed("No change", &format!("{subject} was already set that way."))
         }
         Ok(ConfigChange::Unavailable) => error_embed(
-            "I can't save that right now — my long-term memory is offline. Try again later.",
+            "I couldn't save that right now — access settings are unavailable at the moment. \
+             Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, "failed to update guild access config");
