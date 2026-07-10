@@ -10,6 +10,7 @@ mod backup;
 mod config;
 mod discord;
 mod ingame;
+mod memory;
 mod store;
 
 pub use config::BotConfig;
@@ -22,6 +23,7 @@ use tracing::{error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
+use memory::GaryMemory;
 use store::{GuildConfig, HomeChannels};
 
 /// Default timeout for supervisor control-API requests. The API is one in-cluster
@@ -71,6 +73,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let sessions = std::sync::Arc::new(SessionStore::new());
     let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
     let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
+    let memory = std::sync::Arc::new(GaryMemory::connect(config.db.as_ref()).await);
 
     // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
     // spawned subsystem watches it, and `tasks` tracks their handles so the drain
@@ -139,6 +142,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         ollama,
         sessions,
         home_channels,
+        memory,
         backup,
         tasks: tasks.clone(),
     };
@@ -263,6 +267,7 @@ fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
         commands::recover(),
         commands::new_session(),
         commands::gary_home(),
+        commands::gary_memory(),
         commands::config(),
     ]
 }

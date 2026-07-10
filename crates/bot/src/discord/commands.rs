@@ -22,6 +22,7 @@ use crate::agones::{
     supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
 };
 use crate::backup::{ArtifactSummary, BackupService};
+use crate::memory::{ForgetOutcome, Memory};
 use crate::store::{ConfigChange, HomeToggle};
 
 /// Maximum options a Discord string select menu accepts. Pickers that can exceed
@@ -683,6 +684,91 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     )
     .await?;
     Ok(())
+}
+
+/// Review and prune the durable facts Gary has learned about each game.
+#[poise::command(
+    slash_command,
+    rename = "gary-memory",
+    subcommands("gary_memory_list", "gary_memory_forget")
+)]
+pub(crate) async fn gary_memory(ctx: Context<'_>) -> Result<(), Error> {
+    // Discord always resolves a subcommand, so this parent body is defensive.
+    ctx.send(
+        reply_with(neutral_embed(
+            "Pick an option",
+            "Use `/gary-memory list` to see what Gary has learned, or `/gary-memory forget` to \
+             delete a fact by its id.",
+        ))
+        .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Show every durable fact Gary has saved, grouped by game.
+#[poise::command(slash_command, rename = "list", check = "require_admin")]
+async fn gary_memory_list(ctx: Context<'_>) -> Result<(), Error> {
+    let memories = ctx.data().memory.all().await;
+    let embed = if memories.is_empty() {
+        neutral_embed(
+            "Gary's memory",
+            "Gary hasn't saved anything yet. He records durable facts about a game as he learns \
+             them while running it.",
+        )
+    } else {
+        neutral_embed("Gary's memory", &format_memory_list(&memories))
+    };
+    ctx.send(reply_with(embed).ephemeral(true)).await?;
+    Ok(())
+}
+
+/// Delete one of Gary's saved facts by its id (from `/gary-memory list`).
+#[poise::command(slash_command, rename = "forget", check = "require_admin")]
+async fn gary_memory_forget(
+    ctx: Context<'_>,
+    #[description = "The id of the fact to delete (the number shown by /gary-memory list)"] id: i64,
+) -> Result<(), Error> {
+    let embed = match ctx.data().memory.forget(id).await {
+        Ok(ForgetOutcome::Forgotten) => neutral_embed("Forgotten", &format!("Deleted fact #{id}.")),
+        Ok(ForgetOutcome::NotFound) => error_embed(&format!(
+            "There's no fact #{id} — check `/gary-memory list`."
+        )),
+        Ok(ForgetOutcome::Unavailable) => {
+            error_embed("Gary's long-term memory is offline right now. Try again later.")
+        }
+        Err(err) => {
+            error!(error = ?err, id, "failed to forget gary memory");
+            error_embed("Something went wrong deleting that. Try again in a moment.")
+        }
+    };
+    ctx.send(reply_with(embed).ephemeral(true)).await?;
+    Ok(())
+}
+
+/// Gary's saved facts grouped by scope (game id or `general`), each with its id
+/// so an admin can `/gary-memory forget` it.
+fn format_memory_list(memories: &[Memory]) -> String {
+    let mut by_scope: std::collections::BTreeMap<&str, Vec<&Memory>> =
+        std::collections::BTreeMap::new();
+    for memory in memories {
+        by_scope
+            .entry(memory.scope.as_str())
+            .or_default()
+            .push(memory);
+    }
+    by_scope
+        .into_iter()
+        .map(|(scope, facts)| {
+            let lines = facts
+                .iter()
+                .map(|memory| format!("`#{}` {}", memory.id, memory.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("**{scope}**\n{lines}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Configure who can administer and who can operate this Discord server's game

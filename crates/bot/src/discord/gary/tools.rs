@@ -38,6 +38,7 @@ use crate::agones::{
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
 };
+use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 
 const LIST_SERVERS: &str = "list_servers";
 const SERVER_STATUS: &str = "server_status";
@@ -55,6 +56,8 @@ const EDIT_FILE: &str = "edit_file";
 const RESTORE_FILE: &str = "restore_file";
 const SEND_COMMAND: &str = "send_command";
 const WAIT_FOR_SERVER: &str = "wait_for_server";
+const REMEMBER: &str = "remember";
+const FORGET: &str = "forget";
 const LIST_BACKUPS: &str = "list_backups";
 const LIST_ARCHIVES: &str = "list_archives";
 const BACKUP_SERVER: &str = "backup_server";
@@ -157,6 +160,24 @@ struct LogsParams {
     /// omitted.
     #[serde(default)]
     lines: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct RememberParams {
+    /// Which game this fact is about — a catalog game id (e.g. `palworld`), or
+    /// `general` for something that isn't tied to one game.
+    scope: String,
+    /// The fact to remember, in one short sentence — a durable operational detail
+    /// you'd otherwise have to rediscover, e.g. "soft-stop before editing configs
+    /// or the change won't apply".
+    note: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ForgetParams {
+    /// The id of the fact to delete, as shown in the "Things you've learned" list
+    /// (the number after the `#`).
+    id: i64,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -272,6 +293,16 @@ fn manager_tools() -> Vec<ToolDef> {
             "Save a durable backup of a running server's world right now. Non-destructive — the server keeps running. Use before a risky change so restore_server can roll it back.",
             params_schema::<NameParams>(),
         ),
+        ToolDef::function(
+            REMEMBER,
+            "Save a durable fact about a game so you keep it across sessions — an operational detail you'd otherwise rediscover every time (e.g. a game needs to be stopped before a config edit will apply, or where a setting lives). Scope it to the game id, or 'general' if it's not game-specific. Keep it to one short factual sentence. Your saved facts are shown to you each session under \"Things you've learned\". Don't save one-off state, chit-chat, or anything you can just look up.",
+            params_schema::<RememberParams>(),
+        ),
+        ToolDef::function(
+            FORGET,
+            "Delete a saved fact by its id (the number after the # in \"Things you've learned\") when it turns out wrong or no longer applies.",
+            params_schema::<ForgetParams>(),
+        ),
     ]
 }
 
@@ -343,7 +374,30 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         LIST_ARCHIVES => exec_list_archives(ctx).await,
+        // Memory tools carry no server name (memory is shared across guilds), so
+        // they skip the scope gate above and dispatch on their own.
+        REMEMBER | FORGET => dispatch_memory(ctx, name, args).await,
         _ => dispatch_mutating(ctx, name, args).await,
+    }
+}
+
+/// Dispatch the memory tools. Manager-gated like the mutating set (defense in
+/// depth — they aren't offered below manager either), but kept out of
+/// [`dispatch_mutating`] because they target no server and take no scope gate.
+async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+    if ctx.access < AccessLevel::Manager {
+        return NON_MANAGER_REFUSAL.to_owned();
+    }
+    match name {
+        REMEMBER => match parse::<RememberParams>(args) {
+            Ok(params) => exec_remember(ctx, &params.scope, &params.note).await,
+            Err(message) => message,
+        },
+        FORGET => match parse::<ForgetParams>(args) {
+            Ok(params) => exec_forget(ctx, params.id).await,
+            Err(message) => message,
+        },
+        other => format!("'{other}' isn't a tool I have."),
     }
 }
 
@@ -624,6 +678,51 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
             cluster_error()
+        }
+    }
+}
+
+async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
+    let note = note.trim();
+    if note.is_empty() {
+        return "I need something to remember — give me the fact in a short sentence.".to_owned();
+    }
+    let ids: Vec<&str> = ctx.data.catalog.game_ids().collect();
+    let Some(scope) = normalize_scope(scope, &ids) else {
+        return format!(
+            "I can only file that under a game or 'general'. Pick one of: {}, general.",
+            ids.join(", ")
+        );
+    };
+    let author = ctx.author_id.get().to_string();
+    match ctx.data.memory.remember(&scope, note, Some(&author)).await {
+        Ok(RememberOutcome::Saved(id)) => {
+            format!("saved that under {scope} (fact #{id}); I'll have it next time")
+        }
+        Ok(RememberOutcome::Unavailable) => {
+            "my long-term memory's offline right now, so I can't save that. It'll stick for the \
+             rest of this conversation but not beyond it."
+                .to_owned()
+        }
+        Err(err) => {
+            error!(error = ?err, %scope, "agent: remember failed");
+            "something went wrong saving that — it didn't stick.".to_owned()
+        }
+    }
+}
+
+async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
+    match ctx.data.memory.forget(id).await {
+        Ok(ForgetOutcome::Forgotten) => format!("forgot fact #{id}"),
+        Ok(ForgetOutcome::NotFound) => {
+            format!("I don't have a fact #{id} to forget — check the list of what I've saved")
+        }
+        Ok(ForgetOutcome::Unavailable) => {
+            "my long-term memory's offline right now, so I can't change it.".to_owned()
+        }
+        Err(err) => {
+            error!(error = ?err, id, "agent: forget failed");
+            "something went wrong forgetting that.".to_owned()
         }
     }
 }

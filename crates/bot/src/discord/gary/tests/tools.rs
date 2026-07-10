@@ -20,7 +20,7 @@ const ADMIN_ONLY: [&str; 5] = [
 ];
 
 /// The lifecycle and file tools a manager gets on top of the read-only set.
-const MANAGER_ADDED: [&str; 13] = [
+const MANAGER_ADDED: [&str; 15] = [
     CREATE_SERVER,
     STOP_SERVER,
     START_SERVER,
@@ -34,6 +34,8 @@ const MANAGER_ADDED: [&str; 13] = [
     RESTORE_FILE,
     WAIT_FOR_SERVER,
     BACKUP_SERVER,
+    REMEMBER,
+    FORGET,
 ];
 
 #[test]
@@ -68,8 +70,8 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        17,
-        "four read tools plus the thirteen manager lifecycle/file tools"
+        19,
+        "four read tools plus the fifteen manager lifecycle/file/memory tools"
     );
 }
 
@@ -84,8 +86,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        22,
-        "the four read tools, thirteen manager tools, and five admin-only tools"
+        24,
+        "the four read tools, fifteen manager tools, and five admin-only tools"
     );
 }
 
@@ -97,10 +99,14 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // Derived from the live tool set so a newly added tool can't slip past the
     // gate without this failing.
     for name in tool_names(AccessLevel::Admin) {
+        // remember/forget carry no server name (memory is cross-guild), so they're
+        // spared the gate alongside the listing/create tools.
         let should_gate = name != LIST_SERVERS
             && name != CREATE_SERVER
             && name != LIST_ARCHIVES
-            && name != RECOVER_SERVER;
+            && name != RECOVER_SERVER
+            && name != REMEMBER
+            && name != FORGET;
         assert_eq!(
             targets_existing_server(&name),
             should_gate,

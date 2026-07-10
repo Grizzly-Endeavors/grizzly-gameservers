@@ -21,6 +21,7 @@ use tokio_util::task::TaskTracker;
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 use crate::backup::MaybeBackups;
+use crate::memory::GaryMemory;
 use crate::store::{GuildConfig, HomeChannels};
 
 /// How long an interactive component (button, confirm prompt) waits for a
@@ -60,6 +61,10 @@ pub(crate) struct Data {
     /// Channels where Gary answers without an `@mention` (plus DMs, which are
     /// always no-mention). Backed by Postgres; disabled if persistence is down.
     pub(crate) home_channels: Arc<HomeChannels>,
+    /// Durable operational facts Gary has learned per game, injected into his
+    /// system prompt. Backed by Postgres; empty and read-only if persistence is
+    /// down.
+    pub(crate) memory: Arc<GaryMemory>,
     /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
     /// backup commands then report "not configured", same shape as Gary/home).
     pub(crate) backup: MaybeBackups,
