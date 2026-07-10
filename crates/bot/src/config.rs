@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use tracing::warn;
 
 /// Closure that resolves an environment variable to its raw value, mirroring
 /// `std::env::var_os`. Injected so config parsing is testable without the
@@ -280,7 +281,20 @@ fn required(lookup: EnvLookup, key: &str) -> Result<String> {
 }
 
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
-    lookup(key).and_then(|raw| raw.into_string().ok())
+    match lookup(key)?.into_string() {
+        Ok(value) => Some(value),
+        // Mirror `required`'s fail-loud stance: a set-but-mangled value shouldn't
+        // vanish into the default with no trace, or a misconfiguration reads as
+        // "unset" and is impossible to spot.
+        Err(bad) => {
+            warn!(
+                key,
+                value = %bad.display(),
+                "ignoring non-UTF-8 value for optional env var; falling back to default"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]

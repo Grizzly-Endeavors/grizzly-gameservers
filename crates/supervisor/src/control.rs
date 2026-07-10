@@ -376,7 +376,9 @@ async fn run_command(
     let Some(rcon) = state.rcon.as_ref() else {
         return (
             StatusCode::CONFLICT,
-            Json(ControlError::new("rcon is not enabled for this game")),
+            Json(ControlError::new(
+                "console commands aren't supported for this game",
+            )),
         )
             .into_response();
     };

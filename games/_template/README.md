@@ -7,7 +7,7 @@ Skeleton for onboarding a new game. The manifests here carry a deliberate securi
 1. Copy this directory: `games/_template/` → `games/<game>/`.
 2. Fill in `Dockerfile`: `REPLACE_BASE_IMAGE`/`REPLACE_DIGEST` (the game's own upstream image, pinned), `REPLACE_CHILD_CMD` (the command the supervisor launches), and the optional `SUPERVISOR_DATA_DIR`/`SUPERVISOR_RCON_PORT` env vars if they apply. See `games/minecraft/Dockerfile` for a filled-in example.
 3. Replace every `REPLACE_*` placeholder in the manifests: `REPLACE_GAME` (name/selector/labels), `REPLACE_IMAGE` (the image this directory's `Dockerfile` builds — a tag or digest, never floating `:latest`), `REPLACE_PORT` / the `containerPort` / `nodePort` (a free port in **7000–7010**, the edge-forwarded band), the data `mountPath`, env, and resource sizing.
-4. Add `<game>` to `games/kustomization.yaml` so Flux renders it.
+4. That's all the wiring — do **not** add `<game>` to `games/kustomization.yaml`. The catalog is all-dynamic: the bot renders each `games/<id>/` into a uniquely-named instance on demand per `/create`, so a new game is picked up automatically. `games/kustomization.yaml` is the always-on set (deliberately empty); adding a game there would run it 24/7. See `games/README.md`.
 5. Validate against the live Agones webhook before pushing: `kubectl apply --dry-run=server -k games/<game>/`.
 
 ## The security baseline (why each piece is here)

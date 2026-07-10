@@ -19,7 +19,7 @@ use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
 use discord::{Data, commands};
@@ -226,7 +226,10 @@ async fn on_gateway_event(
 ) -> Result<(), discord::Error> {
     if let serenity::FullEvent::GuildCreate { guild, .. } = event {
         poise::builtins::register_in_guild(ctx, &framework.options().commands, guild.id).await?;
-        info!(
+        // GuildCreate re-fires on every gateway reconnect/resume, so this would be
+        // routine repeat noise at info — the interesting signal is a *new* guild,
+        // which the join path already surfaces.
+        debug!(
             guild = guild.id.get(),
             "registered slash commands for guild"
         );

@@ -245,7 +245,7 @@ fn manager_tools() -> Vec<ToolDef> {
         ),
         ToolDef::function(
             RESTART_SERVER,
-            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. It disconnects everyone currently on, so check server_status for the player count first: if anyone's online, warn them and/or ask before rebooting rather than kicking a live session. Config edits also take effect on the next restart, so the same check applies when you restart to apply a change.",
+            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. Disconnects everyone currently connected.",
             params_schema::<NameParams>(),
         ),
         ToolDef::function(
@@ -505,8 +505,11 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
 }
 
 fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
-    serde_json::from_str(args)
-        .map_err(|err| format!("I couldn't read the arguments for that tool: {err}"))
+    serde_json::from_str(args).map_err(|err| {
+        format!(
+            "the arguments for that tool weren't valid JSON ({err}); check the argument names and types and call it again"
+        )
+    })
 }
 
 /// Whether a tool acts on an *existing* server named in its arguments — the set

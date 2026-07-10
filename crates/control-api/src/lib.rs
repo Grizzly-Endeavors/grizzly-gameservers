@@ -169,9 +169,10 @@ impl ControlOk {
 /// - **Relayed** — `/command` and the lifecycle routes (`/stop`, `/start`,
 ///   `/restart`): the bot surfaces the message to the friend near-verbatim, so
 ///   these bodies are **friend-facing**.
-/// - **Discarded + substituted** — `/archive` and `/restore`: the bot logs the
-///   body but replaces it with its own generic copy for the friend, so these
-///   bodies are **diagnostic** — they only ever land in a log line.
+/// - **Discarded + substituted** — `/archive` (both the archive-out `GET` and
+///   the whole-data restore-in `POST`): the bot logs the body but replaces it
+///   with its own generic copy for the friend, so these bodies are
+///   **diagnostic** — they only ever land in a log line.
 /// - **Unread** — `/announce`: the bot logs only the status code and never
 ///   deserializes the body, so this body is **diagnostic** too (the supervisor's
 ///   own log carries the real cause).

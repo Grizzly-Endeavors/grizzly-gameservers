@@ -299,12 +299,7 @@ fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
 /// Interpret an optional flag variable as a boolean, accepting the common truthy
 /// spellings case-insensitively. Absent or unrecognized values are `false`.
 fn optional_flag(lookup: EnvLookup, key: &str) -> bool {
-    optional(lookup, key).is_some_and(|raw| {
-        matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    optional_flag_or(lookup, key, false)
 }
 
 /// Interpret an optional flag variable as a boolean, falling back to `default`

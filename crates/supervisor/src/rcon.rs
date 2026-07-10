@@ -362,10 +362,11 @@ impl RconRuntime {
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
         if self.dialect.single_packet_reply() {
-            // Minecraft and Palworld reply with a single response packet; read just
-            // that. Palworld additionally never mirrors the sentinel, so attempting
-            // the fragmented read would hang until timeout/EOF on a command that
-            // already ran — the false "communication hiccup" this avoids.
+            // Minecraft, Palworld, and Valheim reply with a single response packet;
+            // read just that. Palworld and Valheim additionally never mirror the
+            // sentinel, so attempting the fragmented read would hang until
+            // timeout/EOF on a command that already ran — the false "communication
+            // hiccup" this avoids.
             let packet = read_packet(&mut stream)
                 .await
                 .context("failed to read rcon command response")?;

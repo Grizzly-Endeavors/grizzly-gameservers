@@ -154,7 +154,10 @@ impl HomeChannels {
         match store.load_all().await {
             Ok(ids) => {
                 let cache: HashSet<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect();
-                info!(home_channels = cache.len(), "connected to postgres");
+                info!(
+                    home_channels = cache.len(),
+                    "connected to postgres for no-mention home channels"
+                );
                 Self {
                     store: Some(store),
                     cache: RwLock::new(cache),

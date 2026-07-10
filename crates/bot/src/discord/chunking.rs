@@ -34,14 +34,12 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     while pos < text.len() {
         let remaining = text.split_at(pos).1;
 
-        // Build prefix for this chunk (reopen fence if needed)
         let prefix = if in_fence {
             format!("{fence_header}\n")
         } else {
             String::new()
         };
 
-        // Suffix we may need to append (close fence if still open at end of chunk)
         let suffix_reserve: usize = if in_fence { FENCE_CLOSE.len() } else { 0 };
 
         let budget = max_chars
@@ -53,7 +51,6 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
         }
 
         if remaining.len() <= budget {
-            // Last chunk — fits entirely
             let mut chunk = prefix;
             chunk.push_str(remaining);
             update_fence_state(remaining, &mut in_fence, &mut fence_header);
@@ -79,7 +76,8 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 
         chunks.push(chunk);
 
-        // Advance past the split, skipping a leading newline
+        // find_split_point prefers a newline boundary, so drop that newline rather
+        // than let it open the next chunk as a blank line.
         pos += split_at;
         if text.get(pos..pos + 1) == Some("\n") {
             pos += 1;

@@ -262,6 +262,36 @@ fn ingame_trigger_request_round_trips() {
 }
 
 #[test]
+fn occupancy_response_encodes_unknown_as_null() {
+    // `players: None` means *unknown*, never a definite zero, so it must survive
+    // as an explicit `null` — not an absent field and not `0` — or a caller could
+    // misread an unreachable console as an empty server.
+    let unknown = OccupancyResponse { players: None };
+    assert_eq!(
+        serde_json::to_string(&unknown).unwrap(),
+        r#"{"players":null}"#,
+        "an unknown count should serialize to an explicit null"
+    );
+    assert_eq!(
+        serde_json::from_str::<OccupancyResponse>(r#"{"players":null}"#).unwrap(),
+        unknown,
+        "null should round-trip back to None, not 0"
+    );
+
+    let empty = OccupancyResponse { players: Some(0) };
+    assert_eq!(
+        serde_json::to_string(&empty).unwrap(),
+        r#"{"players":0}"#,
+        "a definite zero stays distinct from unknown"
+    );
+    assert_eq!(
+        serde_json::from_str::<OccupancyResponse>(r#"{"players":0}"#).unwrap(),
+        empty,
+        "0 should round-trip back to Some(0), never None"
+    );
+}
+
+#[test]
 fn logs_response_round_trips() {
     let response = LogsResponse {
         lines: vec![
