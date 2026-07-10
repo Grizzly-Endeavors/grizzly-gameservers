@@ -20,7 +20,7 @@ use grizzly_control_api::{
 use super::super::auth::AccessLevel;
 use super::super::render::{
     archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
-    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+    error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::{
@@ -37,7 +37,7 @@ use crate::agones::{
     supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
+    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 
@@ -891,7 +891,9 @@ async fn finish_destroy(
         }
         Err(err) => {
             error!(error = ?err, %server, "agent: destroy failed");
-            cluster_error()
+            let message = cluster_error();
+            edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+            message
         }
     }
 }
@@ -1186,7 +1188,9 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
                 }
                 Err(err) => {
                     error!(error = ?err, %server, "agent: archive failed");
-                    cluster_error()
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
                 }
             }
         }
@@ -1234,7 +1238,9 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
                 }
                 Err(err) => {
                     error!(error = ?err, %server, "agent: restore failed");
-                    cluster_error()
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
                 }
             }
         }
@@ -1577,12 +1583,24 @@ fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
 
 fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
     match outcome {
-        RestoreOutcome::Restored { ready: true } => {
-            format!("restored {server} — it's back up on the restored world")
-        }
-        RestoreOutcome::Restored { ready: false } => {
-            format!("restored the world onto {server} — it'll be playable again in a minute")
-        }
+        RestoreOutcome::Restored {
+            boot: BootState::Ready,
+        } => format!("restored {server} — it's back up on the restored world"),
+        RestoreOutcome::Restored {
+            boot: BootState::TimedOut,
+        } => format!("restored the world onto {server} — it'll be playable again in a minute"),
+        RestoreOutcome::Restored {
+            boot: BootState::Crashed,
+        } => format!(
+            "restored the world onto {server}, but it crashed coming back up — read its logs \
+             (the restored data may be the cause), or ping an operator"
+        ),
+        RestoreOutcome::Restored {
+            boot: BootState::Stopped,
+        } => format!(
+            "restored the world onto {server}, but it's paused and won't come up on its own — \
+             start it when you're ready"
+        ),
         RestoreOutcome::Failed(_) => {
             format!("I couldn't restore {server} cleanly — worth trying again in a moment")
         }
@@ -1593,15 +1611,30 @@ fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
 
 fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
     match outcome {
-        RecoverOutcome::Recovered { address, ready } => {
-            if *ready {
-                format!("recovered {name} — it's back up at {address}")
-            } else {
-                format!(
-                    "recovering {name}; it'll be reachable at {address} once it finishes booting"
-                )
-            }
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Ready,
+        } => format!("recovered {name} — it's back up at {address}"),
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::TimedOut,
+        } => {
+            format!("recovering {name}; it'll be reachable at {address} once it finishes booting")
         }
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Crashed,
+        } => format!(
+            "recovered {name} at {address}, but it crashed coming back up — read its logs (the \
+             archived data may be the cause), or ping an operator"
+        ),
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Stopped,
+        } => format!(
+            "recovered {name} at {address}, but it's paused and won't come up on its own — \
+             start it when you're ready"
+        ),
         RecoverOutcome::NoSuchArchive => {
             format!(
                 "there's no archived server named {name} in this Discord server — check list_archives"

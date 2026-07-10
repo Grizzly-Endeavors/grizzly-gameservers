@@ -16,8 +16,8 @@ use super::manifest::{
 use super::s3::S3Store;
 use super::store::{ArchiveRecord, ArchiveStore};
 use super::{
-    ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService, RecoverOutcome,
-    RestoreOutcome,
+    ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService, BootState,
+    RecoverOutcome, RestoreOutcome,
 };
 use crate::agones::{
     BackupTarget, ControlReady, DestroyOutcome, PodTarget, ProvisionOutcome, ReadyWait,
@@ -336,9 +336,8 @@ impl BackupService {
             ExtractResult::Unreachable(reason) => return Ok(RestoreOutcome::Failed(reason)),
         }
 
-        let ready = self.start_and_wait(ctx, instance).await?;
-        Ok(match ready {
-            StartResult::Ready(ready) => RestoreOutcome::Restored { ready },
+        Ok(match self.start_and_wait(ctx, instance).await? {
+            StartResult::Ready(boot) => RestoreOutcome::Restored { boot },
             StartResult::Failed(reason) => RestoreOutcome::Failed(reason),
         })
     }
@@ -450,7 +449,7 @@ impl BackupService {
         }
 
         Ok(match self.start_and_wait(ctx, name).await? {
-            StartResult::Ready(ready) => RecoverOutcome::Recovered { address, ready },
+            StartResult::Ready(boot) => RecoverOutcome::Recovered { address, boot },
             StartResult::Failed(reason) => RecoverOutcome::Failed(reason),
         })
     }
@@ -652,18 +651,29 @@ impl BackupService {
                 ));
             }
         }
-        let ready = matches!(
-            wait_for_ready(
-                ctx.client,
-                ctx.http,
-                ctx.namespace,
-                instance,
-                ctx.control_port
-            )
-            .await?,
-            ReadyWait::Ready
-        );
-        Ok(StartResult::Ready(ready))
+        let boot = match wait_for_ready(
+            ctx.client,
+            ctx.http,
+            ctx.namespace,
+            instance,
+            ctx.control_port,
+        )
+        .await?
+        {
+            ReadyWait::Ready => BootState::Ready,
+            ReadyWait::Crashed => BootState::Crashed,
+            ReadyWait::Stopped => BootState::Stopped,
+            ReadyWait::TimedOut => BootState::TimedOut,
+            // The start we just issued succeeded, so the pod vanishing out from
+            // under the wait is an unexpected race rather than a normal outcome
+            // — surface it as a failure instead of quietly reporting "ready: no".
+            ReadyWait::NotFound | ReadyWait::NotManaged => {
+                return Ok(StartResult::Failed(
+                    "the server disappeared while waiting for it to come back up".to_owned(),
+                ));
+            }
+        };
+        Ok(StartResult::Ready(boot))
     }
 
     /// Ensure an instance has a live pod, cold-starting a shut-down one.
@@ -733,7 +743,7 @@ enum StopBlock {
 
 /// The result of starting a server and waiting for readiness.
 enum StartResult {
-    Ready(bool),
+    Ready(BootState),
     Failed(String),
 }
 

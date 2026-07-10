@@ -30,5 +30,9 @@ spec:
             agones.dev/role: gameserver
       toPorts:
         - ports:
+            # Must match DEFAULT_CONTROL_PORT in crates/bot/src/config.rs AND
+            # crates/supervisor/src/config.rs — a mismatch here is a silent
+            # Cilium drop, not an error. No single source of truth yet
+            # (tracked as issue #42).
             - port: "9359"
               protocol: TCP

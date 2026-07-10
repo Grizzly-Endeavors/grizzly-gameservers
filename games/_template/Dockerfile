@@ -56,6 +56,13 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # Gary's file tools (browse_files/read_file/write_file/restore_file) scope to
 # the right place. Defaults to /data if unset.
 # ENV SUPERVISOR_DATA_DIR=/data
+# REPLACE (optional): the TCP port the readiness probe below connects to.
+# Defaults to 25565 (Minecraft's port) if unset — every other game must set
+# this explicitly or the probe silently watches the wrong port. Point it at
+# the game's own listen port (Terraria), or at a TCP port that only opens once
+# the game is actually hosting, such as RCON/query (Factorio, Palworld), if the
+# game port itself is UDP-only. Leave unset only on the log-pattern path below.
+# ENV SUPERVISOR_GAME_PORT=REPLACE_PORT
 # REPLACE (optional): how the supervisor decides the game is Ready (which gates
 # the one-shot Agones /ready call). By default it waits for a TCP connect on
 # SUPERVISOR_GAME_PORT — correct for games that listen on TCP (Terraria) or whose

@@ -1,0 +1,38 @@
+# Nothing else validates cluster/ (Agones standup, agent guardrails: RBAC,
+# NetworkPolicy, Kyverno gate-scope): deploy.yml only builds/gates/deploys the
+# bot image, and .githooks/pre-commit only inspects staged .rs/.toml files, so
+# a YAML change here — including networkpolicy.yaml, "the guardrail that
+# matters most" per cluster/guardrails/README.md — currently ships straight to
+# Flux with zero earlier warning. This job fails loud at the PR/push edge
+# instead of at reconciliation time.
+#
+# Scoped to `kubectl kustomize` (kustomize is bundled in kubectl, already on
+# the lab-runners image — see grizzly-platform docker/github-runner/Dockerfile
+# — so this needs no new tool/version to install or pin) rather than a
+# kubeconform schema pass: cluster/ mixes built-in kinds (Namespace, RBAC)
+# with CRDs (CiliumNetworkPolicy, Flux's HelmRelease/HelmRepository) that
+# aren't in kubeconform's default schema set. Validating those needs an
+# external CRD schema catalog wired in and confirmed against real output,
+# which isn't something to land unverified. `kustomize build` alone still
+# catches most YAML-shape and cross-file reference errors (bad indentation,
+# broken resource references, missing metadata.name, duplicate resource IDs)
+# — the same class of bug that prompted this workflow.
+name: Validate Cluster Manifests
+
+on:
+  push:
+    paths:
+      - "cluster/**"
+  pull_request:
+    paths:
+      - "cluster/**"
+
+jobs:
+  kustomize-build:
+    runs-on: lab-runners
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: kubectl kustomize cluster/
+        run: |
+          set -euo pipefail
+          kubectl kustomize cluster/ > /dev/null

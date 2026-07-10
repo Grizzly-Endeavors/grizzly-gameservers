@@ -24,7 +24,7 @@ rules:
   # objects rather than mutating in place.
   - apiGroups: ["agones.dev"]
     resources: ["gameservers"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "create", "delete"]
   # Resolve NodePorts for addresses, and create/delete the per-instance Service
   # that exposes each world. /stop deliberately retains the Service.
   - apiGroups: [""]

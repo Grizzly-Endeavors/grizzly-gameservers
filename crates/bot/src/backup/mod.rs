@@ -113,9 +113,26 @@ impl ArchiveOutcome {
     }
 }
 
+/// How a server came up after a restore/recover launch, preserved from
+/// [`crate::agones::ReadyWait`] instead of collapsed to a bool — a crash or a
+/// paused server needs a different message than "still booting", not the same
+/// falsy answer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BootState {
+    /// Accepting connections.
+    Ready,
+    /// Crashed while coming up — the restored/recovered data is the usual
+    /// suspect.
+    Crashed,
+    /// Paused, so it won't come up on its own.
+    Stopped,
+    /// Still coming up when the wait budget elapsed.
+    TimedOut,
+}
+
 /// Outcome of restoring a live server from one of its backups.
 pub(crate) enum RestoreOutcome {
-    Restored { ready: bool },
+    Restored { boot: BootState },
     NotFound,
     NotManaged,
     Failed(String),
@@ -135,7 +152,7 @@ impl RestoreOutcome {
 pub(crate) enum RecoverOutcome {
     Recovered {
         address: String,
-        ready: bool,
+        boot: BootState,
     },
     /// No archive by that name in this guild.
     NoSuchArchive,

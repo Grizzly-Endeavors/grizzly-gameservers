@@ -31,5 +31,8 @@ spec:
             app.kubernetes.io/component: bot
       toPorts:
         - ports:
+            # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs — a
+            # mismatch here is a silent Cilium drop, not an error. No single
+            # source of truth yet (see issue #42).
             - port: "9360"
               protocol: TCP
