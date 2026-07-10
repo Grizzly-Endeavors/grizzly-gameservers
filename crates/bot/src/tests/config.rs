@@ -269,3 +269,201 @@ fn positive_backup_settings_are_accepted() {
     assert_eq!(config.backup_interval, std::time::Duration::from_hours(6));
     assert_eq!(config.backup_retention, 3);
 }
+
+// ---- control-plane egress drift guard (issue #42) ----
+//
+// The control-plane port/host values are pinned in five independent places: the
+// `DEFAULT_*` consts above, the supervisor crate's own `DEFAULT_CONTROL_PORT`,
+// and four Cilium egress carve-outs under `cluster/guardrails/`. If any one
+// drifts from the others, Cilium silently *drops* the packets rather than
+// erroring — a connect timeout that points nowhere near the NetworkPolicy. The
+// cross-reference comments between these sites don't stop drift; these tests read
+// the real YAML off disk and fail CI loudly the moment a const and its carve-out
+// disagree. Mirrors the `real_satisfactory_manifest_is_on_the_advertise_path`
+// pattern in `agones/tests/ports.rs`.
+
+use std::path::{Path, PathBuf};
+
+/// Minimal view of a `CiliumNetworkPolicy` egress carve-out — only the `port`
+/// and `cidr` literals these guardrails pin. Deliberately partial so an unrelated
+/// edit elsewhere in the manifest (selectors, metadata, comments) can't perturb
+/// the drift check.
+#[derive(serde::Deserialize)]
+struct EgressPolicy {
+    spec: EgressSpec,
+}
+
+#[derive(serde::Deserialize)]
+struct EgressSpec {
+    egress: Vec<EgressRule>,
+}
+
+#[derive(serde::Deserialize)]
+struct EgressRule {
+    #[serde(default, rename = "toCIDRSet")]
+    to_cidr_set: Vec<CidrEntry>,
+    #[serde(default, rename = "toPorts")]
+    to_ports: Vec<ToPortRule>,
+}
+
+#[derive(serde::Deserialize)]
+struct CidrEntry {
+    cidr: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ToPortRule {
+    ports: Vec<PortEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct PortEntry {
+    // Cilium serialises the port as a quoted string ("9359"), not an int.
+    port: String,
+}
+
+impl EgressPolicy {
+    /// The single TCP port this carve-out opens, parsed to a `u16`. Panics unless
+    /// the policy declares exactly one — every guardrail here is single-port, and
+    /// a second port sneaking in should fail the check, not be silently ignored.
+    fn only_port(&self) -> u16 {
+        let ports: Vec<u16> = self
+            .spec
+            .egress
+            .iter()
+            .flat_map(|rule| rule.to_ports.iter())
+            .flat_map(|to_port| to_port.ports.iter())
+            .map(|entry| {
+                entry
+                    .port
+                    .parse()
+                    .unwrap_or_else(|_| panic!("port {:?} is not a valid u16", entry.port))
+            })
+            .collect();
+        let [port] = ports.as_slice() else {
+            panic!("expected exactly one egress port, got {ports:?}");
+        };
+        *port
+    }
+
+    /// The single `/32` host this carve-out pins, with the mask stripped. Panics
+    /// unless the policy declares exactly one host CIDR.
+    fn only_cidr_host(&self) -> String {
+        let cidrs: Vec<&str> = self
+            .spec
+            .egress
+            .iter()
+            .flat_map(|rule| rule.to_cidr_set.iter())
+            .map(|entry| entry.cidr.as_str())
+            .collect();
+        let [cidr] = cidrs.as_slice() else {
+            panic!("expected exactly one CIDR, got {cidrs:?}");
+        };
+        cidr.strip_suffix("/32")
+            .unwrap_or_else(|| panic!("expected a /32 host CIDR, got {cidr:?}"))
+            .to_owned()
+    }
+}
+
+fn load_egress(file: &str) -> EgressPolicy {
+    let path = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../cluster/guardrails"
+    ))
+    .join(file);
+    let yaml =
+        std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {path:?}: {err}"));
+    serde_yaml_ng::from_str(&yaml).unwrap_or_else(|err| panic!("parsing {path:?}: {err}"))
+}
+
+/// Reads a `const NAME: u16 = N;` literal out of a Rust source file by a targeted
+/// line scan — enough to reach the supervisor crate's `DEFAULT_CONTROL_PORT`
+/// without a build dependency on it, so its value is pinned against the shared
+/// control port too. Deliberately a line scan, not a Rust parser: the const lines
+/// are flat and this stays cheap to keep in sync with them.
+fn rust_u16_const(source_path: &Path, name: &str) -> u16 {
+    let source = std::fs::read_to_string(source_path)
+        .unwrap_or_else(|err| panic!("reading {source_path:?}: {err}"));
+    let prefix = format!("const {name}: u16 = ");
+    let value = source
+        .lines()
+        .map(str::trim_start)
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("{name} not found in {source_path:?}"));
+    value
+        .trim_end()
+        .trim_end_matches(';')
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} value {value:?} is not a valid u16"))
+}
+
+fn supervisor_config_path() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../supervisor/src/config.rs"
+    ))
+}
+
+#[test]
+fn supervisor_egress_port_matches_control_port_on_both_sides() {
+    let yaml_port = load_egress("bot-to-supervisor-egress.yaml").only_port();
+    assert_eq!(
+        yaml_port, DEFAULT_CONTROL_PORT,
+        "bot-to-supervisor-egress.yaml opens {yaml_port} but bot DEFAULT_CONTROL_PORT is \
+         {DEFAULT_CONTROL_PORT}; Cilium would silently drop the bot's control calls (issue #42)"
+    );
+    let supervisor_control_port = rust_u16_const(&supervisor_config_path(), "DEFAULT_CONTROL_PORT");
+    assert_eq!(
+        supervisor_control_port, DEFAULT_CONTROL_PORT,
+        "supervisor DEFAULT_CONTROL_PORT ({supervisor_control_port}) must equal the bot's \
+         ({DEFAULT_CONTROL_PORT}) — they name the same in-pod control API port (issue #42)"
+    );
+}
+
+#[test]
+fn agent_egress_port_matches_agent_port_default() {
+    let yaml_port = load_egress("game-to-bot-agent-egress.yaml").only_port();
+    assert_eq!(
+        yaml_port, DEFAULT_AGENT_PORT,
+        "game-to-bot-agent-egress.yaml opens {yaml_port} but DEFAULT_AGENT_PORT is \
+         {DEFAULT_AGENT_PORT}; Cilium would silently drop the in-game @Gary triggers (issue #42)"
+    );
+}
+
+#[test]
+fn postgres_egress_matches_db_host_and_port_defaults() {
+    let policy = load_egress("bot-to-postgres-egress.yaml");
+    assert_eq!(
+        policy.only_cidr_host(),
+        DEFAULT_DB_HOST,
+        "bot-to-postgres-egress.yaml CIDR must match DEFAULT_DB_HOST (issue #42)"
+    );
+    assert_eq!(
+        policy.only_port(),
+        DEFAULT_DB_PORT,
+        "bot-to-postgres-egress.yaml port must match DEFAULT_DB_PORT (issue #42)"
+    );
+}
+
+#[test]
+fn s3_egress_matches_s3_endpoint_host_and_port() {
+    let policy = load_egress("bot-to-s3-egress.yaml");
+    let endpoint = url::Url::parse(DEFAULT_S3_ENDPOINT).unwrap();
+    let host = endpoint
+        .host_str()
+        .expect("DEFAULT_S3_ENDPOINT should carry a host");
+    let port = endpoint
+        .port()
+        .expect("DEFAULT_S3_ENDPOINT should carry an explicit port");
+    assert_eq!(
+        policy.only_cidr_host(),
+        host,
+        "bot-to-s3-egress.yaml CIDR must match the host in DEFAULT_S3_ENDPOINT (issue #42)"
+    );
+    assert_eq!(
+        policy.only_port(),
+        port,
+        "bot-to-s3-egress.yaml port must match the port in DEFAULT_S3_ENDPOINT (issue #42)"
+    );
+}
