@@ -65,6 +65,22 @@ fn keys_to_prune_keeps_everything_when_under_the_limit() {
 }
 
 #[test]
+fn keys_to_prune_with_zero_keep_returns_every_key() {
+    let keys = vec![
+        "backups/x/20260707T120000Z.tar.zst".to_owned(),
+        "backups/x/20260707T150000Z.tar.zst".to_owned(),
+        "backups/x/20260707T090000Z.tar.zst".to_owned(),
+    ];
+    // keep == 0 deletes everything — the documented contract callers must reject
+    // upstream. Pinned so a future "helpful" floor-guard can't silently soften it.
+    assert_eq!(
+        keys_to_prune(keys.clone(), 0).len(),
+        keys.len(),
+        "zero retention returns every key"
+    );
+}
+
+#[test]
 fn manifest_round_trips_through_json() {
     let manifest = BackupManifest {
         schema: MANIFEST_SCHEMA,

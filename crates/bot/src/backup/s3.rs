@@ -321,7 +321,13 @@ async fn success(response: reqwest::Response) -> Result<reqwest::Response> {
     if status.is_success() {
         return Ok(response);
     }
-    let body = response.text().await.unwrap_or_default();
+    let body = match response.text().await {
+        Ok(body) => body,
+        // Don't let the body read fail silently while building the diagnostic —
+        // the 3am operator should see that a body existed but couldn't be read,
+        // not an empty tail that looks like no body at all.
+        Err(err) => format!("(could not read error body: {err})"),
+    };
     bail!("s3 request failed with status {status}: {}", body.trim());
 }
 

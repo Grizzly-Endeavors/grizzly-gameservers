@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
 use k8s_openapi::api::core::v1::Service;
+use tracing::warn;
 
 use super::labels::{node_port_named, service_node_port, service_port_names};
 
@@ -250,10 +251,16 @@ pub(crate) fn friend_facing_node_port(service: &Service) -> Option<i32> {
             .iter()
             .find(|port| port.friend_facing)
             .and_then(|port| node_port_named(service, &port.name)),
-        // A remap plan resolves to the first NodePort; so does an unparseable one
-        // (our own rendered services never are) so a display path still shows an
-        // address rather than nothing.
-        Ok(PortPlan::Remap) | Err(_) => service_node_port(service),
+        // A remap plan resolves to the first NodePort.
+        Ok(PortPlan::Remap) => service_node_port(service),
+        // Our own rendered services are always parseable, so a parse failure means
+        // a hand-edited or foreign annotation. Still degrade to the first NodePort
+        // so a display path shows an address rather than nothing — but log it,
+        // since this "impossible" case would otherwise silently mangle the address.
+        Err(err) => {
+            warn!(error = ?err, "unparseable port-advertise annotation; using first NodePort");
+            service_node_port(service)
+        }
     }
 }
 
