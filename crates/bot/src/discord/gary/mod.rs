@@ -8,6 +8,7 @@
 //! the Discord shell — the model client and loop live in `crate::agent`, the
 //! tool executors in [`tools`].
 
+mod recovery;
 mod tools;
 
 use std::future::Future;
@@ -187,6 +188,7 @@ async fn handle_message(
         author_id: message.author.id,
         access,
         scope,
+        pending_change: std::sync::Mutex::new(None),
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the
     // session may call them across several rounds. A `move` closure that closed
@@ -376,52 +378,7 @@ fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> Stri
     prompt.push_str("\n\nAvailable games to launch: ");
     prompt.push_str(if games.is_empty() { "(none)" } else { games });
     if access >= AccessLevel::Manager {
-        prompt.push_str(
-            "\n\nThis person can run this server day-to-day: you may create, stop, start, \
-             restart, and shut down servers for them, and take a backup (backup_server) before a \
-             risky change.",
-        );
-        prompt.push_str(
-            "\n\nYou can also reach inside a running server to inspect and tune it. Every game \
-             stores its settings differently, so explore rather than guess: browse_files from the \
-             top of the data directory to find the file that holds a setting, read_file to see it, \
-             and read_logs when something's wrong or to confirm a change took hold. To change one \
-             setting, use edit_file to replace just that piece of the file — it leaves everything \
-             else alone, so prefer it over rewriting the whole file; fall back to write_file only \
-             to create a file or replace one wholesale. Either way the previous version is saved \
-             first. After a change, restart the server, then wait_for_server to let it actually come \
-             back up before you check it — don't churn on repeated status or log reads while it \
-             boots. Once it's up, read_logs to confirm it's healthy. If it isn't, restore_file and \
-             restart to put it back the way it was. Make one change at a time so you can tell what \
-             worked. If you can't get it healthy, say so plainly and stop rather than thrashing.",
-        );
-        prompt.push_str(
-            "\n\nBefore you restart a server — to reboot it or to apply a config change — check \
-             who's on it: server_status now shows the player count. A restart disconnects everyone \
-             connected, so if anyone's online, don't just do it. Tell them how many are on and ask \
-             whether to restart now or wait until it's empty — a config edit is saved and applies on \
-             the next restart regardless, so there's usually no rush. Servers also update themselves \
-             to the latest version automatically once they're empty, so \"wait until it clears\" is \
-             often the right answer. If the count reads \"unknown\", you couldn't confirm it's empty \
-             — treat it as possibly occupied and ask first. If it's empty, go ahead.",
-        );
-        prompt.push_str(
-            "\n\nEach game stores its settings differently and has its own quirks, and you don't \
-             keep a memory of a conversation once it ends. When you work out a durable operational \
-             fact about a game — one you'd otherwise have to rediscover every time (say a game must \
-             be stopped before a config edit will apply, or where a particular setting lives) — save \
-             it with remember, scoped to the game id (or 'general' if it isn't game-specific). Keep \
-             each note one short factual sentence. If a saved note turns out wrong or stops applying, \
-             forget it by its id. Don't save one-off state, chit-chat, or anything you can just look \
-             up in the moment.",
-        );
-        if !memories.is_empty() {
-            prompt.push_str(
-                "\n\nThings you've learned about these games (durable notes you saved; forget one \
-                 by its # if it's wrong):\n",
-            );
-            prompt.push_str(memories);
-        }
+        append_manager_guidance(&mut prompt, memories);
     }
     if access >= AccessLevel::Admin {
         prompt.push_str(
@@ -453,6 +410,60 @@ fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> Stri
         );
     }
     prompt
+}
+
+/// Append the manager-and-above guidance to `prompt`: the lifecycle grant, the
+/// inspect/tune-and-restart workflow (including that a restart self-guards a config
+/// change it applies), the occupancy check before a restart, and the durable-memory
+/// habit, plus any saved notes. Split out of [`build_system_prompt`] to keep that
+/// function readable and under the line budget.
+fn append_manager_guidance(prompt: &mut String, memories: &str) {
+    prompt.push_str(
+        "\n\nThis person can run this server day-to-day: you may create, stop, start, restart, and \
+         shut down servers for them, and take a backup (backup_server) before a risky change.",
+    );
+    prompt.push_str(
+        "\n\nYou can also reach inside a running server to inspect and tune it. Every game stores \
+         its settings differently, so explore rather than guess: browse_files from the top of the \
+         data directory to find the file that holds a setting, read_file to see it, and read_logs \
+         when something's wrong or to confirm a change took hold. To change one setting, use \
+         edit_file to replace just that piece of the file — it leaves everything else alone, so \
+         prefer it over rewriting the whole file; fall back to write_file only to create a file or \
+         replace one wholesale. Either way the previous version is saved first. After a change, \
+         restart the server to apply it. A restart that applies a config change you just made is \
+         self-guarding: it waits for the server to come back up and, if the change crashes it, \
+         automatically restores the previous version and restarts once, then tells you what \
+         happened — so for that you don't need to wait_for_server or restore_file by hand. For a \
+         plain start or reboot, wait_for_server then read_logs to confirm it's healthy. Make one \
+         change at a time. If a change can't be recovered automatically, say so plainly and stop \
+         rather than thrashing — it's already been flagged for an operator.",
+    );
+    prompt.push_str(
+        "\n\nBefore you restart a server — to reboot it or to apply a config change — check who's \
+         on it: server_status now shows the player count. A restart disconnects everyone connected, \
+         so if anyone's online, don't just do it. Tell them how many are on and ask whether to \
+         restart now or wait until it's empty — a config edit is saved and applies on the next \
+         restart regardless, so there's usually no rush. Servers also update themselves to the \
+         latest version automatically once they're empty, so \"wait until it clears\" is often the \
+         right answer. If the count reads \"unknown\", you couldn't confirm it's empty — treat it as \
+         possibly occupied and ask first. If it's empty, go ahead.",
+    );
+    prompt.push_str(
+        "\n\nEach game stores its settings differently and has its own quirks, and you don't keep a \
+         memory of a conversation once it ends. When you work out a durable operational fact about a \
+         game — one you'd otherwise have to rediscover every time (say a game must be stopped before \
+         a config edit will apply, or where a particular setting lives) — save it with remember, \
+         scoped to the game id (or 'general' if it isn't game-specific). Keep each note one short \
+         factual sentence. If a saved note turns out wrong or stops applying, forget it by its id. \
+         Don't save one-off state, chit-chat, or anything you can just look up in the moment.",
+    );
+    if !memories.is_empty() {
+        prompt.push_str(
+            "\n\nThings you've learned about these games (durable notes you saved; forget one by \
+             its # if it's wrong):\n",
+        );
+        prompt.push_str(memories);
+    }
 }
 
 async fn reply(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
