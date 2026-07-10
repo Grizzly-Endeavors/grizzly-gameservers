@@ -657,8 +657,8 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
             "I'll only answer here when you @mention me now.",
         ),
         Ok(HomeToggle::Unavailable) => error_embed(
-            "I couldn't set that right now — home-channel settings are unavailable at the \
-             moment. You can still @mention me. Try again later.",
+            "I couldn't set that right now — home-channel settings are unavailable. \
+             You can still @mention me. Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, channel = ctx.channel_id().get(), "failed to toggle home channel");
@@ -1124,8 +1124,7 @@ async fn respond_grant_change(
             neutral_embed("No change", &format!("{subject} was already set that way."))
         }
         Ok(ConfigChange::Unavailable) => error_embed(
-            "I couldn't save that right now — access settings are unavailable at the moment. \
-             Try again later.",
+            "I couldn't save that right now — access settings are unavailable. Try again later.",
         ),
         Err(err) => {
             error!(error = ?err, "failed to update guild access config");

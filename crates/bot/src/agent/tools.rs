@@ -9,9 +9,9 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::Deserialize;
 
 /// Arguments for a tool that targets one server by name. This is the whole
-/// parameter list for the lookup tools both surfaces share; on the Discord
-/// surface the richer tools carry the same `name` field (see `TargetName` for the
-/// scope gate that reads it off any of them).
+/// parameter list for the lookup tools both surfaces share, and the `name` field
+/// the richer Discord tools also carry (their scope gate reads just that field off
+/// any tool's arguments).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct NameParams {
     /// Exact server name, as shown by `list_servers`.
