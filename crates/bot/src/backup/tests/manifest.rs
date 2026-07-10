@@ -85,9 +85,9 @@ fn manifest_round_trips_through_json() {
     let manifest = BackupManifest {
         schema: MANIFEST_SCHEMA,
         kind: ArtifactKind::Archive,
-        instance: "nether".to_owned(),
-        game: "minecraft".to_owned(),
-        guild: "998877".to_owned(),
+        instance: InstanceName::new("nether"),
+        game: GameId::new("minecraft"),
+        guild: GuildId::new("998877"),
         created_by: "12345".to_owned(),
         created_at: "2026-07-07T14:30:00Z".to_owned(),
         tarball_key: "archives/998877/nether/20260707T143000Z.tar.zst".to_owned(),

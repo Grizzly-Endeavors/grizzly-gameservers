@@ -26,6 +26,7 @@ use crate::agones::{
     supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
 };
 use crate::config::{DbConfig, S3Config};
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// `created_by` recorded for a safety backup the restore path takes before it
 /// overwrites a world, so an overwrite is always undoable.
@@ -170,8 +171,8 @@ impl BackupService {
         Ok(records
             .into_iter()
             .map(|record| ArtifactSummary {
-                name: record.name,
-                guild: record.guild,
+                name: record.name.into_string(),
+                guild: record.guild.into_string(),
                 key: record.tarball_key,
                 size_bytes: u64::try_from(record.size_bytes).unwrap_or(0),
                 created_at: record.created_at,
@@ -223,7 +224,7 @@ impl BackupService {
 
         let guild = target.guild.clone();
         let stamp = stamp_now();
-        let keys = archive_keys(&guild, instance, &stamp);
+        let keys = archive_keys(guild.as_str(), instance, &stamp);
         let source = match self.open_archive_stream(ctx, instance, false).await? {
             ArchiveSource::Ready(response) => response,
             ArchiveSource::NotFound => return Ok(ArchiveOutcome::NotFound),
@@ -242,7 +243,7 @@ impl BackupService {
             .with_context(|| format!("failed to upload archive for {instance}"))?;
         let manifest = manifest(
             ArtifactKind::Archive,
-            instance,
+            &target.instance,
             &target.game,
             &guild,
             created_by,
@@ -256,7 +257,7 @@ impl BackupService {
         self.archives
             .insert(&ArchiveRecord {
                 guild,
-                name: instance.to_owned(),
+                name: target.instance.clone(),
                 game: target.game.clone(),
                 tarball_key: keys.tarball.clone(),
                 manifest_key: keys.manifest.clone(),
@@ -366,8 +367,8 @@ impl BackupService {
         ) {
             return Ok(RecoverOutcome::NameInUse);
         }
-        let Some(entry) = ctx.catalog.get(&record.game) else {
-            return Ok(RecoverOutcome::UnknownGame(record.game));
+        let Some(entry) = ctx.catalog.get(record.game.as_str()) else {
+            return Ok(RecoverOutcome::UnknownGame(record.game.into_string()));
         };
 
         // Stamp the recovered server with the archive's *own* owning guild, not
@@ -380,7 +381,7 @@ impl BackupService {
             ctx.provision_lock,
             entry,
             name,
-            &record.guild,
+            record.guild.as_str(),
         )
         .await?
         {
@@ -463,7 +464,7 @@ impl BackupService {
         target: &BackupTarget,
         created_by: &str,
     ) -> Result<BackupOutcome> {
-        let instance = &target.instance;
+        let instance = target.instance.as_str();
         let source = match self
             .open_archive_stream(ctx, instance, target.running)
             .await?
@@ -483,7 +484,7 @@ impl BackupService {
             .with_context(|| format!("failed to upload backup for {instance}"))?;
         let manifest = manifest(
             ArtifactKind::Backup,
-            instance,
+            &target.instance,
             &target.game,
             &target.guild,
             created_by,
@@ -544,8 +545,8 @@ impl BackupService {
                 }
             };
             summaries.push(ArtifactSummary {
-                name: manifest.instance,
-                guild: manifest.guild,
+                name: manifest.instance.into_string(),
+                guild: manifest.guild.into_string(),
                 key: tarball,
                 size_bytes: manifest.size_bytes,
                 created_at: manifest.created_at,
@@ -722,7 +723,7 @@ impl BackupService {
         let targets = list_backup_targets(ctx.client, ctx.namespace).await?;
         Ok(targets
             .into_iter()
-            .find(|target| target.instance == instance))
+            .find(|target| target.instance.as_str() == instance))
     }
 }
 
@@ -780,12 +781,13 @@ async fn stop_for_snapshot(ctx: &BackupCtx<'_>, instance: &str) -> Result<Option
     )
 }
 
-/// Build a manifest for a just-uploaded artifact.
+/// Build a manifest for a just-uploaded artifact. The identity trio is typed so a
+/// transposed `game`/`guild` or `instance`/`created_by` is a compile error.
 fn manifest(
     kind: ArtifactKind,
-    instance: &str,
-    game: &str,
-    guild: &str,
+    instance: &InstanceName,
+    game: &GameId,
+    guild: &GuildId,
     created_by: &str,
     tarball_key: &str,
     size_bytes: u64,
@@ -793,9 +795,9 @@ fn manifest(
     BackupManifest {
         schema: MANIFEST_SCHEMA,
         kind,
-        instance: instance.to_owned(),
-        game: game.to_owned(),
-        guild: guild.to_owned(),
+        instance: instance.clone(),
+        game: game.clone(),
+        guild: guild.clone(),
         created_by: created_by.to_owned(),
         created_at: Timestamp::now().to_string(),
         tarball_key: tarball_key.to_owned(),

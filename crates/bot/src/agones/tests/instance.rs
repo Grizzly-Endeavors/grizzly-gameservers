@@ -58,11 +58,11 @@ fn entry() -> GameCatalogEntry {
 
 fn identity() -> InstanceIdentity {
     InstanceIdentity {
-        name: "minecraft-ab12".to_owned(),
-        game: "minecraft".to_owned(),
+        name: InstanceName::new("minecraft-ab12"),
+        game: GameId::new("minecraft"),
         namespace: "game-servers".to_owned(),
         ports: PortAssignment::Remap(7003),
-        guild: "555".to_owned(),
+        guild: GuildId::new("555"),
         start_paused: false,
     }
 }
@@ -143,8 +143,8 @@ fn advertised_entry() -> GameCatalogEntry {
 
 fn advertised_identity() -> InstanceIdentity {
     InstanceIdentity {
-        name: "satisfactory-xy99".to_owned(),
-        game: "satisfactory".to_owned(),
+        name: InstanceName::new("satisfactory-xy99"),
+        game: GameId::new("satisfactory"),
         namespace: "game-servers".to_owned(),
         ports: PortAssignment::Advertised(vec![
             AssignedPort {
@@ -163,7 +163,7 @@ fn advertised_identity() -> InstanceIdentity {
                 friend_facing: false,
             },
         ]),
-        guild: "555".to_owned(),
+        guild: GuildId::new("555"),
         start_paused: false,
     }
 }
@@ -204,7 +204,7 @@ fn empty_guild_leaves_the_guild_label_off() {
     // A pre-scoping instance cold-started from a Service with no guild label
     // must not be stamped with an empty "" guild — the label is simply absent.
     let mut unscoped = identity();
-    unscoped.guild = String::new();
+    unscoped.guild = GuildId::new("");
     let gs = render_gameserver(&entry(), &unscoped).unwrap();
     let labels = gs.metadata.labels.as_ref().unwrap();
     assert!(!labels.contains_key(GUILD_KEY));
