@@ -34,7 +34,7 @@ const GUILD_CONFIG_POOL_MAX_CONNECTIONS: u32 = 2;
 /// snowflakes are stored as text throughout — they are unsigned 64-bit, which
 /// `BIGINT` can't hold the top bit of, and text matches how the id is used
 /// elsewhere.
-async fn connect_pool(config: &DbConfig, max_connections: u32) -> Result<PgPool> {
+pub(crate) async fn connect_pool(config: &DbConfig, max_connections: u32) -> Result<PgPool> {
     let options = PgConnectOptions::new()
         .host(&config.host)
         .port(config.port)

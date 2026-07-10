@@ -35,7 +35,7 @@ fn empty_after_stripping_is_empty() {
 
 #[test]
 fn admin_prompt_describes_mutations_and_confirmation() {
-    let prompt = build_system_prompt(AccessLevel::Admin, "minecraft, valheim");
+    let prompt = build_system_prompt(AccessLevel::Admin, "minecraft, valheim", "");
     assert!(prompt.contains("admin"));
     assert!(
         prompt.contains("confirm"),
@@ -50,7 +50,7 @@ fn admin_prompt_describes_mutations_and_confirmation() {
 
 #[test]
 fn manager_prompt_grants_lifecycle_and_files_but_reserves_destruction() {
-    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft");
+    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft", "");
     assert!(prompt.contains("day-to-day"), "manager can operate servers");
     assert!(
         prompt.contains("edit_file"),
@@ -68,15 +68,39 @@ fn manager_prompt_grants_lifecycle_and_files_but_reserves_destruction() {
 
 #[test]
 fn read_only_prompt_scopes_to_lookups() {
-    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft");
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft", "");
     assert!(prompt.contains("cannot"), "read-only caller can't mutate");
     assert!(prompt.contains("manager or admin has to"));
 }
 
 #[test]
 fn empty_catalog_renders_as_none() {
-    let prompt = build_system_prompt(AccessLevel::ReadOnly, "");
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "", "");
     assert!(prompt.contains("(none)"));
+}
+
+#[test]
+fn manager_prompt_injects_saved_memories_and_remember_guidance() {
+    let memories = "palworld:\n  - #3: soft-stop before editing configs";
+    let prompt = build_system_prompt(AccessLevel::Manager, "palworld", memories);
+    assert!(
+        prompt.contains("remember"),
+        "manager is told how to save durable facts"
+    );
+    assert!(
+        prompt.contains("soft-stop before editing configs"),
+        "saved facts are injected into the prompt"
+    );
+}
+
+#[test]
+fn read_only_prompt_omits_memory_section() {
+    let memories = "palworld:\n  - #3: soft-stop before editing configs";
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "palworld", memories);
+    assert!(
+        !prompt.contains("soft-stop before editing configs"),
+        "read-only callers can't act, so memories aren't injected for them"
+    );
 }
 
 #[test]

@@ -166,13 +166,17 @@ async fn handle_message(
     let access = caller_access_level(ctx, data, message).await;
     let tool_defs = tools::available_tools(access);
     let games = game_catalog_list(data);
+    // Rendered here (async) rather than inside the checkout closure (sync). A fact
+    // Gary saves mid-conversation lands in the prompt on the next fresh session;
+    // within this one it's already in his transcript.
+    let memories = data.memory.render_for_prompt().await;
 
     // Continue this person's conversation in this channel if it's still live,
     // else start fresh; the appended user turn is what the model answers.
     let key = (message.channel_id.get(), message.author.id.get());
-    let mut messages = data
-        .sessions
-        .checkout(key, Instant::now(), || build_system_prompt(access, &games));
+    let mut messages = data.sessions.checkout(key, Instant::now(), || {
+        build_system_prompt(access, &games, &memories)
+    });
     messages.push(ChatMessage::user(prompt));
 
     let tool_ctx = tools::ToolCtx {
@@ -349,7 +353,7 @@ fn game_catalog_list(data: &Data) -> String {
 /// get the lifecycle and file-tuning tools; admins additionally get the
 /// destructive tools and console commands; read-only callers are scoped to
 /// lookups.
-fn build_system_prompt(access: AccessLevel, games: &str) -> String {
+fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
     let mut prompt = String::from(
         "You are Gary, an automaton that manages game servers for a group of friends on Discord. \
          You speak with stark, literal directness in a flat, even tone — no flattery, no pretense, \
@@ -401,6 +405,23 @@ fn build_system_prompt(access: AccessLevel, games: &str) -> String {
              often the right answer. If the count reads \"unknown\", you couldn't confirm it's empty \
              — treat it as possibly occupied and ask first. If it's empty, go ahead.",
         );
+        prompt.push_str(
+            "\n\nEach game stores its settings differently and has its own quirks, and you don't \
+             keep a memory of a conversation once it ends. When you work out a durable operational \
+             fact about a game — one you'd otherwise have to rediscover every time (say a game must \
+             be stopped before a config edit will apply, or where a particular setting lives) — save \
+             it with remember, scoped to the game id (or 'general' if it isn't game-specific). Keep \
+             each note one short factual sentence. If a saved note turns out wrong or stops applying, \
+             forget it by its id. Don't save one-off state, chit-chat, or anything you can just look \
+             up in the moment.",
+        );
+        if !memories.is_empty() {
+            prompt.push_str(
+                "\n\nThings you've learned about these games (durable notes you saved; forget one \
+                 by its # if it's wrong):\n",
+            );
+            prompt.push_str(memories);
+        }
     }
     if access >= AccessLevel::Admin {
         prompt.push_str(
