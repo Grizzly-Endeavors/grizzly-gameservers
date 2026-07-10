@@ -42,6 +42,7 @@ use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
+use crate::notify::Escalation;
 
 const LIST_SERVERS: &str = "list_servers";
 const SERVER_STATUS: &str = "server_status";
@@ -870,6 +871,7 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
             },
             RecoveryStep::Escalate => {
                 error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
+                notify_crash_rollback(ctx, server, &change.path).await;
                 return format!(
                     "the change to {} crashed {server}, and rolling it back didn't bring it up either — I've flagged this for an operator to look at",
                     change.path
@@ -905,11 +907,11 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
             | FsOutcome::Rejected(_),
         ) => {
             warn!(%server, path = %change.path, "agent: auto-rollback restore could not be served");
-            return Err(rollback_failed(server, &change.path));
+            return Err(rollback_failed(ctx, server, &change.path).await);
         }
         Err(err) => {
             error!(error = ?err, %server, path = %change.path, "agent: auto-rollback restore failed");
-            return Err(rollback_failed(server, &change.path));
+            return Err(rollback_failed(ctx, server, &change.path).await);
         }
     }
     match supervisor_restart(
@@ -935,6 +937,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
         )
         | Err(_) => {
             warn!(%server, path = %change.path, "agent: restart after auto-rollback did not bounce the server");
+            notify_crash_rollback(ctx, server, &change.path).await;
             Err(format!(
                 "the change to {} crashed {server}; I put the previous version back but couldn't restart it cleanly — I've flagged this for an operator to look at",
                 change.path
@@ -944,11 +947,26 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
 }
 
 /// Escalation text when an automatic rollback couldn't even be issued — nothing
-/// more the loop can do on its own.
-fn rollback_failed(server: &str, path: &str) -> String {
+/// more the loop can do on its own. Also keeps the promise the text makes by
+/// actually notifying the operators, not just logging it.
+async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
+    notify_crash_rollback(ctx, server, path).await;
     format!(
         "the change to {path} crashed {server} and I couldn't roll it back automatically — I've flagged this for an operator to look at"
     )
+}
+
+/// DM the operators that an automatic crash rollback needs a human hand — the
+/// shared notify step behind every "I've flagged this for an operator" promise
+/// in [`verify_change`]/[`roll_back`].
+async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
+    ctx.data
+        .notifier
+        .notify(&Escalation::CrashRollback {
+            server: server.to_owned(),
+            path: path.to_owned(),
+        })
+        .await;
 }
 
 /// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in

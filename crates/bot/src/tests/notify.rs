@@ -67,7 +67,7 @@ fn summarize_attempts_is_empty_when_no_tools_were_called() {
 
 #[test]
 fn render_discord_escalation_includes_link_asker_and_attempts() {
-    let notice = render_escalation(&Escalation {
+    let notice = render_escalation(&Escalation::RoundBudgetExhausted {
         context: EscalationContext::Discord {
             asker: "Alice (<@42>)".to_owned(),
             jump_link: "https://discord.com/channels/1/2/3".to_owned(),
@@ -87,7 +87,7 @@ fn render_discord_escalation_includes_link_asker_and_attempts() {
 
 #[test]
 fn render_discord_dm_escalation_names_the_dm_not_a_guild() {
-    let notice = render_escalation(&Escalation {
+    let notice = render_escalation(&Escalation::RoundBudgetExhausted {
         context: EscalationContext::Discord {
             asker: "Bob".to_owned(),
             jump_link: "https://discord.com/channels/@me/9/8".to_owned(),
@@ -105,7 +105,7 @@ fn render_discord_dm_escalation_names_the_dm_not_a_guild() {
 
 #[test]
 fn render_ingame_escalation_names_the_server_and_player() {
-    let notice = render_escalation(&Escalation {
+    let notice = render_escalation(&Escalation::RoundBudgetExhausted {
         context: EscalationContext::InGame {
             player: "Steve".to_owned(),
             server: "mc-summer".to_owned(),
@@ -120,4 +120,18 @@ fn render_ingame_escalation_names_the_server_and_player() {
     assert!(notice.contains("guild `1234`"));
     assert!(notice.contains("player Steve"));
     assert!(notice.contains("server_status"));
+}
+
+#[test]
+fn render_crash_rollback_escalation_names_the_server_and_path() {
+    let notice = render_escalation(&Escalation::CrashRollback {
+        server: "mc-summer".to_owned(),
+        path: "server.properties".to_owned(),
+    });
+    assert!(notice.contains("mc-summer"));
+    assert!(notice.contains("server.properties"));
+    // No asker/attempts/rounds exist for this variant — the wording must not
+    // imply a user request or a round budget that was never spent.
+    assert!(!notice.contains("rounds"));
+    assert!(!notice.contains("asked"));
 }

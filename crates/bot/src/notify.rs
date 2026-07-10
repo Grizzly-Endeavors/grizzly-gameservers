@@ -37,22 +37,54 @@ pub(crate) enum EscalationContext {
     },
 }
 
-/// A fully-assembled escalation, ready to render into the operator DM.
-pub(crate) struct Escalation {
-    pub(crate) context: EscalationContext,
-    /// What the user actually asked, verbatim.
-    pub(crate) request: String,
-    /// The tools Gary called this turn, in call order — his attempted approach.
-    pub(crate) attempts: Vec<String>,
-    /// The round budget that was exhausted (why he gave up).
-    pub(crate) rounds: usize,
+/// A fully-assembled escalation, ready to render into the operator DM. Two shapes
+/// share one DM channel: a user ask Gary gave up on (round budget exhausted, with
+/// a conversational trail to show), and a code-enforced crash/rollback recovery
+/// that gave up on its own (no asker, jump link, or attempt history — the loop
+/// caller only has a server and a file path).
+pub(crate) enum Escalation {
+    /// Gary spent his whole round budget on a user's request without resolving it.
+    RoundBudgetExhausted {
+        context: EscalationContext,
+        /// What the user actually asked, verbatim.
+        request: String,
+        /// The tools Gary called this turn, in call order — his attempted approach.
+        attempts: Vec<String>,
+        /// The round budget that was exhausted (why he gave up).
+        rounds: usize,
+    },
+    /// An automatic crash rollback (snapshot→apply→verify→rollback) didn't bring
+    /// the server back up, or couldn't even be issued — nothing more the loop can
+    /// do on its own.
+    CrashRollback { server: String, path: String },
 }
 
 /// Render an escalation into the plain-text DM an operator receives. Uses Discord
 /// markdown (bold labels, a jump link) because the reader is a human operator in
 /// Discord, not the model.
 pub(crate) fn render_escalation(escalation: &Escalation) -> String {
-    let where_line = match &escalation.context {
+    match escalation {
+        Escalation::RoundBudgetExhausted {
+            context,
+            request,
+            attempts,
+            rounds,
+        } => render_round_budget_exhausted(context, request, attempts, *rounds),
+        Escalation::CrashRollback { server, path } => format!(
+            "**Gary's automatic config rollback needed a hand.**\n\n\
+             An automatic config rollback on {server} didn't recover it after a crash — \
+             the edit to {path} may need a manual look."
+        ),
+    }
+}
+
+fn render_round_budget_exhausted(
+    context: &EscalationContext,
+    request: &str,
+    attempts: &[String],
+    rounds: usize,
+) -> String {
+    let where_line = match context {
         EscalationContext::Discord {
             jump_link, guild, ..
         } => {
@@ -66,14 +98,14 @@ pub(crate) fn render_escalation(escalation: &Escalation) -> String {
             format!("in-game chat — server `{server}` (guild `{guild}`)")
         }
     };
-    let who = match &escalation.context {
+    let who = match context {
         EscalationContext::Discord { asker, .. } => asker.clone(),
         EscalationContext::InGame { player, .. } => format!("player {player}"),
     };
-    let tried = if escalation.attempts.is_empty() {
+    let tried = if attempts.is_empty() {
         "nothing — he gave up before calling any tools".to_owned()
     } else {
-        escalation.attempts.join(" → ")
+        attempts.join(" → ")
     };
     format!(
         "**Gary escalated a request he couldn't resolve on his own.**\n\n\
@@ -81,9 +113,7 @@ pub(crate) fn render_escalation(escalation: &Escalation) -> String {
          **Who asked:** {who}\n\
          **They asked:** \"{request}\"\n\
          **Gary tried ({rounds} rounds, budget spent):** {tried}\n\n\
-         He told them you'd take a look.",
-        request = escalation.request,
-        rounds = escalation.rounds,
+         He told them you'd take a look."
     )
 }
 

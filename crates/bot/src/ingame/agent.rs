@@ -108,7 +108,7 @@ pub(crate) async fn handle_ingame_question(
             if escalated {
                 warn!(server, player, "in-game session hit the round budget");
                 deps.notifier
-                    .notify(&Escalation {
+                    .notify(&Escalation::RoundBudgetExhausted {
                         context: EscalationContext::InGame {
                             player: player.to_owned(),
                             server: server.to_owned(),

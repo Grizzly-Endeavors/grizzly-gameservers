@@ -264,7 +264,7 @@ async fn notify_operators_escalated(
 ) {
     let asker = format!("{} (<@{}>)", message.author.name, message.author.id.get());
     data.notifier
-        .notify(&Escalation {
+        .notify(&Escalation::RoundBudgetExhausted {
             context: EscalationContext::Discord {
                 asker,
                 jump_link: message.link(),
