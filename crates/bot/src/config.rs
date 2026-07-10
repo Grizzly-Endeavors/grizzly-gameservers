@@ -15,10 +15,16 @@ const DEFAULT_DOMAIN: &str = "gameservers.grizzly-endeavors.com";
 /// Where the per-game catalog is baked into the container image (see Dockerfile).
 const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
 /// Port the in-pod supervisor serves its control API on; must match the catalog
-/// (`games/<game>/gameserver.yaml`) and the supervisor's own default.
+/// (`games/<game>/gameserver.yaml`), the supervisor's own default
+/// (`DEFAULT_CONTROL_PORT` in `crates/supervisor/src/config.rs`), and the
+/// hardcoded port in `cluster/guardrails/bot-to-supervisor-egress.yaml` —
+/// Cilium silently drops on a mismatch instead of erroring. No single source
+/// of truth yet (see issue #42).
 const DEFAULT_CONTROL_PORT: u16 = 9359;
 /// Port the in-game agent endpoint listens on for supervisor-posted `@Gary`
-/// triggers. Pod-internal, reached over the bot's `ClusterIP` Service.
+/// triggers. Pod-internal, reached over the bot's `ClusterIP` Service. Must
+/// match the hardcoded port in
+/// `cluster/guardrails/game-to-bot-agent-egress.yaml` (see issue #42).
 const DEFAULT_AGENT_PORT: u16 = 9360;
 /// Ollama Cloud's `OpenAI`-compatible chat-completions base. The agent ("Gary")
 /// posts to `{base}/chat/completions`. Overridable for self-hosted Ollama.
@@ -26,7 +32,9 @@ const DEFAULT_OLLAMA_BASE_URL: &str = "https://ollama.com/v1";
 /// Default model tag the agent drives — GLM 5.2 via Ollama Cloud unless overridden.
 const DEFAULT_OLLAMA_MODEL: &str = "glm-5.2";
 /// Foundation Postgres on the R730xd (ADR-003). LAN-only, plain TCP; overridable
-/// for local dev against a different host.
+/// for local dev against a different host. Must match the hardcoded
+/// host/port in `cluster/guardrails/bot-to-postgres-egress.yaml` (see issue
+/// #42).
 const DEFAULT_DB_HOST: &str = "10.0.0.200";
 const DEFAULT_DB_PORT: u16 = 5432;
 /// The bot's dedicated role and (role-owned) database on foundation Postgres,
@@ -35,6 +43,8 @@ const DEFAULT_DB_NAME: &str = "grizzly_gameservers";
 const DEFAULT_DB_USER: &str = "grizzly_gameservers";
 /// Self-hosted versitygw `s3-bulk` on the R730xd — the endpoint the platform S3
 /// doc designates for backups/archives. Path-style, plain HTTP over the LAN.
+/// Must match the hardcoded host/port in
+/// `cluster/guardrails/bot-to-s3-egress.yaml` (see issue #42).
 const DEFAULT_S3_ENDPOINT: &str = "http://10.0.0.200:7072";
 const DEFAULT_S3_BUCKET: &str = "grizzly-gameservers";
 const DEFAULT_S3_REGION: &str = "us-east-1";

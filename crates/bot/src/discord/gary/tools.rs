@@ -11,16 +11,18 @@ use serenity::{
     ButtonStyle, ComponentInteractionCollector, CreateActionRow, CreateButton,
     CreateInteractionResponse, CreateMessage, EditMessage,
 };
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
+use super::recovery::{PendingChange, RecoveryStep, next_step};
+
 use super::super::auth::AccessLevel;
 use super::super::render::{
     archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
-    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+    error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::{
@@ -37,9 +39,10 @@ use crate::agones::{
     supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
+    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
+use crate::notify::Escalation;
 
 const LIST_SERVERS: &str = "list_servers";
 const SERVER_STATUS: &str = "server_status";
@@ -92,6 +95,58 @@ pub(crate) struct ToolCtx<'a> {
     /// existing server by name is gated on it in [`dispatch`], and the listing
     /// tools query within it.
     pub(crate) scope: ServerScope,
+    /// The last config edit that saved a snapshot and hasn't been verified by a
+    /// restart yet, tracked for the duration of one Gary turn. When a restart
+    /// applies this change, [`exec_restart`] watches it come back up and rolls it
+    /// back on a crash — deterministic recovery that doesn't depend on the model.
+    /// Guarded by a plain mutex because dispatch runs the tools one at a time and
+    /// never holds the lock across an await.
+    pub(crate) pending_change: std::sync::Mutex<Option<PendingChange>>,
+}
+
+impl ToolCtx<'_> {
+    /// Record that `path` on `server` was just edited with a snapshot saved, so a
+    /// following restart knows there's a change to verify and, if it crashes, undo.
+    /// The last edit wins, mirroring `restore_file`'s own last-write-per-file model.
+    fn note_pending_change(&self, server: &str, path: &str) {
+        *self.pending_lock() = Some(PendingChange {
+            server: server.to_owned(),
+            path: path.to_owned(),
+        });
+    }
+
+    /// Take the pending change if it targets `server`, leaving an edit awaiting a
+    /// different server's restart in place. `Some` means this restart is the one
+    /// that applies a tracked change and should be watched for a crash.
+    fn take_pending_change(&self, server: &str) -> Option<PendingChange> {
+        let mut guard = self.pending_lock();
+        if guard.as_ref().is_some_and(|change| change.server == server) {
+            guard.take()
+        } else {
+            None
+        }
+    }
+
+    /// Drop any pending change for `path` on `server` — the model restored the file
+    /// itself, so there's no longer an unverified edit for a later restart to undo.
+    fn drop_pending_change(&self, server: &str, path: &str) {
+        let mut guard = self.pending_lock();
+        if guard
+            .as_ref()
+            .is_some_and(|change| change.server == server && change.path == path)
+        {
+            *guard = None;
+        }
+    }
+
+    /// Lock the pending-change slot, recovering from a poisoned mutex rather than
+    /// panicking — a poison here would only mean a prior panic while the lock was
+    /// held, and the tracked state is advisory, so the last value is safe to reuse.
+    fn pending_lock(&self) -> std::sync::MutexGuard<'_, Option<PendingChange>> {
+        self.pending_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// Just the `name` field, pulled from any targeted tool's arguments (they all
@@ -726,6 +781,139 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let outcome = match supervisor_restart(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            error!(error = ?err, %server, "agent: restart failed");
+            return cluster_error();
+        }
+    };
+    // Only a server that genuinely bounced applies a pending config change, so only
+    // then is there something to verify. Any other outcome (already paused,
+    // unreachable, gone) reports as before and leaves the pending change in place
+    // for the restart that eventually applies it.
+    let change = match &outcome {
+        SupervisorOutcome::Restarted => ctx.take_pending_change(server),
+        SupervisorOutcome::Paused
+        | SupervisorOutcome::Resumed
+        | SupervisorOutcome::AlreadyStopped
+        | SupervisorOutcome::AlreadyRunning
+        | SupervisorOutcome::PodNotReady
+        | SupervisorOutcome::Unreachable
+        | SupervisorOutcome::Failed(_)
+        | SupervisorOutcome::NotFound
+        | SupervisorOutcome::NotManaged => None,
+    };
+    // With a tracked change, the loop — not the model — watches it come back up and
+    // rolls a crash back. A plain reboot reports immediately without blocking.
+    match change {
+        Some(change) => verify_change(ctx, change).await,
+        None => format_supervisor(server, &outcome),
+    }
+}
+
+/// Watch a restart that applied a config change and enforce the design's
+/// snapshot→apply→restart→verify→auto-rollback guardrail deterministically: poll
+/// until the server is up or crashed, and on a crash restore the pre-edit snapshot
+/// and restart once more. Bounded to a single automatic rollback — a server still
+/// crashing after that escalates rather than looping. Returns the system-generated
+/// account of what happened for the model to relay; the model never has to reason
+/// its way back to `restore_file` on its own.
+async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
+    let server = change.server.as_str();
+    let mut rollback_spent = false;
+    loop {
+        let outcome = match wait_for_ready(
+            &ctx.data.kube_client,
+            &ctx.data.http,
+            &ctx.data.namespace,
+            server,
+            ctx.data.control_port,
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                error!(error = ?err, %server, "agent: post-restart readiness check failed");
+                // Can't confirm health either way — leave the change in place and
+                // tell the model plainly, rather than rolling back a maybe-fine server.
+                return format!(
+                    "restarted {server}, but I couldn't tell whether it came back up — check its logs"
+                );
+            }
+        };
+        match next_step(&outcome, rollback_spent) {
+            RecoveryStep::Healthy => {
+                return if rollback_spent {
+                    warn!(%server, path = %change.path, "agent: rolled a crashing config change back and the server recovered");
+                    format!(
+                        "the change to {} crashed {server} on restart, so I rolled it back to the previous version and restarted — it's healthy again now",
+                        change.path
+                    )
+                } else {
+                    info!(%server, path = %change.path, "agent: config change verified healthy after restart");
+                    format!("restarted {server} and it came back up healthy — the change is good")
+                };
+            }
+            RecoveryStep::RollBack => match roll_back(ctx, &change).await {
+                Ok(()) => {
+                    rollback_spent = true;
+                }
+                Err(message) => return message,
+            },
+            RecoveryStep::Escalate => {
+                error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
+                notify_crash_rollback(ctx, server, &change.path).await;
+                return format!(
+                    "the change to {} crashed {server}, and rolling it back didn't bring it up either — I've flagged this for an operator to look at",
+                    change.path
+                );
+            }
+            RecoveryStep::Inconclusive => return format_ready_wait(server, &outcome),
+        }
+    }
+}
+
+/// Restore the pre-edit snapshot and restart, the mechanical half of an automatic
+/// rollback. `Ok` means the world is back on the old config and restarting, so the
+/// caller re-polls readiness; `Err` carries the escalation text for a rollback that
+/// couldn't even be issued (nothing left to do automatically).
+async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), String> {
+    let server = change.server.as_str();
+    let restore = supervisor_restore_file(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        &change.path,
+    )
+    .await;
+    match restore {
+        Ok(FsOutcome::Ok(_)) => {}
+        Ok(
+            FsOutcome::NotFound
+            | FsOutcome::NotManaged
+            | FsOutcome::PodNotReady
+            | FsOutcome::Unreachable
+            | FsOutcome::Rejected(_),
+        ) => {
+            warn!(%server, path = %change.path, "agent: auto-rollback restore could not be served");
+            return Err(rollback_failed(ctx, server, &change.path).await);
+        }
+        Err(err) => {
+            error!(error = ?err, %server, path = %change.path, "agent: auto-rollback restore failed");
+            return Err(rollback_failed(ctx, server, &change.path).await);
+        }
+    }
     match supervisor_restart(
         &ctx.data.kube_client,
         &ctx.data.http,
@@ -735,12 +923,50 @@ async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(outcome) => format_supervisor(server, &outcome),
-        Err(err) => {
-            error!(error = ?err, %server, "agent: restart failed");
-            cluster_error()
+        Ok(SupervisorOutcome::Restarted) => Ok(()),
+        Ok(
+            SupervisorOutcome::Paused
+            | SupervisorOutcome::Resumed
+            | SupervisorOutcome::AlreadyStopped
+            | SupervisorOutcome::AlreadyRunning
+            | SupervisorOutcome::PodNotReady
+            | SupervisorOutcome::Unreachable
+            | SupervisorOutcome::Failed(_)
+            | SupervisorOutcome::NotFound
+            | SupervisorOutcome::NotManaged,
+        )
+        | Err(_) => {
+            warn!(%server, path = %change.path, "agent: restart after auto-rollback did not bounce the server");
+            notify_crash_rollback(ctx, server, &change.path).await;
+            Err(format!(
+                "the change to {} crashed {server}; I put the previous version back but couldn't restart it cleanly — I've flagged this for an operator to look at",
+                change.path
+            ))
         }
     }
+}
+
+/// Escalation text when an automatic rollback couldn't even be issued — nothing
+/// more the loop can do on its own. Also keeps the promise the text makes by
+/// actually notifying the operators, not just logging it.
+async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
+    notify_crash_rollback(ctx, server, path).await;
+    format!(
+        "the change to {path} crashed {server} and I couldn't roll it back automatically — I've flagged this for an operator to look at"
+    )
+}
+
+/// DM the operators that an automatic crash rollback needs a human hand — the
+/// shared notify step behind every "I've flagged this for an operator" promise
+/// in [`verify_change`]/[`roll_back`].
+async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
+    ctx.data
+        .notifier
+        .notify(&Escalation::CrashRollback {
+            server: server.to_owned(),
+            path: path.to_owned(),
+        })
+        .await;
 }
 
 /// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in
@@ -891,7 +1117,9 @@ async fn finish_destroy(
         }
         Err(err) => {
             error!(error = ?err, %server, "agent: destroy failed");
-            cluster_error()
+            let message = cluster_error();
+            edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+            message
         }
     }
 }
@@ -991,7 +1219,12 @@ async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_write(&result),
+            Ok(result) => {
+                if result.backed_up {
+                    ctx.note_pending_change(server, &result.path);
+                }
+                format_write(&result)
+            }
             Err(problem) => problem,
         },
         Err(err) => {
@@ -1022,7 +1255,14 @@ async fn exec_edit_file(
     )
     .await
     {
-        Ok(outcome) => format_edit(server, path, outcome),
+        Ok(outcome) => {
+            if let EditOutcome::Edited(result) = &outcome
+                && result.backed_up
+            {
+                ctx.note_pending_change(server, &result.path);
+            }
+            format_edit(server, path, outcome)
+        }
         Err(err) => {
             error!(error = ?err, %server, "agent: edit_file failed");
             cluster_error()
@@ -1042,7 +1282,10 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_restore(&result),
+            Ok(result) => {
+                ctx.drop_pending_change(server, &result.path);
+                format_restore(&result)
+            }
             Err(problem) => problem,
         },
         Err(err) => {
@@ -1186,7 +1429,9 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
                 }
                 Err(err) => {
                     error!(error = ?err, %server, "agent: archive failed");
-                    cluster_error()
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
                 }
             }
         }
@@ -1234,7 +1479,9 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
                 }
                 Err(err) => {
                     error!(error = ?err, %server, "agent: restore failed");
-                    cluster_error()
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
                 }
             }
         }
@@ -1577,12 +1824,24 @@ fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
 
 fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
     match outcome {
-        RestoreOutcome::Restored { ready: true } => {
-            format!("restored {server} — it's back up on the restored world")
-        }
-        RestoreOutcome::Restored { ready: false } => {
-            format!("restored the world onto {server} — it'll be playable again in a minute")
-        }
+        RestoreOutcome::Restored {
+            boot: BootState::Ready,
+        } => format!("restored {server} — it's back up on the restored world"),
+        RestoreOutcome::Restored {
+            boot: BootState::TimedOut,
+        } => format!("restored the world onto {server} — it'll be playable again in a minute"),
+        RestoreOutcome::Restored {
+            boot: BootState::Crashed,
+        } => format!(
+            "restored the world onto {server}, but it crashed coming back up — read its logs \
+             (the restored data may be the cause), or ping an operator"
+        ),
+        RestoreOutcome::Restored {
+            boot: BootState::Stopped,
+        } => format!(
+            "restored the world onto {server}, but it's paused and won't come up on its own — \
+             start it when you're ready"
+        ),
         RestoreOutcome::Failed(_) => {
             format!("I couldn't restore {server} cleanly — worth trying again in a moment")
         }
@@ -1593,15 +1852,30 @@ fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
 
 fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
     match outcome {
-        RecoverOutcome::Recovered { address, ready } => {
-            if *ready {
-                format!("recovered {name} — it's back up at {address}")
-            } else {
-                format!(
-                    "recovering {name}; it'll be reachable at {address} once it finishes booting"
-                )
-            }
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Ready,
+        } => format!("recovered {name} — it's back up at {address}"),
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::TimedOut,
+        } => {
+            format!("recovering {name}; it'll be reachable at {address} once it finishes booting")
         }
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Crashed,
+        } => format!(
+            "recovered {name} at {address}, but it crashed coming back up — read its logs (the \
+             archived data may be the cause), or ping an operator"
+        ),
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Stopped,
+        } => format!(
+            "recovered {name} at {address}, but it's paused and won't come up on its own — \
+             start it when you're ready"
+        ),
         RecoverOutcome::NoSuchArchive => {
             format!(
                 "there's no archived server named {name} in this Discord server — check list_archives"

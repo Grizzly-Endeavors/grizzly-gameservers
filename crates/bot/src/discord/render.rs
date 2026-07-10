@@ -5,7 +5,7 @@ use crate::agones::{
     CreateOutcome, DestroyOutcome, ServerSummary, ShutdownOutcome, StartOutcome, SupervisorOutcome,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, RecoverOutcome, RestoreOutcome,
+    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
@@ -82,9 +82,7 @@ fn server_list_spec(servers: &[ServerSummary]) -> EmbedSpec {
         };
     }
 
-    let any_ready = servers
-        .iter()
-        .any(|server| matches!(server.state.as_str(), "Ready" | "Allocated"));
+    let any_ready = servers.iter().any(|server| server.state.is_online());
     let lines: Vec<String> = servers
         .iter()
         .map(|server| {
@@ -298,15 +296,39 @@ fn archive_spec(outcome: &ArchiveOutcome) -> EmbedSpec {
 
 fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
     match outcome {
-        RestoreOutcome::Restored { ready: true } => EmbedSpec {
+        RestoreOutcome::Restored {
+            boot: BootState::Ready,
+        } => EmbedSpec {
             title: format!("🟢 Restored {server}"),
             colour: COLOUR_UP,
             body: format!("**{server}** is back up on the restored world."),
         },
-        RestoreOutcome::Restored { ready: false } => EmbedSpec {
+        RestoreOutcome::Restored {
+            boot: BootState::TimedOut,
+        } => EmbedSpec {
             title: format!("🟡 {server} is coming back"),
             colour: COLOUR_PENDING,
             body: format!("Restored the world onto **{server}** — it'll be playable in a minute."),
+        },
+        RestoreOutcome::Restored {
+            boot: BootState::Crashed,
+        } => EmbedSpec {
+            title: format!("🔴 {server} crashed coming back up"),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "Restored the world onto **{server}**, but it crashed while starting back up. \
+                 Check its logs — the restored data may be the cause."
+            ),
+        },
+        RestoreOutcome::Restored {
+            boot: BootState::Stopped,
+        } => EmbedSpec {
+            title: format!("🟡 {server} is paused"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "Restored the world onto **{server}**, but it's paused and won't come up on its \
+                 own. Start it when you're ready."
+            ),
         },
         RestoreOutcome::Failed(_) => EmbedSpec {
             title: "Restore failed".to_owned(),
@@ -320,9 +342,44 @@ fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
 
 fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
     match outcome {
-        RecoverOutcome::Recovered { address, ready } => {
-            started_spec(name, address, *ready, "is back")
-        }
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Ready,
+        } => EmbedSpec {
+            title: format!("🟢 {name} is back"),
+            colour: COLOUR_UP,
+            body: format!("Connect at `{address}`"),
+        },
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::TimedOut,
+        } => EmbedSpec {
+            title: format!("🟡 {name} is starting"),
+            colour: COLOUR_PENDING,
+            body: format!("Connect at `{address}` in a couple of minutes."),
+        },
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Crashed,
+        } => EmbedSpec {
+            title: format!("🔴 {name} crashed coming back up"),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "Recovered **{name}** at `{address}`, but it crashed while starting. Check its \
+                 logs — the archived data may be the cause."
+            ),
+        },
+        RecoverOutcome::Recovered {
+            address,
+            boot: BootState::Stopped,
+        } => EmbedSpec {
+            title: format!("🟡 {name} is paused"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "Recovered **{name}** at `{address}`, but it's paused and won't come up on its \
+                 own. Start it when you're ready."
+            ),
+        },
         RecoverOutcome::NoSuchArchive => EmbedSpec {
             title: "No such archive".to_owned(),
             colour: COLOUR_ERROR,

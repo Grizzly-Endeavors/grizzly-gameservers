@@ -6,6 +6,8 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+use crate::domain::{GameId, GuildId, InstanceName};
+
 /// Current manifest schema version, stamped into every manifest as a
 /// forward-compatibility marker. Nothing reads it back yet — the loader assumes
 /// schema 1 — so bumping it is only useful once a future reader branches on the
@@ -30,10 +32,10 @@ pub(crate) struct BackupManifest {
     pub(crate) schema: u32,
     pub(crate) kind: ArtifactKind,
     /// Original instance (server) name.
-    pub(crate) instance: String,
-    pub(crate) game: String,
+    pub(crate) instance: InstanceName,
+    pub(crate) game: GameId,
     /// Owning Discord guild id.
-    pub(crate) guild: String,
+    pub(crate) guild: GuildId,
     /// Discord user id that triggered it, or `auto` for the scheduled cycle.
     pub(crate) created_by: String,
     /// RFC 3339 creation time.

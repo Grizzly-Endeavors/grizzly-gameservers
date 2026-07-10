@@ -41,6 +41,15 @@ fn accepts_correct_bearer_token() {
     ));
 }
 
+#[tokio::test]
+async fn health_reports_ok_regardless_of_state() {
+    assert_eq!(
+        health().await,
+        StatusCode::OK,
+        "health must answer 200 independent of Gary or gateway state"
+    );
+}
+
 #[test]
 fn constant_time_eq_matches_only_identical_bytes() {
     assert!(constant_time_eq(b"abc", b"abc"));

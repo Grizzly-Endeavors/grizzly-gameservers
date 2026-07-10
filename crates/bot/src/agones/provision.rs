@@ -16,7 +16,8 @@ use super::labels::{GAME_KEY, GUILD_KEY, all_node_ports, is_managed, label_value
 use super::naming::{pvc_name, select_free_ports};
 use super::ports::{assign, assignment_from_service, port_plan_from_service, ports_needed};
 use super::scope::ServerScope;
-use super::types::{GameServer, server_address};
+use super::types::{GameServer, ServerState, server_address};
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
 /// Services lease their port(s) from here; the range bounds the **total** ports
@@ -163,11 +164,11 @@ async fn provision_under_lock(
             return Ok(Provisioned::PortsExhausted);
         };
         let identity = InstanceIdentity {
-            name: instance.to_owned(),
-            game: entry.id.clone(),
+            name: InstanceName::new(instance),
+            game: GameId::new(entry.id.as_str()),
             namespace: namespace.to_owned(),
             ports: assign(plan.clone(), &leased)?,
-            guild: guild.to_owned(),
+            guild: GuildId::new(guild),
             start_paused,
         };
         let service = render_service(entry, &identity)?;
@@ -315,11 +316,11 @@ pub(crate) async fn begin_start(
         .to_owned();
 
     let identity = InstanceIdentity {
-        name: instance.to_owned(),
-        game,
+        name: InstanceName::new(instance),
+        game: GameId::new(game),
         namespace: namespace.to_owned(),
         ports,
-        guild,
+        guild: GuildId::new(guild),
         // A cold `/start` resumes a normal server; only recover-from-archive pauses.
         start_paused: false,
     };
@@ -481,13 +482,12 @@ pub(crate) async fn wait_for_instance_ready(
 }
 
 fn is_ready(gameserver: &GameServer) -> bool {
-    matches!(
-        gameserver
-            .status
-            .as_ref()
-            .and_then(|status| status.state.as_deref()),
-        Some("Ready" | "Allocated")
-    )
+    gameserver
+        .status
+        .as_ref()
+        .and_then(|status| status.state.as_deref())
+        .map(ServerState::from_agones)
+        .is_some_and(|state| state.is_online())
 }
 
 async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {

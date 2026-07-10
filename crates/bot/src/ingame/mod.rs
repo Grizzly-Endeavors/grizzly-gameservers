@@ -20,7 +20,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header::AUTHORIZATION};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use grizzly_control_api::{INGAME_TRIGGER_PATH, IngameTriggerRequest};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -28,6 +28,11 @@ use tracing::{error, info, warn};
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
+
+/// Path of the always-on liveness/readiness route. Only the kubelet probe
+/// consumes it, so — unlike [`INGAME_TRIGGER_PATH`] — it isn't part of the
+/// control-api wire contract and stays local to this module.
+const HEALTH_PATH: &str = "/health";
 
 /// Cloneable handles the in-game endpoint shares with the rest of the bot. Every
 /// field is a cheap clone (an `Arc` bump or a short owned string), so the endpoint
@@ -45,6 +50,9 @@ pub(crate) struct IngameDeps {
     /// answer with), so [`spawn`] doesn't start it.
     pub(crate) ollama: Option<OllamaConfig>,
     pub(crate) sessions: Arc<SessionStore>,
+    /// DMs the operators when an in-game `@Gary` question exhausts the round
+    /// budget, so the escalation reaches a human instead of only a `warn` log.
+    pub(crate) notifier: crate::notify::OperatorNotifier,
 }
 
 /// The endpoint's shared state: the dependencies plus the expected bearer token
@@ -58,9 +66,11 @@ struct IngameServer {
     tasks: TaskTracker,
 }
 
-/// Start the in-game agent endpoint in a background task, unless Gary is
-/// unconfigured (then there is nothing to answer with, so it stays off). Warns
-/// when no token is set — the endpoint is then only network-isolated.
+/// Start the in-game agent endpoint in a background task. The server always comes
+/// up so the k8s probes have a `GET /health` target; the Gary-backed
+/// [`INGAME_TRIGGER_PATH`] route is mounted only when Gary is configured (nothing
+/// to answer with otherwise). Warns when the trigger route is live but has no
+/// token — it is then only network-isolated.
 pub(crate) fn spawn(
     deps: IngameDeps,
     port: u16,
@@ -69,10 +79,8 @@ pub(crate) fn spawn(
     shutdown: CancellationToken,
 ) {
     if deps.ollama.is_none() {
-        info!("in-game agent endpoint disabled (Gary not configured)");
-        return;
-    }
-    if token.is_none() {
+        info!("in-game trigger route disabled (Gary not configured); serving health only");
+    } else if token.is_none() {
         warn!(
             "in-game agent endpoint has no token (GAMESERVERS_INGAME_TOKEN unset); it is only \
              protected by network policy"
@@ -96,21 +104,30 @@ async fn serve(
     shutdown: CancellationToken,
     tasks: TaskTracker,
 ) -> Result<()> {
-    let state = IngameServer {
-        deps,
-        token: token.map(Arc::from),
-        tasks,
-    };
-    let app = Router::new()
-        .route(INGAME_TRIGGER_PATH, post(ingame_trigger))
-        .layer(from_fn_with_state(state.clone(), require_token))
-        .with_state(state);
+    let gary_enabled = deps.ollama.is_some();
+    // `GET /health` is always served: unauthenticated, stateless, and independent
+    // of Gary, so the k8s probes have a target whether or not the token-guarded
+    // trigger route is mounted. The auth layer is scoped to the trigger sub-router
+    // alone — a probe carries no bearer token and must not be turned away.
+    let mut app: Router = Router::new().route(HEALTH_PATH, get(health));
+    if gary_enabled {
+        let state = IngameServer {
+            deps,
+            token: token.map(Arc::from),
+            tasks,
+        };
+        let trigger = Router::new()
+            .route(INGAME_TRIGGER_PATH, post(ingame_trigger))
+            .layer(from_fn_with_state(state.clone(), require_token))
+            .with_state(state);
+        app = app.merge(trigger);
+    }
 
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind in-game agent endpoint on {addr}"))?;
-    info!(port, "in-game agent endpoint listening");
+    info!(port, gary_enabled, "in-game agent endpoint listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
@@ -162,6 +179,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// Liveness/readiness target for the k8s probes: `200` whenever the process is
+/// serving. It does no work and touches no state on purpose — an unconfigured Gary
+/// or an idle Discord gateway must not read as dead, and a genuinely wedged process
+/// (what the liveness probe exists to catch) stops answering regardless.
+async fn health() -> StatusCode {
+    StatusCode::OK
 }
 
 /// Accept a trigger, answer it asynchronously, and return `202` immediately — the

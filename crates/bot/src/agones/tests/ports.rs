@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use k8s_openapi::api::core::v1::{ServicePort, ServiceSpec};
 
@@ -220,4 +221,105 @@ fn real_satisfactory_manifest_is_on_the_advertise_path() {
     assert!(game.friend_facing, "game is the friend-facing port");
     assert!(game.env.contains(&"SERVERGAMEPORT".to_owned()));
     assert!(game.env.contains(&"SUPERVISOR_GAME_PORT".to_owned()));
+}
+
+/// The supervisor's own default when `SUPERVISOR_GAME_PORT` is unset — mirrors
+/// `DEFAULT_GAME_PORT` in `crates/supervisor/src/config.rs`. Minecraft relies on
+/// this default equalling its own game port instead of setting the env explicitly.
+const SUPERVISOR_DEFAULT_GAME_PORT: u16 = 25565;
+
+/// Pulls the value out of an uncommented `ENV KEY=value` line. Deliberately a
+/// line scan, not a Dockerfile parser — good enough for the flat `ENV` lines
+/// every game template uses, and cheap to keep in sync with them.
+fn dockerfile_env<'a>(dockerfile: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("ENV {key}=");
+    dockerfile
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+}
+
+/// Collects `(name, containerPort)` pairs out of a `GameServer` manifest's port
+/// list entries (top-level `spec.ports` and the container `ports`, which always
+/// mirror each other), skipping the pod-internal `control` port — it's never a
+/// candidate for the game's own readiness probe.
+fn manifest_container_ports(manifest: &str) -> Vec<(String, u16)> {
+    let mut ports = Vec::new();
+    let mut current_name: Option<String> = None;
+    for line in manifest.lines() {
+        let trimmed = line.trim_start();
+        if let Some(name) = trimmed.strip_prefix("- name: ") {
+            current_name = Some(name.trim().to_owned());
+        } else if let Some(value) = trimmed.strip_prefix("containerPort: ")
+            && let Some(name) = current_name.take()
+            && name != "control"
+            && let Ok(port) = value.trim().parse()
+        {
+            ports.push((name, port));
+        }
+    }
+    ports
+}
+
+/// Guards the contract between each real game's `SUPERVISOR_GAME_PORT` (or its
+/// implicit default) and the port the manifest actually exposes it on, so a typo
+/// is caught here rather than only discovered when a fresh server's readiness
+/// probe never succeeds.
+///
+/// `SUPERVISOR_GAME_PORT` either names a declared game `containerPort`
+/// (Minecraft's implicit default, Terraria, Satisfactory's template default) or
+/// the game's own `SUPERVISOR_RCON_PORT` (Factorio, Palworld: their RCON port is
+/// what actually opens once the game is hosting, and it's intentionally
+/// pod-internal — never a `containerPort` — see their `Dockerfile`s). A game on
+/// the log-marker readiness path (`SUPERVISOR_READY_LOG_PATTERN`, e.g. Valheim)
+/// never consults `game_port` for readiness at all (see `runner.rs`'s
+/// `spawn_readiness_probe` gate), so it's exempt from the check entirely.
+#[test]
+fn real_game_ports_agree_with_their_readiness_probe() {
+    let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
+    let mut checked = Vec::new();
+    for entry in std::fs::read_dir(&games_dir).unwrap() {
+        let entry = entry.unwrap();
+        if !entry.file_type().unwrap().is_dir() {
+            continue;
+        }
+        let game = entry.file_name().into_string().unwrap();
+        if game == "_template" {
+            continue;
+        }
+        let dockerfile = std::fs::read_to_string(entry.path().join("Dockerfile")).unwrap();
+        if dockerfile_env(&dockerfile, "SUPERVISOR_READY_LOG_PATTERN").is_some() {
+            continue;
+        }
+        let manifest = std::fs::read_to_string(entry.path().join("gameserver.yaml")).unwrap();
+
+        let game_port = dockerfile_env(&dockerfile, "SUPERVISOR_GAME_PORT").map_or(
+            SUPERVISOR_DEFAULT_GAME_PORT,
+            |raw| {
+                raw.parse::<u16>().unwrap_or_else(|_| {
+                    panic!("{game}: SUPERVISOR_GAME_PORT {raw:?} isn't a valid port")
+                })
+            },
+        );
+        let rcon_port = dockerfile_env(&dockerfile, "SUPERVISOR_RCON_PORT").map(|raw| {
+            raw.parse::<u16>().unwrap_or_else(|_| {
+                panic!("{game}: SUPERVISOR_RCON_PORT {raw:?} isn't a valid port")
+            })
+        });
+        let container_ports = manifest_container_ports(&manifest);
+
+        let matches_container_port = container_ports.iter().any(|(_, port)| *port == game_port);
+        let matches_rcon_port = rcon_port == Some(game_port);
+        assert!(
+            matches_container_port || matches_rcon_port,
+            "{game}: SUPERVISOR_GAME_PORT {game_port} matches neither a declared \
+             containerPort ({container_ports:?}) nor SUPERVISOR_RCON_PORT ({rcon_port:?})"
+        );
+        checked.push(game);
+    }
+    assert!(
+        !checked.is_empty(),
+        "expected to find at least one real game to check under {games_dir:?}"
+    );
 }

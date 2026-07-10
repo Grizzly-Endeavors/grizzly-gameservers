@@ -36,3 +36,8 @@ pub(crate) use supervisor_fs::{
     supervisor_restore_file, supervisor_send_command, supervisor_write_file,
 };
 pub(crate) use types::ServerSummary;
+// Named only by the discord/agent render test helpers that rebuild a
+// `ServerSummary`; production code reaches state through `ServerSummary`'s
+// `is_online`/`Display`, so the facade export would otherwise read as unused.
+#[cfg(test)]
+pub(crate) use types::ServerState;

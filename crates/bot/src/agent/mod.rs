@@ -11,7 +11,7 @@ pub(crate) mod session;
 pub(crate) mod store;
 pub(crate) mod tools;
 
-pub(crate) use llm::{ChatMessage, OllamaConfig, ToolCall, ToolDef, send_chat_completion};
+pub(crate) use llm::{ChatMessage, OllamaConfig, Role, ToolCall, ToolDef, send_chat_completion};
 pub(crate) use render::{GarySurface, cluster_error, format_server_list, format_summary, no_such};
 pub(crate) use session::{DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, run_session};
 pub(crate) use store::SessionStore;

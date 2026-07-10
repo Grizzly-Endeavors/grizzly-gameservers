@@ -16,6 +16,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use tracing::{error, info, warn};
 
 use crate::config::DbConfig;
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// Postgres pool size for the archive index. Two is ample: the index is a
 /// low-traffic catalog touched only on archive/recover/list, not a hot path.
@@ -41,10 +42,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS archives (\
 pub(crate) struct ArchiveRecord {
     /// Owning Discord guild id — the tenant the archive belongs to and the guild
     /// a recovered server is stamped back into.
-    pub(crate) guild: String,
+    pub(crate) guild: GuildId,
     /// Server name, used both to recover and as the archive key segment.
-    pub(crate) name: String,
-    pub(crate) game: String,
+    pub(crate) name: InstanceName,
+    pub(crate) game: GameId,
     pub(crate) tarball_key: String,
     pub(crate) manifest_key: String,
     pub(crate) size_bytes: i64,
@@ -77,9 +78,9 @@ fn row(columns: ArchiveRow) -> ArchiveRecord {
     let (guild, name, game, tarball_key, manifest_key, size_bytes, created_by, created_at) =
         columns;
     ArchiveRecord {
-        guild,
-        name,
-        game,
+        guild: GuildId::new(guild),
+        name: InstanceName::new(name),
+        game: GameId::new(game),
         tarball_key,
         manifest_key,
         size_bytes,
@@ -157,9 +158,9 @@ impl ArchiveStore {
              (guild_id, name, game, tarball_key, manifest_key, size_bytes, created_by) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
-        .bind(&record.guild)
-        .bind(&record.name)
-        .bind(&record.game)
+        .bind(record.guild.as_str())
+        .bind(record.name.as_str())
+        .bind(record.game.as_str())
         .bind(&record.tarball_key)
         .bind(&record.manifest_key)
         .bind(record.size_bytes)

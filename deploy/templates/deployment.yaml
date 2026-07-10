@@ -150,6 +150,24 @@ spec:
             - name: agent
               containerPort: 9360
               protocol: TCP
+          # Both probes hit the always-on `GET /health` on the agent port — served
+          # whether or not Gary (and thus the trigger route) is configured, so the
+          # probes never fail-closed on a Gary-less deploy. Readiness gates the
+          # Service/rollout; liveness recovers a wedged process (the bot's real work
+          # is outbound to Discord, so a hung gateway won't surface here — but a
+          # deadlocked process stops answering and gets restarted).
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: agent
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: agent
+            initialDelaySeconds: 15
+            periodSeconds: 30
           resources:
             {{- toYaml .Values.bot.resources | nindent 12 }}
           volumeMounts:

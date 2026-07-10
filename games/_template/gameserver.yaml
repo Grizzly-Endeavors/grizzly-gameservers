@@ -1,8 +1,10 @@
 # Skeleton for a new game. Copy this directory to games/<game>/ and replace the
-# REPLACE_* placeholders. The security baseline below is deliberate: it passes
-# the gate's k8s semgrep rules and is PodSecurity "restricted"-compatible, so a
-# new game is gate-clean by default and ready for when the namespace is gated.
-# Adjust only what a specific game genuinely needs (and say why in a comment).
+# REPLACE_* placeholders. The pod defers the *rootless* hardening baseline
+# (runAsNonRoot / readOnlyRootFilesystem) by default, matching all 6 current
+# games: their upstream bases bootstrap as root (chown the data dir, then drop
+# privileges) — see the pod-hardening comment below the labels. A documented
+# nosemgrep block keeps the manifest gate-clean. If your game's base genuinely
+# runs rootless, restore the full baseline (this directory's README documents it).
 #
 # The image bakes in the grizzly supervisor as its entrypoint (Dockerfile in
 # this directory): it launches the game as a child, owns the Agones SDK
@@ -36,19 +38,26 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: REPLACE_GAME
+    # Pod hardening (runAsNonRoot / readOnlyRootFilesystem / allowPrivilegeEscalation)
+    # is deferred by default — that's what all 6 current games do, because the common
+    # self-hosted-game bases (itzg, factoriotools, palworld/wolveix, lloesche, ryshe,
+    # and similar) bootstrap as root: they chown the mounted data dir to a configurable
+    # PUID/PGID, then drop privileges (gosu/su-exec) before launching the game. A forced
+    # non-root user or read-only root filesystem breaks that bootstrap. This pod is NOT
+    # in the bot deploy path; rootless hardening is tracked alongside game-image CI
+    # signing and the Agones carve-out (ADR-003). The three nosemgrep lines below keep
+    # the manifest gate-clean while the baseline is deferred.
+    #
+    # If your game's base genuinely runs rootless (no root chown on startup), it's one
+    # of the exceptions: DELETE the three nosemgrep lines and restore the full hardening
+    # baseline (documented in this directory's README) — a pod securityContext
+    # (runAsNonRoot/runAsUser/runAsGroup/fsGroup/seccompProfile), a container
+    # securityContext (allowPrivilegeEscalation: false, readOnlyRootFilesystem: true,
+    # capabilities drop [ALL]), and a writable /tmp emptyDir mount.
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
-      # Pod-level security baseline. runAsNonRoot + a non-root UID; fsGroup so
-      # the mounted data volume is writable by that user. seccompProfile keeps
-      # the pod in PodSecurity "restricted". Adjust runAsUser to the UID the
-      # game image actually runs as (e.g. itzg/minecraft-server uses 1000).
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-        seccompProfile:
-          type: RuntimeDefault
       containers:
+        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: REPLACE_GAME
           # REPLACE_IMAGE: the composite image from this directory's Dockerfile
           # (grizzly supervisor as PID 1, wrapping the game as its child). CI
@@ -80,23 +89,13 @@ spec:
             - name: control
               containerPort: 9359
               protocol: TCP
-          # Container hardening. readOnlyRootFilesystem means the game may only
-          # write to mounted volumes — give it a writable /tmp (emptyDir) and a
-          # data volume (PVC) for state. Add more emptyDir mounts for any other
-          # path the image writes to. If the game's startup genuinely needs
-          # root (e.g. to chown a fresh data volume, like itzg/minecraft-server
-          # does), drop this block and document why — see
-          # games/minecraft/gameserver.yaml for that worked exception.
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+          # Container hardening (securityContext) is deferred here too — see the
+          # pod-hardening comment above the pod spec for why, and for what to restore
+          # if your game's base runs rootless. The nosemgrep on the container line
+          # above keeps writable-filesystem / privilege-escalation gate-clean.
           volumeMounts:
             - name: data
               mountPath: /data          # REPLACE with the game's data dir
-            - name: tmp
-              mountPath: /tmp
           resources:
             requests:
               cpu: 500m
@@ -111,5 +110,3 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: REPLACE_GAME-data
-        - name: tmp
-          emptyDir: {}

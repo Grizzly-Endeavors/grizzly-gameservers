@@ -13,6 +13,7 @@ use super::labels::{
 };
 use super::naming::pvc_name;
 use super::ports::{AssignedPort, PortAssignment};
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// Everything the renderer needs to stamp a catalog template into a concrete
 /// per-world instance. `ports` carries the leased edge-band port(s): a single
@@ -20,14 +21,14 @@ use super::ports::{AssignedPort, PortAssignment};
 /// numbers are stamped onto the Service and injected into the game's env.
 #[derive(Clone, Debug)]
 pub(crate) struct InstanceIdentity {
-    pub(crate) name: String,
-    pub(crate) game: String,
+    pub(crate) name: InstanceName,
+    pub(crate) game: GameId,
     pub(crate) namespace: String,
     pub(crate) ports: PortAssignment,
     /// Discord guild id that owns this instance (the [`GUILD_KEY`] label).
     /// Empty leaves the label off — for pre-scoping instances whose surviving
     /// Service carries no guild, so a cold `/start` doesn't stamp a bogus one.
-    pub(crate) guild: String,
+    pub(crate) guild: GuildId,
     /// Hold the game process down at boot (inject `SUPERVISOR_START_PAUSED`) so the
     /// bot can seed `/data` from an archive before the first launch. Only set by
     /// recover-from-archive; a normal create/start leaves it `false`.
@@ -53,10 +54,10 @@ pub(crate) fn render_gameserver(
 ) -> Result<DynamicObject> {
     let mut obj: DynamicObject = serde_yaml_ng::from_str(&entry.gameserver_yaml)
         .with_context(|| format!("failed to parse gameserver template for game {}", entry.id))?;
-    obj.metadata.name = Some(identity.name.clone());
+    obj.metadata.name = Some(identity.name.as_str().to_owned());
     obj.metadata.namespace = Some(identity.namespace.clone());
     apply_labels(&mut obj.metadata.labels, identity);
-    rebind_claim(&mut obj.data, &pvc_name(&identity.name))?;
+    rebind_claim(&mut obj.data, &pvc_name(identity.name.as_str()))?;
     if identity.start_paused {
         upsert_container_env(&mut obj.data, START_PAUSED_ENV, "true")?;
     }
@@ -172,14 +173,15 @@ pub(crate) fn render_service(
 ) -> Result<Service> {
     let mut svc: Service = serde_yaml_ng::from_str(&entry.service_yaml)
         .with_context(|| format!("failed to parse service template for game {}", entry.id))?;
-    svc.metadata.name = Some(identity.name.clone());
+    svc.metadata.name = Some(identity.name.as_str().to_owned());
     svc.metadata.namespace = Some(identity.namespace.clone());
     apply_labels(&mut svc.metadata.labels, identity);
 
     let spec = svc.spec.as_mut().context("service template has no spec")?;
-    spec.selector
-        .get_or_insert_with(BTreeMap::new)
-        .insert(GAMESERVER_SELECTOR_KEY.to_owned(), identity.name.clone());
+    spec.selector.get_or_insert_with(BTreeMap::new).insert(
+        GAMESERVER_SELECTOR_KEY.to_owned(),
+        identity.name.as_str().to_owned(),
+    );
 
     match &identity.ports {
         PortAssignment::Remap(number) => {
@@ -226,7 +228,7 @@ pub(crate) fn render_pvc(
 ) -> Result<PersistentVolumeClaim> {
     let mut pvc: PersistentVolumeClaim = serde_yaml_ng::from_str(&entry.pvc_yaml)
         .with_context(|| format!("failed to parse pvc template for game {}", entry.id))?;
-    pvc.metadata.name = Some(pvc_name(&identity.name));
+    pvc.metadata.name = Some(pvc_name(identity.name.as_str()));
     pvc.metadata.namespace = Some(identity.namespace.clone());
     apply_labels(&mut pvc.metadata.labels, identity);
     Ok(pvc)
@@ -234,12 +236,12 @@ pub(crate) fn render_pvc(
 
 fn apply_labels(labels: &mut Option<BTreeMap<String, String>>, identity: &InstanceIdentity) {
     let map = labels.get_or_insert_with(BTreeMap::new);
-    map.insert(NAME_KEY.to_owned(), identity.game.clone());
+    map.insert(NAME_KEY.to_owned(), identity.game.as_str().to_owned());
     map.insert(MANAGED_BY_KEY.to_owned(), MANAGED_BY_VALUE.to_owned());
-    map.insert(GAME_KEY.to_owned(), identity.game.clone());
-    map.insert(INSTANCE_KEY.to_owned(), identity.name.clone());
-    if !identity.guild.is_empty() {
-        map.insert(GUILD_KEY.to_owned(), identity.guild.clone());
+    map.insert(GAME_KEY.to_owned(), identity.game.as_str().to_owned());
+    map.insert(INSTANCE_KEY.to_owned(), identity.name.as_str().to_owned());
+    if !identity.guild.as_str().is_empty() {
+        map.insert(GUILD_KEY.to_owned(), identity.guild.as_str().to_owned());
     }
 }
 

@@ -20,7 +20,11 @@ pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 /// The itzg entrypoint the supervisor wraps as its child process.
 const DEFAULT_CHILD_CMD: &str = "/start";
 const DEFAULT_GAME_PORT: u16 = 25565;
-/// Not in the 7000–7010 `NodePort` band and not 9358 (the Agones SDK).
+/// Not in the 7000–7010 `NodePort` band and not 9358 (the Agones SDK). Must
+/// match `DEFAULT_CONTROL_PORT` in `crates/bot/src/config.rs` and the
+/// hardcoded port in `cluster/guardrails/bot-to-supervisor-egress.yaml` — a
+/// mismatch is a silent Cilium drop, not an error. No single source of truth
+/// yet (see issue #42).
 const DEFAULT_CONTROL_PORT: u16 = 9359;
 /// Where the auto-injected Agones SDK sidecar serves its REST API.
 const DEFAULT_SDK_BASE_URL: &str = "http://127.0.0.1:9358";

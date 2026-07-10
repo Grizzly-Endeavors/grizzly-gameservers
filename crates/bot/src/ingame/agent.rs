@@ -22,6 +22,7 @@ use crate::agent::{
     params_schema, run_session, send_chat_completion,
 };
 use crate::agones::{ServerScope, guild_of, list_active_servers, supervisor_announce};
+use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 
 const LIST_SERVERS: &str = "list_servers";
 const SERVER_STATUS: &str = "server_status";
@@ -106,6 +107,18 @@ pub(crate) async fn handle_ingame_question(
         Ok(SessionOutcome { reply, escalated }) => {
             if escalated {
                 warn!(server, player, "in-game session hit the round budget");
+                deps.notifier
+                    .notify(&Escalation::RoundBudgetExhausted {
+                        context: EscalationContext::InGame {
+                            player: player.to_owned(),
+                            server: server.to_owned(),
+                            guild: guild.clone(),
+                        },
+                        request: question.to_owned(),
+                        attempts: summarize_attempts(&messages),
+                        rounds: DEFAULT_MAX_ROUNDS,
+                    })
+                    .await;
             }
             deps.sessions.commit(key, messages, Instant::now());
             reply

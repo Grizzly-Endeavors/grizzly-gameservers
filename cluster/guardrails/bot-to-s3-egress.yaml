@@ -25,6 +25,9 @@ spec:
       app.kubernetes.io/component: bot
   egress:
     - toCIDRSet:
+        # Must match the host/port embedded in DEFAULT_S3_ENDPOINT in
+        # crates/bot/src/config.rs — a mismatch here is a silent Cilium drop,
+        # not an error. No single source of truth yet (see issue #42).
         - cidr: 10.0.0.200/32
       toPorts:
         - ports:

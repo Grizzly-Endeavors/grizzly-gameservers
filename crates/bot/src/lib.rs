@@ -9,8 +9,10 @@ mod agones;
 mod backup;
 mod config;
 mod discord;
+mod domain;
 mod ingame;
 mod memory;
+mod notify;
 mod store;
 
 pub use config::BotConfig;
@@ -109,6 +111,14 @@ pub async fn run(config: BotConfig) -> Result<()> {
         config.ollama_model,
     );
 
+    // A token-only serenity HTTP client (no gateway) shared by both Gary surfaces
+    // to DM operators on escalation. Built here so the in-game endpoint — spawned
+    // below, before the gateway client exists — can carry it too.
+    let notifier = notify::OperatorNotifier::new(
+        std::sync::Arc::new(serenity::Http::new(&config.token)),
+        std::sync::Arc::clone(&operator_ids),
+    );
+
     // Start the in-game agent endpoint the game-pod supervisors POST `@Gary` chat
     // triggers to. Shares Gary's core and session store via cloned handles (the
     // same pattern as the backup cycle); stays off when Gary isn't configured.
@@ -122,6 +132,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             catalog: std::sync::Arc::clone(&catalog),
             ollama: ollama.clone(),
             sessions: std::sync::Arc::clone(&sessions),
+            notifier: notifier.clone(),
         },
         config.agent_port,
         config.ingame_token,
@@ -145,6 +156,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         memory,
         backup,
         tasks: tasks.clone(),
+        notifier,
     };
     run_gateway(config.token, data, shutdown, tasks).await
 }
