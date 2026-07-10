@@ -34,14 +34,34 @@ pub(crate) fn pvc_name(instance: &str) -> String {
 /// Returns an error if a supplied name has no usable alphanumeric characters,
 /// or if the resulting name would exceed the length budget.
 pub(crate) fn build_instance_name(game: &str, raw: Option<&str>, entropy: u64) -> Result<String> {
-    let name = match raw {
-        Some(supplied) => sanitize_label_segment(supplied)?,
-        None => format!("{game}-{}", base36_suffix(entropy, GENERATED_ID_LEN)),
-    };
+    if let Some(supplied) = raw {
+        return validate_world_name(supplied);
+    }
+    let name = format!("{game}-{}", base36_suffix(entropy, GENERATED_ID_LEN));
+    check_instance_len(&name)?;
+    Ok(name)
+}
+
+/// Validate and normalize a friend-supplied world name into the RFC1123 label
+/// segment used as the instance name, enforcing the length budget. Shared by the
+/// up-front `/create` check (so a bad name is caught before the game picker) and
+/// [`build_instance_name`], so both reject identically.
+///
+/// # Errors
+///
+/// Returns an error if the name has no usable alphanumeric characters, or if the
+/// normalized name would exceed the length budget.
+pub(crate) fn validate_world_name(raw: &str) -> Result<String> {
+    let name = sanitize_label_segment(raw)?;
+    check_instance_len(&name)?;
+    Ok(name)
+}
+
+fn check_instance_len(name: &str) -> Result<()> {
     if name.len() > MAX_INSTANCE_LEN {
         bail!("name '{name}' is too long (max {MAX_INSTANCE_LEN} characters)");
     }
-    Ok(name)
+    Ok(())
 }
 
 /// Coerce arbitrary text into a lowercase RFC1123 label segment: alphanumerics

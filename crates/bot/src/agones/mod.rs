@@ -18,7 +18,7 @@ mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{BackupTarget, list_active_servers, list_backup_targets};
-pub(crate) use naming::{build_instance_name, now_entropy};
+pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,
     begin_start, destroy_instance, list_instance_names, provision_instance,

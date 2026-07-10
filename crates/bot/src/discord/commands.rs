@@ -19,7 +19,8 @@ use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
     begin_start, build_instance_name, destroy_instance, instance_runtime_state,
     list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
-    supervisor_restart, supervisor_start, supervisor_stop, wait_for_instance_ready,
+    supervisor_restart, supervisor_start, supervisor_stop, validate_world_name,
+    wait_for_instance_ready,
 };
 use crate::backup::{ArtifactSummary, BackupService};
 use crate::memory::{ForgetOutcome, Memory};
@@ -100,6 +101,17 @@ pub(crate) async fn create(
     #[description = "Optional name for this world"] name: Option<String>,
 ) -> Result<(), Error> {
     let data = ctx.data();
+
+    // Validate a supplied name before the game picker so a bad one fails fast
+    // rather than after the friend has already picked a game (the check is
+    // game-independent — build_instance_name uses the same validation).
+    if let Some(supplied) = name.as_deref()
+        && let Err(err) = validate_world_name(supplied)
+    {
+        ctx.send(reply_with(error_embed(&format!("That name won't work: {err}"))).ephemeral(true))
+            .await?;
+        return Ok(());
+    }
 
     let options: Vec<CreateSelectMenuOption> = data
         .catalog
