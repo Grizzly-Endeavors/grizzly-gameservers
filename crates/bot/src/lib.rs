@@ -9,6 +9,7 @@ mod agones;
 mod backup;
 mod config;
 mod discord;
+mod domain;
 mod ingame;
 mod memory;
 mod store;

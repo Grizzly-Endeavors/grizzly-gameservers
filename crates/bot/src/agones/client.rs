@@ -12,6 +12,7 @@ use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_gamese
 use super::ports::{friend_facing_node_port, node_ports_by_gameserver};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, ServerSummary, summarize};
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
 /// each to its `NodePort` Service to resolve a connection address under
@@ -90,9 +91,9 @@ pub(crate) async fn list_active_servers(
 /// A managed server the scheduled backup cycle should snapshot: it has a live
 /// `GameServer` (pod up), so its supervisor is reachable to stream `/data`.
 pub(crate) struct BackupTarget {
-    pub(crate) instance: String,
-    pub(crate) game: String,
-    pub(crate) guild: String,
+    pub(crate) instance: InstanceName,
+    pub(crate) game: GameId,
+    pub(crate) guild: GuildId,
     /// Whether the game process is up — drives whether the snapshot quiesces
     /// (flushes) first. A paused server's `/data` is already saved, and its RCON
     /// is down, so quiescing it would only log a spurious failure.
@@ -126,11 +127,9 @@ pub(crate) async fn list_backup_targets(
         };
         let running = label_value(labels, PROCESS_LABEL_KEY) != Some(PROCESS_LABEL_STOPPED);
         targets.push(BackupTarget {
-            instance,
-            game: label_value(labels, GAME_KEY).unwrap_or_default().to_owned(),
-            guild: label_value(labels, GUILD_KEY)
-                .unwrap_or_default()
-                .to_owned(),
+            instance: InstanceName::new(instance),
+            game: GameId::new(label_value(labels, GAME_KEY).unwrap_or_default()),
+            guild: GuildId::new(label_value(labels, GUILD_KEY).unwrap_or_default()),
             running,
         });
     }
