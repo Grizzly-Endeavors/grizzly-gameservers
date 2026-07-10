@@ -28,6 +28,7 @@ use crate::agent::{
     ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolDef, run_session,
     send_chat_completion,
 };
+use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 
 /// How often the typing indicator is refreshed while a session runs. Discord's
 /// indicator lasts ~10s, so 8s keeps it lit without a visible gap.
@@ -177,7 +178,7 @@ async fn handle_message(
     let mut messages = data.sessions.checkout(key, Instant::now(), || {
         build_system_prompt(access, &games, &memories)
     });
-    messages.push(ChatMessage::user(prompt));
+    messages.push(ChatMessage::user(prompt.clone()));
 
     let tool_ctx = tools::ToolCtx {
         data,
@@ -226,6 +227,7 @@ async fn handle_message(
         Ok(SessionOutcome { reply, escalated }) => {
             if escalated {
                 warn!(user = %message.author.id, "agent escalated: round budget exhausted");
+                notify_operators_escalated(data, message, &prompt, &messages).await;
             }
             (reply, true)
         }
@@ -247,6 +249,30 @@ async fn handle_message(
     if persist {
         data.sessions.commit(key, messages, Instant::now());
     }
+}
+
+/// DM the operators that Gary gave up on this request, with the jump link, the
+/// asker, what they asked, and the tools he tried. Split out of [`handle_message`]
+/// so its body stays under the line cap.
+async fn notify_operators_escalated(
+    data: &Data,
+    message: &serenity::Message,
+    request: &str,
+    messages: &[ChatMessage],
+) {
+    let asker = format!("{} (<@{}>)", message.author.name, message.author.id.get());
+    data.notifier
+        .notify(&Escalation {
+            context: EscalationContext::Discord {
+                asker,
+                jump_link: message.link(),
+                guild: message.guild_id.map(serenity::GuildId::get),
+            },
+            request: request.to_owned(),
+            attempts: summarize_attempts(messages),
+            rounds: DEFAULT_MAX_ROUNDS,
+        })
+        .await;
 }
 
 /// Keep Discord's typing indicator lit for `channel_id` until the returned guard
