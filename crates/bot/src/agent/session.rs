@@ -14,9 +14,10 @@ use super::llm::{ChatMessage, ToolCall, ToolDef};
 /// Default ceiling on model turns per request. A bounded loop is the lightweight
 /// version of the design's escalation exit: a model that keeps calling tools
 /// without converging stops and hands back [`ESCALATION_REPLY`] rather than
-/// thrashing, and the shell records the give-up at `warn` (there's no active
-/// human notification yet — see the escalation sites in the Discord/in-game
-/// shells). Sized for a full troubleshooting cycle — browse, read, edit,
+/// thrashing. The shell records the give-up at `warn` and DMs the configured
+/// operators (see `crate::notify`), so the "flagged for Bear" reply is a promise
+/// the system keeps — the escalation sites in the Discord/in-game shells do the
+/// notifying. Sized for a full troubleshooting cycle — browse, read, edit,
 /// restart, check logs, and recover if needed — which spends several tool rounds
 /// before a final reply.
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = 16;

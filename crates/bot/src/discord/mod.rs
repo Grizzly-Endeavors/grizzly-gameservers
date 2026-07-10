@@ -71,6 +71,9 @@ pub(crate) struct Data {
     /// Tracks spawned Gary sessions so the shutdown drain can await an in-flight
     /// turn (e.g. between a mutating tool call and its follow-up) before exit.
     pub(crate) tasks: TaskTracker,
+    /// DMs the operators when Gary escalates a request he couldn't resolve, so the
+    /// "flagged for Bear" reply is a promise the system actually keeps.
+    pub(crate) notifier: crate::notify::OperatorNotifier,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

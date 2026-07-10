@@ -45,6 +45,9 @@ pub(crate) struct IngameDeps {
     /// answer with), so [`spawn`] doesn't start it.
     pub(crate) ollama: Option<OllamaConfig>,
     pub(crate) sessions: Arc<SessionStore>,
+    /// DMs the operators when an in-game `@Gary` question exhausts the round
+    /// budget, so the escalation reaches a human instead of only a `warn` log.
+    pub(crate) notifier: crate::notify::OperatorNotifier,
 }
 
 /// The endpoint's shared state: the dependencies plus the expected bearer token
