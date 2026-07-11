@@ -74,6 +74,23 @@ fn read_only_prompt_scopes_to_lookups() {
 }
 
 #[test]
+fn every_tier_gets_the_concise_reporting_style() {
+    // The reporting-style guidance lives in the shared persona, so it must reach
+    // read-only askers too — everyone gets a reply, so everyone gets the brevity.
+    for access in [
+        AccessLevel::ReadOnly,
+        AccessLevel::Manager,
+        AccessLevel::Admin,
+    ] {
+        let prompt = build_system_prompt(access, "minecraft", "");
+        assert!(
+            prompt.contains("outcome once"),
+            "concise-reporting guidance must apply to every tier"
+        );
+    }
+}
+
+#[test]
 fn empty_catalog_renders_as_none() {
     let prompt = build_system_prompt(AccessLevel::ReadOnly, "", "");
     assert!(prompt.contains("(none)"));
