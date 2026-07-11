@@ -8,9 +8,11 @@ mod agent;
 mod agones;
 mod backup;
 mod config;
+mod defer;
 mod discord;
 mod domain;
 mod ingame;
+mod kv;
 mod memory;
 mod notify;
 mod store;
@@ -76,6 +78,12 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
     let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
     let memory = std::sync::Arc::new(GaryMemory::connect(config.db.as_ref()).await);
+    // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
+    // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
+    // schedule, the same shape as db/s3/ollama.
+    let defer = std::sync::Arc::new(defer::DeferRuntime::new(
+        kv::ValkeyClient::connect(config.valkey.as_ref()).await,
+    ));
 
     // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
     // spawned subsystem watches it, and `tasks` tracks their handles so the drain
@@ -157,6 +165,8 @@ pub async fn run(config: BotConfig) -> Result<()> {
         backup,
         tasks: tasks.clone(),
         notifier,
+        defer,
+        shutdown: shutdown.clone(),
     };
     run_gateway(config.token, data, shutdown, tasks).await
 }
@@ -245,6 +255,11 @@ async fn on_gateway_event(
             guild = guild.id.get(),
             "registered slash commands for guild"
         );
+    }
+    // On the first Ready (a Context now exists), rebuild deferred-task watchers
+    // from Valkey so a pending run_when survives the redeploy that just happened.
+    if let serenity::FullEvent::Ready { .. } = event {
+        data.defer.reconcile(data, ctx).await;
     }
     discord::gary::on_event(ctx, event, framework, data).await
 }

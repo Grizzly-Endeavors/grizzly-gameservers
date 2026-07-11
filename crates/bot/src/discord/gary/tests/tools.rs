@@ -32,7 +32,7 @@ const MANAGER_ADDED: [&str; 15] = [
     WRITE_FILE,
     EDIT_FILE,
     RESTORE_FILE,
-    WAIT_FOR_SERVER,
+    RUN_WHEN,
     BACKUP_SERVER,
     REMEMBER,
     FORGET,
@@ -133,7 +133,7 @@ fn filesystem_tools_are_manager_and_up() {
         WRITE_FILE,
         EDIT_FILE,
         RESTORE_FILE,
-        WAIT_FOR_SERVER,
+        RUN_WHEN,
     ] {
         assert!(
             !read_only.iter().any(|name| name == tool),

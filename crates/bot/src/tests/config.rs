@@ -192,6 +192,66 @@ fn db_overrides_apply() {
 }
 
 #[test]
+fn valkey_is_none_without_a_password() {
+    // Like DB, the password is the OpenBao-sourced part; its absence disables the
+    // deferred-task queue rather than failing startup.
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    assert!(
+        BotConfig::from_env_with(&env).unwrap().valkey.is_none(),
+        "no REDIS_PASSWORD should disable the deferred-task queue"
+    );
+}
+
+#[test]
+fn valkey_defaults_to_foundation_kv_cache_when_password_present() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("REDIS_PASSWORD", "pw")]);
+    let valkey = BotConfig::from_env_with(&env).unwrap().valkey.unwrap();
+    assert_eq!(valkey.host, "10.0.0.200");
+    assert_eq!(valkey.port, 6379);
+    assert_eq!(valkey.db, 2);
+    assert_eq!(valkey.password, "pw");
+    assert_eq!(valkey.url(), "redis://:pw@10.0.0.200:6379/2");
+}
+
+#[test]
+fn blank_valkey_password_reads_as_absent() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret"), ("REDIS_PASSWORD", "")]);
+    assert!(
+        BotConfig::from_env_with(&env).unwrap().valkey.is_none(),
+        "a blank password should read as unset, not an empty credential"
+    );
+}
+
+#[test]
+fn valkey_overrides_apply() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("REDIS_PASSWORD", "pw"),
+        ("REDIS_HOST", "127.0.0.1"),
+        ("REDIS_PORT", "6400"),
+        ("REDIS_DB", "5"),
+    ]);
+    let valkey = BotConfig::from_env_with(&env).unwrap().valkey.unwrap();
+    assert_eq!(valkey.host, "127.0.0.1");
+    assert_eq!(valkey.port, 6400);
+    assert_eq!(valkey.db, 5);
+}
+
+#[test]
+fn out_of_range_valkey_db_is_an_error() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("REDIS_PASSWORD", "pw"),
+        ("REDIS_DB", "16"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("REDIS_DB"),
+        "an out-of-range Redis DB index should name the variable, got: {err}"
+    );
+}
+
+#[test]
 fn invalid_db_port_is_an_error() {
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
@@ -443,6 +503,21 @@ fn postgres_egress_matches_db_host_and_port_defaults() {
         policy.only_port(),
         DEFAULT_DB_PORT,
         "bot-to-postgres-egress.yaml port must match DEFAULT_DB_PORT (issue #42)"
+    );
+}
+
+#[test]
+fn kv_cache_egress_matches_redis_host_and_port_defaults() {
+    let policy = load_egress("bot-to-kv-cache-egress.yaml");
+    assert_eq!(
+        policy.only_cidr_host(),
+        DEFAULT_REDIS_HOST,
+        "bot-to-kv-cache-egress.yaml CIDR must match DEFAULT_REDIS_HOST (issue #42)"
+    );
+    assert_eq!(
+        policy.only_port(),
+        DEFAULT_REDIS_PORT,
+        "bot-to-kv-cache-egress.yaml port must match DEFAULT_REDIS_PORT (issue #42)"
     );
 }
 

@@ -29,6 +29,7 @@ use crate::agent::{
     ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolDef, run_session,
     send_chat_completion,
 };
+use crate::agones::ServerScope;
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 
 /// How often the typing indicator is refreshed while a session runs. Discord's
@@ -130,7 +131,7 @@ async fn handle_message(
     message: &serenity::Message,
     prompt: String,
 ) {
-    let Some(ollama) = data.ollama.as_ref() else {
+    if data.ollama.is_none() {
         reply(
             ctx,
             message,
@@ -138,7 +139,7 @@ async fn handle_message(
         )
         .await;
         return;
-    };
+    }
     if prompt.trim().is_empty() {
         reply(
             ctx,
@@ -166,7 +167,6 @@ async fn handle_message(
         return;
     };
     let access = caller_access_level(ctx, data, message).await;
-    let tool_defs = tools::available_tools(access);
     let games = game_catalog_list(data);
     // Rendered here (async) rather than inside the checkout closure (sync). A fact
     // Gary saves mid-conversation lands in the prompt on the next fresh session;
@@ -181,20 +181,86 @@ async fn handle_message(
     });
     messages.push(ChatMessage::user(prompt.clone()));
 
-    let tool_ctx = tools::ToolCtx {
+    let turn = GaryTurn {
+        ctx,
         data,
-        serenity: ctx,
         channel_id: message.channel_id,
         guild: message.guild_id.map(serenity::GuildId::get),
         author_id: message.author.id,
         access,
         scope,
+    };
+    // On a hard error, run_gary_turn already logged and posted a friendly message;
+    // the prior session is left untouched so a retry doesn't inherit a half-finished
+    // transcript. Only a clean turn is committed for continuity.
+    if let Ok(SessionOutcome { escalated, .. }) = run_gary_turn(&turn, &mut messages).await {
+        if escalated {
+            warn!(user = %message.author.id, "agent escalated: round budget exhausted");
+            notify_operators_escalated(data, message, &prompt, &messages).await;
+        }
+        data.sessions.commit(key, messages, Instant::now());
+    }
+}
+
+/// The identity and delivery target for one Gary turn, decoupled from any
+/// `serenity::Message`. The `@mention` path fills it from the incoming message;
+/// the deferred-task path fills it from a queued batch — so both drive the same
+/// [`run_gary_turn`].
+pub(crate) struct GaryTurn<'a> {
+    pub(crate) ctx: &'a serenity::Context,
+    pub(crate) data: &'a Data,
+    /// Where the reply (and interim narration) is posted.
+    pub(crate) channel_id: serenity::ChannelId,
+    pub(crate) guild: Option<u64>,
+    pub(crate) author_id: serenity::UserId,
+    pub(crate) access: AccessLevel,
+    pub(crate) scope: ServerScope,
+}
+
+/// Run the tool-calling loop for a seeded transcript, keeping a typing indicator
+/// lit, posting the model's interim narration and final reply (chunked) to the
+/// turn's channel. Mutates `messages` in place so the caller holds the full
+/// transcript to persist. Owns all Discord delivery — including a friendly message
+/// on a hard error — so callers only handle session bookkeeping and escalation.
+///
+/// # Errors
+///
+/// Returns an error only if the model call itself fails (the endpoint is
+/// unreachable); tool failures are surfaced to the model as text, not propagated.
+pub(crate) async fn run_gary_turn(
+    turn: &GaryTurn<'_>,
+    messages: &mut Vec<ChatMessage>,
+) -> Result<SessionOutcome> {
+    let Some(ollama) = turn.data.ollama.as_ref() else {
+        // Callers gate on Gary being configured; this is defense in depth.
+        send_chunks(
+            turn.ctx,
+            turn.channel_id,
+            "Gary isn't set up yet — no model is configured.",
+        )
+        .await;
+        return Ok(SessionOutcome {
+            reply: String::new(),
+            escalated: false,
+        });
+    };
+
+    let tool_defs = tools::available_tools(turn.access);
+    let tool_ctx = tools::ToolCtx {
+        data: turn.data,
+        serenity: turn.ctx,
+        channel_id: turn.channel_id,
+        guild: turn.guild,
+        author_id: turn.author_id,
+        access: turn.access,
+        scope: turn.scope.clone(),
         pending_change: std::sync::Mutex::new(None),
     };
-    // Capture only Copy references (`&`), so each closure stays `Fn` — the
-    // session may call them across several rounds. A `move` closure that closed
-    // over the non-Copy `tool_ctx` directly would be `FnOnce`.
-    let http = &data.http;
+    // Capture only Copy references (`&`), so each closure stays `Fn` — the session
+    // may call them across several rounds.
+    let http = &turn.data.http;
+    let ctx = turn.ctx;
+    let channel_id = turn.channel_id;
     let tool_ctx = &tool_ctx;
     let complete = move |transcript: Vec<ChatMessage>, defs: Vec<ToolDef>| {
         Box::pin(async move { send_chat_completion(http, ollama, &transcript, &defs).await })
@@ -203,20 +269,19 @@ async fn handle_message(
     let dispatch = move |call| {
         Box::pin(async move { tools::dispatch(tool_ctx, &call).await }) as DispatchFuture<'_>
     };
-    // Post the model's interim narration inline, before its tool calls run, so
-    // "I'll delete minecraft — confirm below" always lands ahead of the tool's
-    // own side effects (e.g. the confirmation card) instead of racing them.
+    // Post interim narration inline, before its tool calls run, so "I'll delete
+    // minecraft — confirm below" lands ahead of the tool's own side effects.
     let progress = move |event: SessionEvent| {
         Box::pin(async move {
             match event {
-                SessionEvent::AssistantText(text) => send_chunks(ctx, message, &text).await,
+                SessionEvent::AssistantText(text) => send_chunks(ctx, channel_id, &text).await,
             }
         }) as ProgressFuture<'_>
     };
 
-    let typing = start_typing(ctx, message.channel_id);
+    let typing = start_typing(turn.ctx, turn.channel_id);
     let outcome = run_session(
-        &mut messages,
+        messages,
         tool_defs,
         DEFAULT_MAX_ROUNDS,
         &complete,
@@ -224,33 +289,21 @@ async fn handle_message(
         &progress,
     )
     .await;
-
-    let (final_text, persist) = match outcome {
-        Ok(SessionOutcome { reply, escalated }) => {
-            if escalated {
-                warn!(user = %message.author.id, "agent escalated: round budget exhausted");
-                notify_operators_escalated(data, message, &prompt, &messages).await;
-            }
-            (reply, true)
-        }
-        Err(err) => {
-            error!(error = ?err, user = %message.author.id, "agent: session failed");
-            (
-                "Something went wrong while I was working on that. Try again in a moment."
-                    .to_owned(),
-                false,
-            )
-        }
-    };
-
     drop(typing);
-    send_chunks(ctx, message, &final_text).await;
 
-    // Only a clean turn is worth continuing from; a failed one leaves the prior
-    // session untouched so a retry doesn't inherit a half-finished transcript.
-    if persist {
-        data.sessions.commit(key, messages, Instant::now());
+    match &outcome {
+        Ok(SessionOutcome { reply, .. }) => send_chunks(turn.ctx, turn.channel_id, reply).await,
+        Err(err) => {
+            error!(error = ?err, "agent: session failed");
+            send_chunks(
+                turn.ctx,
+                turn.channel_id,
+                "Something went wrong while I was working on that. Try again in a moment.",
+            )
+            .await;
+        }
     }
+    outcome
 }
 
 /// DM the operators that Gary gave up on this request, with the jump link, the
@@ -297,14 +350,18 @@ fn start_typing(ctx: &serenity::Context, channel_id: serenity::ChannelId) -> wat
     stop_tx
 }
 
-/// Send `text` to the channel as one or more plain messages, splitting on
+/// Send `text` to `channel_id` as one or more plain messages, splitting on
 /// Discord's size cap without breaking code fences. Posted as ordinary messages
 /// (not threaded replies) so a back-and-forth reads like a conversation rather
-/// than a stack of "replying to you" cards.
-async fn send_chunks(ctx: &serenity::Context, message: &serenity::Message, text: &str) {
+/// than a stack of "replying to you" cards. Takes a bare `ChannelId` so the
+/// deferred-task path — which has no triggering message — can deliver too.
+pub(crate) async fn send_chunks(
+    ctx: &serenity::Context,
+    channel_id: serenity::ChannelId,
+    text: &str,
+) {
     for chunk in chunk_text(text, DISCORD_MAX_CHARS) {
-        if let Err(err) = message
-            .channel_id
+        if let Err(err) = channel_id
             .send_message(ctx, CreateMessage::new().content(chunk))
             .await
         {
@@ -373,7 +430,7 @@ async fn guild_owner_id(ctx: &serenity::Context, guild_id: serenity::GuildId) ->
     }
 }
 
-fn game_catalog_list(data: &Data) -> String {
+pub(crate) fn game_catalog_list(data: &Data) -> String {
     data.catalog.game_ids().collect::<Vec<_>>().join(", ")
 }
 
@@ -381,7 +438,7 @@ fn game_catalog_list(data: &Data) -> String {
 /// get the lifecycle and file-tuning tools; admins additionally get the
 /// destructive tools and console commands; read-only callers are scoped to
 /// lookups.
-fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
+pub(crate) fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
     let mut prompt = String::from(
         "You are Gary, an automaton that manages game servers for a group of friends on Discord. \
          You speak with stark, literal directness in a flat, even tone — no flattery, no pretense, \
@@ -459,20 +516,36 @@ fn append_manager_guidance(prompt: &mut String, memories: &str) {
          restart the server to apply it. A restart that applies a config change you just made is \
          self-guarding: it waits for the server to come back up and, if the change crashes it, \
          automatically restores the previous version and restarts once, then tells you what \
-         happened — so for that you don't need to wait_for_server or restore_file by hand. For a \
-         plain start or reboot, wait_for_server then read_logs to confirm it's healthy. Make one \
-         change at a time. If a change can't be recovered automatically, say so plainly and stop \
-         rather than thrashing — it's already been flagged for an operator.",
+         happened — so for that you don't need to watch it or restore_file by hand. For a plain \
+         start or reboot, use run_when with the startup condition to watch it come back up and \
+         confirm it's healthy — or catch a boot that fails or stalls — instead of holding the \
+         conversation on a typing indicator. Make one change at a time. If a change can't be \
+         recovered automatically, say so plainly and stop rather than thrashing — it's already \
+         been flagged for an operator.",
     );
     prompt.push_str(
         "\n\nBefore you restart a server — to reboot it or to apply a config change — check who's \
          on it: server_status now shows the player count. A restart disconnects everyone connected, \
          so if anyone's online, don't just do it. Tell them how many are on and ask whether to \
          restart now or wait until it's empty — a config edit is saved and applies on the next \
-         restart regardless, so there's usually no rush. Servers also update themselves to the \
-         latest version automatically once they're empty, so \"wait until it clears\" is often the \
-         right answer. If the count reads \"unknown\", you couldn't confirm it's empty — treat it as \
-         possibly occupied and ask first. If it's empty, go ahead.",
+         restart regardless, so there's usually no rush. If the count reads \"unknown\", you \
+         couldn't confirm it's empty — treat it as possibly occupied and ask first. If it's empty, \
+         go ahead.",
+    );
+    prompt.push_str(
+        "\n\nWhen something can't or shouldn't happen right now — a slow job (spinning up a server), \
+         or a change that needs a restart while people are still playing — don't sit blocking the \
+         conversation and don't make them come back later. Use run_when to schedule it: it takes a \
+         target server, a condition, and the task to do. The conditions are: 'startup' — watch a \
+         server you just (re)started come up, so you can confirm it's healthy or notice a bad boot; \
+         'empty' — the moment the server has no players, for a change wanted ASAP as people are \
+         logging off; and 'idle' — after the server has been empty a while, for a no-rush tweak \
+         that shouldn't fire the instant someone briefly drops. Pick empty when it's urgent and \
+         they're about to get off so it can happen; pick idle for a nice-to-have with no hurry. If \
+         it isn't clear which, ask. run_when returns right away — tell them plainly that you'll \
+         take care of it yourself once that happens and come back here with the result. There's no \
+         separate notification and you can't 'ping' anyone, so don't promise one: you do the work \
+         and report back when it's done.",
     );
     prompt.push_str(
         "\n\nEach game stores its settings differently and has its own quirks, and you don't keep a \

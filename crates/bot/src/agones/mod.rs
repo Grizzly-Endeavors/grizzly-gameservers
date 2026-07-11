@@ -28,7 +28,7 @@ pub(crate) use scope::{ScopeVerdict, ServerScope, guild_of, verify_scope};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state,
     resolve_managed_pod, supervisor_restart, supervisor_start, supervisor_stop,
-    wait_for_control_reachable, wait_for_ready,
+    wait_for_control_reachable, wait_for_ready, wait_for_ready_within,
 };
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,

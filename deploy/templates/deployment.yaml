@@ -105,6 +105,23 @@ spec:
                   name: grizzly-gameservers-db
                   key: db_password
                   optional: true
+            # Foundation kv-cache (Valkey) for Gary's deferred-task queue
+            # (run_when). Host/port/db are plain config; only the password is a
+            # secret, marked optional so a missing secret disables the queue (Gary
+            # reports he can't schedule) rather than crash-looping — same shape as
+            # DB/S3/Ollama above.
+            - name: REDIS_HOST
+              value: {{ .Values.bot.kv.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.bot.kv.port | quote }}
+            - name: REDIS_DB
+              value: {{ .Values.bot.kv.db | quote }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-kv-cache
+                  key: redis_password
+                  optional: true
             # S3 (s3-bulk versitygw) for world backups/archives. Endpoint/bucket/
             # region are plain config; only the keys are secret, marked optional so
             # a missing secret leaves the backup feature disabled (graceful) rather

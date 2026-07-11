@@ -1,0 +1,33 @@
+# Bot → foundation kv-cache (Valkey; Gary's deferred-task queue).
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) default-denies
+# egress and, via the RFC1918 `except` on the internet rule, makes private LAN
+# hosts — including the foundation stores at 10.0.0.200 — unreachable, so a
+# confused or prompt-injected game pod can't pivot into the platform.
+#
+# Gary's run_when queue is durable on the shared kv-cache (Valkey) at
+# 10.0.0.200:6379. Cilium policies are additive, so this widens the bot's egress
+# by exactly one path: the bot identity → 10.0.0.200/32, TCP 6379 only. It selects
+# only the bot (not the untrusted game-server pods, which stay fully leashed and
+# never hold the Valkey password), and opens only the Valkey port — OpenBao (8200),
+# Postgres (5432), and S3 (7072) stay closed to it beyond their own carve-outs.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-to-kv-cache-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  egress:
+    - toCIDRSet:
+        # Must match DEFAULT_REDIS_HOST/DEFAULT_REDIS_PORT in
+        # crates/bot/src/config.rs — a mismatch here is a silent Cilium drop, not
+        # an error. No single source of truth yet (see issue #42).
+        - cidr: 10.0.0.200/32
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
