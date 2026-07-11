@@ -343,7 +343,34 @@ pub(crate) async fn wait_for_ready(
     instance: &str,
     control_port: u16,
 ) -> Result<ReadyWait> {
-    let deadline = tokio::time::Instant::now() + READY_WAIT_TIMEOUT;
+    wait_for_ready_within(
+        client,
+        http,
+        namespace,
+        instance,
+        control_port,
+        READY_WAIT_TIMEOUT,
+    )
+    .await
+}
+
+/// [`wait_for_ready`] with a caller-chosen ceiling. The interactive tools use the
+/// default [`READY_WAIT_TIMEOUT`]; the deferred `startup` watchdog uses a much
+/// longer one — no real server should take that long to come up, so exceeding it
+/// is itself the signal that a boot is stuck (returned as [`ReadyWait::TimedOut`]).
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn wait_for_ready_within(
+    client: &Client,
+    http: &reqwest::Client,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+    timeout: Duration,
+) -> Result<ReadyWait> {
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut ticker = tokio::time::interval(READY_POLL_INTERVAL);
 
     loop {

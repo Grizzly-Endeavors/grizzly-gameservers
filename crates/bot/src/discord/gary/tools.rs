@@ -41,6 +41,7 @@ use crate::agones::{
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
+use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::notify::Escalation;
 
@@ -59,7 +60,7 @@ const WRITE_FILE: &str = "write_file";
 const EDIT_FILE: &str = "edit_file";
 const RESTORE_FILE: &str = "restore_file";
 const SEND_COMMAND: &str = "send_command";
-const WAIT_FOR_SERVER: &str = "wait_for_server";
+const RUN_WHEN: &str = "run_when";
 const REMEMBER: &str = "remember";
 const FORGET: &str = "forget";
 const LIST_BACKUPS: &str = "list_backups";
@@ -239,6 +240,21 @@ struct CommandParams {
     command: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct RunWhenParams {
+    /// Exact server name to act on, as shown by `list_servers`.
+    name: String,
+    /// When to run the task: `startup` (watch a (re)start finish — whether it comes
+    /// up healthy or fails/stalls), `empty` (the moment no players are connected —
+    /// for urgent changes as people log off), or `idle` (after it's been empty a
+    /// few minutes — for no-rush tweaks).
+    condition: Condition,
+    /// What to do once the condition is met, phrased the way you'd note it for
+    /// yourself — e.g. "set difficulty to hard and restart", or "let them know it's
+    /// up and healthy".
+    task: String,
+}
+
 /// The tools advertised to the model for a given caller. Everyone gets the
 /// read-only set; managers additionally get the lifecycle and file-tuning tools;
 /// admins additionally get the destructive tools and console commands.
@@ -334,9 +350,9 @@ fn manager_tools() -> Vec<ToolDef> {
             params_schema::<PathParams>(),
         ),
         ToolDef::function(
-            WAIT_FOR_SERVER,
-            "Wait for a starting or restarting server to actually come back up and start accepting players, up to a few minutes. Use this after start_server, restart_server, or a config change plus restart instead of repeatedly checking status or logs — it blocks until the server is ready, has crashed, or the wait runs out, then tells you which.",
-            params_schema::<NameParams>(),
+            RUN_WHEN,
+            "Schedule a task to run later, once a server reaches a condition, instead of blocking the conversation now or making the user wait around. Good for slow jobs (e.g. right after start_server or restart_server) and for changes that need a restart while people are still playing. The `condition` is one of: \"startup\" — watch a (re)starting server settle so you can confirm it came up healthy, or catch a boot that crashes, loops, or stalls; \"empty\" — fire the moment no players are connected, for a change wanted ASAP as people log off; \"idle\" — fire after the server has been empty for a few minutes, for a no-rush tweak. Pick empty when it's urgent, idle when it can wait; ask the user if it's unclear. Returns immediately — you then carry the task out yourself when the condition is met and report back in the channel. There is no notification system and you can't ping anyone, so don't promise to; you do the work and come back with the result. Only works on games that report a live player count for the empty/idle conditions.",
+            params_schema::<RunWhenParams>(),
         ),
         ToolDef::function(
             BACKUP_SERVER,
@@ -513,8 +529,8 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        WAIT_FOR_SERVER if manager => match parse::<NameParams>(args) {
-            Ok(params) => exec_wait_for_server(ctx, &params.name).await,
+        RUN_WHEN if manager => match parse::<RunWhenParams>(args) {
+            Ok(params) => exec_run_when(ctx, &params.name, params.condition, &params.task).await,
             Err(message) => message,
         },
         BACKUP_SERVER if manager => match parse::<NameParams>(args) {
@@ -549,7 +565,7 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
         // Manager tools reached without manager rights (a read-only caller).
         CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
         | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE | RESTORE_FILE
-        | WAIT_FOR_SERVER | BACKUP_SERVER => NON_MANAGER_REFUSAL.to_owned(),
+        | RUN_WHEN | BACKUP_SERVER => NON_MANAGER_REFUSAL.to_owned(),
         other => format!("'{other}' isn't a tool I have."),
     }
 }
@@ -583,7 +599,7 @@ fn targets_existing_server(tool: &str) -> bool {
             | EDIT_FILE
             | RESTORE_FILE
             | SEND_COMMAND
-            | WAIT_FOR_SERVER
+            | RUN_WHEN
             | LIST_BACKUPS
             | BACKUP_SERVER
             | ARCHIVE_SERVER
@@ -1320,8 +1336,57 @@ async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> St
     }
 }
 
-async fn exec_wait_for_server(ctx: &ToolCtx<'_>, server: &str) -> String {
-    match wait_for_ready(
+/// Queue a task to run once `server` reaches `condition`, returning a model-facing
+/// note for Gary to relay in his own words. Non-blocking: the wait happens in the
+/// background so this turn stays free. Refuses `empty`/`idle` for a game that
+/// can't report a live player count (there'd be no way to tell when it's empty),
+/// and reports plainly when the queue backend is unavailable — in both cases
+/// nudging Gary to offer doing it now instead of leaving the ask dropped.
+async fn exec_run_when(
+    ctx: &ToolCtx<'_>,
+    server: &str,
+    condition: Condition,
+    task: &str,
+) -> String {
+    if !ctx.data.defer.is_enabled() {
+        return "I can't schedule things right now — my task queue isn't available. Offer to do it \
+                now instead."
+            .to_owned();
+    }
+    if matches!(condition, Condition::Empty | Condition::Idle)
+        && let Some(refusal) = empty_condition_feasibility(ctx, server).await
+    {
+        return refusal;
+    }
+
+    let record = DeferredTask::new(task, ctx.author_id.get(), ctx.channel_id.get(), ctx.guild);
+    match ctx
+        .data
+        .defer
+        .enqueue_and_watch(ctx.data, ctx.serenity, server, condition, &record)
+        .await
+    {
+        Ok(()) => format!(
+            "Scheduled. Once {server} is {}, this will run: \"{task}\". Tell them you'll take care \
+             of it yourself when that happens and come back here with the result — there's no \
+             separate notification, so don't promise to ping them; you handle it.",
+            condition.as_str()
+        ),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: failed to enqueue deferred task");
+            "I couldn't schedule that just now — the task queue didn't accept it. Offer to try \
+             doing it now instead."
+                .to_owned()
+        }
+    }
+}
+
+/// `None` if `server` can report a live player count (so `empty`/`idle` are
+/// watchable), else a model-facing refusal. A definite "no live count"
+/// (`Ok(None)`) is a hard refusal; a transient not-ready/unreachable is allowed
+/// through — the watcher polls until the count is readable.
+async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
+    match supervisor_occupancy(
         &ctx.data.kube_client,
         &ctx.data.http,
         &ctx.data.namespace,
@@ -1330,10 +1395,23 @@ async fn exec_wait_for_server(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(outcome) => format_ready_wait(server, &outcome),
+        Ok(FsOutcome::Ok(None)) => Some(format!(
+            "I can't tell when {server} is empty — this game doesn't report a live player count, so \
+             I can't wait for it to clear. Offer to make the change now, or ask them to tell you \
+             when to."
+        )),
+        // A real count, or a transient state — let it queue; the watcher handles it.
+        Ok(
+            FsOutcome::Ok(Some(_))
+            | FsOutcome::NotFound
+            | FsOutcome::NotManaged
+            | FsOutcome::PodNotReady
+            | FsOutcome::Unreachable
+            | FsOutcome::Rejected(_),
+        ) => None,
         Err(err) => {
-            error!(error = ?err, %server, "agent: wait_for_server failed");
-            cluster_error()
+            error!(error = ?err, %server, "agent: run_when feasibility probe failed");
+            None
         }
     }
 }

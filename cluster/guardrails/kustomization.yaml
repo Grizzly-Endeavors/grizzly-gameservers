@@ -7,4 +7,5 @@ resources:
   - bot-to-supervisor-egress.yaml
   - bot-to-postgres-egress.yaml
   - bot-to-s3-egress.yaml
+  - bot-to-kv-cache-egress.yaml
   - game-to-bot-agent-egress.yaml

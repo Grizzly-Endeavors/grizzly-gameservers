@@ -35,6 +35,14 @@ pub(crate) enum EscalationContext {
         server: String,
         guild: String,
     },
+    /// A deferred-task batch (a `run_when` queue firing) gave up. There's no single
+    /// asker or jump link — the batch ran unattended once its condition was met —
+    /// so it carries the server and condition instead.
+    Deferred {
+        server: String,
+        condition: String,
+        guild: Option<u64>,
+    },
 }
 
 /// A fully-assembled escalation, ready to render into the operator DM. Two shapes
@@ -97,10 +105,19 @@ fn render_round_budget_exhausted(
         EscalationContext::InGame { server, guild, .. } => {
             format!("in-game chat — server `{server}` (guild `{guild}`)")
         }
+        EscalationContext::Deferred {
+            server,
+            condition,
+            guild,
+        } => {
+            let scope = guild.map_or_else(|| "no guild".to_owned(), |id| format!("guild `{id}`"));
+            format!("a deferred task — server `{server}`, condition `{condition}` ({scope})")
+        }
     };
     let who = match context {
         EscalationContext::Discord { asker, .. } => asker.clone(),
         EscalationContext::InGame { player, .. } => format!("player {player}"),
+        EscalationContext::Deferred { .. } => "a deferred batch (no live asker)".to_owned(),
     };
     let tried = if attempts.is_empty() {
         "nothing — he gave up before calling any tools".to_owned()

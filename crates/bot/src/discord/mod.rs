@@ -9,18 +9,20 @@ pub(crate) mod commands;
 pub(crate) mod gary;
 mod render;
 
-pub(crate) use auth::require_scope;
+pub(crate) use auth::{AccessLevel, require_scope};
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use kube::Client;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::agent::{OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 use crate::backup::MaybeBackups;
+use crate::defer::DeferRuntime;
 use crate::memory::GaryMemory;
 use crate::store::{GuildConfig, HomeChannels};
 
@@ -74,6 +76,13 @@ pub(crate) struct Data {
     /// DMs the operators when Gary escalates a request he couldn't resolve, so the
     /// "flagged for Bear" reply is a promise the system actually keeps.
     pub(crate) notifier: crate::notify::OperatorNotifier,
+    /// Gary's deferred-task queue (`run_when`): durable in Valkey, watchers polled
+    /// in the background. Disabled (reports it can't schedule) when Valkey isn't
+    /// configured, the same graceful-degrade shape as `home_channels`/`backup`.
+    pub(crate) defer: Arc<DeferRuntime>,
+    /// The shared shutdown signal, so a deferred watcher's long wait can be
+    /// cancelled promptly instead of blocking the drain for its full ceiling.
+    pub(crate) shutdown: CancellationToken,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

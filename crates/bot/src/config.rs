@@ -41,6 +41,17 @@ const DEFAULT_DB_PORT: u16 = 5432;
 /// provisioned by `setup-grizzly-gameservers-stores.yml`.
 const DEFAULT_DB_NAME: &str = "grizzly_gameservers";
 const DEFAULT_DB_USER: &str = "grizzly_gameservers";
+/// Foundation Valkey (kv-cache) on the R730xd — the shared Redis-wire store the
+/// platform designates for light queues/caches. LAN-only, plain TCP. Backs Gary's
+/// deferred-task queue. Must match the hardcoded host/port in
+/// `cluster/guardrails/bot-to-kv-cache-egress.yaml` (see issue #42).
+const DEFAULT_REDIS_HOST: &str = "10.0.0.200";
+const DEFAULT_REDIS_PORT: u16 = 6379;
+/// Logical DB index for the deferred-task queue. The shared instance has one
+/// password (no ACL users), so isolation is by key prefix; the DB index is a
+/// courtesy that keeps a `SCAN` cheap. `0` is the default shared DB and `1` is
+/// Authentik's — this app takes `2`.
+const DEFAULT_REDIS_DB: u8 = 2;
 /// Self-hosted versitygw `s3-bulk` on the R730xd — the endpoint the platform S3
 /// doc designates for backups/archives. Path-style, plain HTTP over the LAN.
 /// Must match the hardcoded host/port in
@@ -79,6 +90,10 @@ pub struct BotConfig {
     /// `DB_PASSWORD` is set — the bot then runs without persistence (no-mention
     /// home channels are disabled), the same graceful-degrade shape as `ollama`.
     pub(crate) db: Option<DbConfig>,
+    /// Foundation-Valkey connection for Gary's deferred-task queue. `None` when no
+    /// `REDIS_PASSWORD` is set — the `run_when` tool then reports it can't schedule,
+    /// the same graceful-degrade shape as `db`/`ollama`.
+    pub(crate) valkey: Option<ValkeyConfig>,
     /// S3 (versitygw) connection for backups/archives. `None` when the access/
     /// secret keys aren't set — backups/archive/restore then report "not
     /// configured", the same graceful-degrade shape as `db`/`ollama`.
@@ -103,6 +118,28 @@ pub(crate) struct S3Config {
     pub(crate) region: String,
     pub(crate) access_key: String,
     pub(crate) secret_key: String,
+}
+
+/// Connection settings for the bot's foundation-Valkey (kv-cache) queue. Only the
+/// password is a secret (synced from `OpenBao`); the rest carry infra defaults.
+#[derive(Clone, Debug)]
+pub(crate) struct ValkeyConfig {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) db: u8,
+    pub(crate) password: String,
+}
+
+impl ValkeyConfig {
+    /// The `redis://` connection URL, with the password after the empty username
+    /// (`redis://:<password>@host:port/db`) — the RESP auth form the shared
+    /// `requirepass` instance expects.
+    pub(crate) fn url(&self) -> String {
+        format!(
+            "redis://:{}@{}:{}/{}",
+            self.password, self.host, self.port, self.db
+        )
+    }
 }
 
 /// Connection settings for the bot's foundation-Postgres database. Only the
@@ -147,6 +184,7 @@ impl BotConfig {
             optional(lookup, "OLLAMA_MODEL").unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_owned());
 
         let db = db_config_from_env(lookup)?;
+        let valkey = valkey_config_from_env(lookup)?;
         let s3 = s3_config_from_env(lookup);
         let backup_interval = Duration::from_secs(
             optional_positive_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
@@ -171,6 +209,7 @@ impl BotConfig {
             ollama_base_url,
             ollama_model,
             db,
+            valkey,
             s3,
             backup_interval,
             backup_retention,
@@ -221,6 +260,44 @@ fn db_config_from_env(lookup: EnvLookup) -> Result<Option<DbConfig>> {
         user: optional(lookup, "DB_USER").unwrap_or_else(|| DEFAULT_DB_USER.to_owned()),
         password,
     }))
+}
+
+/// Build the Valkey connection settings from the environment, or `None` when
+/// `REDIS_PASSWORD` is unset/empty — the password is the one part sourced from
+/// `OpenBao`, so its absence is the signal that the queue backend isn't wired and
+/// the deferred-task feature should degrade (Gary reports he can't schedule)
+/// rather than fail.
+///
+/// # Errors
+///
+/// Returns an error if `REDIS_PORT` is set but not a valid port, or `REDIS_DB` is
+/// set but not a valid DB index (0-15).
+fn valkey_config_from_env(lookup: EnvLookup) -> Result<Option<ValkeyConfig>> {
+    let Some(password) = optional(lookup, "REDIS_PASSWORD").filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(ValkeyConfig {
+        host: optional(lookup, "REDIS_HOST").unwrap_or_else(|| DEFAULT_REDIS_HOST.to_owned()),
+        port: optional_port(lookup, "REDIS_PORT")?.unwrap_or(DEFAULT_REDIS_PORT),
+        db: optional_redis_db(lookup, "REDIS_DB")?.unwrap_or(DEFAULT_REDIS_DB),
+        password,
+    }))
+}
+
+/// Parse an optional env var as a Redis logical DB index (0-15). Rejects
+/// non-numeric values and out-of-range indices — the shared instance runs the
+/// default 16 databases (0-15).
+fn optional_redis_db(lookup: EnvLookup, key: &str) -> Result<Option<u8>> {
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    let value = raw
+        .parse::<u8>()
+        .ok()
+        .filter(|&value| value <= 15)
+        .with_context(|| format!("{key} must be a Redis DB index (0-15), got {raw:?}"))?;
+    Ok(Some(value))
 }
 
 /// Parse an optional env var as a positive `u64` (>= 1). Rejects both non-numeric

@@ -44,6 +44,15 @@ bot:
     port: 5432
     name: grizzly_gameservers
     user: grizzly_gameservers
+  # Foundation kv-cache (Valkey on the R730xd) for Gary's deferred-task queue
+  # (run_when). Host/port/db are plain config; the password is synced from OpenBao
+  # (grizzly-platform/stores/kv-cache) into the grizzly-gameservers-kv-cache Secret
+  # and injected via secretKeyRef (optional — an absent password disables the
+  # deferred-task feature). Shared instance: DB 2 (0 is the default, 1 is Authentik).
+  kv:
+    host: 10.0.0.200
+    port: 6379
+    db: 2
   # S3 (s3-bulk versitygw on the R730xd) for world backups/archives. The access/
   # secret keys come from the grizzly-gameservers-s3 Secret (ESO); absent keys
   # leave the backup feature disabled. Path-style, plain HTTP over the LAN.
