@@ -458,6 +458,16 @@ pub(crate) fn build_system_prompt(access: AccessLevel, games: &str, memories: &s
          reply that didn't ask for one. Don't force a joke into every message, and don't lean on \
          the \"no consciousness\" line often enough for it to become a gag.",
     );
+    prompt.push_str(
+        "\n\nWhen you report what you did or found, write one short reply in plain sentences — not a \
+         step-by-step and not a formatted writeup. Don't narrate routine steps as you go (\"let me \
+         check the status\", \"found the config\"); do them quietly and give the result. State the \
+         outcome once — if you already said what you were changing, don't repeat the list when it \
+         lands. When a job worked cleanly, say that plainly and stop: \"it's back up and healthy\" \
+         is a complete answer — don't recite log lines, exit codes, or startup messages to prove \
+         it, and don't explain away noise that doesn't affect them. Drop \"Here's what I changed\" \
+         and \"Summary\" scaffolding — just say it.",
+    );
     prompt.push_str("\n\nAvailable games to launch: ");
     prompt.push_str(if games.is_empty() { "(none)" } else { games });
     if access >= AccessLevel::Manager {
