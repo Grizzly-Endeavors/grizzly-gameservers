@@ -22,6 +22,7 @@ use crate::discord::gary::{
 };
 use crate::discord::{AccessLevel, Data};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
+use crate::prompts;
 
 /// How long the `startup` watchdog waits for a (re)start to settle before calling
 /// it stuck. No real server takes this long to come up, so exceeding it is itself
@@ -114,22 +115,15 @@ async fn wait_startup(data: &Data, server: &str) -> String {
     )
     .await
     {
-        Ok(ReadyWait::Ready) => "has finished starting up and is accepting players".to_owned(),
-        Ok(ReadyWait::Crashed) => {
-            "came up unhealthy — it crashed while starting (a bad config change is the usual cause)"
-                .to_owned()
-        }
-        Ok(ReadyWait::Stopped) => "was stopped before it finished starting".to_owned(),
-        Ok(ReadyWait::TimedOut) => {
-            "still isn't up after a long wait, so its startup looks stuck".to_owned()
-        }
-        Ok(ReadyWait::NotFound) => "no longer exists — it was removed before it came up".to_owned(),
-        Ok(ReadyWait::NotManaged) => {
-            "isn't a server I can manage, so I couldn't watch it start".to_owned()
-        }
+        Ok(ReadyWait::Ready) => prompts::StartupReady::render(),
+        Ok(ReadyWait::Crashed) => prompts::StartupCrashed::render(),
+        Ok(ReadyWait::Stopped) => prompts::StartupStopped::render(),
+        Ok(ReadyWait::TimedOut) => prompts::StartupTimedOut::render(),
+        Ok(ReadyWait::NotFound) => prompts::StartupNotFound::render(),
+        Ok(ReadyWait::NotManaged) => prompts::StartupNotManaged::render(),
         Err(err) => {
             error!(error = ?err, server = %server, "deferred startup watch: cluster query failed");
-            "couldn't be checked — the cluster didn't answer while I watched it start".to_owned()
+            prompts::StartupUnchecked::render()
         }
     }
 }
@@ -159,7 +153,7 @@ async fn wait_occupancy(
             Ok(FsOutcome::Ok(reading)) => match grace {
                 None => {
                     if reading == Some(0) {
-                        return "is now empty — no players are connected".to_owned();
+                        return prompts::OccupancyEmpty::render();
                     }
                 }
                 Some(window) => {
@@ -167,15 +161,15 @@ async fn wait_occupancy(
                     if empty_since
                         .is_some_and(|since| Instant::now().duration_since(since) >= window)
                     {
-                        return "has been empty for a while now".to_owned();
+                        return prompts::OccupancyIdle::render();
                     }
                 }
             },
             Ok(FsOutcome::NotFound) => {
-                return "no longer exists — it was removed before it went empty".to_owned();
+                return prompts::OccupancyNotFound::render();
             }
             Ok(FsOutcome::NotManaged) => {
-                return "isn't a server I can manage, so I couldn't watch it clear".to_owned();
+                return prompts::OccupancyNotManaged::render();
             }
             // Transient: the console isn't reachable this tick. Treat as "unknown"
             // (reset any idle streak) and keep polling until the ceiling.
@@ -188,7 +182,7 @@ async fn wait_occupancy(
             }
         }
         if Instant::now() >= deadline {
-            return "still hasn't emptied out after a long wait".to_owned();
+            return prompts::OccupancyTimedOut::render();
         }
         tokio::time::sleep(poll_interval).await;
     }

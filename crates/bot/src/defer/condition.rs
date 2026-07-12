@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::task::DeferredTask;
+use crate::prompts;
 
 /// Every deferred-task key is namespaced with the app prefix (the shared kv-cache
 /// requires it — isolation is by prefix, not ACL) and a `wait:` segment, then the
@@ -96,26 +97,18 @@ pub(crate) fn compose_batch_prompt(
     trigger_note: &str,
     tasks: &[DeferredTask],
 ) -> String {
-    let mut prompt = format!(
-        "[Deferred work] The server \"{server}\" {trigger_note}. A little while ago, these were \
-         queued to run once that happened:\n"
-    );
     let listed = tasks
         .iter()
         .enumerate()
         .map(|(index, task)| format!("{}. {}", index + 1, task.task.trim()))
         .collect::<Vec<_>>()
         .join("\n");
-    prompt.push_str(&listed);
-    prompt.push_str(
-        "\nCarry out the queued tasks now, if they still make sense for the situation. If the \
-         server failed to come up or is unhealthy, don't run them blindly — look into what went \
-         wrong (read the logs), fix it if you safely can, and say plainly what happened. Nobody is \
-         waiting on a live reply, so when you're done, post a short plain-language summary to the \
-         channel of what you did (and anything you couldn't). If a task no longer makes sense, say \
-         so instead of forcing it.",
-    );
-    prompt
+    prompts::DeferredBatch {
+        server,
+        trigger_note,
+        tasks: &listed,
+    }
+    .render()
 }
 
 #[cfg(test)]
