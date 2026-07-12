@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 
 use serde_yaml_ng::Mapping;
 
-use crate::error::PromptError;
-use crate::ident::{
+use super::error::PromptError;
+use super::ident::{
     is_valid_enum_value, is_valid_id, is_valid_placeholder_name, pascal_to_snake, snake_to_pascal,
 };
-use crate::model::{
+use super::model::{
     Annotations, BodySegment, Param, ParamType, PromptFile, PromptKind, PromptTree, ToolSchema,
     ToolSchemaRef, UsedBy, Variable,
 };
-use crate::parse::{RawAnnotations, RawFile, RawParam, TokenizeError, parse_file, tokenize_body};
+use super::parse::{RawAnnotations, RawFile, RawParam, TokenizeError, parse_file, tokenize_body};
 
 /// Whether `sent_when` is required or forbidden for a file's type.
 enum SentWhen {
@@ -70,8 +70,8 @@ pub fn load(dir: &Path) -> Result<PromptTree, PromptError> {
 }
 
 /// Recursively collect every `*.md` path under `dir`, sorted for deterministic
-/// diagnostics.
-fn collect_md_files(dir: &Path) -> Result<Vec<PathBuf>, PromptError> {
+/// diagnostics. Also used by the emitter to register rebuild-on-change triggers.
+pub(super) fn collect_md_files(dir: &Path) -> Result<Vec<PathBuf>, PromptError> {
     let mut out = Vec::new();
     walk(dir, &mut out)?;
     out.sort();
@@ -417,7 +417,7 @@ fn validate_variables(
 fn build_variables(
     raw: &RawFile,
     placeholders: &[String],
-    map: &BTreeMap<String, crate::parse::RawVariable>,
+    map: &BTreeMap<String, super::parse::RawVariable>,
 ) -> Result<Vec<Variable>, PromptError> {
     let mut out = Vec::new();
     for name in placeholders {

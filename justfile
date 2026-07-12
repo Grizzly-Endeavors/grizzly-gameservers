@@ -36,9 +36,10 @@ game-push game="minecraft" tag="dev":
 bot-push tag="dev":
     ./scripts/push-bot-image.sh {{tag}}
 
-# Run the full test suite (quiet format).
+# Run the full test suite (quiet format). --all-features so prompt-lib's
+# non-default codegen/verify faces are exercised, not just the runtime face.
 test:
-    cargo test --quiet
+    cargo test --quiet --all-features
 
 # Auto-format all Rust code.
 fmt:
@@ -48,9 +49,10 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Run clippy with deny-warnings across all targets.
+# Run clippy with deny-warnings across all targets and features (so the codegen
+# face and generated output are linted, not just the default runtime face).
 lint:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings
 
 # Run cargo-deny (advisories, licenses, bans, sources).
 deny:

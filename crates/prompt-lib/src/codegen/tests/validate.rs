@@ -544,9 +544,9 @@ fn rejects_derived_name_collision() {
 
 #[test]
 fn loads_committed_valid_tree() {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/tests/fixtures/valid");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/codegen/tests/fixtures/valid");
     let tree = load(&dir).unwrap();
-    assert_eq!(tree.files.len(), 4, "prompt + two tools + params");
+    assert_eq!(tree.files.len(), 6, "two prompts + three tools + params");
 
     assert!(matches!(
         &tree.files.get("Greeting").expect("file present").kind,

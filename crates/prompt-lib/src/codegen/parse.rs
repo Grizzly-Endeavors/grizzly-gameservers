@@ -1,15 +1,15 @@
 //! Per-file parsing: split frontmatter from body, deserialize the frontmatter,
 //! normalize and check the body, tokenize placeholders. No cross-file logic and
 //! no semantic validation beyond what a single file can decide on its own —
-//! that lives in [`crate::validate`].
+//! that lives in [`super::validate`].
 
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_yaml_ng::Mapping;
 
-use crate::error::PromptError;
-use crate::model::BodySegment;
+use super::error::PromptError;
+use super::model::BodySegment;
 
 /// A single file's raw frontmatter fields plus its normalized body. Fields are
 /// `Option` so the validator can report a precise rule (missing id vs bad id)

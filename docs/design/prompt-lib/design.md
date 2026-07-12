@@ -65,7 +65,7 @@ Tool bodies and parameter descriptions are static text: `{{` anywhere in a `tool
 
 Codegen emits one flat module. Per file:
 
-- **`type: prompt`** → one struct named by the id, one borrowed string field per unique `{{variable}}`, and an infallible consuming `render(self) -> String`. The body is compiled into the render method as literal segments interleaved with field values — no runtime templating engine, no error path (validation already happened at build time). Values are inserted verbatim; there is no escaping layer.
+- **`type: prompt`** → one struct named by the id, one borrowed string field per unique `{{variable}}`, and an infallible `render() -> String`. A prompt with variables renders by consuming `self` (`render(self)`); a prompt with no variables has no `self` to consume, so its `render` is an associated function (`render()`, called `<Id>::render()`) — the borrowless struct is a bare unit struct. The body is compiled into the render method as literal segments interleaved with field values — no runtime templating engine, no error path (validation already happened at build time). Values are inserted verbatim; there is no escaping layer.
 - **`type: tool`** → one unit struct named by the id with two associated items: `NAME: &'static str`, the wire name as a constant usable in dispatch `match` arms, and `spec() -> ToolSpec`, assembling the full tool spec (wire name, description body, JSON schema). If the tool has an inline `tool_schema` with at least one parameter, a `Deserialize`-deriving params struct named `<Id>Params` is emitted alongside; if it uses `params_from`, it shares the referenced params file's struct instead.
 - **`type: params`** → one `Deserialize`-deriving struct named exactly by the id, shared by every referencing tool.
 

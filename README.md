@@ -26,7 +26,7 @@ The supervisor runs inside game-server pods, not locally — it's built into the
 ## Test
 
 ```bash
-cargo test --quiet
+cargo test --quiet --all-features
 ```
 
 ## Dev Tasks
@@ -34,9 +34,9 @@ cargo test --quiet
 Via `just` (convenience, not required):
 
 - `just` / `just ci-local` — fmt-check, lint, test, deny
-- `just test` — `cargo test --quiet`
+- `just test` — `cargo test --quiet --all-features`
 - `just fmt` — `cargo fmt --all`
-- `just lint` — `cargo clippy --all-targets -- -D warnings`
+- `just lint` — `cargo clippy --all-targets --all-features -- -D warnings`
 - `just deny` — `cargo deny check`
 
 ## Git Hooks

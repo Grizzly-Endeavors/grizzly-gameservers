@@ -2,24 +2,32 @@
 //!
 //! A prompt file is Markdown with YAML frontmatter: the frontmatter declares an
 //! id, a type (`prompt`, `tool`, or `params`), and human-facing annotations; the
-//! body is the verbatim text sent to the model. This crate's job in phase one is
-//! the front half of that pipeline — parse a directory of prompt files and run
-//! every structural validation rule, producing a validated in-memory model that
-//! later phases turn into generated code.
+//! body is the verbatim text sent to the model. This crate has three
+//! dependency-isolated faces, selected by cargo feature:
 //!
-//! [`load`] is the entry point: give it a prompt directory and it returns the
-//! validated [`PromptTree`] or a [`PromptError`] naming the offending file and
-//! the rule it broke.
+//! - **runtime** (default): only [`ToolSpec`], the shared type generated code
+//!   references. No YAML parser, no file I/O.
+//! - **codegen** (feature `codegen`, a build-dependency): [`load`] parses and
+//!   validates a prompt directory into a [`PromptTree`], and [`emit`]/[`generate`]
+//!   turn that tree into the generated `prompts.rs` module.
+//! - **verify** (feature `verify`, a dev-dependency): cross-references annotations
+//!   against the source tree. Added in a later phase.
 
-mod error;
-mod ident;
-mod model;
-mod parse;
-mod validate;
+// Generated code (and this crate's own golden self-test) refer to types by an
+// absolute `grizzly_prompt_lib::…` path. This alias makes those paths resolve
+// inside the crate exactly as they do in a downstream consumer.
+extern crate self as grizzly_prompt_lib;
 
-pub use error::PromptError;
-pub use model::{
-    Annotations, BodySegment, Param, ParamType, PromptFile, PromptKind, PromptTree, ToolSchema,
-    ToolSchemaRef, UsedBy, Variable,
+mod spec;
+
+#[doc(hidden)]
+pub use spec::__private;
+pub use spec::ToolSpec;
+
+#[cfg(feature = "codegen")]
+mod codegen;
+#[cfg(feature = "codegen")]
+pub use codegen::{
+    Annotations, BodySegment, Param, ParamType, PromptError, PromptFile, PromptKind, PromptTree,
+    ToolSchema, ToolSchemaRef, UsedBy, Variable, emit, generate, load,
 };
-pub use validate::load;
