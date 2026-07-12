@@ -1335,12 +1335,24 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
     if !service.archives_enabled() {
         return archives_unavailable_text();
     }
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
         archive_confirm_embed(server),
         "gary_archive_confirm",
-        format!("the user cancelled — {server} was not archived"),
-        format!("the confirmation timed out — {server} was not archived"),
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server,
+            verb: "archived",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server,
+            verb: "archived",
+        }
+        .render(),
     )
     .await
     {
@@ -1385,16 +1397,28 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
     let Some(latest) = backups.first() else {
-        return format!("{server} has no backups to restore from yet");
+        return prompts::RestoreServerNoBackups { server }.render();
     };
     let key = latest.key.clone();
     let label = latest.created_at.clone();
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
         restore_confirm_embed(server, &label),
         "gary_restore_confirm",
-        format!("the user cancelled — {server} was not restored"),
-        format!("the confirmation timed out — {server} was not restored"),
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server,
+            verb: "restored",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server,
+            verb: "restored",
+        }
+        .render(),
     )
     .await
     {
@@ -1437,9 +1461,7 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
         Ok(archives) => match archives.iter().find(|archive| archive.name == name) {
             Some(archive) => archive.guild.clone(),
             None => {
-                return format!(
-                    "there's no archived server named {name} here — check list_archives"
-                );
+                return prompts::RecoverNoArchiveHere { name }.render();
             }
         },
         Err(err) => {
@@ -1775,16 +1797,16 @@ fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
 
 fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
     match outcome {
-        BackupOutcome::BackedUp { size_bytes } => format!(
-            "backed up {server} ({}); restore_server can roll it back to this point",
-            human_size(*size_bytes)
-        ),
-        BackupOutcome::NotRunning => {
-            format!("{server} isn't running, so there's nothing live to back up — start it first")
+        BackupOutcome::BackedUp { size_bytes } => {
+            let size = human_size(*size_bytes);
+            prompts::BackupDone {
+                server,
+                size: &size,
+            }
+            .render()
         }
-        BackupOutcome::Unreachable(_) => {
-            format!("I couldn't reach {server} to back it up — worth trying again in a moment")
-        }
+        BackupOutcome::NotRunning => prompts::BackupNotRunning { server }.render(),
+        BackupOutcome::Unreachable(_) => prompts::BackupUnreachable { server }.render(),
         BackupOutcome::NotFound => no_such(server),
         BackupOutcome::NotManaged => not_managed(server),
     }
@@ -1792,14 +1814,16 @@ fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
 
 fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
     match outcome {
-        ArchiveOutcome::Archived { name, size_bytes } => format!(
-            "archived {name} ({}) and released its storage; recover_server brings it back",
-            human_size(*size_bytes)
-        ),
+        ArchiveOutcome::Archived { name, size_bytes } => {
+            let size = human_size(*size_bytes);
+            prompts::ArchiveDone {
+                name: name.as_str(),
+                size: &size,
+            }
+            .render()
+        }
         ArchiveOutcome::Unavailable => archives_unavailable_text(),
-        ArchiveOutcome::Failed(_) => format!(
-            "I couldn't archive {server} cleanly, so nothing was released — worth trying again shortly"
-        ),
+        ArchiveOutcome::Failed(_) => prompts::ArchiveFailed { server }.render(),
         ArchiveOutcome::NotFound => no_such(server),
         ArchiveOutcome::NotManaged => not_managed(server),
     }
@@ -1809,25 +1833,17 @@ fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
     match outcome {
         RestoreOutcome::Restored {
             boot: BootState::Ready,
-        } => format!("restored {server} — it's back up on the restored world"),
+        } => prompts::RestoreServerReady { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::TimedOut,
-        } => format!("restored the world onto {server} — it'll be playable again in a minute"),
+        } => prompts::RestoreServerTimedOut { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Crashed,
-        } => format!(
-            "restored the world onto {server}, but it crashed coming back up — read its logs \
-             (the restored data may be the cause), or ping an operator"
-        ),
+        } => prompts::RestoreServerCrashed { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Stopped,
-        } => format!(
-            "restored the world onto {server}, but it's paused and won't come up on its own — \
-             start it when you're ready"
-        ),
-        RestoreOutcome::Failed(_) => {
-            format!("I couldn't restore {server} cleanly — worth trying again in a moment")
-        }
+        } => prompts::RestoreServerStopped { server }.render(),
+        RestoreOutcome::Failed(_) => prompts::RestoreServerFailed { server }.render(),
         RestoreOutcome::NotFound => no_such(server),
         RestoreOutcome::NotManaged => not_managed(server),
     }
@@ -1838,51 +1854,51 @@ fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Ready,
-        } => format!("recovered {name} — it's back up at {address}"),
+        } => prompts::RecoverReady {
+            name,
+            address: address.as_str(),
+        }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::TimedOut,
-        } => {
-            format!("recovering {name}; it'll be reachable at {address} once it finishes booting")
+        } => prompts::RecoverTimedOut {
+            name,
+            address: address.as_str(),
         }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Crashed,
-        } => format!(
-            "recovered {name} at {address}, but it crashed coming back up — read its logs (the \
-             archived data may be the cause), or ping an operator"
-        ),
+        } => prompts::RecoverCrashed {
+            name,
+            address: address.as_str(),
+        }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Stopped,
-        } => format!(
-            "recovered {name} at {address}, but it's paused and won't come up on its own — \
-             start it when you're ready"
-        ),
-        RecoverOutcome::NoSuchArchive => {
-            format!(
-                "there's no archived server named {name} in this Discord server — check list_archives"
-            )
+        } => prompts::RecoverStopped {
+            name,
+            address: address.as_str(),
         }
-        RecoverOutcome::NameInUse => {
-            format!("a server named {name} is already running — use start_server instead")
-        }
+        .render(),
+        RecoverOutcome::NoSuchArchive => prompts::RecoverNoSuchArchive { name }.render(),
+        RecoverOutcome::NameInUse => prompts::RecoverNameInUse { name }.render(),
         RecoverOutcome::Unavailable => archives_unavailable_text(),
-        RecoverOutcome::UnknownGame(game) => {
-            format!("{name} ran '{game}', which isn't in the catalog anymore")
+        RecoverOutcome::UnknownGame(game) => prompts::RecoverUnknownGame {
+            name,
+            game: game.as_str(),
         }
-        RecoverOutcome::PortsExhausted => {
-            "all server slots are in use right now — archive or destroy one first".to_owned()
-        }
-        RecoverOutcome::Failed(_) => {
-            format!("I couldn't bring {name} back cleanly — worth trying again in a moment")
-        }
+        .render(),
+        RecoverOutcome::PortsExhausted => prompts::RecoverPortsExhausted::render(),
+        RecoverOutcome::Failed(_) => prompts::RecoverFailed { name }.render(),
     }
 }
 
 fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
     if artifacts.is_empty() {
-        return format!("{server} has no backups yet");
+        return prompts::BackupListEmpty { server }.render();
     }
     let lines = artifacts
         .iter()
@@ -1895,12 +1911,16 @@ fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("backups of {server} (newest first):\n{lines}")
+    prompts::BackupListHeader {
+        server,
+        lines: &lines,
+    }
+    .render()
 }
 
 fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
     if artifacts.is_empty() {
-        return "no servers are archived in this Discord server".to_owned();
+        return prompts::ArchiveListEmpty::render();
     }
     let lines = artifacts
         .iter()
@@ -1914,7 +1934,7 @@ fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("archived servers in this Discord server:\n{lines}")
+    prompts::ArchiveListHeader { lines: &lines }.render()
 }
 
 fn backups_not_configured() -> String {

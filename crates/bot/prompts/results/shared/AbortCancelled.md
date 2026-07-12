@@ -8,6 +8,10 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: finish_destroy
+    - file: discord/gary/tools.rs
+      function: exec_archive
+    - file: discord/gary/tools.rs
+      function: exec_restore
   reasoning:
     - >-
       Names the deliberate cancel (a human said no) so the model relays a chosen
