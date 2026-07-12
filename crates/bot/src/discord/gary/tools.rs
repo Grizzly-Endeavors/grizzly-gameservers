@@ -1590,7 +1590,10 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         path.to_owned()
     };
     if entries.is_empty() {
-        return format!("{location} is empty");
+        return prompts::BrowseEmpty {
+            location: &location,
+        }
+        .render();
     }
     let listing = entries
         .iter()
@@ -1601,35 +1604,52 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("{location} contains:\n{listing}")
+    prompts::BrowseListing {
+        location: &location,
+        listing: &listing,
+    }
+    .render()
 }
 
 fn format_file(file: &ReadResponse) -> String {
+    // The parenthetical's leading space is a code-owned separator; the note
+    // prompt itself carries none, so the empty case renders cleanly.
     let note = if file.truncated {
-        " (showing the first part; the file is larger and was truncated)"
+        format!(" {}", prompts::FileTruncatedNote::render())
     } else {
-        ""
+        String::new()
     };
-    format!("contents of {}{note}:\n{}", file.path, file.content)
+    prompts::FileContents {
+        path: file.path.as_str(),
+        note: &note,
+        content: file.content.as_str(),
+    }
+    .render()
 }
 
 fn format_logs(server: &str, lines: &[String]) -> String {
     if lines.is_empty() {
-        return format!("{server} hasn't produced any output yet");
+        return prompts::LogsEmpty { server }.render();
     }
-    format!("recent output from {server}:\n{}", lines.join("\n"))
+    let joined = lines.join("\n");
+    prompts::LogsOutput {
+        server,
+        lines: &joined,
+    }
+    .render()
 }
 
 fn format_write(result: &WriteResponse) -> String {
     let saved = if result.backed_up {
-        "saved the previous version first, so restore_file can undo this"
+        prompts::FileBackupSaved::render()
     } else {
-        "this is a new file, so there's nothing to restore it to"
+        prompts::FileNoBackup::render()
     };
-    format!(
-        "wrote {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
-        result.path
-    )
+    prompts::FileWritten {
+        path: result.path.as_str(),
+        saved: &saved,
+    }
+    .render()
 }
 
 /// Render an [`EditOutcome`]. The soft-failure variants explain what to do next
@@ -1639,27 +1659,27 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
     match outcome {
         EditOutcome::Edited(result) => {
             let saved = if result.backed_up {
-                "saved the previous version first, so restore_file can undo this"
+                prompts::FileBackupSaved::render()
             } else {
-                "this is a new file, so there's nothing to restore it to"
+                prompts::FileNoBackup::render()
             };
-            format!(
-                "edited {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
-                result.path
-            )
+            prompts::FileEdited {
+                path: result.path.as_str(),
+                saved: &saved,
+            }
+            .render()
         }
-        EditOutcome::NoMatch => format!(
-            "I couldn't find that exact text in {path} on {server} — read the file again and copy the current text verbatim, whitespace and all"
-        ),
-        EditOutcome::Ambiguous(count) => format!(
-            "that text appears {count} times in {path}, so I can't tell which one to change — include more of the surrounding lines so it matches only once"
-        ),
-        EditOutcome::Unchanged => {
-            format!("the old and new text are identical, so there's nothing to change in {path}")
+        EditOutcome::NoMatch => prompts::EditNoMatch { path, server }.render(),
+        EditOutcome::Ambiguous(count) => {
+            let count = count.to_string();
+            prompts::EditAmbiguous {
+                count: &count,
+                path,
+            }
+            .render()
         }
-        EditOutcome::TooLargeToEdit => format!(
-            "{path} is too big to edit safely this way — rewrite the whole file with write_file instead"
-        ),
+        EditOutcome::Unchanged => prompts::EditUnchanged { path }.render(),
+        EditOutcome::TooLargeToEdit => prompts::EditTooLarge { path }.render(),
         EditOutcome::Unserved(problem) => match fs_result(server, problem) {
             // Unserved only ever carries a failure; the Ok arm is unreachable in
             // practice but is handled defensively rather than panicking.
@@ -1670,18 +1690,23 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
 }
 
 fn format_restore(result: &RestoreResponse) -> String {
-    format!(
-        "restored {} to its previous version; restart the server to apply it",
-        result.path
-    )
+    prompts::RestoreFileDone {
+        path: result.path.as_str(),
+    }
+    .render()
 }
 
 fn format_command_output(server: &str, command: &str, result: &CommandResponse) -> String {
     let output = result.output.trim();
     if output.is_empty() {
-        format!("ran `{command}` on {server}; the server returned no output")
+        prompts::CommandNoOutput { command, server }.render()
     } else {
-        format!("ran `{command}` on {server}:\n{output}")
+        prompts::CommandOutput {
+            command,
+            server,
+            output,
+        }
+        .render()
     }
 }
 
