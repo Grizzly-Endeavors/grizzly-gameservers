@@ -4,7 +4,6 @@
 //! text on purpose — Gary composes the friendly Discord reply himself.
 
 use poise::serenity_prelude as serenity;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serenity::{
@@ -25,7 +24,7 @@ use super::super::render::{
     error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
-use crate::agent::{NameParams, ToolCall, ToolDef, no_args_schema, params_schema};
+use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
     ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
@@ -41,40 +40,14 @@ use crate::backup::{
 use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::notify::Escalation;
-
-const LIST_SERVERS: &str = "list_servers";
-const SERVER_STATUS: &str = "server_status";
-const CREATE_SERVER: &str = "create_server";
-const STOP_SERVER: &str = "stop_server";
-const START_SERVER: &str = "start_server";
-const RESTART_SERVER: &str = "restart_server";
-const SHUTDOWN_SERVER: &str = "shutdown_server";
-const DESTROY_SERVER: &str = "destroy_server";
-const BROWSE_FILES: &str = "browse_files";
-const READ_FILE: &str = "read_file";
-const READ_LOGS: &str = "read_logs";
-const WRITE_FILE: &str = "write_file";
-const EDIT_FILE: &str = "edit_file";
-const RESTORE_FILE: &str = "restore_file";
-const SEND_COMMAND: &str = "send_command";
-const RUN_WHEN: &str = "run_when";
-const REMEMBER: &str = "remember";
-const FORGET: &str = "forget";
-const LIST_BACKUPS: &str = "list_backups";
-const LIST_ARCHIVES: &str = "list_archives";
-const BACKUP_SERVER: &str = "backup_server";
-const ARCHIVE_SERVER: &str = "archive_server";
-const RESTORE_SERVER: &str = "restore_server";
-const RECOVER_SERVER: &str = "recover_server";
-
-/// Returned to the model when a caller reaches an admin-only tool without admin
-/// rights. The model is only offered these tools to admins, so this is defense
-/// in depth.
-const NON_ADMIN_REFUSAL: &str = "that action needs an admin — I can only look things up or run day-to-day changes for you here.";
-
-/// Returned to the model when a read-only caller reaches a manager-tier tool.
-const NON_MANAGER_REFUSAL: &str =
-    "that action needs a manager or an admin — I can only look things up for you here.";
+use crate::prompts::{
+    self, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
+    DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
+    ListServers, NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer,
+    Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams,
+    SendCommand, SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer,
+    WriteFile, WriteFileParams,
+};
 
 /// Everything a tool executor needs: the shared bot state plus the Discord
 /// handles the destructive-confirmation flow uses, and the caller's access tier
@@ -154,129 +127,15 @@ struct TargetName {
     name: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
-struct CreateParams {
-    /// Which game to launch — must be one of the catalog game ids.
-    game: String,
-    /// Optional world name. A name is generated when omitted.
-    #[serde(default)]
-    name: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct PathParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory, e.g. `server.properties` or
-    /// `logs/latest.log`. Use `""` for the top of the data directory. Must stay
-    /// inside the data directory — absolute paths and `..` are refused.
-    path: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct WriteParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory to overwrite. The previous
-    /// version is saved first so `restore_file` can undo the change.
-    path: String,
-    /// The full new contents of the file.
-    content: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct EditParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory to edit, e.g. `server.properties`.
-    /// The previous version is saved first so `restore_file` can undo the change.
-    path: String,
-    /// The exact text to find and replace. Must appear once in the file — copy it
-    /// verbatim, whitespace included, and include enough surrounding text to be
-    /// unique. If it's missing or appears more than once, the edit is refused and
-    /// nothing changes.
-    old_text: String,
-    /// The text to put in its place.
-    new_text: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct LogsParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// How many trailing lines to return. Defaults to a recent window when
-    /// omitted.
-    #[serde(default)]
-    lines: Option<usize>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct RememberParams {
-    /// Which game this fact is about — a catalog game id (e.g. `palworld`), or
-    /// `general` for something that isn't tied to one game.
-    scope: String,
-    /// The fact to remember, in one short sentence — a durable operational detail
-    /// you'd otherwise have to rediscover, e.g. "soft-stop before editing configs
-    /// or the change won't apply".
-    note: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct ForgetParams {
-    /// The id of the fact to delete, as shown in the "Things you've learned" list
-    /// (the number after the `#`).
-    id: i64,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct CommandParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// The in-game console command to run, without a leading slash — e.g.
-    /// `list`, `say hello everyone`, `weather clear`, `whitelist add steve`.
-    command: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct RunWhenParams {
-    /// Exact server name to act on, as shown by `list_servers`.
-    name: String,
-    /// When to run the task: `startup` (watch a (re)start finish — whether it comes
-    /// up healthy or fails/stalls), `empty` (the moment no players are connected —
-    /// for urgent changes as people log off), or `idle` (after it's been empty a
-    /// few minutes — for no-rush tweaks).
-    condition: Condition,
-    /// What to do once the condition is met, phrased the way you'd note it for
-    /// yourself — e.g. "set difficulty to hard and restart", or "let them know it's
-    /// up and healthy".
-    task: String,
-}
-
 /// The tools advertised to the model for a given caller. Everyone gets the
 /// read-only set; managers additionally get the lifecycle and file-tuning tools;
 /// admins additionally get the destructive tools and console commands.
 pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
-    let mut tools = vec![
-        ToolDef::function(
-            LIST_SERVERS,
-            "List every game server and its state and connection address.",
-            no_args_schema(),
-        ),
-        ToolDef::function(
-            SERVER_STATUS,
-            "Look up one server's current state and address by name.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            LIST_BACKUPS,
-            "List a server's saved world backups (newest first), so you can see what points it could be restored to.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            LIST_ARCHIVES,
-            "List the servers archived in this Discord server — ones that were put into cold storage and can be recovered.",
-            no_args_schema(),
-        ),
+    let mut tools: Vec<ToolDef> = vec![
+        ListServers::spec().into(),
+        ServerStatus::spec().into(),
+        ListBackups::spec().into(),
+        ListArchives::spec().into(),
     ];
     if access >= AccessLevel::Manager {
         tools.extend(manager_tools());
@@ -291,117 +150,35 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
 /// day-to-day operations, none of which permanently destroy a world.
 fn manager_tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::function(
-            CREATE_SERVER,
-            "Launch a new game server for the given catalog game, with an optional world name.",
-            params_schema::<CreateParams>(),
-        ),
-        ToolDef::function(
-            STOP_SERVER,
-            "Pause a running server in place (world saved, kept warm for a fast start).",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            START_SERVER,
-            "Start a server: resume a paused one or bring a stopped one back up.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RESTART_SERVER,
-            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. Disconnects everyone currently connected.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            SHUTDOWN_SERVER,
-            "Fully shut a server down to free its slot, keeping the world so it can start later.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            BROWSE_FILES,
-            "List the files and folders in a running server's data directory. Use \"\" for the top level, then descend. Start here to find which file holds a setting.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            READ_FILE,
-            "Read a config or text file from a running server's data directory.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            READ_LOGS,
-            "Read the most recent output from a running server — the first place to look when something is wrong or to confirm a change took effect.",
-            params_schema::<LogsParams>(),
-        ),
-        ToolDef::function(
-            EDIT_FILE,
-            "Change one setting in a config file in place: find old_text and replace it with new_text, leaving the rest of the file untouched. Prefer this over write_file for a targeted change — you don't rewrite the whole file, so you can't accidentally clobber other settings. old_text must match exactly once; if it's missing or ambiguous the edit is refused and nothing changes. Saves the previous version first (restore_file undoes it). Takes effect on the next restart.",
-            params_schema::<EditParams>(),
-        ),
-        ToolDef::function(
-            WRITE_FILE,
-            "Overwrite a config file in a running server's data directory with entirely new contents — use this to create a file or rewrite one wholesale; prefer edit_file to change one setting. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
-            params_schema::<WriteParams>(),
-        ),
-        ToolDef::function(
-            RESTORE_FILE,
-            "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            RUN_WHEN,
-            "Schedule a task to run later, once a server reaches a condition, instead of blocking the conversation now or making the user wait around. Good for slow jobs (e.g. right after start_server or restart_server) and for changes that need a restart while people are still playing. The `condition` is one of: \"startup\" — watch a (re)starting server settle so you can confirm it came up healthy, or catch a boot that crashes, loops, or stalls; \"empty\" — fire the moment no players are connected, for a change wanted ASAP as people log off; \"idle\" — fire after the server has been empty for a few minutes, for a no-rush tweak. Pick empty when it's urgent, idle when it can wait; ask the user if it's unclear. Returns immediately — you then carry the task out yourself when the condition is met and report back in the channel. There is no notification system and you can't ping anyone, so don't promise to; you do the work and come back with the result. Only works on games that report a live player count for the empty/idle conditions.",
-            params_schema::<RunWhenParams>(),
-        ),
-        ToolDef::function(
-            BACKUP_SERVER,
-            "Save a durable backup of a running server's world right now. Non-destructive — the server keeps running. Use before a risky change so restore_server can roll it back.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            REMEMBER,
-            "Save a durable fact about a game so you keep it across sessions — an operational detail you'd otherwise rediscover every time (e.g. a game needs to be stopped before a config edit will apply, or where a setting lives). Scope it to the game id, or 'general' if it's not game-specific. Keep it to one short factual sentence. Your saved facts are shown to you each session under \"Things you've learned\". Don't save one-off state, chit-chat, or anything you can just look up.",
-            params_schema::<RememberParams>(),
-        ),
-        ToolDef::function(
-            FORGET,
-            "Delete a saved fact by its id (the number after the # in \"Things you've learned\") when it turns out wrong or no longer applies.",
-            params_schema::<ForgetParams>(),
-        ),
+        CreateServer::spec().into(),
+        StopServer::spec().into(),
+        StartServer::spec().into(),
+        RestartServer::spec().into(),
+        ShutdownServer::spec().into(),
+        BrowseFiles::spec().into(),
+        ReadFile::spec().into(),
+        ReadLogs::spec().into(),
+        EditFile::spec().into(),
+        WriteFile::spec().into(),
+        RestoreFile::spec().into(),
+        RunWhen::spec().into(),
+        BackupServer::spec().into(),
+        Remember::spec().into(),
+        Forget::spec().into(),
     ]
 }
 
 /// The destructive and heavy-handed tools offered only to admin callers:
 /// permanent deletion, world overwrites, archival, and live console commands.
+/// The "do not confirm" steer on `destroy_server` and the confirmation phrasing
+/// on `archive_server`/`restore_server` live in those tools' prompt files.
 fn admin_only_tools() -> Vec<ToolDef> {
     vec![
-        // "do not confirm" is deliberate and unlike archive/restore's phrasing:
-        // the tool itself posts the Discord Danger/Cancel prompt, so telling Gary
-        // not to seek his own confirmation avoids a redundant chat loop ("are you
-        // sure?" / "yes" / "are you really sure?") stacked in front of that prompt.
-        ToolDef::function(
-            DESTROY_SERVER,
-            "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            ARCHIVE_SERVER,
-            "Archive a server: save a durable backup and then release its storage, freeing a slot. The world is kept safe and recover_server brings it back later. Posts a confirmation the user must approve before anything is released.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RESTORE_SERVER,
-            "Roll a server back to its most recent backup, replacing the current world (a safety backup of the current world is taken first). Posts a confirmation the user must approve before the world is overwritten.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RECOVER_SERVER,
-            "Bring an archived server back: recreate it and restore its world from the archive. Use the name shown by list_archives. Constructive, so it runs without a confirmation.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            SEND_COMMAND,
-            "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
-            params_schema::<CommandParams>(),
-        ),
+        DestroyServer::spec().into(),
+        ArchiveServer::spec().into(),
+        RestoreServer::spec().into(),
+        RecoverServer::spec().into(),
+        SendCommand::spec().into(),
     ]
 }
 
@@ -427,19 +204,19 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     }
     let name = call.function.name.as_str();
     match name {
-        LIST_SERVERS => exec_list_servers(ctx).await,
-        SERVER_STATUS => match parse::<NameParams>(args) {
+        ListServers::NAME => exec_list_servers(ctx).await,
+        ServerStatus::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_server_status(ctx, &params.name).await,
             Err(message) => message,
         },
-        LIST_BACKUPS => match parse::<NameParams>(args) {
+        ListBackups::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_list_backups(ctx, &params.name).await,
             Err(message) => message,
         },
-        LIST_ARCHIVES => exec_list_archives(ctx).await,
+        ListArchives::NAME => exec_list_archives(ctx).await,
         // Memory tools carry no server name (memory is shared across guilds), so
         // they skip the scope gate above and dispatch on their own.
-        REMEMBER | FORGET => dispatch_memory(ctx, name, args).await,
+        Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
         _ => dispatch_mutating(ctx, name, args).await,
     }
 }
@@ -449,18 +226,18 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
 /// [`dispatch_mutating`] because they target no server and take no scope gate.
 async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     if ctx.access < AccessLevel::Manager {
-        return NON_MANAGER_REFUSAL.to_owned();
+        return prompts::NonManagerRefusal::render();
     }
     match name {
-        REMEMBER => match parse::<RememberParams>(args) {
+        Remember::NAME => match parse::<RememberParams>(args) {
             Ok(params) => exec_remember(ctx, &params.scope, &params.note).await,
             Err(message) => message,
         },
-        FORGET => match parse::<ForgetParams>(args) {
+        Forget::NAME => match parse::<ForgetParams>(args) {
             Ok(params) => exec_forget(ctx, params.id).await,
             Err(message) => message,
         },
-        other => format!("'{other}' isn't a tool I have."),
+        other => prompts::UnknownTool { name: other }.render(),
     }
 }
 
@@ -473,43 +250,46 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
     let manager = ctx.access >= AccessLevel::Manager;
     let admin = ctx.access >= AccessLevel::Admin;
     match name {
-        CREATE_SERVER if manager => match parse::<CreateParams>(args) {
+        CreateServer::NAME if manager => match parse::<CreateServerParams>(args) {
             Ok(params) => exec_create(ctx, &params.game, params.name.as_deref()).await,
             Err(message) => message,
         },
-        STOP_SERVER if manager => match parse::<NameParams>(args) {
+        StopServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_stop(ctx, &params.name).await,
             Err(message) => message,
         },
-        START_SERVER if manager => match parse::<NameParams>(args) {
+        StartServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_start(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTART_SERVER if manager => match parse::<NameParams>(args) {
+        RestartServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_restart(ctx, &params.name).await,
             Err(message) => message,
         },
-        SHUTDOWN_SERVER if manager => match parse::<NameParams>(args) {
+        ShutdownServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        BROWSE_FILES if manager => match parse::<PathParams>(args) {
+        BrowseFiles::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_FILE if manager => match parse::<PathParams>(args) {
+        ReadFile::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_LOGS if manager => match parse::<LogsParams>(args) {
-            Ok(params) => exec_read_logs(ctx, &params.name, params.lines).await,
+        ReadLogs::NAME if manager => match parse::<ReadLogsParams>(args) {
+            Ok(params) => match narrow_lines(params.lines) {
+                Ok(lines) => exec_read_logs(ctx, &params.name, lines).await,
+                Err(message) => message,
+            },
             Err(message) => message,
         },
-        WRITE_FILE if manager => match parse::<WriteParams>(args) {
+        WriteFile::NAME if manager => match parse::<WriteFileParams>(args) {
             Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
             Err(message) => message,
         },
-        EDIT_FILE if manager => match parse::<EditParams>(args) {
+        EditFile::NAME if manager => match parse::<EditFileParams>(args) {
             Ok(params) => {
                 exec_edit_file(
                     ctx,
@@ -522,57 +302,102 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             }
             Err(message) => message,
         },
-        RESTORE_FILE if manager => match parse::<PathParams>(args) {
+        RestoreFile::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        RUN_WHEN if manager => match parse::<RunWhenParams>(args) {
-            Ok(params) => exec_run_when(ctx, &params.name, params.condition, &params.task).await,
+        RunWhen::NAME if manager => match parse::<RunWhenParams>(args) {
+            Ok(params) => {
+                exec_run_when(ctx, &params.name, params.condition.into(), &params.task).await
+            }
             Err(message) => message,
         },
-        BACKUP_SERVER if manager => match parse::<NameParams>(args) {
+        BackupServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_backup(ctx, &params.name).await,
             Err(message) => message,
         },
-        DESTROY_SERVER if admin => match parse::<NameParams>(args) {
+        DestroyServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
-        SEND_COMMAND if admin => match parse::<CommandParams>(args) {
+        SendCommand::NAME if admin => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
         },
-        ARCHIVE_SERVER if admin => match parse::<NameParams>(args) {
+        ArchiveServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_archive(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTORE_SERVER if admin => match parse::<NameParams>(args) {
+        RestoreServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_restore(ctx, &params.name).await,
             Err(message) => message,
         },
-        RECOVER_SERVER if admin => match parse::<NameParams>(args) {
+        RecoverServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_recover(ctx, &params.name).await,
             Err(message) => message,
         },
-        // Admin-only tools reached without admin rights (a manager or read-only
-        // caller): they need an admin.
-        DESTROY_SERVER | SEND_COMMAND | ARCHIVE_SERVER | RESTORE_SERVER | RECOVER_SERVER => {
-            NON_ADMIN_REFUSAL.to_owned()
-        }
-        // Manager tools reached without manager rights (a read-only caller).
-        CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
-        | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE | RESTORE_FILE
-        | RUN_WHEN | BACKUP_SERVER => NON_MANAGER_REFUSAL.to_owned(),
-        other => format!("'{other}' isn't a tool I have."),
+        // A known tool the caller's tier couldn't be offered (defense in depth),
+        // or an unknown name — classified into the right refusal.
+        other => tier_refusal(other),
+    }
+}
+
+/// The response for a mutating tool that fell through every guarded arm: a
+/// tier-appropriate refusal for a real-but-out-of-tier tool (defense in depth —
+/// these aren't offered below their tier), or the unknown-tool message otherwise.
+fn tier_refusal(name: &str) -> String {
+    if matches!(
+        name,
+        DestroyServer::NAME
+            | SendCommand::NAME
+            | ArchiveServer::NAME
+            | RestoreServer::NAME
+            | RecoverServer::NAME
+    ) {
+        prompts::NonAdminRefusal::render()
+    } else if matches!(
+        name,
+        CreateServer::NAME
+            | StopServer::NAME
+            | StartServer::NAME
+            | RestartServer::NAME
+            | ShutdownServer::NAME
+            | BrowseFiles::NAME
+            | ReadFile::NAME
+            | ReadLogs::NAME
+            | WriteFile::NAME
+            | EditFile::NAME
+            | RestoreFile::NAME
+            | RunWhen::NAME
+            | BackupServer::NAME
+    ) {
+        prompts::NonManagerRefusal::render()
+    } else {
+        prompts::UnknownTool { name }.render()
     }
 }
 
 fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
     serde_json::from_str(args).map_err(|err| {
-        format!(
-            "the arguments for that tool weren't valid JSON ({err}); check the argument names and types and call it again"
-        )
+        prompts::BadToolArguments {
+            error: &err.to_string(),
+        }
+        .render()
     })
+}
+
+/// Narrow the model-supplied line count to the unsigned window `read_logs` wants.
+/// The generated schema carries `lines` as a signed integer (the v1 tool vocab has
+/// no unsigned type), so a negative value is possible on the wire; refuse it with a
+/// message the model can act on rather than erroring the whole loop.
+fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
+    match lines {
+        None => Ok(None),
+        Some(count) => match usize::try_from(count) {
+            Ok(narrowed) => Ok(Some(narrowed)),
+            Err(_) => Err(prompts::NegativeLineCount::render()),
+        },
+    }
 }
 
 /// Whether a tool acts on an *existing* server named in its arguments — the set
@@ -583,24 +408,24 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
-        SERVER_STATUS
-            | STOP_SERVER
-            | START_SERVER
-            | RESTART_SERVER
-            | SHUTDOWN_SERVER
-            | DESTROY_SERVER
-            | BROWSE_FILES
-            | READ_FILE
-            | READ_LOGS
-            | WRITE_FILE
-            | EDIT_FILE
-            | RESTORE_FILE
-            | SEND_COMMAND
-            | RUN_WHEN
-            | LIST_BACKUPS
-            | BACKUP_SERVER
-            | ARCHIVE_SERVER
-            | RESTORE_SERVER
+        ServerStatus::NAME
+            | StopServer::NAME
+            | StartServer::NAME
+            | RestartServer::NAME
+            | ShutdownServer::NAME
+            | DestroyServer::NAME
+            | BrowseFiles::NAME
+            | ReadFile::NAME
+            | ReadLogs::NAME
+            | WriteFile::NAME
+            | EditFile::NAME
+            | RestoreFile::NAME
+            | SendCommand::NAME
+            | RunWhen::NAME
+            | ListBackups::NAME
+            | BackupServer::NAME
+            | ArchiveServer::NAME
+            | RestoreServer::NAME
     )
 }
 
@@ -679,28 +504,42 @@ async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(FsOutcome::Ok(Some(count))) => return format!("\nPlayers online: {count}"),
-        Ok(FsOutcome::Ok(None)) => "this game doesn't report a live player count",
-        Ok(FsOutcome::PodNotReady) => "the server isn't fully up yet",
-        Ok(_) => "the console didn't answer",
+        Ok(FsOutcome::Ok(Some(count))) => {
+            let count = count.to_string();
+            // The leading newline separates this from the summary line above; the
+            // separator is owned here, so the prompt body carries no leading space.
+            return format!("\n{}", prompts::OccupancyKnown { count: &count }.render());
+        }
+        Ok(FsOutcome::Ok(None)) => prompts::OccupancyReasonNoCount::render(),
+        Ok(FsOutcome::PodNotReady) => prompts::OccupancyReasonNotUp::render(),
+        Ok(_) => prompts::OccupancyReasonNoConsole::render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: occupancy lookup failed");
-            "the count couldn't be read"
+            prompts::OccupancyReasonUnread::render()
         }
     };
-    format!("\nPlayers online: unknown ({reason})")
+    format!(
+        "\n{}",
+        prompts::OccupancyUnknown { reason: &reason }.render()
+    )
 }
 
 async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> String {
     let Some(entry) = ctx.data.catalog.get(game) else {
-        return format!(
-            "'{game}' isn't a game I can launch. Available games: {}.",
-            game_ids(ctx)
-        );
+        return prompts::CreateUnknownGame {
+            game,
+            games: &game_ids(ctx),
+        }
+        .render();
     };
     let server = match build_instance_name(game, name, now_entropy()) {
         Ok(server) => server,
-        Err(err) => return format!("that name won't work: {err}"),
+        Err(err) => {
+            return prompts::CreateBadName {
+                error: &err.to_string(),
+            }
+            .render();
+        }
     };
 
     match provision_instance(
@@ -716,13 +555,15 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
     {
         // Don't block the loop on first-boot world generation (minutes). Report
         // the address now; the user can ask for status to see when it's ready.
-        Ok(ProvisionOutcome::Provisioned { address }) => format!(
-            "created {server}; it'll be reachable at {address} once it finishes booting (first boot can take a couple of minutes)"
-        ),
-        Ok(ProvisionOutcome::AlreadyExists) => format!("a server named {server} already exists"),
-        Ok(ProvisionOutcome::PortsExhausted) => {
-            "all server slots are in use right now — destroy one first, then try again".to_owned()
+        Ok(ProvisionOutcome::Provisioned { address }) => prompts::CreateCreated {
+            server: &server,
+            address: &address,
         }
+        .render(),
+        Ok(ProvisionOutcome::AlreadyExists) => {
+            prompts::CreateNameTaken { server: &server }.render()
+        }
+        Ok(ProvisionOutcome::PortsExhausted) => prompts::CreatePortsExhausted::render(),
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
             cluster_error()
@@ -733,44 +574,47 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
 async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
     let note = note.trim();
     if note.is_empty() {
-        return "I need something to remember — give me the fact in a short sentence.".to_owned();
+        return prompts::RememberNeedFact::render();
     }
     let ids: Vec<&str> = ctx.data.catalog.game_ids().collect();
     let Some(scope) = normalize_scope(scope, &ids) else {
-        return format!(
-            "I can only file that under a game or 'general'. Pick one of: {}, general.",
-            ids.join(", ")
-        );
+        return prompts::RememberBadScope {
+            games: &ids.join(", "),
+        }
+        .render();
     };
     let author = ctx.author_id.get().to_string();
     match ctx.data.memory.remember(&scope, note, Some(&author)).await {
         Ok(RememberOutcome::Saved(id)) => {
-            format!("saved that under {scope} (fact #{id}); I'll have it next time")
+            let id = id.to_string();
+            prompts::RememberSaved {
+                scope: scope.as_str(),
+                id: &id,
+            }
+            .render()
         }
-        Ok(RememberOutcome::Unavailable) => {
-            "my long-term memory's offline right now, so I can't save that. It'll stick for the \
-             rest of this conversation but not beyond it."
-                .to_owned()
-        }
+        Ok(RememberOutcome::Unavailable) => prompts::RememberMemoryOffline::render(),
         Err(err) => {
             error!(error = ?err, %scope, "agent: remember failed");
-            "something went wrong saving that — it didn't stick.".to_owned()
+            prompts::RememberSaveFailed::render()
         }
     }
 }
 
 async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
     match ctx.data.memory.forget(id).await {
-        Ok(ForgetOutcome::Forgotten) => format!("forgot fact #{id}"),
+        Ok(ForgetOutcome::Forgotten) => {
+            let fact_id = id.to_string();
+            prompts::ForgetForgot { id: &fact_id }.render()
+        }
         Ok(ForgetOutcome::NotFound) => {
-            format!("I don't have a fact #{id} to forget — check the list of what I've saved")
+            let fact_id = id.to_string();
+            prompts::ForgetNoSuchFact { id: &fact_id }.render()
         }
-        Ok(ForgetOutcome::Unavailable) => {
-            "my long-term memory's offline right now, so I can't change it.".to_owned()
-        }
+        Ok(ForgetOutcome::Unavailable) => prompts::ForgetMemoryOffline::render(),
         Err(err) => {
             error!(error = ?err, id, "agent: forget failed");
-            "something went wrong forgetting that.".to_owned()
+            prompts::ForgetFailed::render()
         }
     }
 }
@@ -858,22 +702,21 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 error!(error = ?err, %server, "agent: post-restart readiness check failed");
                 // Can't confirm health either way — leave the change in place and
                 // tell the model plainly, rather than rolling back a maybe-fine server.
-                return format!(
-                    "restarted {server}, but I couldn't tell whether it came back up — check its logs"
-                );
+                return prompts::ChangeRestartedUnverified { server }.render();
             }
         };
         match next_step(&outcome, rollback_spent) {
             RecoveryStep::Healthy => {
                 return if rollback_spent {
                     warn!(%server, path = %change.path, "agent: rolled a crashing config change back and the server recovered");
-                    format!(
-                        "the change to {} crashed {server} on restart, so I rolled it back to the previous version and restarted — it's healthy again now",
-                        change.path
-                    )
+                    prompts::ChangeRolledBackHealthy {
+                        path: change.path.as_str(),
+                        server,
+                    }
+                    .render()
                 } else {
                     info!(%server, path = %change.path, "agent: config change verified healthy after restart");
-                    format!("restarted {server} and it came back up healthy — the change is good")
+                    prompts::ChangeHealthy { server }.render()
                 };
             }
             RecoveryStep::RollBack => match roll_back(ctx, &change).await {
@@ -885,10 +728,13 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
             RecoveryStep::Escalate => {
                 error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
                 notify_crash_rollback(ctx, server, &change.path).await;
-                return format!(
-                    "the change to {} crashed {server}, and rolling it back didn't bring it up either — I've flagged this for an operator to look at",
-                    change.path
-                );
+                let escalation = prompts::OperatorFlagged::render();
+                return prompts::ChangeRollbackFailedFlagged {
+                    path: change.path.as_str(),
+                    server,
+                    escalation: &escalation,
+                }
+                .render();
             }
             RecoveryStep::Inconclusive => return format_ready_wait(server, &outcome),
         }
@@ -951,10 +797,13 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
         | Err(_) => {
             warn!(%server, path = %change.path, "agent: restart after auto-rollback did not bounce the server");
             notify_crash_rollback(ctx, server, &change.path).await;
-            Err(format!(
-                "the change to {} crashed {server}; I put the previous version back but couldn't restart it cleanly — I've flagged this for an operator to look at",
-                change.path
-            ))
+            let escalation = prompts::OperatorFlagged::render();
+            Err(prompts::ChangeRollbackUnclean {
+                path: change.path.as_str(),
+                server,
+                escalation: &escalation,
+            }
+            .render())
         }
     }
 }
@@ -964,9 +813,13 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
 /// actually notifying the operators, not just logging it.
 async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     notify_crash_rollback(ctx, server, path).await;
-    format!(
-        "the change to {path} crashed {server} and I couldn't roll it back automatically — I've flagged this for an operator to look at"
-    )
+    let escalation = prompts::OperatorFlagged::render();
+    prompts::ChangeRollbackImpossible {
+        path,
+        server,
+        escalation: &escalation,
+    }
+    .render()
 }
 
 /// DM the operators that an automatic crash rollback needs a human hand — the
@@ -1022,15 +875,19 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(StartBegin::Starting { address }) => {
-            format!("starting {server}; it'll be reachable at {address} once it boots back up")
+        Ok(StartBegin::Starting { address }) => prompts::ColdStartStarting {
+            server,
+            address: &address,
         }
-        Ok(StartBegin::AlreadyRunning) => format!("{server} is already running"),
+        .render(),
+        Ok(StartBegin::AlreadyRunning) => prompts::ServerAlreadyRunning { server }.render(),
         Ok(StartBegin::NotFound) => no_such(server),
         Ok(StartBegin::NotManaged) => not_managed(server),
-        Ok(StartBegin::UnknownGame(game)) => {
-            format!("{server} runs '{game}', which isn't in the catalog anymore")
+        Ok(StartBegin::UnknownGame(game)) => prompts::ColdStartUnknownGame {
+            server,
+            game: &game,
         }
+        .render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: cold start failed");
             cluster_error()
@@ -1040,9 +897,7 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 
 async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
     match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
-        Ok(ShutdownOutcome::Down) => {
-            format!("stopped {server}; its world is saved and it can be started again")
-        }
+        Ok(ShutdownOutcome::Down) => prompts::ShutdownStopped { server }.render(),
         Ok(ShutdownOutcome::NotFound) => no_such(server),
         Ok(ShutdownOutcome::NotManaged) => not_managed(server),
         Err(err) => {
@@ -1077,7 +932,7 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
         Ok(message) => message,
         Err(err) => {
             error!(error = ?err, %server, "agent: failed to post destroy confirmation");
-            return "I couldn't post a confirmation prompt in this channel, so I didn't delete anything.".to_owned();
+            return prompts::DestroyNoConfirmChannel::render();
         }
     };
 
@@ -1103,7 +958,13 @@ async fn finish_destroy(
             neutral_embed("Timed out", "Nothing was deleted."),
         )
         .await;
-        return format!("the confirmation timed out — {server} was not deleted");
+        let reason = prompts::AbortTimedOut::render();
+        return prompts::ConfirmAborted {
+            reason: &reason,
+            server,
+            verb: "deleted",
+        }
+        .render();
     };
 
     if let Err(err) = interaction
@@ -1120,7 +981,13 @@ async fn finish_destroy(
             neutral_embed("Cancelled", "Nothing was deleted."),
         )
         .await;
-        return format!("the user cancelled — {server} was not deleted");
+        let reason = prompts::AbortCancelled::render();
+        return prompts::ConfirmAborted {
+            reason: &reason,
+            server,
+            verb: "deleted",
+        }
+        .render();
     }
 
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
@@ -1346,9 +1213,7 @@ async fn exec_run_when(
     task: &str,
 ) -> String {
     if !ctx.data.defer.is_enabled() {
-        return "I can't schedule things right now — my task queue isn't available. Offer to do it \
-                now instead."
-            .to_owned();
+        return prompts::RunWhenQueueUnavailable::render();
     }
     if matches!(condition, Condition::Empty | Condition::Idle)
         && let Some(refusal) = empty_condition_feasibility(ctx, server).await
@@ -1363,17 +1228,15 @@ async fn exec_run_when(
         .enqueue_and_watch(ctx.data, ctx.serenity, server, condition, &record)
         .await
     {
-        Ok(()) => format!(
-            "Scheduled. Once {server} is {}, this will run: \"{task}\". Tell them you'll take care \
-             of it yourself when that happens and come back here with the result — there's no \
-             separate notification, so don't promise to ping them; you handle it.",
-            condition.as_str()
-        ),
+        Ok(()) => prompts::RunWhenScheduled {
+            server,
+            condition: condition.as_str(),
+            task,
+        }
+        .render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: failed to enqueue deferred task");
-            "I couldn't schedule that just now — the task queue didn't accept it. Offer to try \
-             doing it now instead."
-                .to_owned()
+            prompts::RunWhenScheduleRejected::render()
         }
     }
 }
@@ -1392,11 +1255,7 @@ async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<
     )
     .await
     {
-        Ok(FsOutcome::Ok(None)) => Some(format!(
-            "I can't tell when {server} is empty — this game doesn't report a live player count, so \
-             I can't wait for it to clear. Offer to make the change now, or ask them to tell you \
-             when to."
-        )),
+        Ok(FsOutcome::Ok(None)) => Some(prompts::RunWhenCantWatchEmpty { server }.render()),
         // A real count, or a transient state — let it queue; the watcher handles it.
         Ok(
             FsOutcome::Ok(Some(_))
@@ -1476,12 +1335,24 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
     if !service.archives_enabled() {
         return archives_unavailable_text();
     }
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
         archive_confirm_embed(server),
         "gary_archive_confirm",
-        format!("the user cancelled — {server} was not archived"),
-        format!("the confirmation timed out — {server} was not archived"),
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server,
+            verb: "archived",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server,
+            verb: "archived",
+        }
+        .render(),
     )
     .await
     {
@@ -1526,16 +1397,28 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
     let Some(latest) = backups.first() else {
-        return format!("{server} has no backups to restore from yet");
+        return prompts::RestoreServerNoBackups { server }.render();
     };
     let key = latest.key.clone();
     let label = latest.created_at.clone();
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
         restore_confirm_embed(server, &label),
         "gary_restore_confirm",
-        format!("the user cancelled — {server} was not restored"),
-        format!("the confirmation timed out — {server} was not restored"),
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server,
+            verb: "restored",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server,
+            verb: "restored",
+        }
+        .render(),
     )
     .await
     {
@@ -1578,9 +1461,7 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
         Ok(archives) => match archives.iter().find(|archive| archive.name == name) {
             Some(archive) => archive.guild.clone(),
             None => {
-                return format!(
-                    "there's no archived server named {name} here — check list_archives"
-                );
+                return prompts::RecoverNoArchiveHere { name }.render();
             }
         },
         Err(err) => {
@@ -1642,10 +1523,7 @@ async fn confirm_destructive(
         Ok(message) => message,
         Err(err) => {
             error!(error = ?err, "agent: failed to post backup confirmation");
-            return Confirm::Declined(
-                "I couldn't post a confirmation prompt in this channel, so I didn't do anything."
-                    .to_owned(),
-            );
+            return Confirm::Declined(prompts::ConfirmNoChannel::render());
         }
     };
     let decision = ComponentInteractionCollector::new(ctx.serenity)
@@ -1705,13 +1583,12 @@ fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
         FsOutcome::Ok(value) => Ok(value),
         FsOutcome::NotFound => Err(no_such(server)),
         FsOutcome::NotManaged => Err(not_managed(server)),
-        FsOutcome::PodNotReady => Err(format!(
-            "{server} isn't ready to work with yet — try again shortly"
-        )),
-        FsOutcome::Unreachable => Err(format!(
-            "I couldn't reach {server} just now — worth trying again in a moment"
-        )),
-        FsOutcome::Rejected(message) => Err(format!("that didn't work: {message}")),
+        FsOutcome::PodNotReady => Err(prompts::FsNotReady { server }.render()),
+        FsOutcome::Unreachable => Err(prompts::FsUnreachable { server }.render()),
+        FsOutcome::Rejected(message) => Err(prompts::FsRejected {
+            message: message.as_str(),
+        }
+        .render()),
     }
 }
 
@@ -1719,16 +1596,19 @@ fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
 fn format_summary(server: &ServerSummary) -> String {
     let game = server.game.as_deref().unwrap_or("unknown game");
     let address = server.address.as_deref().unwrap_or("no address yet");
-    format!(
-        "{} (game: {game}, state: {}, address: {address})",
-        server.name, server.state
-    )
+    prompts::ServerSummaryLine {
+        name: server.name.as_str(),
+        game,
+        state: server.state.as_str(),
+        address,
+    }
+    .render()
 }
 
 /// The active servers rendered as a newline-separated list.
 fn format_server_list(servers: &[ServerSummary]) -> String {
     if servers.is_empty() {
-        return "no game servers are running right now".to_owned();
+        return prompts::ServerListEmpty::render();
     }
     servers
         .iter()
@@ -1740,11 +1620,11 @@ fn format_server_list(servers: &[ServerSummary]) -> String {
 /// A tool result the model reads, so it carries the hint to re-list rather than
 /// just reporting the server missing.
 fn no_such(server: &str) -> String {
-    format!("there's no server named {server} — check list_servers for the current names")
+    prompts::ServerNotFound { server }.render()
 }
 
 fn cluster_error() -> String {
-    "I couldn't reach the cluster just now — try again in a moment".to_owned()
+    prompts::ClusterUnreachable::render()
 }
 
 fn format_entries(path: &str, entries: &[DirEntry]) -> String {
@@ -1754,7 +1634,10 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         path.to_owned()
     };
     if entries.is_empty() {
-        return format!("{location} is empty");
+        return prompts::BrowseEmpty {
+            location: &location,
+        }
+        .render();
     }
     let listing = entries
         .iter()
@@ -1765,35 +1648,52 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("{location} contains:\n{listing}")
+    prompts::BrowseListing {
+        location: &location,
+        listing: &listing,
+    }
+    .render()
 }
 
 fn format_file(file: &ReadResponse) -> String {
+    // The parenthetical's leading space is a code-owned separator; the note
+    // prompt itself carries none, so the empty case renders cleanly.
     let note = if file.truncated {
-        " (showing the first part; the file is larger and was truncated)"
+        format!(" {}", prompts::FileTruncatedNote::render())
     } else {
-        ""
+        String::new()
     };
-    format!("contents of {}{note}:\n{}", file.path, file.content)
+    prompts::FileContents {
+        path: file.path.as_str(),
+        note: &note,
+        content: file.content.as_str(),
+    }
+    .render()
 }
 
 fn format_logs(server: &str, lines: &[String]) -> String {
     if lines.is_empty() {
-        return format!("{server} hasn't produced any output yet");
+        return prompts::LogsEmpty { server }.render();
     }
-    format!("recent output from {server}:\n{}", lines.join("\n"))
+    let joined = lines.join("\n");
+    prompts::LogsOutput {
+        server,
+        lines: &joined,
+    }
+    .render()
 }
 
 fn format_write(result: &WriteResponse) -> String {
     let saved = if result.backed_up {
-        "saved the previous version first, so restore_file can undo this"
+        prompts::FileBackupSaved::render()
     } else {
-        "this is a new file, so there's nothing to restore it to"
+        prompts::FileNoBackup::render()
     };
-    format!(
-        "wrote {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
-        result.path
-    )
+    prompts::FileWritten {
+        path: result.path.as_str(),
+        saved: &saved,
+    }
+    .render()
 }
 
 /// Render an [`EditOutcome`]. The soft-failure variants explain what to do next
@@ -1803,27 +1703,27 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
     match outcome {
         EditOutcome::Edited(result) => {
             let saved = if result.backed_up {
-                "saved the previous version first, so restore_file can undo this"
+                prompts::FileBackupSaved::render()
             } else {
-                "this is a new file, so there's nothing to restore it to"
+                prompts::FileNoBackup::render()
             };
-            format!(
-                "edited {} ({saved}); restart the server and read the logs to confirm it comes back healthy",
-                result.path
-            )
+            prompts::FileEdited {
+                path: result.path.as_str(),
+                saved: &saved,
+            }
+            .render()
         }
-        EditOutcome::NoMatch => format!(
-            "I couldn't find that exact text in {path} on {server} — read the file again and copy the current text verbatim, whitespace and all"
-        ),
-        EditOutcome::Ambiguous(count) => format!(
-            "that text appears {count} times in {path}, so I can't tell which one to change — include more of the surrounding lines so it matches only once"
-        ),
-        EditOutcome::Unchanged => {
-            format!("the old and new text are identical, so there's nothing to change in {path}")
+        EditOutcome::NoMatch => prompts::EditNoMatch { path, server }.render(),
+        EditOutcome::Ambiguous(count) => {
+            let count = count.to_string();
+            prompts::EditAmbiguous {
+                count: &count,
+                path,
+            }
+            .render()
         }
-        EditOutcome::TooLargeToEdit => format!(
-            "{path} is too big to edit safely this way — rewrite the whole file with write_file instead"
-        ),
+        EditOutcome::Unchanged => prompts::EditUnchanged { path }.render(),
+        EditOutcome::TooLargeToEdit => prompts::EditTooLarge { path }.render(),
         EditOutcome::Unserved(problem) => match fs_result(server, problem) {
             // Unserved only ever carries a failure; the Ok arm is unreachable in
             // practice but is handled defensively rather than panicking.
@@ -1834,39 +1734,40 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
 }
 
 fn format_restore(result: &RestoreResponse) -> String {
-    format!(
-        "restored {} to its previous version; restart the server to apply it",
-        result.path
-    )
+    prompts::RestoreFileDone {
+        path: result.path.as_str(),
+    }
+    .render()
 }
 
 fn format_command_output(server: &str, command: &str, result: &CommandResponse) -> String {
     let output = result.output.trim();
     if output.is_empty() {
-        format!("ran `{command}` on {server}; the server returned no output")
+        prompts::CommandNoOutput { command, server }.render()
     } else {
-        format!("ran `{command}` on {server}:\n{output}")
+        prompts::CommandOutput {
+            command,
+            server,
+            output,
+        }
+        .render()
     }
 }
 
 fn format_supervisor(server: &str, outcome: &SupervisorOutcome) -> String {
     match outcome {
-        SupervisorOutcome::Paused => format!("paused {server}; world saved and kept warm"),
-        SupervisorOutcome::Resumed => format!("{server} is waking up — ready in a few seconds"),
-        SupervisorOutcome::Restarted => format!("restarted {server} — back up in a few seconds"),
-        SupervisorOutcome::AlreadyStopped => format!("{server} is already paused"),
-        SupervisorOutcome::AlreadyRunning => format!("{server} is already running"),
-        SupervisorOutcome::PodNotReady => {
-            format!("{server} isn't ready to control yet — try again shortly")
+        SupervisorOutcome::Paused => prompts::LifecyclePaused { server }.render(),
+        SupervisorOutcome::Resumed => prompts::LifecycleWaking { server }.render(),
+        SupervisorOutcome::Restarted => prompts::LifecycleRestarted { server }.render(),
+        SupervisorOutcome::AlreadyStopped => prompts::LifecycleAlreadyPaused { server }.render(),
+        SupervisorOutcome::AlreadyRunning => prompts::ServerAlreadyRunning { server }.render(),
+        SupervisorOutcome::PodNotReady => prompts::LifecycleControlNotReady { server }.render(),
+        SupervisorOutcome::Unreachable => prompts::LifecycleControlUnreachable { server }.render(),
+        SupervisorOutcome::Failed(message) => prompts::LifecycleControlRefused {
+            server,
+            message: message.as_str(),
         }
-        SupervisorOutcome::Unreachable => {
-            format!(
-                "I couldn't reach {server}'s controls right now — worth trying again in a moment"
-            )
-        }
-        SupervisorOutcome::Failed(message) => {
-            format!("{server}'s controls refused that: {message}")
-        }
+        .render(),
         SupervisorOutcome::NotFound => no_such(server),
         SupervisorOutcome::NotManaged => not_managed(server),
     }
@@ -1874,16 +1775,10 @@ fn format_supervisor(server: &str, outcome: &SupervisorOutcome) -> String {
 
 fn format_ready_wait(server: &str, outcome: &ReadyWait) -> String {
     match outcome {
-        ReadyWait::Ready => format!("{server} is back up and accepting players"),
-        ReadyWait::Crashed => format!(
-            "{server} crashed while coming up — read its logs to see why, and restore_file if a recent change is at fault"
-        ),
-        ReadyWait::Stopped => {
-            format!("{server} is stopped, so it won't come up on its own — start it first")
-        }
-        ReadyWait::TimedOut => format!(
-            "{server} still isn't accepting players after a few minutes — a big world can take a while to load, so check the logs or wait and try again"
-        ),
+        ReadyWait::Ready => prompts::ReadyBackUp { server }.render(),
+        ReadyWait::Crashed => prompts::ReadyCrashed { server }.render(),
+        ReadyWait::Stopped => prompts::ReadyStopped { server }.render(),
+        ReadyWait::TimedOut => prompts::ReadyTimedOut { server }.render(),
         ReadyWait::NotFound => no_such(server),
         ReadyWait::NotManaged => not_managed(server),
     }
@@ -1891,7 +1786,7 @@ fn format_ready_wait(server: &str, outcome: &ReadyWait) -> String {
 
 fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
     match outcome {
-        DestroyOutcome::Destroyed => format!("deleted {server} and its world"),
+        DestroyOutcome::Destroyed => prompts::DestroyDeleted { server }.render(),
         DestroyOutcome::NotFound => no_such(server),
         DestroyOutcome::NotManaged => not_managed(server),
     }
@@ -1899,16 +1794,16 @@ fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
 
 fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
     match outcome {
-        BackupOutcome::BackedUp { size_bytes } => format!(
-            "backed up {server} ({}); restore_server can roll it back to this point",
-            human_size(*size_bytes)
-        ),
-        BackupOutcome::NotRunning => {
-            format!("{server} isn't running, so there's nothing live to back up — start it first")
+        BackupOutcome::BackedUp { size_bytes } => {
+            let size = human_size(*size_bytes);
+            prompts::BackupDone {
+                server,
+                size: &size,
+            }
+            .render()
         }
-        BackupOutcome::Unreachable(_) => {
-            format!("I couldn't reach {server} to back it up — worth trying again in a moment")
-        }
+        BackupOutcome::NotRunning => prompts::BackupNotRunning { server }.render(),
+        BackupOutcome::Unreachable(_) => prompts::BackupUnreachable { server }.render(),
         BackupOutcome::NotFound => no_such(server),
         BackupOutcome::NotManaged => not_managed(server),
     }
@@ -1916,14 +1811,16 @@ fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
 
 fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
     match outcome {
-        ArchiveOutcome::Archived { name, size_bytes } => format!(
-            "archived {name} ({}) and released its storage; recover_server brings it back",
-            human_size(*size_bytes)
-        ),
+        ArchiveOutcome::Archived { name, size_bytes } => {
+            let size = human_size(*size_bytes);
+            prompts::ArchiveDone {
+                name: name.as_str(),
+                size: &size,
+            }
+            .render()
+        }
         ArchiveOutcome::Unavailable => archives_unavailable_text(),
-        ArchiveOutcome::Failed(_) => format!(
-            "I couldn't archive {server} cleanly, so nothing was released — worth trying again shortly"
-        ),
+        ArchiveOutcome::Failed(_) => prompts::ArchiveFailed { server }.render(),
         ArchiveOutcome::NotFound => no_such(server),
         ArchiveOutcome::NotManaged => not_managed(server),
     }
@@ -1933,25 +1830,17 @@ fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
     match outcome {
         RestoreOutcome::Restored {
             boot: BootState::Ready,
-        } => format!("restored {server} — it's back up on the restored world"),
+        } => prompts::RestoreServerReady { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::TimedOut,
-        } => format!("restored the world onto {server} — it'll be playable again in a minute"),
+        } => prompts::RestoreServerTimedOut { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Crashed,
-        } => format!(
-            "restored the world onto {server}, but it crashed coming back up — read its logs \
-             (the restored data may be the cause), or ping an operator"
-        ),
+        } => prompts::RestoreServerCrashed { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Stopped,
-        } => format!(
-            "restored the world onto {server}, but it's paused and won't come up on its own — \
-             start it when you're ready"
-        ),
-        RestoreOutcome::Failed(_) => {
-            format!("I couldn't restore {server} cleanly — worth trying again in a moment")
-        }
+        } => prompts::RestoreServerStopped { server }.render(),
+        RestoreOutcome::Failed(_) => prompts::RestoreServerFailed { server }.render(),
         RestoreOutcome::NotFound => no_such(server),
         RestoreOutcome::NotManaged => not_managed(server),
     }
@@ -1962,51 +1851,51 @@ fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Ready,
-        } => format!("recovered {name} — it's back up at {address}"),
+        } => prompts::RecoverReady {
+            name,
+            address: address.as_str(),
+        }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::TimedOut,
-        } => {
-            format!("recovering {name}; it'll be reachable at {address} once it finishes booting")
+        } => prompts::RecoverTimedOut {
+            name,
+            address: address.as_str(),
         }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Crashed,
-        } => format!(
-            "recovered {name} at {address}, but it crashed coming back up — read its logs (the \
-             archived data may be the cause), or ping an operator"
-        ),
+        } => prompts::RecoverCrashed {
+            name,
+            address: address.as_str(),
+        }
+        .render(),
         RecoverOutcome::Recovered {
             address,
             boot: BootState::Stopped,
-        } => format!(
-            "recovered {name} at {address}, but it's paused and won't come up on its own — \
-             start it when you're ready"
-        ),
-        RecoverOutcome::NoSuchArchive => {
-            format!(
-                "there's no archived server named {name} in this Discord server — check list_archives"
-            )
+        } => prompts::RecoverStopped {
+            name,
+            address: address.as_str(),
         }
-        RecoverOutcome::NameInUse => {
-            format!("a server named {name} is already running — use start_server instead")
-        }
+        .render(),
+        RecoverOutcome::NoSuchArchive => prompts::RecoverNoSuchArchive { name }.render(),
+        RecoverOutcome::NameInUse => prompts::RecoverNameInUse { name }.render(),
         RecoverOutcome::Unavailable => archives_unavailable_text(),
-        RecoverOutcome::UnknownGame(game) => {
-            format!("{name} ran '{game}', which isn't in the catalog anymore")
+        RecoverOutcome::UnknownGame(game) => prompts::RecoverUnknownGame {
+            name,
+            game: game.as_str(),
         }
-        RecoverOutcome::PortsExhausted => {
-            "all server slots are in use right now — archive or destroy one first".to_owned()
-        }
-        RecoverOutcome::Failed(_) => {
-            format!("I couldn't bring {name} back cleanly — worth trying again in a moment")
-        }
+        .render(),
+        RecoverOutcome::PortsExhausted => prompts::RecoverPortsExhausted::render(),
+        RecoverOutcome::Failed(_) => prompts::RecoverFailed { name }.render(),
     }
 }
 
 fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
     if artifacts.is_empty() {
-        return format!("{server} has no backups yet");
+        return prompts::BackupListEmpty { server }.render();
     }
     let lines = artifacts
         .iter()
@@ -2019,12 +1908,16 @@ fn format_backup_list(server: &str, artifacts: &[ArtifactSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("backups of {server} (newest first):\n{lines}")
+    prompts::BackupListHeader {
+        server,
+        lines: &lines,
+    }
+    .render()
 }
 
 fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
     if artifacts.is_empty() {
-        return "no servers are archived in this Discord server".to_owned();
+        return prompts::ArchiveListEmpty::render();
     }
     let lines = artifacts
         .iter()
@@ -2038,21 +1931,19 @@ fn format_archive_list(artifacts: &[ArtifactSummary]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    format!("archived servers in this Discord server:\n{lines}")
+    prompts::ArchiveListHeader { lines: &lines }.render()
 }
 
 fn backups_not_configured() -> String {
-    "backups aren't set up on this bot, so there's nothing to save or restore".to_owned()
+    prompts::BackupsNotConfigured::render()
 }
 
 fn archives_unavailable_text() -> String {
-    "I can't track archives right now — my archive records are offline. Backups and restore still \
-     work; try archiving again later"
-        .to_owned()
+    prompts::ArchivesUnavailable::render()
 }
 
 fn not_managed(server: &str) -> String {
-    format!("{server} is managed by the platform and can't be controlled from here")
+    prompts::NotManaged { server }.render()
 }
 
 fn game_ids(ctx: &ToolCtx<'_>) -> String {

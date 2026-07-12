@@ -33,6 +33,34 @@ The bot ships through gated CI: every push to `main` builds the image, gate-sign
 
 The bot ships through CI (above), but the **per-game supervisor runs in-pod**, so iterating on it means building and pushing the composite game image rather than waiting on a deploy. Use `scripts/push-game-image.sh [game] [tag]` (or `just game-push minecraft dev`): it builds `games/<game>/Dockerfile` (cargo-chef-cached, so a source-only change rebuilds in seconds), port-forwards the in-cluster registry (`registry.registry.svc.cluster.local:5000`, plain HTTP), and pushes through `localhost:5000` (Docker treats localhost as insecure). The `:dev` catalog tag pins `imagePullPolicy: Always`, so a freshly created (or cold-started) server re-pulls. Game images aren't gate-signed or auto-deployed by CI yet, so `game-push` is the operative dev loop for a supervisor change — the durable CI build (`.github/workflows/deploy.yml`) currently covers the bot image only.
 
+## Prompt Library (prompt-lib)
+
+Every piece of prose the software *sends* to a model — system prompts, user-turn framing, tool names, tool descriptions, tool parameter descriptions, and the fixed prose of tool *results* fed back into the conversation — lives as a Markdown file under a consuming crate's `prompts/` tree (`crates/<crate>/prompts/<Id>.md`), compiled by the `grizzly-prompt-lib` build step into typed Rust accessors. **Design of record: `docs/design/prompt-lib/design.md`** — read it before creating or restructuring prompt files. Computed data (lists, ids, counts) is **not** prompt text: it enters a prompt through a `{{variable}}`. A short value-level fallback for absent data (rendering a missing game as `unknown game`, an empty list as `(none)`) stays in Rust but must be described in that variable's `contents` annotation, so the tuning surface still shows it. Out of scope: what the software does with model *output*, and text shown to human users.
+
+**The maintenance contract (load-bearing).** Any change to code that renders a prompt, adds or removes a prompt variable, or moves a call site **must update that prompt file's `annotations` in the same change**. Variable coverage is enforced at build time and `used_by` accuracy by the annotations test below; `sent_when` and `reasoning` are not machine-checked and are maintained on trust — a stale one is caught exactly when someone opens the file to tune it, so keep them honest. Prompt bodies and tool/parameter descriptions are the **human's tuning surface**: you may *create* them, but do **not** rewrite existing model-visible text without being asked.
+
+**YAML conventions** (keep files uniform): double-quote any value containing a colon; use a block scalar (`>-`) for multi-line prose in annotations and descriptions; an `id` is PascalCase matching `([A-Z][a-z0-9]*)+` (no acronym runs — `HttpProxy`, never `HTTPProxy`), globally unique, and equal to the filename stem — the id *is* the generated type name, so grepping it finds the file and every call site; `used_by` entries are `{file, function}` at file-and-function granularity, **never line numbers**, with `file` relative to the crate's `src/` (e.g. `discord/gary/tools.rs`, no `src/` prefix).
+
+**The annotations test.** Each consuming crate carries exactly one integration test that cross-checks annotations against the source tree — it blocks a merge, not compilation, since a stale cross-reference shouldn't stop a mid-refactor build:
+
+```rust
+#![expect(
+    clippy::tests_outside_test_module,
+    reason = "integration tests live at crate root by cargo convention"
+)]
+use std::path::Path;
+use grizzly_prompt_lib::verify_annotations;
+
+#[test]
+fn prompt_annotations_are_current() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    verify_annotations(&root.join("prompts"), &root.join("src"))
+        .expect("prompt annotations are stale — fix the named prompt file's used_by entry");
+}
+```
+
+It fails if a `used_by` entry names a source file that doesn't exist or that lacks the id or the named function, or if a prompt id appears in no source file (an orphan). A consuming crate declares `grizzly-prompt-lib` three times — `[build-dependencies]` with `features = ["codegen"]`, `[dependencies]` with defaults, `[dev-dependencies]` with `features = ["verify"]` — per design §Integration.
+
 ## Naming
 
 - **Domain-specific names**: prefer descriptive names that match the domain (`send_chat_completion` over generic `run`, `spawn_widget_window` over `handle`).

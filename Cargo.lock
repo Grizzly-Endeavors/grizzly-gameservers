@@ -1001,6 +1001,7 @@ dependencies = [
  "axum",
  "dotenvy",
  "grizzly-control-api",
+ "grizzly-prompt-lib",
  "jiff",
  "k8s-openapi",
  "kube",
@@ -1019,6 +1020,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "grizzly-prompt-lib"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
 ]
 
 [[package]]

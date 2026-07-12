@@ -37,7 +37,7 @@ echo -e "${GREEN}✓ Formatting applied${NC}"
 
 STEP=$((STEP + 1))
 echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running clippy...${NC}"
-if ! OUTPUT=$(cargo clippy --all-targets -- -D warnings 2>&1); then
+if ! OUTPUT=$(cargo clippy --all-targets --all-features -- -D warnings 2>&1); then
     echo "$OUTPUT"
     echo -e "${RED}ERROR: Clippy found issues.${NC}"
     exit 1
@@ -46,7 +46,7 @@ echo -e "${GREEN}✓ Clippy OK${NC}"
 
 STEP=$((STEP + 1))
 echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running tests...${NC}"
-if ! OUTPUT=$(cargo test --quiet 2>&1); then
+if ! OUTPUT=$(cargo test --quiet --all-features 2>&1); then
     echo "$OUTPUT"
     echo -e "${RED}ERROR: Tests failed.${NC}"
     exit 1

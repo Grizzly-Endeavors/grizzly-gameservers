@@ -9,7 +9,7 @@ fn ingame_tools_are_read_only_lookups() {
         .collect();
     assert_eq!(
         names,
-        vec![LIST_SERVERS, SERVER_STATUS],
+        vec![IngameListServers::NAME, IngameServerStatus::NAME],
         "in-game gets exactly the two read-only lookups, nothing mutating"
     );
 }
