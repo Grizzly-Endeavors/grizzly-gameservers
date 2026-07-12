@@ -17,11 +17,12 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, GarySurface, NameParams, SessionEvent, SessionOutcome,
-    ToolCall, ToolDef, cluster_error, format_server_list, format_summary, no_args_schema, no_such,
-    params_schema, run_session, send_chat_completion,
+    ChatMessage, DEFAULT_MAX_ROUNDS, NameParams, SessionEvent, SessionOutcome, ToolCall, ToolDef,
+    no_args_schema, params_schema, run_session, send_chat_completion,
 };
-use crate::agones::{ServerScope, guild_of, list_active_servers, supervisor_announce};
+use crate::agones::{
+    ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
+};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 
 const LIST_SERVERS: &str = "list_servers";
@@ -214,7 +215,7 @@ async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall
 
 async fn exec_list_servers(deps: &IngameDeps, scope: &ServerScope) -> String {
     match list_active_servers(deps.client.clone(), &deps.namespace, &deps.domain, scope).await {
-        Ok(summaries) => format_server_list(GarySurface::InGame, &summaries),
+        Ok(summaries) => format_server_list(&summaries),
         Err(err) => {
             error!(error = ?err, "ingame: list_servers failed");
             cluster_error()
@@ -227,15 +228,44 @@ async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) 
         Ok(summaries) => summaries
             .iter()
             .find(|summary| summary.name == name)
-            .map_or_else(
-                || no_such(name),
-                |summary| format_summary(GarySurface::InGame, summary),
-            ),
+            .map_or_else(|| no_such(name), format_summary),
         Err(err) => {
             error!(error = ?err, "ingame: server_status failed");
             cluster_error()
         }
     }
+}
+
+/// One server rendered as a single labeled line for the model to read.
+fn format_summary(server: &ServerSummary) -> String {
+    let game = server.game.as_deref().unwrap_or("unknown game");
+    let address = server.address.as_deref().unwrap_or("no address yet");
+    format!(
+        "{} (game: {game}, state: {}, address: {address})",
+        server.name, server.state
+    )
+}
+
+/// The active servers rendered as a newline-separated list.
+fn format_server_list(servers: &[ServerSummary]) -> String {
+    if servers.is_empty() {
+        return "no game servers are running right now".to_owned();
+    }
+    servers
+        .iter()
+        .map(format_summary)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A tool result the model reads, so it carries the hint to re-list rather than
+/// just reporting the server missing.
+fn no_such(server: &str) -> String {
+    format!("there's no server named {server} — check list_servers for the current names")
+}
+
+fn cluster_error() -> String {
+    "I couldn't reach the cluster just now — try again in a moment".to_owned()
 }
 
 /// Gary's instructions for the in-game surface. Hardened against prompt injection
