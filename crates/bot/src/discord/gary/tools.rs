@@ -504,28 +504,42 @@ async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(FsOutcome::Ok(Some(count))) => return format!("\nPlayers online: {count}"),
-        Ok(FsOutcome::Ok(None)) => "this game doesn't report a live player count",
-        Ok(FsOutcome::PodNotReady) => "the server isn't fully up yet",
-        Ok(_) => "the console didn't answer",
+        Ok(FsOutcome::Ok(Some(count))) => {
+            let count = count.to_string();
+            // The leading newline separates this from the summary line above; the
+            // separator is owned here, so the prompt body carries no leading space.
+            return format!("\n{}", prompts::OccupancyKnown { count: &count }.render());
+        }
+        Ok(FsOutcome::Ok(None)) => prompts::OccupancyReasonNoCount::render(),
+        Ok(FsOutcome::PodNotReady) => prompts::OccupancyReasonNotUp::render(),
+        Ok(_) => prompts::OccupancyReasonNoConsole::render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: occupancy lookup failed");
-            "the count couldn't be read"
+            prompts::OccupancyReasonUnread::render()
         }
     };
-    format!("\nPlayers online: unknown ({reason})")
+    format!(
+        "\n{}",
+        prompts::OccupancyUnknown { reason: &reason }.render()
+    )
 }
 
 async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> String {
     let Some(entry) = ctx.data.catalog.get(game) else {
-        return format!(
-            "'{game}' isn't a game I can launch. Available games: {}.",
-            game_ids(ctx)
-        );
+        return prompts::CreateUnknownGame {
+            game,
+            games: &game_ids(ctx),
+        }
+        .render();
     };
     let server = match build_instance_name(game, name, now_entropy()) {
         Ok(server) => server,
-        Err(err) => return format!("that name won't work: {err}"),
+        Err(err) => {
+            return prompts::CreateBadName {
+                error: &err.to_string(),
+            }
+            .render();
+        }
     };
 
     match provision_instance(
@@ -541,13 +555,15 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
     {
         // Don't block the loop on first-boot world generation (minutes). Report
         // the address now; the user can ask for status to see when it's ready.
-        Ok(ProvisionOutcome::Provisioned { address }) => format!(
-            "created {server}; it'll be reachable at {address} once it finishes booting (first boot can take a couple of minutes)"
-        ),
-        Ok(ProvisionOutcome::AlreadyExists) => format!("a server named {server} already exists"),
-        Ok(ProvisionOutcome::PortsExhausted) => {
-            "all server slots are in use right now — destroy one first, then try again".to_owned()
+        Ok(ProvisionOutcome::Provisioned { address }) => prompts::CreateCreated {
+            server: &server,
+            address: &address,
         }
+        .render(),
+        Ok(ProvisionOutcome::AlreadyExists) => {
+            prompts::CreateNameTaken { server: &server }.render()
+        }
+        Ok(ProvisionOutcome::PortsExhausted) => prompts::CreatePortsExhausted::render(),
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
             cluster_error()
@@ -856,15 +872,19 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(StartBegin::Starting { address }) => {
-            format!("starting {server}; it'll be reachable at {address} once it boots back up")
+        Ok(StartBegin::Starting { address }) => prompts::ColdStartStarting {
+            server,
+            address: &address,
         }
-        Ok(StartBegin::AlreadyRunning) => format!("{server} is already running"),
+        .render(),
+        Ok(StartBegin::AlreadyRunning) => prompts::ServerAlreadyRunning { server }.render(),
         Ok(StartBegin::NotFound) => no_such(server),
         Ok(StartBegin::NotManaged) => not_managed(server),
-        Ok(StartBegin::UnknownGame(game)) => {
-            format!("{server} runs '{game}', which isn't in the catalog anymore")
+        Ok(StartBegin::UnknownGame(game)) => prompts::ColdStartUnknownGame {
+            server,
+            game: &game,
         }
+        .render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: cold start failed");
             cluster_error()
@@ -874,9 +894,7 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 
 async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
     match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
-        Ok(ShutdownOutcome::Down) => {
-            format!("stopped {server}; its world is saved and it can be started again")
-        }
+        Ok(ShutdownOutcome::Down) => prompts::ShutdownStopped { server }.render(),
         Ok(ShutdownOutcome::NotFound) => no_such(server),
         Ok(ShutdownOutcome::NotManaged) => not_managed(server),
         Err(err) => {
@@ -911,7 +929,7 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
         Ok(message) => message,
         Err(err) => {
             error!(error = ?err, %server, "agent: failed to post destroy confirmation");
-            return "I couldn't post a confirmation prompt in this channel, so I didn't delete anything.".to_owned();
+            return prompts::DestroyNoConfirmChannel::render();
         }
     };
 
@@ -937,7 +955,13 @@ async fn finish_destroy(
             neutral_embed("Timed out", "Nothing was deleted."),
         )
         .await;
-        return format!("the confirmation timed out — {server} was not deleted");
+        let reason = prompts::AbortTimedOut::render();
+        return prompts::ConfirmAborted {
+            reason: &reason,
+            server,
+            verb: "deleted",
+        }
+        .render();
     };
 
     if let Err(err) = interaction
@@ -954,7 +978,13 @@ async fn finish_destroy(
             neutral_embed("Cancelled", "Nothing was deleted."),
         )
         .await;
-        return format!("the user cancelled — {server} was not deleted");
+        let reason = prompts::AbortCancelled::render();
+        return prompts::ConfirmAborted {
+            reason: &reason,
+            server,
+            verb: "deleted",
+        }
+        .render();
     }
 
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
@@ -1742,7 +1772,7 @@ fn format_ready_wait(server: &str, outcome: &ReadyWait) -> String {
 
 fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
     match outcome {
-        DestroyOutcome::Destroyed => format!("deleted {server} and its world"),
+        DestroyOutcome::Destroyed => prompts::DestroyDeleted { server }.render(),
         DestroyOutcome::NotFound => no_such(server),
         DestroyOutcome::NotManaged => not_managed(server),
     }

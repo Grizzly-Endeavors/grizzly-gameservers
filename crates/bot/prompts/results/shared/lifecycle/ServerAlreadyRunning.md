@@ -8,6 +8,8 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: format_supervisor
+    - file: discord/gary/tools.rs
+      function: exec_cold_start
   variables:
     server:
       source: the target server's instance name
