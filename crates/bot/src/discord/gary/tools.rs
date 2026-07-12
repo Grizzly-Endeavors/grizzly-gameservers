@@ -4,7 +4,6 @@
 //! text on purpose — Gary composes the friendly Discord reply himself.
 
 use poise::serenity_prelude as serenity;
-use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serenity::{
@@ -25,7 +24,7 @@ use super::super::render::{
     error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
-use crate::agent::{NameParams, ToolCall, ToolDef, no_args_schema, params_schema};
+use crate::agent::{ToolCall, ToolDef};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
     ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
@@ -41,31 +40,14 @@ use crate::backup::{
 use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::notify::Escalation;
-
-const LIST_SERVERS: &str = "list_servers";
-const SERVER_STATUS: &str = "server_status";
-const CREATE_SERVER: &str = "create_server";
-const STOP_SERVER: &str = "stop_server";
-const START_SERVER: &str = "start_server";
-const RESTART_SERVER: &str = "restart_server";
-const SHUTDOWN_SERVER: &str = "shutdown_server";
-const DESTROY_SERVER: &str = "destroy_server";
-const BROWSE_FILES: &str = "browse_files";
-const READ_FILE: &str = "read_file";
-const READ_LOGS: &str = "read_logs";
-const WRITE_FILE: &str = "write_file";
-const EDIT_FILE: &str = "edit_file";
-const RESTORE_FILE: &str = "restore_file";
-const SEND_COMMAND: &str = "send_command";
-const RUN_WHEN: &str = "run_when";
-const REMEMBER: &str = "remember";
-const FORGET: &str = "forget";
-const LIST_BACKUPS: &str = "list_backups";
-const LIST_ARCHIVES: &str = "list_archives";
-const BACKUP_SERVER: &str = "backup_server";
-const ARCHIVE_SERVER: &str = "archive_server";
-const RESTORE_SERVER: &str = "restore_server";
-const RECOVER_SERVER: &str = "recover_server";
+use crate::prompts::{
+    ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams, DestroyServer,
+    EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups, ListServers,
+    NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
+    RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SendCommand,
+    SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer, WriteFile,
+    WriteFileParams,
+};
 
 /// Returned to the model when a caller reaches an admin-only tool without admin
 /// rights. The model is only offered these tools to admins, so this is defense
@@ -154,129 +136,15 @@ struct TargetName {
     name: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
-struct CreateParams {
-    /// Which game to launch — must be one of the catalog game ids.
-    game: String,
-    /// Optional world name. A name is generated when omitted.
-    #[serde(default)]
-    name: Option<String>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct PathParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory, e.g. `server.properties` or
-    /// `logs/latest.log`. Use `""` for the top of the data directory. Must stay
-    /// inside the data directory — absolute paths and `..` are refused.
-    path: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct WriteParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory to overwrite. The previous
-    /// version is saved first so `restore_file` can undo the change.
-    path: String,
-    /// The full new contents of the file.
-    content: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct EditParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// Path within the server's data directory to edit, e.g. `server.properties`.
-    /// The previous version is saved first so `restore_file` can undo the change.
-    path: String,
-    /// The exact text to find and replace. Must appear once in the file — copy it
-    /// verbatim, whitespace included, and include enough surrounding text to be
-    /// unique. If it's missing or appears more than once, the edit is refused and
-    /// nothing changes.
-    old_text: String,
-    /// The text to put in its place.
-    new_text: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct LogsParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// How many trailing lines to return. Defaults to a recent window when
-    /// omitted.
-    #[serde(default)]
-    lines: Option<usize>,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct RememberParams {
-    /// Which game this fact is about — a catalog game id (e.g. `palworld`), or
-    /// `general` for something that isn't tied to one game.
-    scope: String,
-    /// The fact to remember, in one short sentence — a durable operational detail
-    /// you'd otherwise have to rediscover, e.g. "soft-stop before editing configs
-    /// or the change won't apply".
-    note: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct ForgetParams {
-    /// The id of the fact to delete, as shown in the "Things you've learned" list
-    /// (the number after the `#`).
-    id: i64,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct CommandParams {
-    /// Exact server name, as shown by `list_servers`.
-    name: String,
-    /// The in-game console command to run, without a leading slash — e.g.
-    /// `list`, `say hello everyone`, `weather clear`, `whitelist add steve`.
-    command: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct RunWhenParams {
-    /// Exact server name to act on, as shown by `list_servers`.
-    name: String,
-    /// When to run the task: `startup` (watch a (re)start finish — whether it comes
-    /// up healthy or fails/stalls), `empty` (the moment no players are connected —
-    /// for urgent changes as people log off), or `idle` (after it's been empty a
-    /// few minutes — for no-rush tweaks).
-    condition: Condition,
-    /// What to do once the condition is met, phrased the way you'd note it for
-    /// yourself — e.g. "set difficulty to hard and restart", or "let them know it's
-    /// up and healthy".
-    task: String,
-}
-
 /// The tools advertised to the model for a given caller. Everyone gets the
 /// read-only set; managers additionally get the lifecycle and file-tuning tools;
 /// admins additionally get the destructive tools and console commands.
 pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
-    let mut tools = vec![
-        ToolDef::function(
-            LIST_SERVERS,
-            "List every game server and its state and connection address.",
-            no_args_schema(),
-        ),
-        ToolDef::function(
-            SERVER_STATUS,
-            "Look up one server's current state and address by name.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            LIST_BACKUPS,
-            "List a server's saved world backups (newest first), so you can see what points it could be restored to.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            LIST_ARCHIVES,
-            "List the servers archived in this Discord server — ones that were put into cold storage and can be recovered.",
-            no_args_schema(),
-        ),
+    let mut tools: Vec<ToolDef> = vec![
+        ListServers::spec().into(),
+        ServerStatus::spec().into(),
+        ListBackups::spec().into(),
+        ListArchives::spec().into(),
     ];
     if access >= AccessLevel::Manager {
         tools.extend(manager_tools());
@@ -291,117 +159,35 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
 /// day-to-day operations, none of which permanently destroy a world.
 fn manager_tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::function(
-            CREATE_SERVER,
-            "Launch a new game server for the given catalog game, with an optional world name.",
-            params_schema::<CreateParams>(),
-        ),
-        ToolDef::function(
-            STOP_SERVER,
-            "Pause a running server in place (world saved, kept warm for a fast start).",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            START_SERVER,
-            "Start a server: resume a paused one or bring a stopped one back up.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RESTART_SERVER,
-            "Restart a running server in place — a quick reboot that keeps its address and re-pulls the latest game version. Disconnects everyone currently connected.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            SHUTDOWN_SERVER,
-            "Fully shut a server down to free its slot, keeping the world so it can start later.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            BROWSE_FILES,
-            "List the files and folders in a running server's data directory. Use \"\" for the top level, then descend. Start here to find which file holds a setting.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            READ_FILE,
-            "Read a config or text file from a running server's data directory.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            READ_LOGS,
-            "Read the most recent output from a running server — the first place to look when something is wrong or to confirm a change took effect.",
-            params_schema::<LogsParams>(),
-        ),
-        ToolDef::function(
-            EDIT_FILE,
-            "Change one setting in a config file in place: find old_text and replace it with new_text, leaving the rest of the file untouched. Prefer this over write_file for a targeted change — you don't rewrite the whole file, so you can't accidentally clobber other settings. old_text must match exactly once; if it's missing or ambiguous the edit is refused and nothing changes. Saves the previous version first (restore_file undoes it). Takes effect on the next restart.",
-            params_schema::<EditParams>(),
-        ),
-        ToolDef::function(
-            WRITE_FILE,
-            "Overwrite a config file in a running server's data directory with entirely new contents — use this to create a file or rewrite one wholesale; prefer edit_file to change one setting. Saves the previous version first. The change takes effect on the next restart — restart and read the logs to confirm it's healthy.",
-            params_schema::<WriteParams>(),
-        ),
-        ToolDef::function(
-            RESTORE_FILE,
-            "Undo the last write to a file by restoring the version saved before it. Restart afterward to apply.",
-            params_schema::<PathParams>(),
-        ),
-        ToolDef::function(
-            RUN_WHEN,
-            "Schedule a task to run later, once a server reaches a condition, instead of blocking the conversation now or making the user wait around. Good for slow jobs (e.g. right after start_server or restart_server) and for changes that need a restart while people are still playing. The `condition` is one of: \"startup\" — watch a (re)starting server settle so you can confirm it came up healthy, or catch a boot that crashes, loops, or stalls; \"empty\" — fire the moment no players are connected, for a change wanted ASAP as people log off; \"idle\" — fire after the server has been empty for a few minutes, for a no-rush tweak. Pick empty when it's urgent, idle when it can wait; ask the user if it's unclear. Returns immediately — you then carry the task out yourself when the condition is met and report back in the channel. There is no notification system and you can't ping anyone, so don't promise to; you do the work and come back with the result. Only works on games that report a live player count for the empty/idle conditions.",
-            params_schema::<RunWhenParams>(),
-        ),
-        ToolDef::function(
-            BACKUP_SERVER,
-            "Save a durable backup of a running server's world right now. Non-destructive — the server keeps running. Use before a risky change so restore_server can roll it back.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            REMEMBER,
-            "Save a durable fact about a game so you keep it across sessions — an operational detail you'd otherwise rediscover every time (e.g. a game needs to be stopped before a config edit will apply, or where a setting lives). Scope it to the game id, or 'general' if it's not game-specific. Keep it to one short factual sentence. Your saved facts are shown to you each session under \"Things you've learned\". Don't save one-off state, chit-chat, or anything you can just look up.",
-            params_schema::<RememberParams>(),
-        ),
-        ToolDef::function(
-            FORGET,
-            "Delete a saved fact by its id (the number after the # in \"Things you've learned\") when it turns out wrong or no longer applies.",
-            params_schema::<ForgetParams>(),
-        ),
+        CreateServer::spec().into(),
+        StopServer::spec().into(),
+        StartServer::spec().into(),
+        RestartServer::spec().into(),
+        ShutdownServer::spec().into(),
+        BrowseFiles::spec().into(),
+        ReadFile::spec().into(),
+        ReadLogs::spec().into(),
+        EditFile::spec().into(),
+        WriteFile::spec().into(),
+        RestoreFile::spec().into(),
+        RunWhen::spec().into(),
+        BackupServer::spec().into(),
+        Remember::spec().into(),
+        Forget::spec().into(),
     ]
 }
 
 /// The destructive and heavy-handed tools offered only to admin callers:
 /// permanent deletion, world overwrites, archival, and live console commands.
+/// The "do not confirm" steer on `destroy_server` and the confirmation phrasing
+/// on `archive_server`/`restore_server` live in those tools' prompt files.
 fn admin_only_tools() -> Vec<ToolDef> {
     vec![
-        // "do not confirm" is deliberate and unlike archive/restore's phrasing:
-        // the tool itself posts the Discord Danger/Cancel prompt, so telling Gary
-        // not to seek his own confirmation avoids a redundant chat loop ("are you
-        // sure?" / "yes" / "are you really sure?") stacked in front of that prompt.
-        ToolDef::function(
-            DESTROY_SERVER,
-            "Permanently delete a server and its world. Run this tool when asked, do not confirm.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            ARCHIVE_SERVER,
-            "Archive a server: save a durable backup and then release its storage, freeing a slot. The world is kept safe and recover_server brings it back later. Posts a confirmation the user must approve before anything is released.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RESTORE_SERVER,
-            "Roll a server back to its most recent backup, replacing the current world (a safety backup of the current world is taken first). Posts a confirmation the user must approve before the world is overwritten.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            RECOVER_SERVER,
-            "Bring an archived server back: recreate it and restore its world from the archive. Use the name shown by list_archives. Constructive, so it runs without a confirmation.",
-            params_schema::<NameParams>(),
-        ),
-        ToolDef::function(
-            SEND_COMMAND,
-            "Run an in-game console command on a running server over RCON (e.g. list, say, weather, whitelist, op) and return the game's reply. Takes effect immediately — no restart needed. Only works on games that have RCON enabled.",
-            params_schema::<CommandParams>(),
-        ),
+        DestroyServer::spec().into(),
+        ArchiveServer::spec().into(),
+        RestoreServer::spec().into(),
+        RecoverServer::spec().into(),
+        SendCommand::spec().into(),
     ]
 }
 
@@ -427,19 +213,19 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     }
     let name = call.function.name.as_str();
     match name {
-        LIST_SERVERS => exec_list_servers(ctx).await,
-        SERVER_STATUS => match parse::<NameParams>(args) {
+        ListServers::NAME => exec_list_servers(ctx).await,
+        ServerStatus::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_server_status(ctx, &params.name).await,
             Err(message) => message,
         },
-        LIST_BACKUPS => match parse::<NameParams>(args) {
+        ListBackups::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_list_backups(ctx, &params.name).await,
             Err(message) => message,
         },
-        LIST_ARCHIVES => exec_list_archives(ctx).await,
+        ListArchives::NAME => exec_list_archives(ctx).await,
         // Memory tools carry no server name (memory is shared across guilds), so
         // they skip the scope gate above and dispatch on their own.
-        REMEMBER | FORGET => dispatch_memory(ctx, name, args).await,
+        Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
         _ => dispatch_mutating(ctx, name, args).await,
     }
 }
@@ -452,11 +238,11 @@ async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
         return NON_MANAGER_REFUSAL.to_owned();
     }
     match name {
-        REMEMBER => match parse::<RememberParams>(args) {
+        Remember::NAME => match parse::<RememberParams>(args) {
             Ok(params) => exec_remember(ctx, &params.scope, &params.note).await,
             Err(message) => message,
         },
-        FORGET => match parse::<ForgetParams>(args) {
+        Forget::NAME => match parse::<ForgetParams>(args) {
             Ok(params) => exec_forget(ctx, params.id).await,
             Err(message) => message,
         },
@@ -473,43 +259,46 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
     let manager = ctx.access >= AccessLevel::Manager;
     let admin = ctx.access >= AccessLevel::Admin;
     match name {
-        CREATE_SERVER if manager => match parse::<CreateParams>(args) {
+        CreateServer::NAME if manager => match parse::<CreateServerParams>(args) {
             Ok(params) => exec_create(ctx, &params.game, params.name.as_deref()).await,
             Err(message) => message,
         },
-        STOP_SERVER if manager => match parse::<NameParams>(args) {
+        StopServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_stop(ctx, &params.name).await,
             Err(message) => message,
         },
-        START_SERVER if manager => match parse::<NameParams>(args) {
+        StartServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_start(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTART_SERVER if manager => match parse::<NameParams>(args) {
+        RestartServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_restart(ctx, &params.name).await,
             Err(message) => message,
         },
-        SHUTDOWN_SERVER if manager => match parse::<NameParams>(args) {
+        ShutdownServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        BROWSE_FILES if manager => match parse::<PathParams>(args) {
+        BrowseFiles::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_FILE if manager => match parse::<PathParams>(args) {
+        ReadFile::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        READ_LOGS if manager => match parse::<LogsParams>(args) {
-            Ok(params) => exec_read_logs(ctx, &params.name, params.lines).await,
+        ReadLogs::NAME if manager => match parse::<ReadLogsParams>(args) {
+            Ok(params) => match narrow_lines(params.lines) {
+                Ok(lines) => exec_read_logs(ctx, &params.name, lines).await,
+                Err(message) => message,
+            },
             Err(message) => message,
         },
-        WRITE_FILE if manager => match parse::<WriteParams>(args) {
+        WriteFile::NAME if manager => match parse::<WriteFileParams>(args) {
             Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
             Err(message) => message,
         },
-        EDIT_FILE if manager => match parse::<EditParams>(args) {
+        EditFile::NAME if manager => match parse::<EditFileParams>(args) {
             Ok(params) => {
                 exec_edit_file(
                     ctx,
@@ -522,48 +311,78 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             }
             Err(message) => message,
         },
-        RESTORE_FILE if manager => match parse::<PathParams>(args) {
+        RestoreFile::NAME if manager => match parse::<PathParams>(args) {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        RUN_WHEN if manager => match parse::<RunWhenParams>(args) {
-            Ok(params) => exec_run_when(ctx, &params.name, params.condition, &params.task).await,
+        RunWhen::NAME if manager => match parse::<RunWhenParams>(args) {
+            Ok(params) => {
+                exec_run_when(ctx, &params.name, params.condition.into(), &params.task).await
+            }
             Err(message) => message,
         },
-        BACKUP_SERVER if manager => match parse::<NameParams>(args) {
+        BackupServer::NAME if manager => match parse::<NameParams>(args) {
             Ok(params) => exec_backup(ctx, &params.name).await,
             Err(message) => message,
         },
-        DESTROY_SERVER if admin => match parse::<NameParams>(args) {
+        DestroyServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
-        SEND_COMMAND if admin => match parse::<CommandParams>(args) {
+        SendCommand::NAME if admin => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
         },
-        ARCHIVE_SERVER if admin => match parse::<NameParams>(args) {
+        ArchiveServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_archive(ctx, &params.name).await,
             Err(message) => message,
         },
-        RESTORE_SERVER if admin => match parse::<NameParams>(args) {
+        RestoreServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_restore(ctx, &params.name).await,
             Err(message) => message,
         },
-        RECOVER_SERVER if admin => match parse::<NameParams>(args) {
+        RecoverServer::NAME if admin => match parse::<NameParams>(args) {
             Ok(params) => exec_recover(ctx, &params.name).await,
             Err(message) => message,
         },
-        // Admin-only tools reached without admin rights (a manager or read-only
-        // caller): they need an admin.
-        DESTROY_SERVER | SEND_COMMAND | ARCHIVE_SERVER | RESTORE_SERVER | RECOVER_SERVER => {
-            NON_ADMIN_REFUSAL.to_owned()
-        }
-        // Manager tools reached without manager rights (a read-only caller).
-        CREATE_SERVER | STOP_SERVER | START_SERVER | RESTART_SERVER | SHUTDOWN_SERVER
-        | BROWSE_FILES | READ_FILE | READ_LOGS | WRITE_FILE | EDIT_FILE | RESTORE_FILE
-        | RUN_WHEN | BACKUP_SERVER => NON_MANAGER_REFUSAL.to_owned(),
-        other => format!("'{other}' isn't a tool I have."),
+        // A known tool the caller's tier couldn't be offered (defense in depth),
+        // or an unknown name — classified into the right refusal.
+        other => tier_refusal(other),
+    }
+}
+
+/// The response for a mutating tool that fell through every guarded arm: a
+/// tier-appropriate refusal for a real-but-out-of-tier tool (defense in depth —
+/// these aren't offered below their tier), or the unknown-tool message otherwise.
+fn tier_refusal(name: &str) -> String {
+    if matches!(
+        name,
+        DestroyServer::NAME
+            | SendCommand::NAME
+            | ArchiveServer::NAME
+            | RestoreServer::NAME
+            | RecoverServer::NAME
+    ) {
+        NON_ADMIN_REFUSAL.to_owned()
+    } else if matches!(
+        name,
+        CreateServer::NAME
+            | StopServer::NAME
+            | StartServer::NAME
+            | RestartServer::NAME
+            | ShutdownServer::NAME
+            | BrowseFiles::NAME
+            | ReadFile::NAME
+            | ReadLogs::NAME
+            | WriteFile::NAME
+            | EditFile::NAME
+            | RestoreFile::NAME
+            | RunWhen::NAME
+            | BackupServer::NAME
+    ) {
+        NON_MANAGER_REFUSAL.to_owned()
+    } else {
+        format!("'{name}' isn't a tool I have.")
     }
 }
 
@@ -575,6 +394,20 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
     })
 }
 
+/// Narrow the model-supplied line count to the unsigned window `read_logs` wants.
+/// The generated schema carries `lines` as a signed integer (the v1 tool vocab has
+/// no unsigned type), so a negative value is possible on the wire; refuse it with a
+/// message the model can act on rather than erroring the whole loop.
+fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
+    match lines {
+        None => Ok(None),
+        Some(count) => match usize::try_from(count) {
+            Ok(narrowed) => Ok(Some(narrowed)),
+            Err(_) => Err("the line count can't be negative — pass a positive number of lines, or omit it for a recent window".to_owned()),
+        },
+    }
+}
+
 /// Whether a tool acts on an *existing* server named in its arguments — the set
 /// the scope gate applies to. Excluded because they enforce tenancy themselves:
 /// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
@@ -583,24 +416,24 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
-        SERVER_STATUS
-            | STOP_SERVER
-            | START_SERVER
-            | RESTART_SERVER
-            | SHUTDOWN_SERVER
-            | DESTROY_SERVER
-            | BROWSE_FILES
-            | READ_FILE
-            | READ_LOGS
-            | WRITE_FILE
-            | EDIT_FILE
-            | RESTORE_FILE
-            | SEND_COMMAND
-            | RUN_WHEN
-            | LIST_BACKUPS
-            | BACKUP_SERVER
-            | ARCHIVE_SERVER
-            | RESTORE_SERVER
+        ServerStatus::NAME
+            | StopServer::NAME
+            | StartServer::NAME
+            | RestartServer::NAME
+            | ShutdownServer::NAME
+            | DestroyServer::NAME
+            | BrowseFiles::NAME
+            | ReadFile::NAME
+            | ReadLogs::NAME
+            | WriteFile::NAME
+            | EditFile::NAME
+            | RestoreFile::NAME
+            | SendCommand::NAME
+            | RunWhen::NAME
+            | ListBackups::NAME
+            | BackupServer::NAME
+            | ArchiveServer::NAME
+            | RestoreServer::NAME
     )
 }
 

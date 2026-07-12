@@ -2,11 +2,11 @@
 //! the Redis key layout, the idle empty-streak transition, and the composition of
 //! a fired batch into one prompt for Gary. No IO — all of this is unit-tested.
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::task::DeferredTask;
 use crate::prompts;
+use crate::prompts::RunWhenCondition;
 
 /// Every deferred-task key is namespaced with the app prefix (the shared kv-cache
 /// requires it — isolation is by prefix, not ACL) and a `wait:` segment, then the
@@ -18,7 +18,7 @@ pub(crate) const KEY_SCAN_PATTERN: &str = "gameservers:wait:*";
 
 /// What a deferred task waits for. The model picks one; the watcher polls the
 /// existing supervisor endpoints until it holds, then runs the queued tasks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Condition {
     /// The server has finished a (re)start — either it came up healthy and is
@@ -49,6 +49,21 @@ impl Condition {
             "empty" => Some(Self::Empty),
             "idle" => Some(Self::Idle),
             _ => None,
+        }
+    }
+}
+
+/// Narrow the generated `run_when` condition enum to the domain [`Condition`] at
+/// the dispatch boundary. Total by construction — both enums carry exactly the
+/// same three variants — so the wire strings stay owned solely by this module
+/// (which also encodes them into the Redis key layout), and the tool schema is
+/// generated from the prompt file rather than from this type.
+impl From<RunWhenCondition> for Condition {
+    fn from(value: RunWhenCondition) -> Self {
+        match value {
+            RunWhenCondition::Startup => Self::Startup,
+            RunWhenCondition::Empty => Self::Empty,
+            RunWhenCondition::Idle => Self::Idle,
         }
     }
 }

@@ -17,17 +17,15 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, NameParams, SessionEvent, SessionOutcome, ToolCall, ToolDef,
-    no_args_schema, params_schema, run_session, send_chat_completion,
+    ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolCall, ToolDef, run_session,
+    send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
 };
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
-
-const LIST_SERVERS: &str = "list_servers";
-const SERVER_STATUS: &str = "server_status";
+use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
 
 /// Ceiling on the answer broadcast into chat. Game chat wraps long lines poorly,
 /// and the prompt already asks for brevity — this is a defensive cap so a runaway
@@ -182,16 +180,8 @@ fn truncate(text: &str, max_chars: usize) -> String {
 /// like the RCON password) and nothing mutating.
 fn ingame_tools() -> Vec<ToolDef> {
     vec![
-        ToolDef::function(
-            LIST_SERVERS,
-            "List the running game servers with their state and connection address.",
-            no_args_schema(),
-        ),
-        ToolDef::function(
-            SERVER_STATUS,
-            "Look up one server's current state and address by its exact name.",
-            params_schema::<NameParams>(),
-        ),
+        IngameListServers::spec().into(),
+        IngameServerStatus::spec().into(),
     ]
 }
 
@@ -200,15 +190,16 @@ fn ingame_tools() -> Vec<ToolDef> {
 /// refusal rather than failing the loop.
 async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall) -> String {
     match call.function.name.as_str() {
-        LIST_SERVERS => exec_list_servers(deps, scope).await,
-        SERVER_STATUS => match serde_json::from_str::<NameParams>(call.function.arguments.as_str())
-        {
-            Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
-            Err(err) => {
-                debug!(error = ?err, "ingame: server_status args failed to parse");
-                "I couldn't tell which server you meant.".to_owned()
+        IngameListServers::NAME => exec_list_servers(deps, scope).await,
+        IngameServerStatus::NAME => {
+            match serde_json::from_str::<NameParams>(call.function.arguments.as_str()) {
+                Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
+                Err(err) => {
+                    debug!(error = ?err, "ingame: server_status args failed to parse");
+                    "I couldn't tell which server you meant.".to_owned()
+                }
             }
-        },
+        }
         _ => "I can only look up server info from in-game — an admin can do the rest in Discord."
             .to_owned(),
     }

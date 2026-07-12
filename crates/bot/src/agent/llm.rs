@@ -131,6 +131,15 @@ impl ToolDef {
     }
 }
 
+/// The single place prompt-lib's generated tool specs cross into the bot's wire
+/// type. Every `<Tool>::spec()` flows through here, so the LLM client's own types
+/// stay unaware of prompt-lib.
+impl From<grizzly_prompt_lib::ToolSpec> for ToolDef {
+    fn from(spec: grizzly_prompt_lib::ToolSpec) -> Self {
+        Self::function(spec.name, spec.description, spec.parameters)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct ChatRequest<'a> {
     model: &'a str,
