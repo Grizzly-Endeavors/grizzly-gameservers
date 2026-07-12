@@ -18,7 +18,7 @@ tool_schema:
 annotations:
   sent_when: offered on the Discord surface to managers and admins
   used_by:
-    - file: src/discord/gary/tools.rs
+    - file: discord/gary/tools.rs
       function: dispatch_tool
   reasoning:
     - the enum keeps edit modes closed so the model can't invent a third mode

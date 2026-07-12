@@ -5,7 +5,7 @@ params_from: NameParams
 annotations:
   sent_when: offered on the Discord surface to managers and admins
   used_by:
-    - file: src/discord/gary/tools.rs
+    - file: discord/gary/tools.rs
       function: dispatch_tool
   reasoning:
     - shares NameParams so it stays in lockstep with the other lifecycle tools

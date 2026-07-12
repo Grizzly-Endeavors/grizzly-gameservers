@@ -25,7 +25,7 @@ type: prompt
 annotations:
   sent_when: at conversation start
   used_by:
-    - file: src/discord.rs
+    - file: discord.rs
       function: greet
   variables:
     name:
@@ -56,7 +56,7 @@ tool_schema:
 annotations:
   sent_when: offered to managers and admins
   used_by:
-    - file: src/tools.rs
+    - file: tools.rs
       function: dispatch
   reasoning:
     - lets Gary edit server config
@@ -72,7 +72,7 @@ tool_schema:
     description: the server name
 annotations:
   used_by:
-    - file: src/tools.rs
+    - file: tools.rs
       function: dispatch
   reasoning:
     - shared by lifecycle tools
@@ -86,7 +86,7 @@ params_from: NameParams
 annotations:
   sent_when: offered to managers
   used_by:
-    - file: src/tools.rs
+    - file: tools.rs
       function: dispatch
   reasoning:
     - starts a stopped server
@@ -169,7 +169,7 @@ tool_schema: {}
 annotations:
   sent_when: always
   used_by:
-    - file: src/x.rs
+    - file: x.rs
       function: f
   reasoning:
     - health check
@@ -193,7 +193,7 @@ tool_schema: {}
 annotations:
   sent_when: discord surface
   used_by:
-    - file: src/discord.rs
+    - file: discord.rs
       function: f
   reasoning:
     - discord variant
@@ -207,7 +207,7 @@ tool_schema: {}
 annotations:
   sent_when: in-game surface
   used_by:
-    - file: src/ingame.rs
+    - file: ingame.rs
       function: f
   reasoning:
     - terser in-game variant

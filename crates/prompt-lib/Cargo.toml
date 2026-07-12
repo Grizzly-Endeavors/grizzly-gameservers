@@ -10,13 +10,17 @@ publish = false
 # runtime face — only the shared `ToolSpec` type generated code references, and
 # nothing heavier. Consumers opt into the build-time and dev-time faces:
 #   - build-dependency edge enables `codegen` (parser, validation, emitter)
-#   - dev-dependency edge will enable `verify` (Phase 3)
+#   - dev-dependency edge enables `verify` (the annotation cross-check)
 # Because the pre-commit hook (the only lint/test enforcement) runs with default
 # features, the canonical `test`/`lint` commands pass `--all-features` so the
 # non-default faces are actually checked.
 default = []
 codegen = ["dep:serde", "dep:serde_yaml_ng"]
-verify = []
+# `verify` reuses codegen's `load` to read the validated tree, so it enables
+# codegen rather than duplicating the parser. Both live only on the consumer's
+# dev/build edges — the shipped binary uses `default` (runtime face) and pulls in
+# neither the YAML parser nor serde.
+verify = ["codegen"]
 
 [dependencies]
 # Runtime face: `ToolSpec.parameters` is a `serde_json::Value`, and generated

@@ -4,7 +4,7 @@ type: prompt
 annotations:
   sent_when: prepended to every Discord conversation with Gary
   used_by:
-    - file: src/discord/gary/mod.rs
+    - file: discord/gary/mod.rs
       function: assemble_system_prompt
   variables:
     name:

@@ -10,8 +10,9 @@
 //! - **codegen** (feature `codegen`, a build-dependency): [`load`] parses and
 //!   validates a prompt directory into a [`PromptTree`], and [`emit`]/[`generate`]
 //!   turn that tree into the generated `prompts.rs` module.
-//! - **verify** (feature `verify`, a dev-dependency): cross-references annotations
-//!   against the source tree. Added in a later phase.
+//! - **verify** (feature `verify`, a dev-dependency): [`verify_annotations`]
+//!   cross-references each prompt's `used_by` annotations and id against the
+//!   crate's source tree — the test-time check the build step can't make.
 
 // Generated code (and this crate's own golden self-test) refer to types by an
 // absolute `grizzly_prompt_lib::…` path. This alias makes those paths resolve
@@ -31,3 +32,8 @@ pub use codegen::{
     Annotations, BodySegment, Param, ParamType, PromptError, PromptFile, PromptKind, PromptTree,
     ToolSchema, ToolSchemaRef, UsedBy, Variable, emit, generate, load,
 };
+
+#[cfg(feature = "verify")]
+mod verify;
+#[cfg(feature = "verify")]
+pub use verify::{VerifyError, VerifyReport, verify_annotations};
