@@ -5,10 +5,18 @@ edition = "2024"
 license = "MIT"
 publish = false
 
+[build-dependencies]
+# Codegen face: build.rs calls emit() to compile prompts/ into $OUT_DIR/prompts.rs.
+grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["codegen"] }
+
 [dependencies]
 anyhow = "1.0.103"
 dotenvy = "0.15.7"
 grizzly-control-api = { path = "../control-api", version = "0.1.0" }
+# Runtime face: the ToolSpec type generated tool specs assemble into. Referenced
+# by generated code starting with the tool migration (Phase 5); declared now per
+# the three-declaration contract (build-deps codegen / deps default / dev-deps verify).
+grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0" }
 k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
 # Client for the in-pod supervisor control API. Default (native-tls) backend
 # unifies with serenity's; the control calls themselves are plaintext http to
@@ -66,6 +74,11 @@ serde_yaml_ng = "0.10.0"
 rusty-s3 = "0.10.0"
 url = "2.5.8"
 jiff = "0.2.31"
+
+[dev-dependencies]
+# Verify face: the conventional annotations test (tests/prompt_annotations.rs)
+# cross-checks each prompt file's used_by entries against the source tree.
+grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["verify"] }
 
 [lints]
 workspace = true

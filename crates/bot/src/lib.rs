@@ -15,6 +15,7 @@ mod ingame;
 mod kv;
 mod memory;
 mod notify;
+mod prompts;
 mod store;
 
 pub use config::BotConfig;
