@@ -8,6 +8,8 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: format_server_list
+    - file: ingame/agent.rs
+      function: format_server_list
   reasoning:
     - >-
       The model-facing empty-list copy (distinct from the human-facing embed

@@ -8,6 +8,8 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: no_such
+    - file: ingame/agent.rs
+      function: no_such
   variables:
     server:
       source: the server name the model passed to the tool

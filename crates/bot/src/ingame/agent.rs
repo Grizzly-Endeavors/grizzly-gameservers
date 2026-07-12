@@ -196,12 +196,11 @@ async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall
                 Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
                 Err(err) => {
                     debug!(error = ?err, "ingame: server_status args failed to parse");
-                    "I couldn't tell which server you meant.".to_owned()
+                    prompts::IngameServerUnclear::render()
                 }
             }
         }
-        _ => "I can only look up server info from in-game — an admin can do the rest in Discord."
-            .to_owned(),
+        _ => prompts::IngameLookupOnly::render(),
     }
 }
 
@@ -232,16 +231,19 @@ async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) 
 fn format_summary(server: &ServerSummary) -> String {
     let game = server.game.as_deref().unwrap_or("unknown game");
     let address = server.address.as_deref().unwrap_or("no address yet");
-    format!(
-        "{} (game: {game}, state: {}, address: {address})",
-        server.name, server.state
-    )
+    prompts::ServerSummaryLine {
+        name: server.name.as_str(),
+        game,
+        state: server.state.as_str(),
+        address,
+    }
+    .render()
 }
 
 /// The active servers rendered as a newline-separated list.
 fn format_server_list(servers: &[ServerSummary]) -> String {
     if servers.is_empty() {
-        return "no game servers are running right now".to_owned();
+        return prompts::ServerListEmpty::render();
     }
     servers
         .iter()
@@ -253,11 +255,11 @@ fn format_server_list(servers: &[ServerSummary]) -> String {
 /// A tool result the model reads, so it carries the hint to re-list rather than
 /// just reporting the server missing.
 fn no_such(server: &str) -> String {
-    format!("there's no server named {server} — check list_servers for the current names")
+    prompts::ServerNotFound { server }.render()
 }
 
 fn cluster_error() -> String {
-    "I couldn't reach the cluster just now — try again in a moment".to_owned()
+    prompts::ClusterUnreachable::render()
 }
 
 /// Gary's instructions for the in-game surface. Hardened against prompt injection

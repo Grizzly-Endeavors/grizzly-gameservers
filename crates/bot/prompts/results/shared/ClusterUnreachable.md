@@ -8,6 +8,8 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: cluster_error
+    - file: ingame/agent.rs
+      function: cluster_error
   reasoning:
     - >-
       A transient-failure result worded as "try again in a moment" so the model

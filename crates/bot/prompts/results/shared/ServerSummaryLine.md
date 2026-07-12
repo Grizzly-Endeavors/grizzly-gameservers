@@ -9,6 +9,8 @@ annotations:
   used_by:
     - file: discord/gary/tools.rs
       function: format_summary
+    - file: ingame/agent.rs
+      function: format_summary
   variables:
     name:
       source: the server's Kubernetes instance name
