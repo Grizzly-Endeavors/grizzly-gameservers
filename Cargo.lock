@@ -1022,6 +1022,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grizzly-prompt-lib"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
 name = "grizzly-supervisor"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/bot", "crates/control-api", "crates/supervisor"]
+members = ["crates/bot", "crates/control-api", "crates/prompt-lib", "crates/supervisor"]
 
 # Lint configuration — shared across every workspace member.
 #
