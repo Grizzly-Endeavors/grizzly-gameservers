@@ -574,44 +574,47 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
 async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
     let note = note.trim();
     if note.is_empty() {
-        return "I need something to remember — give me the fact in a short sentence.".to_owned();
+        return prompts::RememberNeedFact::render();
     }
     let ids: Vec<&str> = ctx.data.catalog.game_ids().collect();
     let Some(scope) = normalize_scope(scope, &ids) else {
-        return format!(
-            "I can only file that under a game or 'general'. Pick one of: {}, general.",
-            ids.join(", ")
-        );
+        return prompts::RememberBadScope {
+            games: &ids.join(", "),
+        }
+        .render();
     };
     let author = ctx.author_id.get().to_string();
     match ctx.data.memory.remember(&scope, note, Some(&author)).await {
         Ok(RememberOutcome::Saved(id)) => {
-            format!("saved that under {scope} (fact #{id}); I'll have it next time")
+            let id = id.to_string();
+            prompts::RememberSaved {
+                scope: scope.as_str(),
+                id: &id,
+            }
+            .render()
         }
-        Ok(RememberOutcome::Unavailable) => {
-            "my long-term memory's offline right now, so I can't save that. It'll stick for the \
-             rest of this conversation but not beyond it."
-                .to_owned()
-        }
+        Ok(RememberOutcome::Unavailable) => prompts::RememberMemoryOffline::render(),
         Err(err) => {
             error!(error = ?err, %scope, "agent: remember failed");
-            "something went wrong saving that — it didn't stick.".to_owned()
+            prompts::RememberSaveFailed::render()
         }
     }
 }
 
 async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
     match ctx.data.memory.forget(id).await {
-        Ok(ForgetOutcome::Forgotten) => format!("forgot fact #{id}"),
+        Ok(ForgetOutcome::Forgotten) => {
+            let fact_id = id.to_string();
+            prompts::ForgetForgot { id: &fact_id }.render()
+        }
         Ok(ForgetOutcome::NotFound) => {
-            format!("I don't have a fact #{id} to forget — check the list of what I've saved")
+            let fact_id = id.to_string();
+            prompts::ForgetNoSuchFact { id: &fact_id }.render()
         }
-        Ok(ForgetOutcome::Unavailable) => {
-            "my long-term memory's offline right now, so I can't change it.".to_owned()
-        }
+        Ok(ForgetOutcome::Unavailable) => prompts::ForgetMemoryOffline::render(),
         Err(err) => {
             error!(error = ?err, id, "agent: forget failed");
-            "something went wrong forgetting that.".to_owned()
+            prompts::ForgetFailed::render()
         }
     }
 }
@@ -1210,9 +1213,7 @@ async fn exec_run_when(
     task: &str,
 ) -> String {
     if !ctx.data.defer.is_enabled() {
-        return "I can't schedule things right now — my task queue isn't available. Offer to do it \
-                now instead."
-            .to_owned();
+        return prompts::RunWhenQueueUnavailable::render();
     }
     if matches!(condition, Condition::Empty | Condition::Idle)
         && let Some(refusal) = empty_condition_feasibility(ctx, server).await
@@ -1227,17 +1228,15 @@ async fn exec_run_when(
         .enqueue_and_watch(ctx.data, ctx.serenity, server, condition, &record)
         .await
     {
-        Ok(()) => format!(
-            "Scheduled. Once {server} is {}, this will run: \"{task}\". Tell them you'll take care \
-             of it yourself when that happens and come back here with the result — there's no \
-             separate notification, so don't promise to ping them; you handle it.",
-            condition.as_str()
-        ),
+        Ok(()) => prompts::RunWhenScheduled {
+            server,
+            condition: condition.as_str(),
+            task,
+        }
+        .render(),
         Err(err) => {
             error!(error = ?err, %server, "agent: failed to enqueue deferred task");
-            "I couldn't schedule that just now — the task queue didn't accept it. Offer to try \
-             doing it now instead."
-                .to_owned()
+            prompts::RunWhenScheduleRejected::render()
         }
     }
 }
@@ -1256,11 +1255,7 @@ async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<
     )
     .await
     {
-        Ok(FsOutcome::Ok(None)) => Some(format!(
-            "I can't tell when {server} is empty — this game doesn't report a live player count, so \
-             I can't wait for it to clear. Offer to make the change now, or ask them to tell you \
-             when to."
-        )),
+        Ok(FsOutcome::Ok(None)) => Some(prompts::RunWhenCantWatchEmpty { server }.render()),
         // A real count, or a transient state — let it queue; the watcher handles it.
         Ok(
             FsOutcome::Ok(Some(_))
