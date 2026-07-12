@@ -1523,10 +1523,7 @@ async fn confirm_destructive(
         Ok(message) => message,
         Err(err) => {
             error!(error = ?err, "agent: failed to post backup confirmation");
-            return Confirm::Declined(
-                "I couldn't post a confirmation prompt in this channel, so I didn't do anything."
-                    .to_owned(),
-            );
+            return Confirm::Declined(prompts::ConfirmNoChannel::render());
         }
     };
     let decision = ComponentInteractionCollector::new(ctx.serenity)
