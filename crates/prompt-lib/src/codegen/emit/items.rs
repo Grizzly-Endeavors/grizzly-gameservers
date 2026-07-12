@@ -6,7 +6,7 @@ use super::super::model::{
     BodySegment, ParamType, PromptKind, PromptTree, ToolSchema, ToolSchemaRef, Variable,
 };
 use super::Code;
-use super::rust::{enum_type_name, field_type, str_lit};
+use super::rust::{char_lit, enum_type_name, field_type, str_lit};
 use super::schema::emit_schema;
 
 /// A prompt: a struct with one borrowed field per variable and an infallible
@@ -60,7 +60,15 @@ fn emit_render_body(code: &mut Code, body: &[BodySegment]) {
     code.line("let mut out = String::new();");
     for seg in body {
         match seg {
-            BodySegment::Literal(text) => code.line(&format!("out.push_str({});", str_lit(text))),
+            BodySegment::Literal(text) => {
+                // A single-char segment pushes a `char`; a one-char `&str` would
+                // trip clippy's `single_char_add_str` in the generated code.
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => code.line(&format!("out.push({});", char_lit(c))),
+                    _ => code.line(&format!("out.push_str({});", str_lit(text))),
+                }
+            }
             BodySegment::Placeholder(name) => code.line(&format!("out.push_str(self.{name});")),
         }
     }

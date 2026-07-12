@@ -11,6 +11,13 @@ pub(super) fn str_lit(s: &str) -> String {
     format!("{s:?}")
 }
 
+/// Render `c` as a valid Rust char literal — quoted and escaped. Used for a
+/// single-character body segment so the generated `render` pushes a `char`
+/// rather than a one-char `&str` (which trips clippy's `single_char_add_str`).
+pub(super) fn char_lit(c: char) -> String {
+    format!("'{}'", c.escape_default())
+}
+
 /// The Rust field type for a parameter, wrapping optional parameters in
 /// `Option<T>`. Enums map to the generated `<OwnerId><ParamPascal>` type.
 pub(super) fn field_type(param: &Param, owner_id: &str, param_name: &str) -> String {
