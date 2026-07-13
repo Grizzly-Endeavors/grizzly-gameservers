@@ -153,7 +153,17 @@ impl HomeChannels {
         };
         match store.load_all().await {
             Ok(ids) => {
-                let cache: HashSet<u64> = ids.iter().filter_map(|id| id.parse().ok()).collect();
+                let cache: HashSet<u64> = ids
+                    .iter()
+                    .filter_map(|id| {
+                        if let Ok(parsed) = id.parse() {
+                            Some(parsed)
+                        } else {
+                            warn!(id = %id, "skipping home channel with unparseable id");
+                            None
+                        }
+                    })
+                    .collect();
                 info!(
                     home_channels = cache.len(),
                     "connected to postgres for no-mention home channels"
@@ -368,6 +378,13 @@ impl GuildConfigStore {
                         principal
                             .ids_mut(tier.set_mut(map.entry(guild).or_default()))
                             .insert(id);
+                    } else {
+                        warn!(
+                            guild = %guild,
+                            id = %id,
+                            table,
+                            "skipping admin/manager grant with unparseable id"
+                        );
                     }
                 }
             }
