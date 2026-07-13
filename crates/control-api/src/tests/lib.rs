@@ -125,16 +125,21 @@ fn list_response_round_trips() {
             DirEntry {
                 name: "latest.log".to_owned(),
                 kind: EntryKind::File,
-                size: 4096,
+                size_bytes: 4096,
             },
             DirEntry {
                 name: "archive".to_owned(),
                 kind: EntryKind::Dir,
-                size: 0,
+                size_bytes: 0,
             },
         ],
     };
     let json = serde_json::to_string(&response).unwrap();
+    assert!(
+        json.contains(r#""size":4096"#),
+        "DirEntry::size_bytes must stay on the wire as \"size\" — the supervisor and bot are \
+         deployed independently and must agree on the JSON key regardless of the Rust field name"
+    );
     let parsed: ListResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, response, "ListResponse should survive a round-trip");
 }

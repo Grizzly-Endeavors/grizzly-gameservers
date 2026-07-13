@@ -25,7 +25,7 @@ We wanted three capabilities: periodic **automatic backups** of running servers,
 ## Consequences
 
 - Worlds now survive `/destroy` if archived first, and can be rolled back to any retained point. The archive area frees the PVC while keeping the world recoverable, so "I'm done with this for now" no longer means "delete it forever."
-- Archive and restore-overwrite are destructive-adjacent, so both are gated behind an explicit Discord confirmation (slash-command buttons; Gary reuses the destroy-confirmation flow). Restore-overwrite additionally takes a safety backup of the current world first, so it is undoable.
+- Archive and restore-overwrite are destructive-adjacent, so both are gated behind an explicit Discord confirmation (slash-command buttons; Gary reuses the destroy-confirmation flow). Restore-overwrite additionally takes a safety backup of the current world first when possible, so the overwrite is normally undoable; when that safety backup can't be taken, restore still proceeds and tells the user there is no undo point rather than implying one exists.
 - Recover-from-archive uses `SUPERVISOR_START_PAUSED`: the bot provisions the trio held down, seeds `/data` from the archive over the control API, then starts the game — so the game never generates a throwaway world that would be immediately overwritten.
 - The DB coupling is scoped to archives only; a Postgres outage disables archive/recover but leaves backups and restore-from-backup fully working.
 - New dependencies (`rusty-s3`, `jiff`, `tokio-util`, `tokio-stream`, `url`) all pass `cargo deny`. The supervisor image gains `zstd` for `tar --zstd`.

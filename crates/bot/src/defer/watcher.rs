@@ -83,7 +83,7 @@ pub(crate) async fn run_watcher(
             Ok(true) => return,
             Ok(false) => data.defer.register_silent(&server, condition),
             Err(err) => {
-                warn!(error = ?err, server = %server, "deferred watcher: couldn't confirm queue empty; exiting (reconcile re-arms)");
+                warn!(error = ?err, server = %server, "deferred watcher: couldn't confirm queue empty; exiting (queue persists in valkey; re-arms only on next process restart)");
                 return;
             }
         }

@@ -37,6 +37,10 @@ use crate::prompts;
 /// indicator lasts ~10s, so 8s keeps it lit without a visible gap.
 const TYPING_INTERVAL: Duration = Duration::from_secs(8);
 
+/// Shown when Gary has no model configured, from the `@mention` entry point
+/// and, as defense in depth, inside [`run_gary_turn`] itself.
+const GARY_NOT_CONFIGURED_REPLY: &str = "Gary isn't set up yet — no model is configured.";
+
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
@@ -133,12 +137,7 @@ async fn handle_message(
     prompt: String,
 ) {
     if data.ollama.is_none() {
-        reply(
-            ctx,
-            message,
-            "Gary isn't set up yet — no model is configured.",
-        )
-        .await;
+        reply(ctx, message, GARY_NOT_CONFIGURED_REPLY).await;
         return;
     }
     if prompt.trim().is_empty() {
@@ -234,12 +233,7 @@ pub(crate) async fn run_gary_turn(
 ) -> Result<SessionOutcome> {
     let Some(ollama) = turn.data.ollama.as_ref() else {
         // Callers gate on Gary being configured; this is defense in depth.
-        send_chunks(
-            turn.ctx,
-            turn.channel_id,
-            "Gary isn't set up yet — no model is configured.",
-        )
-        .await;
+        send_chunks(turn.ctx, turn.channel_id, GARY_NOT_CONFIGURED_REPLY).await;
         return Ok(SessionOutcome {
             reply: String::new(),
             escalated: false,

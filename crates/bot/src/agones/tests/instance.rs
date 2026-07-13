@@ -321,7 +321,11 @@ fn advertised_gameserver_rewrites_container_ports_and_injects_env() {
     };
     assert_eq!(by_name("game"), Some(7003));
     assert_eq!(by_name("messaging"), Some(7004));
-    assert_eq!(by_name("control"), Some(9359), "control port must not move");
+    assert_eq!(
+        by_name("control"),
+        Some(i64::from(grizzly_control_api::CONTROL_PORT)),
+        "control port must track the shared grizzly_control_api::CONTROL_PORT"
+    );
 
     // Env injected with the leased numbers as strings.
     let env = gs

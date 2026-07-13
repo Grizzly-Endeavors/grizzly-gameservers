@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use grizzly_control_api::{
-    AnnounceRequest, CommandRequest, CommandResponse, ControlError, DirEntry, ListResponse,
+    ANNOUNCE_PATH, AnnounceRequest, COMMAND_PATH, CommandRequest, CommandResponse, ControlError,
+    DirEntry, FS_LIST_PATH, FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse,
     LogsQuery, LogsResponse, OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse,
     RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
 };
@@ -60,7 +61,7 @@ pub(crate) async fn supervisor_list_files(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/fs/list");
+    let url = format!("http://{pod_ip}:{control_port}{FS_LIST_PATH}");
     let response = http
         .get(&url)
         .query(&PathQuery {
@@ -90,7 +91,7 @@ pub(crate) async fn supervisor_read_file(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/fs/read");
+    let url = format!("http://{pod_ip}:{control_port}{FS_READ_PATH}");
     let response = http
         .get(&url)
         .query(&PathQuery {
@@ -120,7 +121,7 @@ pub(crate) async fn supervisor_write_file(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/fs/write");
+    let url = format!("http://{pod_ip}:{control_port}{FS_WRITE_PATH}");
     let response = http
         .post(&url)
         .json(&WriteRequest {
@@ -269,7 +270,7 @@ pub(crate) async fn supervisor_restore_file(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/fs/restore");
+    let url = format!("http://{pod_ip}:{control_port}{FS_RESTORE_PATH}");
     let response = http
         .post(&url)
         .json(&RestoreRequest {
@@ -298,7 +299,7 @@ pub(crate) async fn supervisor_read_logs(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/logs");
+    let url = format!("http://{pod_ip}:{control_port}{LOGS_PATH}");
     let response = http
         .get(&url)
         .query(&LogsQuery { lines })
@@ -328,7 +329,7 @@ pub(crate) async fn supervisor_send_command(
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}/command");
+    let url = format!("http://{pod_ip}:{control_port}{COMMAND_PATH}");
     let response = http
         .post(&url)
         .json(&CommandRequest {
@@ -390,7 +391,7 @@ pub(crate) async fn supervisor_announce(
             return;
         }
     };
-    let url = format!("http://{pod_ip}:{control_port}/announce");
+    let url = format!("http://{pod_ip}:{control_port}{ANNOUNCE_PATH}");
     match http
         .post(&url)
         .json(&AnnounceRequest {

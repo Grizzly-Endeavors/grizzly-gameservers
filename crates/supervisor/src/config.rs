@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use tracing::warn;
 
 use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
@@ -20,12 +21,14 @@ pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 /// The itzg entrypoint the supervisor wraps as its child process.
 const DEFAULT_CHILD_CMD: &str = "/start";
 const DEFAULT_GAME_PORT: u16 = 25565;
-/// Not in the 7000–7010 `NodePort` band and not 9358 (the Agones SDK). Must
-/// match `DEFAULT_CONTROL_PORT` in `crates/bot/src/config.rs` and the
-/// hardcoded port in `cluster/guardrails/bot-to-supervisor-egress.yaml` — a
-/// mismatch is a silent Cilium drop, not an error. No single source of truth
-/// yet (see issue #42).
-const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Default control-API port. Sourced from the shared
+/// `grizzly_control_api::CONTROL_PORT` (the single Rust source of truth, where the
+/// port-choice rationale lives) so the bot and supervisor can't drift from each
+/// other. The `cluster/guardrails/bot-to-supervisor-egress.yaml` carve-out still
+/// hardcodes the same value and must be matched by hand — a YAML file can't import
+/// a Rust const, so that half stays tracked under issue #42; a mismatch there is a
+/// silent Cilium drop, not an error.
+const DEFAULT_CONTROL_PORT: u16 = grizzly_control_api::CONTROL_PORT;
 /// Where the auto-injected Agones SDK sidecar serves its REST API.
 const DEFAULT_SDK_BASE_URL: &str = "http://127.0.0.1:9358";
 /// The instance PVC mount the agent's file operations are confined to — matches
@@ -238,6 +241,8 @@ impl SupervisorConfig {
             ),
         };
 
+        warn_if_rcon_settings_without_port(lookup, rcon_port);
+
         Ok(Self {
             child_command,
             game_port,
@@ -294,6 +299,44 @@ fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
         agent_token,
         server,
     }))
+}
+
+/// Warn when one or more RCON-dependent settings (`rcon_dialect`,
+/// `rcon_password_env`, `rcon_password_max_len`, `palworld_ini_path`,
+/// `auto_update_enabled`) are set but `SUPERVISOR_RCON_PORT` is absent. All of
+/// them are parsed unconditionally but silently do nothing without a port — no
+/// RCON seeding, no `/command` route — so this makes that misconfiguration
+/// visible at startup instead of only when someone tries RCON and finds it
+/// missing.
+fn warn_if_rcon_settings_without_port(lookup: EnvLookup, rcon_port: Option<u16>) {
+    if rcon_port.is_some() {
+        return;
+    }
+    let rcon_dependent_keys = [
+        "SUPERVISOR_RCON_DIALECT",
+        "SUPERVISOR_RCON_PASSWORD_ENV",
+        "SUPERVISOR_RCON_PASSWORD_MAX_LEN",
+        "SUPERVISOR_PALWORLD_INI",
+        "SUPERVISOR_AUTO_UPDATE",
+    ];
+    let mut configured = Vec::new();
+    for key in rcon_dependent_keys {
+        if optional(lookup, key).is_some() {
+            configured.push(key);
+        }
+    }
+    if configured.is_empty() {
+        return;
+    }
+    // parse_chat_watch treats its half-configured case as a hard error. That's
+    // the stricter alternative here too, but this is a live system: refusing to
+    // start would take down a currently-running (if degraded) server on its next
+    // restart, so this stays a warning rather than matching that behavior.
+    warn!(
+        settings = %configured.join(", "),
+        "rcon-dependent settings set but SUPERVISOR_RCON_PORT is not; rcon is \
+         disabled so they won't take effect"
+    );
 }
 
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {

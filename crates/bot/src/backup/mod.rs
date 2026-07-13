@@ -95,6 +95,14 @@ pub(crate) enum ArchiveOutcome {
         name: String,
         size_bytes: u64,
     },
+    /// The archive is durably committed (tarball + manifest + Postgres record),
+    /// but the final teardown that frees the old server's storage failed. The
+    /// archive is `/recover`-able and it's safe to retry the archive to free the
+    /// storage; the teardown error is logged at the failure site, not carried here.
+    ArchivedNotReleased {
+        name: String,
+        size_bytes: u64,
+    },
     NotFound,
     NotManaged,
     /// The archive catalog (Postgres) isn't configured, so archive is disabled.
@@ -108,7 +116,11 @@ impl ArchiveOutcome {
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Failed(reason) => Some(reason),
-            Self::Archived { .. } | Self::NotFound | Self::NotManaged | Self::Unavailable => None,
+            Self::Archived { .. }
+            | Self::ArchivedNotReleased { .. }
+            | Self::NotFound
+            | Self::NotManaged
+            | Self::Unavailable => None,
         }
     }
 }
@@ -130,9 +142,26 @@ pub(crate) enum BootState {
     TimedOut,
 }
 
+/// Whether the restore path managed to take the promised pre-restore safety
+/// backup. When it couldn't — no live target to snapshot, or the snapshot itself
+/// failed — the restore still proceeds, but the result must report that the
+/// overwrite has no undo point rather than imply one exists.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SafetyBackup {
+    /// A safety backup of the pre-restore world was taken; the overwrite is undoable.
+    Taken,
+    /// No safety backup exists; the world that was overwritten can't be brought back.
+    Absent,
+}
+
 /// Outcome of restoring a live server from one of its backups.
 pub(crate) enum RestoreOutcome {
-    Restored { boot: BootState },
+    Restored {
+        boot: BootState,
+        /// Whether the promised pre-restore safety backup was actually taken;
+        /// `Absent` means the overwrite has no undo point and the result says so.
+        safety_backup: SafetyBackup,
+    },
     NotFound,
     NotManaged,
     Failed(String),

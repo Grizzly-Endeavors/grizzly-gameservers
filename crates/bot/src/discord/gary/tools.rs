@@ -579,7 +579,7 @@ async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
     let ids: Vec<&str> = ctx.data.catalog.game_ids().collect();
     let Some(scope) = normalize_scope(scope, &ids) else {
         return prompts::RememberBadScope {
-            games: &ids.join(", "),
+            games: &game_ids(ctx),
         }
         .render();
     };
@@ -1643,7 +1643,7 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         .iter()
         .map(|entry| match entry.kind {
             EntryKind::Dir => format!("{}/ (folder)", entry.name),
-            EntryKind::File => format!("{} ({} bytes)", entry.name, entry.size),
+            EntryKind::File => format!("{} ({} bytes)", entry.name, entry.size_bytes),
             EntryKind::Other => format!("{} (other)", entry.name),
         })
         .collect::<Vec<_>>()
@@ -1811,7 +1811,15 @@ fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
 
 fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
     match outcome {
-        ArchiveOutcome::Archived { name, size_bytes } => {
+        // Partial success (durable archive, old storage not freed). There is no
+        // honest tool-result prompt for it yet: ArchiveDone slightly overstates it
+        // (it claims the storage was released), but it preserves the load-bearing
+        // truth — archived and recoverable — where ArchiveFailed would falsely tell
+        // the model nothing was saved. A dedicated prompt is the real fix (see
+        // "Open questions" in docs/design/02-backups-archive-restore.md); left
+        // as-is here to avoid rewording prompt text.
+        ArchiveOutcome::Archived { name, size_bytes }
+        | ArchiveOutcome::ArchivedNotReleased { name, size_bytes } => {
             let size = human_size(*size_bytes);
             prompts::ArchiveDone {
                 name: name.as_str(),
@@ -1830,15 +1838,19 @@ fn format_restore_outcome(server: &str, outcome: &RestoreOutcome) -> String {
     match outcome {
         RestoreOutcome::Restored {
             boot: BootState::Ready,
+            ..
         } => prompts::RestoreServerReady { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::TimedOut,
+            ..
         } => prompts::RestoreServerTimedOut { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Crashed,
+            ..
         } => prompts::RestoreServerCrashed { server }.render(),
         RestoreOutcome::Restored {
             boot: BootState::Stopped,
+            ..
         } => prompts::RestoreServerStopped { server }.render(),
         RestoreOutcome::Failed(_) => prompts::RestoreServerFailed { server }.render(),
         RestoreOutcome::NotFound => no_such(server),
@@ -1946,8 +1958,10 @@ fn not_managed(server: &str) -> String {
     prompts::NotManaged { server }.render()
 }
 
+/// Delegates to [`super::game_catalog_list`] for the `&ToolCtx`-shaped call
+/// sites so the comma-joined id list is computed in exactly one place.
 fn game_ids(ctx: &ToolCtx<'_>) -> String {
-    ctx.data.catalog.game_ids().collect::<Vec<_>>().join(", ")
+    super::game_catalog_list(ctx.data)
 }
 
 #[cfg(test)]

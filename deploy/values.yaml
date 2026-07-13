@@ -66,9 +66,10 @@ bot:
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:
+    # Sole control plane (Gary, DB/Valkey, backups) with the highest OOM blast radius.
     requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: "1"
+      cpu: 250m
       memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi

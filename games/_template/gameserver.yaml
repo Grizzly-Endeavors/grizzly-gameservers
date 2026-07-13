@@ -56,6 +56,13 @@ spec:
     # capabilities drop [ALL]), and a writable /tmp emptyDir mount.
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
+      # The kubelet SIGKILLs the pod this long after SIGTERM. Must stay ≥ the
+      # supervisor's DEFAULT_GRACEFUL_TIMEOUT_SECS (90s, in crates/supervisor):
+      # the supervisor is PID 1 and catches SIGTERM to save the world within that
+      # window, so a shorter grace period truncates the save mid-write. 120 leaves
+      # comfortable margin. A drift guard in the bot crate's tests/config.rs keeps
+      # every game manifest ≥ the save window.
+      terminationGracePeriodSeconds: 120
       containers:
         # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: REPLACE_GAME

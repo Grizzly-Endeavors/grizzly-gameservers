@@ -332,17 +332,22 @@ fn positive_backup_settings_are_accepted() {
 
 // ---- control-plane egress drift guard (issue #42) ----
 //
-// The control-plane port/host values are pinned in five independent places: the
-// `DEFAULT_*` consts above, the supervisor crate's own `DEFAULT_CONTROL_PORT`,
-// and four Cilium egress carve-outs under `cluster/guardrails/`. If any one
-// drifts from the others, Cilium silently *drops* the packets rather than
-// erroring — a connect timeout that points nowhere near the NetworkPolicy. The
-// cross-reference comments between these sites don't stop drift; these tests read
-// the real YAML off disk and fail CI loudly the moment a const and its carve-out
-// disagree. Mirrors the `real_satisfactory_manifest_is_on_the_advertise_path`
-// pattern in `agones/tests/ports.rs`.
+// The control-plane host/port values are pinned in independent places Cilium
+// can't cross-check: the `DEFAULT_*` consts above and the Cilium egress carve-outs
+// under `cluster/guardrails/`. If a const drifts from its carve-out, Cilium
+// silently *drops* the packets rather than erroring — a connect timeout that
+// points nowhere near the NetworkPolicy. The cross-reference comments between
+// these sites don't stop drift; these tests read the real YAML off disk and fail
+// CI loudly the moment a const and its carve-out disagree. Mirrors the
+// `real_satisfactory_manifest_is_on_the_advertise_path` pattern in
+// `agones/tests/ports.rs`.
+//
+// The supervisor control port is no longer among the drifting pairs: the bot and
+// supervisor both default to `grizzly_control_api::CONTROL_PORT`, so the two Rust
+// sides are equal by construction — only that shared const vs. its
+// `bot-to-supervisor-egress.yaml` carve-out still needs guarding below.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Minimal view of a `CiliumNetworkPolicy` egress carve-out — only the `port`
 /// and `cidr` literals these guardrails pin. Deliberately partial so an unrelated
@@ -436,48 +441,14 @@ fn load_egress(file: &str) -> EgressPolicy {
     serde_yaml_ng::from_str(&yaml).unwrap_or_else(|err| panic!("parsing {path:?}: {err}"))
 }
 
-/// Reads a `const NAME: u16 = N;` literal out of a Rust source file by a targeted
-/// line scan — enough to reach the supervisor crate's `DEFAULT_CONTROL_PORT`
-/// without a build dependency on it, so its value is pinned against the shared
-/// control port too. Deliberately a line scan, not a Rust parser: the const lines
-/// are flat and this stays cheap to keep in sync with them.
-fn rust_u16_const(source_path: &Path, name: &str) -> u16 {
-    let source = std::fs::read_to_string(source_path)
-        .unwrap_or_else(|err| panic!("reading {source_path:?}: {err}"));
-    let prefix = format!("const {name}: u16 = ");
-    let value = source
-        .lines()
-        .map(str::trim_start)
-        .find_map(|line| line.strip_prefix(prefix.as_str()))
-        .unwrap_or_else(|| panic!("{name} not found in {source_path:?}"));
-    value
-        .trim_end()
-        .trim_end_matches(';')
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("{name} value {value:?} is not a valid u16"))
-}
-
-fn supervisor_config_path() -> PathBuf {
-    PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../supervisor/src/config.rs"
-    ))
-}
-
 #[test]
-fn supervisor_egress_port_matches_control_port_on_both_sides() {
+fn supervisor_egress_port_matches_shared_control_port() {
     let yaml_port = load_egress("bot-to-supervisor-egress.yaml").only_port();
     assert_eq!(
         yaml_port, DEFAULT_CONTROL_PORT,
-        "bot-to-supervisor-egress.yaml opens {yaml_port} but bot DEFAULT_CONTROL_PORT is \
-         {DEFAULT_CONTROL_PORT}; Cilium would silently drop the bot's control calls (issue #42)"
-    );
-    let supervisor_control_port = rust_u16_const(&supervisor_config_path(), "DEFAULT_CONTROL_PORT");
-    assert_eq!(
-        supervisor_control_port, DEFAULT_CONTROL_PORT,
-        "supervisor DEFAULT_CONTROL_PORT ({supervisor_control_port}) must equal the bot's \
-         ({DEFAULT_CONTROL_PORT}) — they name the same in-pod control API port (issue #42)"
+        "bot-to-supervisor-egress.yaml opens {yaml_port} but the shared control port \
+         DEFAULT_CONTROL_PORT (= grizzly_control_api::CONTROL_PORT) is {DEFAULT_CONTROL_PORT}; \
+         Cilium would silently drop the bot's control calls (issue #42)"
     );
 }
 
@@ -541,4 +512,145 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
         port,
         "bot-to-s3-egress.yaml port must match the port in DEFAULT_S3_ENDPOINT (issue #42)"
     );
+}
+
+// ---- game manifest drift guards ----
+//
+// Two values in every `games/<game>/gameserver.yaml` must track a Rust source of
+// truth that no YAML-level check can cross-verify. These read the real manifests
+// off disk and fail CI the moment one drifts (mirroring the egress guards above
+// and the control-port assertion in `agones/tests/instance.rs`):
+//
+//   * `spec.template.spec.terminationGracePeriodSeconds` — the window the kubelet
+//     grants the pod after SIGTERM before it SIGKILLs. The in-pod supervisor is
+//     PID 1 and catches SIGTERM to save the world within DEFAULT_GRACEFUL_TIMEOUT_SECS;
+//     a shorter grace period truncates the save mid-write. Guarded as `>=` that window.
+//   * the `control` containerPort — the port the bot dials the supervisor on. Both
+//     sides default it to `grizzly_control_api::CONTROL_PORT`; the manifests
+//     hardcode the same number and can't import the const.
+
+/// The supervisor's SIGTERM world-save window, in seconds — the lower bound every
+/// game pod's `terminationGracePeriodSeconds` must clear. Tracks
+/// `DEFAULT_GRACEFUL_TIMEOUT_SECS` in `crates/supervisor/src/config.rs`, which is
+/// private to that crate and not re-exported, so it can't be referenced here; this
+/// literal mirrors it by hand. If the supervisor's graceful timeout ever rises
+/// above 90, raise this and every manifest's `terminationGracePeriodSeconds` too.
+const SUPERVISOR_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+
+/// Partial view of a game `GameServer` manifest — only the pod-spec fields these
+/// drift guards pin, so an unrelated manifest edit can't perturb the check.
+#[derive(serde::Deserialize)]
+struct GameServerManifest {
+    spec: ManifestSpec,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestSpec {
+    template: ManifestTemplate,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestTemplate {
+    spec: ManifestPodSpec,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestPodSpec {
+    // Optional so a manifest missing the field fails with the named assertion
+    // below rather than serde's generic "missing field" error.
+    #[serde(rename = "terminationGracePeriodSeconds")]
+    termination_grace_period_seconds: Option<u64>,
+    containers: Vec<ManifestContainer>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestContainer {
+    #[serde(default)]
+    ports: Vec<ManifestPort>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestPort {
+    name: String,
+    #[serde(rename = "containerPort")]
+    container_port: u16,
+}
+
+impl ManifestPodSpec {
+    /// The single `control` containerPort across the pod's containers. Panics
+    /// unless exactly one is declared — a missing or duplicated control port is a
+    /// drift the guard should catch, not skip over.
+    fn control_port(&self) -> u16 {
+        let ports: Vec<u16> = self
+            .containers
+            .iter()
+            .flat_map(|container| container.ports.iter())
+            .filter(|entry| entry.name == "control")
+            .map(|entry| entry.container_port)
+            .collect();
+        let [port] = ports.as_slice() else {
+            panic!("expected exactly one control port, got {ports:?}");
+        };
+        *port
+    }
+}
+
+/// Every `games/<game>/gameserver.yaml` paired with its directory name.
+/// Enumerated off disk rather than hardcoded so a newly-added game is guarded
+/// automatically; includes `_template`, whose drift would propagate into every
+/// game later copied from it.
+fn load_game_manifests() -> Vec<(String, GameServerManifest)> {
+    let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
+    let entries =
+        std::fs::read_dir(&games_dir).unwrap_or_else(|err| panic!("reading {games_dir:?}: {err}"));
+    let mut manifests = Vec::new();
+    for entry in entries {
+        let dir = entry.unwrap_or_else(|err| panic!("reading a games/ entry: {err}"));
+        let manifest_path = dir.path().join("gameserver.yaml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let name = dir.file_name().to_string_lossy().into_owned();
+        let yaml = std::fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|err| panic!("reading {manifest_path:?}: {err}"));
+        let manifest = serde_yaml_ng::from_str(&yaml)
+            .unwrap_or_else(|err| panic!("parsing {manifest_path:?}: {err}"));
+        manifests.push((name, manifest));
+    }
+    assert!(
+        !manifests.is_empty(),
+        "no games/*/gameserver.yaml found under {games_dir:?}"
+    );
+    manifests
+}
+
+#[test]
+fn game_manifests_grant_the_supervisor_its_full_shutdown_window() {
+    for (game, manifest) in load_game_manifests() {
+        let Some(grace) = manifest.spec.template.spec.termination_grace_period_seconds else {
+            panic!(
+                "games/{game}/gameserver.yaml has no \
+                 spec.template.spec.terminationGracePeriodSeconds; the kubelet defaults it to \
+                 30s and SIGKILLs the supervisor mid world-save"
+            );
+        };
+        assert!(
+            grace >= SUPERVISOR_GRACEFUL_TIMEOUT_SECS,
+            "games/{game}/gameserver.yaml sets terminationGracePeriodSeconds={grace}, \
+             below the supervisor's {SUPERVISOR_GRACEFUL_TIMEOUT_SECS}s save window \
+             (DEFAULT_GRACEFUL_TIMEOUT_SECS); the world-save would be SIGKILLed mid-write"
+        );
+    }
+}
+
+#[test]
+fn game_manifests_pin_the_shared_control_port() {
+    for (game, manifest) in load_game_manifests() {
+        assert_eq!(
+            manifest.spec.template.spec.control_port(),
+            grizzly_control_api::CONTROL_PORT,
+            "games/{game}/gameserver.yaml declares a control containerPort that differs from \
+             the shared grizzly_control_api::CONTROL_PORT; the bot would dial the wrong port"
+        );
+    }
 }
