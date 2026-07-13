@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
+use tracing::warn;
 
 use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
@@ -240,6 +241,8 @@ impl SupervisorConfig {
             ),
         };
 
+        warn_if_rcon_settings_without_port(lookup, rcon_port);
+
         Ok(Self {
             child_command,
             game_port,
@@ -296,6 +299,44 @@ fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
         agent_token,
         server,
     }))
+}
+
+/// Warn when one or more RCON-dependent settings (`rcon_dialect`,
+/// `rcon_password_env`, `rcon_password_max_len`, `palworld_ini_path`,
+/// `auto_update_enabled`) are set but `SUPERVISOR_RCON_PORT` is absent. All of
+/// them are parsed unconditionally but silently do nothing without a port — no
+/// RCON seeding, no `/command` route — so this makes that misconfiguration
+/// visible at startup instead of only when someone tries RCON and finds it
+/// missing.
+fn warn_if_rcon_settings_without_port(lookup: EnvLookup, rcon_port: Option<u16>) {
+    if rcon_port.is_some() {
+        return;
+    }
+    let rcon_dependent_keys = [
+        "SUPERVISOR_RCON_DIALECT",
+        "SUPERVISOR_RCON_PASSWORD_ENV",
+        "SUPERVISOR_RCON_PASSWORD_MAX_LEN",
+        "SUPERVISOR_PALWORLD_INI",
+        "SUPERVISOR_AUTO_UPDATE",
+    ];
+    let mut configured = Vec::new();
+    for key in rcon_dependent_keys {
+        if optional(lookup, key).is_some() {
+            configured.push(key);
+        }
+    }
+    if configured.is_empty() {
+        return;
+    }
+    // parse_chat_watch treats its half-configured case as a hard error. That's
+    // the stricter alternative here too, but this is a live system: refusing to
+    // start would take down a currently-running (if degraded) server on its next
+    // restart, so this stays a warning rather than matching that behavior.
+    warn!(
+        settings = %configured.join(", "),
+        "rcon-dependent settings set but SUPERVISOR_RCON_PORT is not; rcon is \
+         disabled so they won't take effect"
+    );
 }
 
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
