@@ -230,7 +230,8 @@ pub struct DirEntry {
     pub name: String,
     pub kind: EntryKind,
     /// Size in bytes for files; `0` for directories.
-    pub size: u64,
+    #[serde(rename = "size")]
+    pub size_bytes: u64,
 }
 
 /// Body of `GET /fs/list`: the directory's entries, sorted by name.

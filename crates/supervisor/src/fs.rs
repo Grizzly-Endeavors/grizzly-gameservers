@@ -153,7 +153,7 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
         let name = entry.file_name().to_string_lossy().into_owned();
         // `file_type()` reads the dir entry itself, so it doesn't follow symlinks.
         let file_type = entry.file_type().map_err(|err| io(&err))?;
-        let (kind, size) = if file_type.is_dir() {
+        let (kind, size_bytes) = if file_type.is_dir() {
             (EntryKind::Dir, 0)
         } else if file_type.is_file() {
             // Size comes from a separate stat. If the file vanishes between the
@@ -170,7 +170,11 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
         } else {
             (EntryKind::Other, 0)
         };
-        entries.push(DirEntry { name, kind, size });
+        entries.push(DirEntry {
+            name,
+            kind,
+            size_bytes,
+        });
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)

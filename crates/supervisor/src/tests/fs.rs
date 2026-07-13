@@ -65,7 +65,7 @@ fn list_dir_returns_sorted_entries_with_kinds() {
         .find(|e| e.name == "server.properties")
         .unwrap();
     assert_eq!(props.kind, EntryKind::File);
-    assert_eq!(props.size, "difficulty=normal\n".len() as u64);
+    assert_eq!(props.size_bytes, "difficulty=normal\n".len() as u64);
 }
 
 #[test]

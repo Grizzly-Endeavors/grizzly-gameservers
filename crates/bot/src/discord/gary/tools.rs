@@ -1643,7 +1643,7 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
         .iter()
         .map(|entry| match entry.kind {
             EntryKind::Dir => format!("{}/ (folder)", entry.name),
-            EntryKind::File => format!("{} ({} bytes)", entry.name, entry.size),
+            EntryKind::File => format!("{} ({} bytes)", entry.name, entry.size_bytes),
             EntryKind::Other => format!("{} (other)", entry.name),
         })
         .collect::<Vec<_>>()

@@ -394,12 +394,12 @@ fn browse_listing_describes_files_and_folders() {
         DirEntry {
             name: "logs".to_owned(),
             kind: EntryKind::Dir,
-            size: 0,
+            size_bytes: 0,
         },
         DirEntry {
             name: "server.properties".to_owned(),
             kind: EntryKind::File,
-            size: 1024,
+            size_bytes: 1024,
         },
     ];
     let rendered = format_entries("", &entries);
