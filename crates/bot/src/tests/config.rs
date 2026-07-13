@@ -513,3 +513,144 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
         "bot-to-s3-egress.yaml port must match the port in DEFAULT_S3_ENDPOINT (issue #42)"
     );
 }
+
+// ---- game manifest drift guards ----
+//
+// Two values in every `games/<game>/gameserver.yaml` must track a Rust source of
+// truth that no YAML-level check can cross-verify. These read the real manifests
+// off disk and fail CI the moment one drifts (mirroring the egress guards above
+// and the control-port assertion in `agones/tests/instance.rs`):
+//
+//   * `spec.template.spec.terminationGracePeriodSeconds` — the window the kubelet
+//     grants the pod after SIGTERM before it SIGKILLs. The in-pod supervisor is
+//     PID 1 and catches SIGTERM to save the world within DEFAULT_GRACEFUL_TIMEOUT_SECS;
+//     a shorter grace period truncates the save mid-write. Guarded as `>=` that window.
+//   * the `control` containerPort — the port the bot dials the supervisor on. Both
+//     sides default it to `grizzly_control_api::CONTROL_PORT`; the manifests
+//     hardcode the same number and can't import the const.
+
+/// The supervisor's SIGTERM world-save window, in seconds — the lower bound every
+/// game pod's `terminationGracePeriodSeconds` must clear. Tracks
+/// `DEFAULT_GRACEFUL_TIMEOUT_SECS` in `crates/supervisor/src/config.rs`, which is
+/// private to that crate and not re-exported, so it can't be referenced here; this
+/// literal mirrors it by hand. If the supervisor's graceful timeout ever rises
+/// above 90, raise this and every manifest's `terminationGracePeriodSeconds` too.
+const SUPERVISOR_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+
+/// Partial view of a game `GameServer` manifest — only the pod-spec fields these
+/// drift guards pin, so an unrelated manifest edit can't perturb the check.
+#[derive(serde::Deserialize)]
+struct GameServerManifest {
+    spec: ManifestSpec,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestSpec {
+    template: ManifestTemplate,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestTemplate {
+    spec: ManifestPodSpec,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestPodSpec {
+    // Optional so a manifest missing the field fails with the named assertion
+    // below rather than serde's generic "missing field" error.
+    #[serde(rename = "terminationGracePeriodSeconds")]
+    termination_grace_period_seconds: Option<u64>,
+    containers: Vec<ManifestContainer>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestContainer {
+    #[serde(default)]
+    ports: Vec<ManifestPort>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestPort {
+    name: String,
+    #[serde(rename = "containerPort")]
+    container_port: u16,
+}
+
+impl ManifestPodSpec {
+    /// The single `control` containerPort across the pod's containers. Panics
+    /// unless exactly one is declared — a missing or duplicated control port is a
+    /// drift the guard should catch, not skip over.
+    fn control_port(&self) -> u16 {
+        let ports: Vec<u16> = self
+            .containers
+            .iter()
+            .flat_map(|container| container.ports.iter())
+            .filter(|entry| entry.name == "control")
+            .map(|entry| entry.container_port)
+            .collect();
+        let [port] = ports.as_slice() else {
+            panic!("expected exactly one control port, got {ports:?}");
+        };
+        *port
+    }
+}
+
+/// Every `games/<game>/gameserver.yaml` paired with its directory name.
+/// Enumerated off disk rather than hardcoded so a newly-added game is guarded
+/// automatically; includes `_template`, whose drift would propagate into every
+/// game later copied from it.
+fn load_game_manifests() -> Vec<(String, GameServerManifest)> {
+    let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
+    let entries =
+        std::fs::read_dir(&games_dir).unwrap_or_else(|err| panic!("reading {games_dir:?}: {err}"));
+    let mut manifests = Vec::new();
+    for entry in entries {
+        let dir = entry.unwrap_or_else(|err| panic!("reading a games/ entry: {err}"));
+        let manifest_path = dir.path().join("gameserver.yaml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let name = dir.file_name().to_string_lossy().into_owned();
+        let yaml = std::fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|err| panic!("reading {manifest_path:?}: {err}"));
+        let manifest = serde_yaml_ng::from_str(&yaml)
+            .unwrap_or_else(|err| panic!("parsing {manifest_path:?}: {err}"));
+        manifests.push((name, manifest));
+    }
+    assert!(
+        !manifests.is_empty(),
+        "no games/*/gameserver.yaml found under {games_dir:?}"
+    );
+    manifests
+}
+
+#[test]
+fn game_manifests_grant_the_supervisor_its_full_shutdown_window() {
+    for (game, manifest) in load_game_manifests() {
+        let Some(grace) = manifest.spec.template.spec.termination_grace_period_seconds else {
+            panic!(
+                "games/{game}/gameserver.yaml has no \
+                 spec.template.spec.terminationGracePeriodSeconds; the kubelet defaults it to \
+                 30s and SIGKILLs the supervisor mid world-save"
+            );
+        };
+        assert!(
+            grace >= SUPERVISOR_GRACEFUL_TIMEOUT_SECS,
+            "games/{game}/gameserver.yaml sets terminationGracePeriodSeconds={grace}, \
+             below the supervisor's {SUPERVISOR_GRACEFUL_TIMEOUT_SECS}s save window \
+             (DEFAULT_GRACEFUL_TIMEOUT_SECS); the world-save would be SIGKILLed mid-write"
+        );
+    }
+}
+
+#[test]
+fn game_manifests_pin_the_shared_control_port() {
+    for (game, manifest) in load_game_manifests() {
+        assert_eq!(
+            manifest.spec.template.spec.control_port(),
+            grizzly_control_api::CONTROL_PORT,
+            "games/{game}/gameserver.yaml declares a control containerPort that differs from \
+             the shared grizzly_control_api::CONTROL_PORT; the bot would dial the wrong port"
+        );
+    }
+}

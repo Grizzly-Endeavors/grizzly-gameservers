@@ -40,6 +40,10 @@ spec:
     # game-image CI signing and the Agones carve-out (ADR-003).
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
+      # SIGKILL grace after SIGTERM. Must stay ≥ the supervisor's
+      # DEFAULT_GRACEFUL_TIMEOUT_SECS (90s) so its world-save finishes; see
+      # games/_template/gameserver.yaml.
+      terminationGracePeriodSeconds: 120
       containers:
         # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: palworld
