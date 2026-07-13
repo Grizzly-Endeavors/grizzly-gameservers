@@ -3,10 +3,14 @@
 //! pulling each other's transport stacks.
 //!
 //! Most of these describe the supervisor's control server, which the bot
-//! consumes: routing ([`ControlCommand`]) and bodies ([`StatusResponse`],
-//! [`ControlOk`], [`ControlError`]) live together so a contract change is one
-//! edit both sides recompile against. The reverse direction — the supervisor
-//! posting in-game chat triggers to the bot's agent endpoint
+//! consumes. Routing and bodies live together so a contract change is one edit
+//! both sides recompile against: the lifecycle routes as [`ControlCommand`], the
+//! body-carrying routes as path constants ([`FS_LIST_PATH`], [`FS_READ_PATH`],
+//! [`FS_WRITE_PATH`], [`FS_RESTORE_PATH`], [`LOGS_PATH`], [`COMMAND_PATH`],
+//! [`ANNOUNCE_PATH`], plus [`ARCHIVE_PATH`] and [`OCCUPANCY_PATH`]), and each
+//! route's request/response bodies beside them — so no route path is a bare
+//! literal one side could rename into a silent 404. The reverse direction — the
+//! supervisor posting in-game chat triggers to the bot's agent endpoint
 //! ([`IngameTriggerRequest`] on [`INGAME_TRIGGER_PATH`]) — shares this crate too,
 //! so the one contract file stays authoritative for both loops.
 
@@ -288,6 +292,43 @@ pub struct CommandResponse {
 pub struct AnnounceRequest {
     pub message: String,
 }
+
+/// Path of `GET /fs/list`: the entries of a directory under the data root
+/// ([`ListResponse`]). Shared so the bot's client and the supervisor's server
+/// build and match the same path.
+pub const FS_LIST_PATH: &str = "/fs/list";
+
+/// Path of `GET /fs/read`: the UTF-8 contents of a file under the data root
+/// ([`ReadResponse`]). Shared so the bot's client and the supervisor's server
+/// build and match the same path.
+pub const FS_READ_PATH: &str = "/fs/read";
+
+/// Path of `POST /fs/write`: overwrite a file under the data root, snapshotting
+/// the prior version first ([`WriteRequest`]/[`WriteResponse`]). Shared so the
+/// bot's client and the supervisor's server build and match the same path.
+pub const FS_WRITE_PATH: &str = "/fs/write";
+
+/// Path of `POST /fs/restore`: restore a file from the snapshot its last write
+/// took ([`RestoreRequest`]/[`RestoreResponse`]). Shared so the bot's client and
+/// the supervisor's server build and match the same path.
+pub const FS_RESTORE_PATH: &str = "/fs/restore";
+
+/// Path of `GET /logs`: the most recent captured stdout/stderr lines
+/// ([`LogsQuery`]/[`LogsResponse`]). Shared so the bot's client and the
+/// supervisor's server build and match the same path.
+pub const LOGS_PATH: &str = "/logs";
+
+/// Path of `POST /command`: run one in-game console command over RCON
+/// ([`CommandRequest`]/[`CommandResponse`]). Only served for games whose per-game
+/// template enables RCON. Shared so the bot's client and the supervisor's server
+/// build and match the same path.
+pub const COMMAND_PATH: &str = "/command";
+
+/// Path of `POST /announce`: broadcast a message to everyone on the running
+/// server ([`AnnounceRequest`]). Only served for games whose per-game template
+/// enables RCON. Shared so the bot's client and the supervisor's server build and
+/// match the same path.
+pub const ANNOUNCE_PATH: &str = "/announce";
 
 /// Path of the whole-`/data` archive routes. `GET` streams a compressed tar of
 /// the data root out; `POST` extracts an uploaded stream back into it. Streamed
