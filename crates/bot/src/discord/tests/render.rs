@@ -297,3 +297,66 @@ fn join_within_embed_limit_handles_a_single_oversized_line() {
     assert!(joined.len() <= EMBED_DESCRIPTION_LIMIT);
     assert!(joined.contains("…and 1 more"));
 }
+
+#[test]
+fn restore_with_a_safety_backup_keeps_the_clean_message() {
+    let spec = restore_spec(
+        &RestoreOutcome::Restored {
+            boot: BootState::Ready,
+            safety_backup: SafetyBackup::Taken,
+        },
+        "survival",
+    );
+    assert_eq!(spec.colour, COLOUR_UP, "a healthy restore is still green");
+    assert!(
+        !spec.body.contains("can't be brought back"),
+        "when an undo point exists the restore must not warn about losing one, got: {}",
+        spec.body
+    );
+}
+
+#[test]
+fn restore_without_a_safety_backup_warns_theres_no_undo() {
+    // Every boot state must carry the caveat — the overwrite already happened.
+    for boot in [
+        BootState::Ready,
+        BootState::TimedOut,
+        BootState::Crashed,
+        BootState::Stopped,
+    ] {
+        let spec = restore_spec(
+            &RestoreOutcome::Restored {
+                boot,
+                safety_backup: SafetyBackup::Absent,
+            },
+            "survival",
+        );
+        assert!(
+            spec.body.contains("can't be brought back"),
+            "a restore with no safety backup must tell the friend the old world is gone, got: {}",
+            spec.body
+        );
+    }
+}
+
+#[test]
+fn archived_but_storage_not_freed_is_amber_and_recoverable() {
+    let spec = archive_spec(&ArchiveOutcome::ArchivedNotReleased {
+        name: "survival".to_owned(),
+        size_bytes: 5 * 1024 * 1024,
+    });
+    assert_eq!(
+        spec.colour, COLOUR_PENDING,
+        "a durable-but-not-released archive is a partial success, not a failure or clean success"
+    );
+    assert!(
+        spec.body.contains("/recover"),
+        "the friend must learn the archive is recoverable, got: {}",
+        spec.body
+    );
+    assert!(
+        !spec.body.to_lowercase().contains("nothing was"),
+        "it must not reproduce the 'nothing was released' failure wording, got: {}",
+        spec.body
+    );
+}

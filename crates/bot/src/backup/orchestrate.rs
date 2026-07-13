@@ -17,7 +17,7 @@ use super::s3::S3Store;
 use super::store::{ArchiveRecord, ArchiveStore};
 use super::{
     ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService, BootState,
-    RecoverOutcome, RestoreOutcome,
+    RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 use crate::agones::{
     BackupTarget, ControlReady, DestroyOutcome, PodTarget, ProvisionOutcome, ReadyWait,
@@ -268,11 +268,27 @@ impl BackupService {
             .await
             .with_context(|| format!("failed to record archive for {instance}"))?;
 
-        // The archive is durable in S3 + Postgres — now release the trio.
-        match destroy_instance(ctx.client, ctx.namespace, instance).await? {
-            DestroyOutcome::Destroyed | DestroyOutcome::NotFound => {}
-            DestroyOutcome::NotManaged => {
+        // The archive is durable in S3 + Postgres. Releasing the trio is the last
+        // step; if it *errors* now, the archive still stands and is recover-able,
+        // so surface a distinct partial success (safe to retry) instead of letting
+        // `?` collapse it into the generic "nothing was saved" failure — the
+        // archive was saved, and the GameServer may already be half-torn-down.
+        match destroy_instance(ctx.client, ctx.namespace, instance).await {
+            Ok(DestroyOutcome::Destroyed | DestroyOutcome::NotFound) => {}
+            Ok(DestroyOutcome::NotManaged) => {
                 warn!(instance, "archived server was unmanaged at teardown");
+            }
+            Err(err) => {
+                error!(
+                    error = ?err,
+                    instance,
+                    "archive committed but releasing the server's storage failed; \
+                     it's recoverable and safe to retry"
+                );
+                return Ok(ArchiveOutcome::ArchivedNotReleased {
+                    name: instance.to_owned(),
+                    size_bytes: size,
+                });
             }
         }
         Ok(ArchiveOutcome::Archived {
@@ -300,14 +316,42 @@ impl BackupService {
             EnsurePod::Failed(reason) => return Ok(RestoreOutcome::Failed(reason)),
         }
 
-        // Best-effort safety net: snapshot the current world before overwriting it.
-        if let Some(target) = self.find_target(ctx, instance).await?
-            && let Err(err) = self
+        // Best-effort safety net: snapshot the current world before overwriting
+        // it, so the friend has the undo point promised in the restore confirm.
+        // Track whether it actually landed — the restore still proceeds if it
+        // didn't, but the "Restored" result must then drop the undo promise
+        // rather than imply an undo point that doesn't exist.
+        let safety_backup = if let Some(target) = self.find_target(ctx, instance).await? {
+            match self
                 .snapshot_target(ctx, &target, CREATED_BY_PRE_RESTORE)
                 .await
-        {
-            warn!(error = ?err, instance, "pre-restore safety backup failed; continuing");
-        }
+            {
+                Ok(BackupOutcome::BackedUp { .. }) => SafetyBackup::Taken,
+                Ok(other) => {
+                    warn!(
+                        instance,
+                        outcome = ?other,
+                        "pre-restore safety backup didn't complete; restoring anyway with no undo point"
+                    );
+                    SafetyBackup::Absent
+                }
+                Err(err) => {
+                    warn!(
+                        error = ?err,
+                        instance,
+                        "pre-restore safety backup failed; restoring anyway with no undo point"
+                    );
+                    SafetyBackup::Absent
+                }
+            }
+        } else {
+            warn!(
+                instance,
+                "pre-restore safety backup skipped: no live backup target found; \
+                 restoring anyway with no undo point"
+            );
+            SafetyBackup::Absent
+        };
 
         if let Some(block) = stop_for_snapshot(ctx, instance).await? {
             return Ok(match block {
@@ -338,7 +382,10 @@ impl BackupService {
         }
 
         Ok(match self.start_and_wait(ctx, instance).await? {
-            StartResult::Ready(boot) => RestoreOutcome::Restored { boot },
+            StartResult::Ready(boot) => RestoreOutcome::Restored {
+                boot,
+                safety_backup,
+            },
             StartResult::Failed(reason) => RestoreOutcome::Failed(reason),
         })
     }

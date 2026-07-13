@@ -97,6 +97,48 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
 }
 
 #[test]
+fn tier_refusal_matches_each_tools_real_tier() {
+    // Derived from the live manager_tools()/admin_only_tools() sets rather than a
+    // hand-copied list, so a tool added to one of those but not to tier_refusal's
+    // matching arm fails here — instead of silently telling a below-tier caller
+    // "no such tool" instead of "an admin has to do that".
+    let admin_names: Vec<String> = admin_only_tools()
+        .into_iter()
+        .map(|tool| tool.function.name)
+        .collect();
+    let manager_names: Vec<String> = manager_tools()
+        .into_iter()
+        .map(|tool| tool.function.name)
+        // remember/forget are manager-tier but dispatch through dispatch_memory,
+        // never dispatch_mutating's fallthrough, so tier_refusal never sees them.
+        .filter(|name| name.as_str() != Remember::NAME && name.as_str() != Forget::NAME)
+        .collect();
+
+    for name in tool_names(AccessLevel::Admin) {
+        let refusal = tier_refusal(&name);
+        if admin_names.contains(&name) {
+            assert_eq!(
+                refusal,
+                "that action needs an admin — I can only look things up or run day-to-day changes for you here.",
+                "{name} is admin-only; tier_refusal should give the admin refusal"
+            );
+        } else if manager_names.contains(&name) {
+            assert_eq!(
+                refusal,
+                "that action needs a manager or an admin — I can only look things up for you here.",
+                "{name} is manager-tier; tier_refusal should give the manager refusal"
+            );
+        } else {
+            assert_eq!(
+                refusal,
+                format!("'{name}' isn't a tool I have."),
+                "{name} never reaches dispatch_mutating's fallthrough; tier_refusal should call it unknown"
+            );
+        }
+    }
+}
+
+#[test]
 fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // The gate must apply to every tool that names an existing server, and only
     // to those — list_servers/list_archives scope their own query, and

@@ -6,10 +6,17 @@ use crate::agones::{
 };
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
+    SafetyBackup,
 };
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
+
+/// Appended to a restore result when the promised pre-restore safety backup
+/// couldn't be taken, so the "Restored" message doesn't imply an undo point that
+/// isn't there. Leading space: it is concatenated onto an existing sentence.
+const RESTORE_NO_UNDO_CAVEAT: &str = " Heads up: I couldn't save a safety backup of the previous world first, so the \
+     version it just replaced can't be brought back.";
 
 /// Discord rejects an embed whose description exceeds 4096 characters. A busy
 /// guild's server list or a long backup list can blow past that.
@@ -281,6 +288,19 @@ fn archive_spec(outcome: &ArchiveOutcome) -> EmbedSpec {
                 human_size(*size_bytes)
             ),
         },
+        // Partial success: the archive is durable and recoverable, but freeing the
+        // old storage failed. Amber (not neutral), and the body must not imply the
+        // clean "storage freed" outcome — it says the archive is safe and retryable.
+        ArchiveOutcome::ArchivedNotReleased { name, size_bytes } => EmbedSpec {
+            title: format!("📦 Archived {name}"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "Saved a {} archive, so **{name}** is safe and `/recover` brings it back \
+                 whenever you want. I couldn't free its old storage this time, though — \
+                 that's harmless, and it's safe to run `/archive {name}` again to clear it up.",
+                human_size(*size_bytes)
+            ),
+        },
         ArchiveOutcome::Unavailable => backups_db_disabled_spec(),
         ArchiveOutcome::Failed(_) => EmbedSpec {
             title: "Couldn't archive it".to_owned(),
@@ -297,39 +317,17 @@ fn archive_spec(outcome: &ArchiveOutcome) -> EmbedSpec {
 fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
     match outcome {
         RestoreOutcome::Restored {
-            boot: BootState::Ready,
-        } => EmbedSpec {
-            title: format!("🟢 Restored {server}"),
-            colour: COLOUR_UP,
-            body: format!("**{server}** is back up on the restored world."),
-        },
-        RestoreOutcome::Restored {
-            boot: BootState::TimedOut,
-        } => EmbedSpec {
-            title: format!("🟡 {server} is coming back"),
-            colour: COLOUR_PENDING,
-            body: format!("Restored the world onto **{server}** — it'll be playable in a minute."),
-        },
-        RestoreOutcome::Restored {
-            boot: BootState::Crashed,
-        } => EmbedSpec {
-            title: format!("🔴 {server} crashed coming back up"),
-            colour: COLOUR_ERROR,
-            body: format!(
-                "Restored the world onto **{server}**, but it crashed while starting back up. \
-                 Check its logs — the restored data may be the cause."
-            ),
-        },
-        RestoreOutcome::Restored {
-            boot: BootState::Stopped,
-        } => EmbedSpec {
-            title: format!("🟡 {server} is paused"),
-            colour: COLOUR_PENDING,
-            body: format!(
-                "Restored the world onto **{server}**, but it's paused and won't come up on its \
-                 own. Start it when you're ready."
-            ),
-        },
+            boot,
+            safety_backup,
+        } => {
+            let mut spec = restored_spec(server, *boot);
+            // The overwrite already happened; with no safety backup there is no
+            // undo point, so say so rather than leave a clean "Restored".
+            if matches!(safety_backup, SafetyBackup::Absent) {
+                spec.body.push_str(RESTORE_NO_UNDO_CAVEAT);
+            }
+            spec
+        }
         RestoreOutcome::Failed(_) => EmbedSpec {
             title: "Restore failed".to_owned(),
             colour: COLOUR_ERROR,
@@ -337,6 +335,39 @@ fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
         },
         RestoreOutcome::NotFound => not_found_spec(server),
         RestoreOutcome::NotManaged => not_managed_spec(server),
+    }
+}
+
+/// The per-boot-state body of a completed restore, before [`restore_spec`]
+/// appends any missing-undo-point caveat.
+fn restored_spec(server: &str, boot: BootState) -> EmbedSpec {
+    match boot {
+        BootState::Ready => EmbedSpec {
+            title: format!("🟢 Restored {server}"),
+            colour: COLOUR_UP,
+            body: format!("**{server}** is back up on the restored world."),
+        },
+        BootState::TimedOut => EmbedSpec {
+            title: format!("🟡 {server} is coming back"),
+            colour: COLOUR_PENDING,
+            body: format!("Restored the world onto **{server}** — it'll be playable in a minute."),
+        },
+        BootState::Crashed => EmbedSpec {
+            title: format!("🔴 {server} crashed coming back up"),
+            colour: COLOUR_ERROR,
+            body: format!(
+                "Restored the world onto **{server}**, but it crashed while starting back up. \
+                 Check its logs — the restored data may be the cause."
+            ),
+        },
+        BootState::Stopped => EmbedSpec {
+            title: format!("🟡 {server} is paused"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "Restored the world onto **{server}**, but it's paused and won't come up on its \
+                 own. Start it when you're ready."
+            ),
+        },
     }
 }
 
