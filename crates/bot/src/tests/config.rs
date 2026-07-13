@@ -332,17 +332,22 @@ fn positive_backup_settings_are_accepted() {
 
 // ---- control-plane egress drift guard (issue #42) ----
 //
-// The control-plane port/host values are pinned in five independent places: the
-// `DEFAULT_*` consts above, the supervisor crate's own `DEFAULT_CONTROL_PORT`,
-// and four Cilium egress carve-outs under `cluster/guardrails/`. If any one
-// drifts from the others, Cilium silently *drops* the packets rather than
-// erroring — a connect timeout that points nowhere near the NetworkPolicy. The
-// cross-reference comments between these sites don't stop drift; these tests read
-// the real YAML off disk and fail CI loudly the moment a const and its carve-out
-// disagree. Mirrors the `real_satisfactory_manifest_is_on_the_advertise_path`
-// pattern in `agones/tests/ports.rs`.
+// The control-plane host/port values are pinned in independent places Cilium
+// can't cross-check: the `DEFAULT_*` consts above and the Cilium egress carve-outs
+// under `cluster/guardrails/`. If a const drifts from its carve-out, Cilium
+// silently *drops* the packets rather than erroring — a connect timeout that
+// points nowhere near the NetworkPolicy. The cross-reference comments between
+// these sites don't stop drift; these tests read the real YAML off disk and fail
+// CI loudly the moment a const and its carve-out disagree. Mirrors the
+// `real_satisfactory_manifest_is_on_the_advertise_path` pattern in
+// `agones/tests/ports.rs`.
+//
+// The supervisor control port is no longer among the drifting pairs: the bot and
+// supervisor both default to `grizzly_control_api::CONTROL_PORT`, so the two Rust
+// sides are equal by construction — only that shared const vs. its
+// `bot-to-supervisor-egress.yaml` carve-out still needs guarding below.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Minimal view of a `CiliumNetworkPolicy` egress carve-out — only the `port`
 /// and `cidr` literals these guardrails pin. Deliberately partial so an unrelated
@@ -436,48 +441,14 @@ fn load_egress(file: &str) -> EgressPolicy {
     serde_yaml_ng::from_str(&yaml).unwrap_or_else(|err| panic!("parsing {path:?}: {err}"))
 }
 
-/// Reads a `const NAME: u16 = N;` literal out of a Rust source file by a targeted
-/// line scan — enough to reach the supervisor crate's `DEFAULT_CONTROL_PORT`
-/// without a build dependency on it, so its value is pinned against the shared
-/// control port too. Deliberately a line scan, not a Rust parser: the const lines
-/// are flat and this stays cheap to keep in sync with them.
-fn rust_u16_const(source_path: &Path, name: &str) -> u16 {
-    let source = std::fs::read_to_string(source_path)
-        .unwrap_or_else(|err| panic!("reading {source_path:?}: {err}"));
-    let prefix = format!("const {name}: u16 = ");
-    let value = source
-        .lines()
-        .map(str::trim_start)
-        .find_map(|line| line.strip_prefix(prefix.as_str()))
-        .unwrap_or_else(|| panic!("{name} not found in {source_path:?}"));
-    value
-        .trim_end()
-        .trim_end_matches(';')
-        .trim()
-        .parse()
-        .unwrap_or_else(|_| panic!("{name} value {value:?} is not a valid u16"))
-}
-
-fn supervisor_config_path() -> PathBuf {
-    PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../supervisor/src/config.rs"
-    ))
-}
-
 #[test]
-fn supervisor_egress_port_matches_control_port_on_both_sides() {
+fn supervisor_egress_port_matches_shared_control_port() {
     let yaml_port = load_egress("bot-to-supervisor-egress.yaml").only_port();
     assert_eq!(
         yaml_port, DEFAULT_CONTROL_PORT,
-        "bot-to-supervisor-egress.yaml opens {yaml_port} but bot DEFAULT_CONTROL_PORT is \
-         {DEFAULT_CONTROL_PORT}; Cilium would silently drop the bot's control calls (issue #42)"
-    );
-    let supervisor_control_port = rust_u16_const(&supervisor_config_path(), "DEFAULT_CONTROL_PORT");
-    assert_eq!(
-        supervisor_control_port, DEFAULT_CONTROL_PORT,
-        "supervisor DEFAULT_CONTROL_PORT ({supervisor_control_port}) must equal the bot's \
-         ({DEFAULT_CONTROL_PORT}) — they name the same in-pod control API port (issue #42)"
+        "bot-to-supervisor-egress.yaml opens {yaml_port} but the shared control port \
+         DEFAULT_CONTROL_PORT (= grizzly_control_api::CONTROL_PORT) is {DEFAULT_CONTROL_PORT}; \
+         Cilium would silently drop the bot's control calls (issue #42)"
     );
 }
 

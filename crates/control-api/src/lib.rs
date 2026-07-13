@@ -9,7 +9,9 @@
 //! [`FS_WRITE_PATH`], [`FS_RESTORE_PATH`], [`LOGS_PATH`], [`COMMAND_PATH`],
 //! [`ANNOUNCE_PATH`], plus [`ARCHIVE_PATH`] and [`OCCUPANCY_PATH`]), and each
 //! route's request/response bodies beside them — so no route path is a bare
-//! literal one side could rename into a silent 404. The reverse direction — the
+//! literal one side could rename into a silent 404. The control port both sides
+//! bind and dial ([`CONTROL_PORT`]) lives here for the same reason — a port
+//! mismatch is a silent drop, not an error. The reverse direction — the
 //! supervisor posting in-game chat triggers to the bot's agent endpoint
 //! ([`IngameTriggerRequest`] on [`INGAME_TRIGGER_PATH`]) — shares this crate too,
 //! so the one contract file stays authoritative for both loops.
@@ -31,6 +33,16 @@ pub const PROCESS_LABEL_RUNNING: &str = "running";
 
 /// Value of [`PROCESS_LABEL_KEY`] while the game process is intentionally stopped.
 pub const PROCESS_LABEL_STOPPED: &str = "stopped";
+
+/// Default TCP port the supervisor serves its control API on and the bot's control
+/// client dials. Pod-internal — never added to the `NodePort` Service — so only the
+/// bot (allowed by a scoped Cilium egress rule) can reach it. Deliberately outside
+/// the 7000–7010 `NodePort` band and clear of 9358 (the Agones SDK). Shared so both
+/// sides default to the same port; a mismatch is a silent Cilium drop, not an error.
+/// The `cluster/guardrails/bot-to-supervisor-egress.yaml` guardrail hardcodes this
+/// value too and must still be matched by hand (a YAML file can't import a Rust
+/// const — that half stays tracked under issue #42).
+pub const CONTROL_PORT: u16 = 9359;
 
 /// A control action the bot can ask the supervisor to perform, identified by the
 /// HTTP method + path it arrives on. Not a wire *body* — it is the routing key,

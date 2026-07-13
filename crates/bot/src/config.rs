@@ -14,13 +14,14 @@ const DEFAULT_NAMESPACE: &str = "game-servers";
 const DEFAULT_DOMAIN: &str = "gameservers.grizzly-endeavors.com";
 /// Where the per-game catalog is baked into the container image (see Dockerfile).
 const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
-/// Port the in-pod supervisor serves its control API on; must match the catalog
-/// (`games/<game>/gameserver.yaml`), the supervisor's own default
-/// (`DEFAULT_CONTROL_PORT` in `crates/supervisor/src/config.rs`), and the
-/// hardcoded port in `cluster/guardrails/bot-to-supervisor-egress.yaml` —
-/// Cilium silently drops on a mismatch instead of erroring. No single source
-/// of truth yet (see issue #42).
-const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Port the in-pod supervisor serves its control API on. Sourced from the shared
+/// `grizzly_control_api::CONTROL_PORT` (the single Rust source of truth) so the bot
+/// and supervisor can't drift from each other. Still must match the catalog
+/// (`games/<game>/gameserver.yaml`) and the hardcoded port in
+/// `cluster/guardrails/bot-to-supervisor-egress.yaml` by hand — those YAML files
+/// can't import a Rust const, so that half stays tracked under issue #42; Cilium
+/// silently drops on a mismatch instead of erroring.
+const DEFAULT_CONTROL_PORT: u16 = grizzly_control_api::CONTROL_PORT;
 /// Port the in-game agent endpoint listens on for supervisor-posted `@Gary`
 /// triggers. Pod-internal, reached over the bot's `ClusterIP` Service. Must
 /// match the hardcoded port in
