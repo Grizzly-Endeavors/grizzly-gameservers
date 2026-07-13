@@ -20,12 +20,14 @@ pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 /// The itzg entrypoint the supervisor wraps as its child process.
 const DEFAULT_CHILD_CMD: &str = "/start";
 const DEFAULT_GAME_PORT: u16 = 25565;
-/// Not in the 7000–7010 `NodePort` band and not 9358 (the Agones SDK). Must
-/// match `DEFAULT_CONTROL_PORT` in `crates/bot/src/config.rs` and the
-/// hardcoded port in `cluster/guardrails/bot-to-supervisor-egress.yaml` — a
-/// mismatch is a silent Cilium drop, not an error. No single source of truth
-/// yet (see issue #42).
-const DEFAULT_CONTROL_PORT: u16 = 9359;
+/// Default control-API port. Sourced from the shared
+/// `grizzly_control_api::CONTROL_PORT` (the single Rust source of truth, where the
+/// port-choice rationale lives) so the bot and supervisor can't drift from each
+/// other. The `cluster/guardrails/bot-to-supervisor-egress.yaml` carve-out still
+/// hardcodes the same value and must be matched by hand — a YAML file can't import
+/// a Rust const, so that half stays tracked under issue #42; a mismatch there is a
+/// silent Cilium drop, not an error.
+const DEFAULT_CONTROL_PORT: u16 = grizzly_control_api::CONTROL_PORT;
 /// Where the auto-injected Agones SDK sidecar serves its REST API.
 const DEFAULT_SDK_BASE_URL: &str = "http://127.0.0.1:9358";
 /// The instance PVC mount the agent's file operations are confined to — matches

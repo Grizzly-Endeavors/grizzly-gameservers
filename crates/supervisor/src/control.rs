@@ -11,10 +11,11 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
-    ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, CommandRequest, CommandResponse, ControlCommand,
-    ControlError, ControlOk, ExtractQuery, ListResponse, LogsQuery, LogsResponse, OCCUPANCY_PATH,
-    OccupancyResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse, ResultKind,
-    RouteError, StatusResponse, WriteRequest, WriteResponse,
+    ANNOUNCE_PATH, ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, COMMAND_PATH, CommandRequest,
+    CommandResponse, ControlCommand, ControlError, ControlOk, ExtractQuery, FS_LIST_PATH,
+    FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse,
+    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse,
+    ResultKind, RouteError, StatusResponse, WriteRequest, WriteResponse,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -78,15 +79,15 @@ pub async fn serve(
     rcon: Option<Arc<RconRuntime>>,
 ) -> Result<()> {
     let app = Router::new()
-        .route("/fs/list", get(fs_list))
-        .route("/fs/read", get(fs_read))
-        .route("/fs/write", post(fs_write))
-        .route("/fs/restore", post(fs_restore))
+        .route(FS_LIST_PATH, get(fs_list))
+        .route(FS_READ_PATH, get(fs_read))
+        .route(FS_WRITE_PATH, post(fs_write))
+        .route(FS_RESTORE_PATH, post(fs_restore))
         .route(ARCHIVE_PATH, get(archive_out).post(archive_in))
-        .route("/logs", get(logs_tail))
+        .route(LOGS_PATH, get(logs_tail))
         .route(OCCUPANCY_PATH, get(occupancy))
-        .route("/command", post(run_command))
-        .route("/announce", post(announce))
+        .route(COMMAND_PATH, post(run_command))
+        .route(ANNOUNCE_PATH, post(announce))
         .fallback(any(handle))
         .with_state(ControlState {
             tx,
