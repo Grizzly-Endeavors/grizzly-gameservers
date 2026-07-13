@@ -1815,8 +1815,9 @@ fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
         // honest tool-result prompt for it yet: ArchiveDone slightly overstates it
         // (it claims the storage was released), but it preserves the load-bearing
         // truth — archived and recoverable — where ArchiveFailed would falsely tell
-        // the model nothing was saved. A dedicated prompt is the real fix (see the
-        // handoff note); left as-is here to avoid rewording prompt text.
+        // the model nothing was saved. A dedicated prompt is the real fix (see
+        // "Open questions" in docs/design/02-backups-archive-restore.md); left
+        // as-is here to avoid rewording prompt text.
         ArchiveOutcome::Archived { name, size_bytes }
         | ArchiveOutcome::ArchivedNotReleased { name, size_bytes } => {
             let size = human_size(*size_bytes);

@@ -4,7 +4,7 @@ A Discord-driven service for spinning up and managing game servers on Grizzly En
 
 See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architecture and [`CLAUDE.md`](CLAUDE.md) for working conventions. **Status: live.** The Discord shim, the LLM ops agent (Gary), and the in-pod process supervisor are all deployed and gate-signed via CI; see [`docs/activation-status.md`](docs/activation-status.md) for what's verified.
 
-A Cargo workspace with three crates: `crates/bot` (Discord shim + ops agent + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (in-pod process supervisor baked into game images, binary `grizzly-supervisor`), and `crates/control-api` (wire types shared by the two).
+A Cargo workspace with four crates: `crates/bot` (Discord shim + ops agent + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (in-pod process supervisor baked into game images, binary `grizzly-supervisor`), `crates/control-api` (the wire contract shared by the two — request/response bodies plus the route-path constants and `CONTROL_PORT`, so neither side hardcodes a bare literal like `9359` or `/fs/read`), and `crates/prompt-lib` (build-time compiler that turns the bot's `prompts/` Markdown tree into typed Rust accessors).
 
 ## Build
 
