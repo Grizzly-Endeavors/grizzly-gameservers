@@ -21,23 +21,51 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Build and push (capture digest)
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # The runners' DinD layer store is an emptyDir that dies with the pod, so a plain
+      # `docker build` is fully cold every run. BuildKit's registry cache persists layers in
+      # zot instead (the same recipe the in-cluster Argo builds use — grizzly-platform
+      # ADR-057): dependency layers become LAN-local cache hits and a source-only change
+      # rebuilds just the app layers.
+      - name: Build and push via BuildKit registry cache (capture digest)
         id: push
         run: |
           set -euo pipefail
-          docker build -f Dockerfile -t "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" .
-          docker push "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}"
-          # The gate signs by digest, and the chart pins by digest — resolve the
-          # immutable digest of what we just pushed.
-          digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" | cut -d@ -f2)
-          # Fail loud on a missing/garbage digest. RepoDigests is only populated
-          # from the registry's push response, so a registry hiccup can leave it
-          # empty — and an empty digest silently poisons the gate (scans `@`) and
-          # deploy (pins `@`). Guard the whole pipeline at the source.
+          # The buildx builder runs its own buildkitd, which does its own registry I/O and
+          # ignores dockerd's --registry-mirror/--insecure-registry flags — so mirror
+          # docker.io through zot and mark zot plain-HTTP here, mirroring the
+          # buildkitd-config ConfigMap the Argo builds use.
+          cat > /tmp/buildkitd.toml <<'EOF'
+          [registry."docker.io"]
+            mirrors = ["registry.registry.svc.cluster.local:5000"]
+          [registry."registry.registry.svc.cluster.local:5000"]
+            http = true
+          EOF
+          # Builder image pinned for reproducibility; bump deliberately (check
+          # https://github.com/moby/buildkit/releases). Pulled through dockerd, so the zot
+          # Docker Hub mirror serves it LAN-local.
+          docker buildx create --name ci \
+            --driver docker-container \
+            --driver-opt image=moby/buildkit:v0.31.2 \
+            --config /tmp/buildkitd.toml
+          # oci-mediatypes+image-manifest make zot accept the cache manifest (ADR-057);
+          # mode=max caches the intermediate stages too. provenance/sbom are disabled so
+          # the push stays a single image manifest — the gate cosign-signs this exact
+          # digest and Kyverno verifies it at admission; an attestation index would change
+          # what the digest refers to.
+          docker buildx build --builder ci -f Dockerfile \
+            --cache-from "type=registry,ref=$REGISTRY/$IMAGE_NAME:buildcache" \
+            --cache-to "type=registry,ref=$REGISTRY/$IMAGE_NAME:buildcache,mode=max,oci-mediatypes=true,image-manifest=true" \
+            --output "type=registry,name=$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" \
+            --provenance=false --sbom=false \
+            --metadata-file /tmp/build-metadata.json \
+            .
+          digest=$(node -pe "require('/tmp/build-metadata.json')['containerimage.digest']")
+          # Fail loud on a missing/garbage digest: an empty digest silently poisons the
+          # gate (scans `@`) and deploy (pins `@`). Guard the whole pipeline at the source.
           case "$digest" in
             sha256:*) : ;;
-            *) echo "::error::empty/invalid image digest from registry: '${digest}'"; exit 1 ;;
+            *) echo "::error::empty/invalid image digest from buildx metadata: '${digest}'"; exit 1 ;;
           esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
@@ -54,7 +82,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
       # ADR-020 model: pin deploy/values.yaml to the gate-signed digest and
@@ -68,11 +96,15 @@ jobs:
           # outputs for this (regular) job on workflow re-runs — the gate job
           # (a reusable workflow) still receives the value, but this job sees ''
           # and would pin a garbage `@`. The ${GITHUB_SHA} tag is exactly what
-          # build pushed and what the gate signed, and docker inspect here uses
-          # the same method build did, so it yields the identical digest whether
-          # this is a first run or a re-run.
-          docker pull -q "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}"
-          export DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$IMAGE_NAME:${GITHUB_SHA}" | cut -d@ -f2)"
+          # build pushed and what the gate signed; a HEAD on the manifest
+          # returns Docker-Content-Digest without pulling any layers, and yields
+          # the identical digest whether this is a first run or a re-run.
+          DIGEST=$(curl -fsSI \
+            -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+            -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+            "http://$REGISTRY/v2/$IMAGE_NAME/manifests/${GITHUB_SHA}" \
+            | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
+          export DIGEST
           # Guard: never pin/commit an empty or malformed digest.
           case "$DIGEST" in
             sha256:*) : ;;
