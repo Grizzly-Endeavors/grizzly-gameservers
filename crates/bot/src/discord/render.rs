@@ -139,6 +139,14 @@ fn start_spec(outcome: &StartOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_NEUTRAL,
             body: format!("**{server}** is already running."),
         },
+        StartOutcome::StillStopping => EmbedSpec {
+            title: format!("🟡 {server} is still shutting down"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "**{server}** hasn't finished shutting down yet, so there's nothing to start \
+                 back up. Give it a couple of minutes and try `/start` again."
+            ),
+        },
         StartOutcome::NotFound => not_found_spec(server),
         StartOutcome::NotManaged => not_managed_spec(server),
         StartOutcome::UnknownGame(game) => EmbedSpec {

@@ -59,8 +59,14 @@ pub(crate) enum ShutdownOutcome {
 }
 
 pub(crate) enum StartOutcome {
-    Started { address: String, ready: bool },
+    Started {
+        address: String,
+        ready: bool,
+    },
     AlreadyRunning,
+    /// A teardown is still in flight, so there is nothing to resume in place and
+    /// nothing to recreate yet — the old `GameServer` still holds the name.
+    StillStopping,
     NotFound,
     NotManaged,
     UnknownGame(String),

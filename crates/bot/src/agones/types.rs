@@ -32,12 +32,12 @@ pub(crate) struct GameServerStatus {
 }
 
 /// The lifecycle state of a managed game server as the bot presents it: the
-/// Agones `GameServer` state parsed once at the k8s boundary, plus the two
+/// Agones `GameServer` state parsed once at the k8s boundary, plus the three
 /// synthetic states the bot overlays — `Paused` (pod up, process quiesced by
-/// `/stop`) and `Stopped` (Service retained, `GameServer` torn down by
-/// `/shutdown`) — and `Unknown` when Agones reports no state yet. Any Agones
-/// state the bot doesn't reason about is preserved verbatim in `Other` so it
-/// still renders truthfully.
+/// `/stop`), `Stopping` (`GameServer` deleted, finalizer not yet released) and
+/// `Stopped` (Service retained, `GameServer` torn down by `/shutdown`) — and
+/// `Unknown` when Agones reports no state yet. Any Agones state the bot doesn't
+/// reason about is preserved verbatim in `Other` so it still renders truthfully.
 ///
 /// Parsing string states into this closed set at the edge means downstream code
 /// matches variants instead of comparing string literals, so a typo can't
@@ -47,6 +47,7 @@ pub(crate) enum ServerState {
     Ready,
     Allocated,
     Paused,
+    Stopping,
     Stopped,
     Unknown,
     Other(String),
@@ -79,6 +80,7 @@ impl ServerState {
             Self::Ready => "Ready",
             Self::Allocated => "Allocated",
             Self::Paused => "Paused",
+            Self::Stopping => "Stopping",
             Self::Stopped => "Stopped",
             Self::Unknown => "Unknown",
             Self::Other(state) => state,

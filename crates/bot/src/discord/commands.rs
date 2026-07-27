@@ -483,6 +483,17 @@ pub(crate) async fn start(
             }
         }
         Ok(RuntimeState::Down) => start_cold(ctx, &reply, &server).await?,
+        // Neither path is available mid-teardown: there's no live pod to resume
+        // and the outgoing GameServer still owns the name. Say so plainly rather
+        // than dialling a pod that is on its way out.
+        Ok(RuntimeState::Terminating) => {
+            reply
+                .edit(
+                    ctx,
+                    cleared(start_result_embed(&StartOutcome::StillStopping, &server)),
+                )
+                .await?;
+        }
         Ok(RuntimeState::Absent) => {
             reply
                 .edit(

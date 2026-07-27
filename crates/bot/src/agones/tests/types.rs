@@ -28,6 +28,7 @@ fn is_online_is_true_only_for_ready_and_allocated() {
     assert!(ServerState::Ready.is_online());
     assert!(ServerState::Allocated.is_online());
     assert!(!ServerState::Paused.is_online());
+    assert!(!ServerState::Stopping.is_online());
     assert!(!ServerState::Stopped.is_online());
     assert!(!ServerState::Unknown.is_online());
     assert!(!ServerState::from_agones("Scheduled").is_online());
@@ -39,12 +40,14 @@ fn as_str_and_display_agree_for_every_variant() {
         ServerState::Ready,
         ServerState::Allocated,
         ServerState::Paused,
+        ServerState::Stopping,
         ServerState::Stopped,
         ServerState::Unknown,
         ServerState::Other("Error".to_owned()),
     ] {
         assert_eq!(state.to_string(), state.as_str());
     }
+    assert_eq!(ServerState::Stopping.as_str(), "Stopping");
     assert_eq!(ServerState::Stopped.as_str(), "Stopped");
     assert_eq!(ServerState::Unknown.as_str(), "Unknown");
 }
