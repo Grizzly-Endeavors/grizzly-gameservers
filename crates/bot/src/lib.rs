@@ -70,6 +70,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         .build()
         .context("failed to build supervisor control http client")?;
 
+    let schedule = CycleSchedule::from_config(&config);
     let namespace = config.namespace;
     let domain = config.domain;
     let control_port = config.control_port;
@@ -93,13 +94,13 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let shutdown = CancellationToken::new();
     let tasks = TaskTracker::new();
 
-    // Builds the backup service (if S3 is configured) and starts its scheduled
-    // snapshot cycle; the returned handle also goes into the command Data.
-    let backup = setup_backups(
+    // Starts the scheduled background work — stranded-server recovery always,
+    // world backups when S3 is configured. The backup handle it returns also
+    // goes into the command Data.
+    let backup = setup_cycles(
+        schedule,
         config.s3.as_ref(),
         config.db.as_ref(),
-        config.backup_retention,
-        config.backup_interval,
         CycleHandles {
             client: kube_client.clone(),
             http: http.clone(),
@@ -328,6 +329,115 @@ struct CycleHandles {
     control_port: u16,
     catalog: std::sync::Arc<agones::GameCatalog>,
     provision_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Cadences and budgets for the scheduled background cycles.
+struct CycleSchedule {
+    backup_interval: std::time::Duration,
+    backup_retention: usize,
+    reconcile_interval: std::time::Duration,
+    stranded_dwell: std::time::Duration,
+}
+
+impl CycleSchedule {
+    fn from_config(config: &BotConfig) -> Self {
+        Self {
+            backup_interval: config.backup_interval,
+            backup_retention: config.backup_retention,
+            reconcile_interval: config.reconcile_interval,
+            stranded_dwell: config.stranded_dwell,
+        }
+    }
+}
+
+/// Owned cluster/catalog handles the stranded-instance reconciler needs. It
+/// reaches only the Kubernetes API, so it carries none of the backup cycle's
+/// HTTP/supervisor handles.
+struct ReconcileHandles {
+    client: kube::Client,
+    namespace: String,
+    domain: String,
+    catalog: std::sync::Arc<agones::GameCatalog>,
+    dwell: std::time::Duration,
+}
+
+impl ReconcileHandles {
+    fn from_cycle(handles: &CycleHandles, dwell: std::time::Duration) -> Self {
+        Self {
+            client: handles.client.clone(),
+            namespace: handles.namespace.clone(),
+            domain: handles.domain.clone(),
+            catalog: std::sync::Arc::clone(&handles.catalog),
+            dwell,
+        }
+    }
+}
+
+/// Start every scheduled background cycle, returning the backup service the
+/// commands also need.
+///
+/// Stranded-server recovery starts unconditionally: unlike backups it depends on
+/// no optional configuration, and the failure it exists to catch is precisely
+/// the one nobody is around to notice.
+async fn setup_cycles(
+    schedule: CycleSchedule,
+    s3: Option<&config::S3Config>,
+    db: Option<&config::DbConfig>,
+    handles: CycleHandles,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) -> backup::MaybeBackups {
+    spawn_stranded_cycle(
+        ReconcileHandles::from_cycle(&handles, schedule.stranded_dwell),
+        schedule.reconcile_interval,
+        tasks,
+        shutdown.clone(),
+    );
+    setup_backups(
+        s3,
+        db,
+        schedule.backup_retention,
+        schedule.backup_interval,
+        handles,
+        tasks,
+        shutdown,
+    )
+    .await
+}
+
+/// Sweep for servers stranded on a node that stopped answering and bring them
+/// back on a healthy one, in a tracked background task that stops at the next
+/// tick boundary once `shutdown` is cancelled.
+fn spawn_stranded_cycle(
+    handles: ReconcileHandles,
+    interval: std::time::Duration,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) {
+    tasks.spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick fires immediately; skip it so a redeploy doesn't sweep
+        // before the cluster has settled, only once per interval thereafter.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                () = shutdown.cancelled() => break,
+            }
+            let ctx = agones::StrandedCtx {
+                client: &handles.client,
+                namespace: &handles.namespace,
+                domain: &handles.domain,
+                catalog: &handles.catalog,
+            };
+            agones::run_stranded_cycle(&ctx, handles.dwell).await;
+        }
+    });
+    info!(
+        interval_secs = interval.as_secs(),
+        "stranded-server reconciler enabled"
+    );
 }
 
 /// Build the backup service (or `None` when S3 isn't configured) and, when built,
