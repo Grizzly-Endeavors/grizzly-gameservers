@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Service};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, ListParams, PostParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::{Client, Error as KubeError};
@@ -30,6 +31,14 @@ const PORT_RANGE: RangeInclusive<i32> = 7000..=7010;
 const READY_TIMEOUT: Duration = Duration::from_mins(5);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
+/// How long a delete waits for the object to actually leave the API before
+/// calling it stranded. A `GameServer` carries Agones' `agones.dev/controller`
+/// finalizer, which Agones only releases once the pod is truly gone — so this
+/// has to clear the game pods' `terminationGracePeriodSeconds` (120s, the
+/// supervisor's world-save window) with room to spare. Past that, the pod's
+/// kubelet isn't answering and the object is pinned until its node returns.
+const DELETE_TIMEOUT: Duration = Duration::from_secs(150);
+
 /// Outcome of a `/create`. Expected friend-visible results (name clash, no free
 /// ports) are values, not errors; `Err` is reserved for cluster/internal faults.
 pub(crate) enum CreateOutcome {
@@ -39,7 +48,12 @@ pub(crate) enum CreateOutcome {
 }
 
 pub(crate) enum ShutdownOutcome {
+    /// The `GameServer` is confirmed gone; `/start` will cold-start it.
     Down,
+    /// The delete was accepted but the `GameServer` outlived [`DELETE_TIMEOUT`],
+    /// so Agones still can't reap its pod. The world is safe on its PVC and the
+    /// reconciler recycles the instance once the pod's node stops answering.
+    Stranded,
     NotFound,
     NotManaged,
 }
@@ -54,6 +68,11 @@ pub(crate) enum StartOutcome {
 
 pub(crate) enum DestroyOutcome {
     Destroyed,
+    /// The `GameServer` wouldn't confirm gone, so nothing else was deleted —
+    /// the Service and PVC (and therefore the world) are untouched. Deleting a
+    /// PVC out from under a pod that may still be writing to it is how a world
+    /// gets lost, so an unconfirmed teardown stops here rather than proceeding.
+    Blocked,
     NotFound,
     NotManaged,
 }
@@ -234,6 +253,11 @@ async fn create_storage_and_server(
 /// The lighter `/stop` (pause the process, keep the pod) goes through the
 /// supervisor, not here.
 ///
+/// Waits for the `GameServer` to actually leave the API rather than trusting the
+/// accepted delete: Agones' finalizer keeps the object addressable until the pod
+/// is reaped, and a caller that assumes otherwise reports a shutdown that hasn't
+/// happened and routes the next `/start` down the warm path into a dead pod.
+///
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached.
@@ -253,8 +277,10 @@ pub(crate) async fn shutdown_instance(
     if !is_managed(service.metadata.labels.as_ref()) {
         return Ok(ShutdownOutcome::NotManaged);
     }
-    delete_if_present(&gameserver_api(client, namespace), instance).await?;
-    Ok(ShutdownOutcome::Down)
+    match delete_and_confirm(&gameserver_api(client, namespace), instance).await? {
+        DeleteWait::Deleted => Ok(ShutdownOutcome::Down),
+        DeleteWait::Unconfirmed => Ok(ShutdownOutcome::Stranded),
+    }
 }
 
 /// Result of the start-up phase of `/start`: the `GameServer` has been recreated
@@ -343,6 +369,13 @@ pub(crate) async fn begin_start(
 /// Tear an instance down completely: delete its `GameServer`, Service and PVC.
 /// This destroys the world.
 ///
+/// The `GameServer` must be confirmed gone before the Service and PVC are
+/// touched. An accepted-but-unfinished `GameServer` delete means its pod is
+/// still around, and deleting the PVC underneath a live pod hands the world to
+/// the storage class' `Delete` reclaim policy the moment the pod finally exits —
+/// a teardown the friend never sees fail. When the confirmation doesn't land,
+/// nothing after it runs and the caller gets [`DestroyOutcome::Blocked`].
+///
 /// # Errors
 ///
 /// Returns an error if the cluster cannot be reached or a delete fails for a
@@ -363,7 +396,16 @@ pub(crate) async fn destroy_instance(
     if !is_managed(service.metadata.labels.as_ref()) {
         return Ok(DestroyOutcome::NotManaged);
     }
-    delete_if_present(&gameserver_api(client, namespace), instance).await?;
+    if matches!(
+        delete_and_confirm(&gameserver_api(client, namespace), instance).await?,
+        DeleteWait::Unconfirmed
+    ) {
+        warn!(
+            instance,
+            "gameserver did not confirm gone; leaving service and pvc intact"
+        );
+        return Ok(DestroyOutcome::Blocked);
+    }
     delete_if_present(&services, instance).await?;
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     delete_if_present(&pvcs, &pvc_name(instance)).await?;
@@ -490,13 +532,20 @@ fn is_ready(gameserver: &GameServer) -> bool {
         .is_some_and(|state| state.is_online())
 }
 
+/// Roll back a half-built instance. Deletes in reverse-create order — the
+/// `GameServer` first so Agones releases the pod, then the PVC it mounted, then
+/// the Service — because a PVC delete issued while its pod is alive only takes
+/// effect later, once `kubernetes.io/pvc-protection` clears.
 async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
+    let gameserver = delete_and_confirm(&gameserver_api(client, namespace), instance)
+        .await
+        .map(|_| ());
     for outcome in [
-        delete_if_present(&gameserver_api(client, namespace), instance).await,
-        delete_if_present(&services, instance).await,
+        gameserver,
         delete_if_present(&pvcs, &pvc_name(instance)).await,
+        delete_if_present(&services, instance).await,
     ] {
         if let Err(err) = outcome {
             warn!(error = ?err, instance, "rollback delete failed; manual cleanup may be needed");
@@ -504,6 +553,85 @@ async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {
     }
 }
 
+/// Where an object sits in its delete lifecycle, read from its metadata alone.
+/// Kubernetes answers a delete as soon as it is *accepted*, so "the API returned
+/// success" and "the object is gone" are different facts whenever a finalizer is
+/// involved — this is the distinction the callers need to keep straight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeletionState {
+    /// No delete has been issued against this object.
+    Live,
+    /// A delete was accepted; a finalizer still holds the object in the API.
+    Terminating,
+}
+
+/// Classify an object's delete lifecycle from its metadata.
+pub(crate) fn deletion_state(meta: &ObjectMeta) -> DeletionState {
+    if meta.deletion_timestamp.is_some() {
+        DeletionState::Terminating
+    } else {
+        DeletionState::Live
+    }
+}
+
+/// Outcome of a delete that waits for the object to actually leave the API.
+pub(crate) enum DeleteWait {
+    /// The object is gone.
+    Deleted,
+    /// The object outlived the wait. Either a finalizer still holds it past
+    /// [`DELETE_TIMEOUT`] — for a `GameServer` that means Agones can't reap its
+    /// pod, which in practice means the pod's node stopped answering — or the
+    /// name was recreated underneath us. Callers must treat the object as
+    /// possibly still live.
+    Unconfirmed,
+}
+
+/// Delete an object and wait for it to actually leave the API.
+///
+/// `Api::delete` resolves as soon as the API server *accepts* the delete, which
+/// for a finalizer-bearing object just stamps `metadata.deletionTimestamp`.
+/// Treating that as "gone" is what lets a caller report a teardown that hasn't
+/// happened, so every delete whose completion the caller depends on goes
+/// through here rather than [`delete_if_present`].
+///
+/// # Errors
+///
+/// Returns an error if the delete fails for a reason other than the object
+/// already being absent, or if the object cannot be polled afterwards.
+async fn delete_and_confirm<K>(api: &Api<K>, name: &str) -> Result<DeleteWait>
+where
+    K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + kube::Resource,
+{
+    delete_if_present(api, name).await?;
+
+    let deadline = tokio::time::Instant::now() + DELETE_TIMEOUT;
+    let mut ticker = tokio::time::interval(POLL_INTERVAL);
+    loop {
+        ticker.tick().await;
+        let Some(object) = api
+            .get_opt(name)
+            .await
+            .with_context(|| format!("failed to confirm deletion of {name}"))?
+        else {
+            return Ok(DeleteWait::Deleted);
+        };
+        // Still present but carrying no deletion timestamp means this is a
+        // different object wearing the same name — the one we deleted is gone
+        // and something recreated it. Waiting out the deadline would be waiting
+        // on an object nobody asked to remove.
+        if deletion_state(object.meta()) == DeletionState::Live {
+            warn!(name, "object reappeared during delete; stopping the wait");
+            return Ok(DeleteWait::Unconfirmed);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(DeleteWait::Unconfirmed);
+        }
+    }
+}
+
+/// Delete an object, tolerating one that is already gone. Returns once the
+/// delete is *accepted* — see [`delete_and_confirm`] when the caller needs the
+/// object to actually be gone before it does anything else.
 async fn delete_if_present<K>(api: &Api<K>, name: &str) -> Result<()>
 where
     K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
@@ -537,3 +665,7 @@ fn is_already_exists(err: &KubeError) -> bool {
 fn is_port_conflict(err: &KubeError) -> bool {
     api_status_code(err) == Some(422)
 }
+
+#[cfg(test)]
+#[path = "tests/provision.rs"]
+mod tests;
