@@ -159,6 +159,20 @@ fn shutdown_spec(outcome: &ShutdownOutcome, server: &str) -> EmbedSpec {
                  (a little slower than `/stop`'s pause, since it has to fully boot back up)."
             ),
         },
+        // The shutdown was accepted but couldn't be confirmed, which in practice
+        // means the machine the server was running on stopped answering. Amber,
+        // not red: nothing is lost and it resolves itself. The body deliberately
+        // avoids "shut down" — claiming that is what made the last outage
+        // impossible to reason about from Discord.
+        ShutdownOutcome::Stranded => EmbedSpec {
+            title: format!("🟡 {server} is still shutting down"),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "**{server}**'s world is saved, but the machine it was running on stopped \
+                 responding before it finished shutting down. I'll move it to another machine \
+                 automatically — nothing is lost and you don't need to do anything."
+            ),
+        },
         ShutdownOutcome::NotFound => not_found_spec(server),
         ShutdownOutcome::NotManaged => not_managed_spec(server),
     }
@@ -226,6 +240,19 @@ fn destroy_spec(outcome: &DestroyOutcome, server: &str) -> EmbedSpec {
             title: format!("Destroyed {server}"),
             colour: COLOUR_NEUTRAL,
             body: format!("**{server}** and its world have been deleted."),
+        },
+        // Refused, not failed: the world is intact and deleting it while the
+        // server may still be writing to it is the one outcome worth preventing.
+        // Amber, and the body must not read as "destroyed".
+        DestroyOutcome::Blocked => EmbedSpec {
+            title: "Didn't destroy it".to_owned(),
+            colour: COLOUR_PENDING,
+            body: format!(
+                "**{server}** wouldn't shut down cleanly — the machine it was running on \
+                 stopped responding — so I left it and its world alone rather than risk \
+                 deleting a world that's still in use. Nothing was deleted. Try again once \
+                 it's back."
+            ),
         },
         DestroyOutcome::NotFound => not_found_spec(server),
         DestroyOutcome::NotManaged => not_managed_spec(server),

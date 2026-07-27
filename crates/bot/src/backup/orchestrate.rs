@@ -278,6 +278,21 @@ impl BackupService {
             Ok(DestroyOutcome::NotManaged) => {
                 warn!(instance, "archived server was unmanaged at teardown");
             }
+            // The teardown refused rather than failed: the server wouldn't
+            // confirm it had stopped, so its storage is deliberately still
+            // there. Same partial success as an errored release — the archive
+            // stands and re-running `/archive` clears the storage up.
+            Ok(DestroyOutcome::Blocked) => {
+                warn!(
+                    instance,
+                    "archive committed but the server wouldn't confirm shut down; \
+                     its storage was left in place and is safe to release later"
+                );
+                return Ok(ArchiveOutcome::ArchivedNotReleased {
+                    name: instance.to_owned(),
+                    size_bytes: size,
+                });
+            }
             Err(err) => {
                 error!(
                     error = ?err,

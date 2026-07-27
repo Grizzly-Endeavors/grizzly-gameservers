@@ -898,6 +898,7 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
     match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(ShutdownOutcome::Down) => prompts::ShutdownStopped { server }.render(),
+        Ok(ShutdownOutcome::Stranded) => prompts::ShutdownStranded { server }.render(),
         Ok(ShutdownOutcome::NotFound) => no_such(server),
         Ok(ShutdownOutcome::NotManaged) => not_managed(server),
         Err(err) => {
@@ -1787,6 +1788,7 @@ fn format_ready_wait(server: &str, outcome: &ReadyWait) -> String {
 fn format_destroy(server: &str, outcome: &DestroyOutcome) -> String {
     match outcome {
         DestroyOutcome::Destroyed => prompts::DestroyDeleted { server }.render(),
+        DestroyOutcome::Blocked => prompts::DestroyBlocked { server }.render(),
         DestroyOutcome::NotFound => no_such(server),
         DestroyOutcome::NotManaged => not_managed(server),
     }

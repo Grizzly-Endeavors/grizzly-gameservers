@@ -181,6 +181,46 @@ fn shutdown_and_destroy_success_stay_neutral() {
     );
 }
 
+// An unconfirmed teardown is amber, not red: the world is intact and recovery is
+// automatic, so it isn't a failure the friend has to act on.
+#[test]
+fn unconfirmed_teardowns_are_pending_not_errors() {
+    assert_eq!(
+        shutdown_spec(&ShutdownOutcome::Stranded, "palworld").colour,
+        COLOUR_PENDING,
+        "a shutdown awaiting recovery is in-progress, not failed"
+    );
+    assert_eq!(
+        destroy_spec(&DestroyOutcome::Blocked, "palworld").colour,
+        COLOUR_PENDING,
+        "a refused destroy is in-progress, not failed"
+    );
+}
+
+// The bug this whole change exists to prevent: telling a friend a server is shut
+// down, or a world deleted, when neither has actually happened.
+#[test]
+fn unconfirmed_teardowns_never_claim_they_finished() {
+    let shutdown = shutdown_spec(&ShutdownOutcome::Stranded, "palworld");
+    assert!(
+        !shutdown.body.contains("is fully shut down"),
+        "an unconfirmed shutdown must not claim the server stopped, got: {}",
+        shutdown.body
+    );
+
+    let destroy = destroy_spec(&DestroyOutcome::Blocked, "palworld");
+    assert!(
+        destroy.body.contains("Nothing was deleted"),
+        "a blocked destroy must say the world is intact, got: {}",
+        destroy.body
+    );
+    assert!(
+        !destroy.title.contains("Destroyed"),
+        "a blocked destroy must not read as a destruction, got: {}",
+        destroy.title
+    );
+}
+
 #[test]
 fn not_managed_outcomes_explain_the_boundary() {
     let spec = shutdown_spec(&ShutdownOutcome::NotManaged, "platform-thing");
