@@ -64,6 +64,13 @@ const DEFAULT_S3_REGION: &str = "us-east-1";
 const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
 /// How many backups to retain per server; older ones are pruned each cycle.
 const DEFAULT_BACKUP_RETENTION: usize = 7;
+/// How often the reconciler sweeps for servers stranded on an unresponsive node.
+const DEFAULT_RECONCILE_INTERVAL_MINUTES: u64 = 5;
+/// How long a pod must sit terminating before the reconciler forces it out. Well
+/// clear of the game pods' 120s graceful-stop window, so a slow but healthy
+/// world-save is never cut short — this is only meant to catch a kubelet that
+/// has stopped answering entirely.
+const DEFAULT_STRANDED_DWELL_MINUTES: u64 = 15;
 
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
@@ -103,6 +110,11 @@ pub struct BotConfig {
     pub(crate) backup_interval: Duration,
     /// How many backups to keep per server before the cycle prunes older ones.
     pub(crate) backup_retention: usize,
+    /// How often the reconciler sweeps for stranded servers.
+    pub(crate) reconcile_interval: Duration,
+    /// How long a pod must have been terminating before the reconciler treats it
+    /// as stranded and forces it out.
+    pub(crate) stranded_dwell: Duration,
     /// Port the in-game agent endpoint binds for supervisor-posted chat triggers.
     pub(crate) agent_port: u16,
     /// Shared bearer token the in-game agent endpoint requires. `None` runs it
@@ -194,6 +206,16 @@ impl BotConfig {
         );
         let backup_retention = optional_positive_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
             .unwrap_or(DEFAULT_BACKUP_RETENTION);
+        let reconcile_interval = Duration::from_secs(
+            optional_positive_u64(lookup, "GAMESERVERS_RECONCILE_INTERVAL_MINUTES")?
+                .unwrap_or(DEFAULT_RECONCILE_INTERVAL_MINUTES)
+                .saturating_mul(60),
+        );
+        let stranded_dwell = Duration::from_secs(
+            optional_positive_u64(lookup, "GAMESERVERS_STRANDED_DWELL_MINUTES")?
+                .unwrap_or(DEFAULT_STRANDED_DWELL_MINUTES)
+                .saturating_mul(60),
+        );
         let agent_port =
             optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
         let ingame_token =
@@ -214,6 +236,8 @@ impl BotConfig {
             s3,
             backup_interval,
             backup_retention,
+            reconcile_interval,
+            stranded_dwell,
             agent_port,
             ingame_token,
         })

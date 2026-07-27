@@ -10,6 +10,7 @@ use kube::{Api, Client};
 use tracing::{debug, warn};
 
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
+use super::provision::{DeletionState, deletion_state};
 use super::types::GameServer;
 
 /// Per-request timeout for the mutating supervisor calls. `/stop` and `/restart`
@@ -35,6 +36,11 @@ const READY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 pub(crate) enum RuntimeState {
     /// The `GameServer` (and its pod) exist — the supervisor can act in place.
     PodUp,
+    /// The `GameServer` is being deleted but a finalizer still holds it, so its
+    /// pod is on the way out and its control API must not be dialled. Resolves
+    /// on its own once the pod is reaped; the reconciler forces that along when
+    /// the pod's node has stopped answering.
+    Terminating,
     /// No `GameServer`, but the Service survives — `/shutdown`ed, needs a cold start.
     Down,
     /// Nothing by that name.
@@ -138,8 +144,14 @@ pub(crate) async fn supervisor_restart(
     .await
 }
 
-/// Classify an instance as warm (pod up), cold (shut down), or absent so `/start`
-/// can pick the fast or the reschedule path.
+/// Classify an instance as warm (pod up), on its way down, cold (shut down), or
+/// absent so `/start` can pick the fast or the reschedule path.
+///
+/// The `GameServer` object existing is not enough to call an instance warm: a
+/// deleted one lingers, addressable, until Agones' finalizer clears, which it
+/// can't do while the pod's node is unreachable. Reading only existence is what
+/// let `/start` keep choosing the warm path against a server that was already
+/// gone, with no command able to move it off that node.
 ///
 /// # Errors
 ///
@@ -150,13 +162,15 @@ pub(crate) async fn instance_runtime_state(
     instance: &str,
 ) -> Result<RuntimeState> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
-    if gameservers
+    if let Some(gameserver) = gameservers
         .get_opt(instance)
         .await
         .with_context(|| format!("failed to read gameserver {instance}"))?
-        .is_some()
     {
-        return Ok(RuntimeState::PodUp);
+        return Ok(match deletion_state(&gameserver.metadata) {
+            DeletionState::Live => RuntimeState::PodUp,
+            DeletionState::Terminating => RuntimeState::Terminating,
+        });
     }
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     if services
@@ -280,8 +294,17 @@ async fn gameserver_pod_ip(
     Ok(list.items.iter().find_map(running_pod_ip))
 }
 
-/// The pod IP of a Running pod, or `None` if it isn't running or has no IP yet.
+/// The pod IP of a live Running pod, or `None` if it isn't running, is on its
+/// way out, or has no IP yet.
+///
+/// A pod whose node stops answering keeps reporting `Running` with its old IP
+/// indefinitely — the delete that evicted it can't complete without a kubelet to
+/// confirm it. Skipping terminating pods is what stops the control client from
+/// dialling an address that no longer has anything behind it.
 fn running_pod_ip(pod: &Pod) -> Option<String> {
+    if deletion_state(&pod.metadata) == DeletionState::Terminating {
+        return None;
+    }
     let status = pod.status.as_ref()?;
     if status.phase.as_deref() != Some("Running") {
         return None;

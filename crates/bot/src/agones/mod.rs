@@ -12,6 +12,7 @@ mod naming;
 mod ports;
 mod provision;
 mod scope;
+mod stranded;
 mod supervisor;
 mod supervisor_fs;
 mod types;
@@ -25,6 +26,7 @@ pub(crate) use provision::{
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
 pub(crate) use scope::{ScopeVerdict, ServerScope, guild_of, verify_scope};
+pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state,
     resolve_managed_pod, supervisor_restart, supervisor_start, supervisor_stop,

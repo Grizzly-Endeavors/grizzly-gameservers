@@ -137,7 +137,9 @@ impl BackupService {
             return Ok(
                 match instance_runtime_state(ctx.client, ctx.namespace, instance).await? {
                     RuntimeState::Absent => BackupOutcome::NotFound,
-                    RuntimeState::Down | RuntimeState::PodUp => BackupOutcome::NotRunning,
+                    RuntimeState::Down | RuntimeState::PodUp | RuntimeState::Terminating => {
+                        BackupOutcome::NotRunning
+                    }
                 },
             );
         };
@@ -744,6 +746,13 @@ impl BackupService {
         match instance_runtime_state(ctx.client, ctx.namespace, instance).await? {
             RuntimeState::Absent => return Ok(EnsurePod::NotFound),
             RuntimeState::PodUp => return Ok(EnsurePod::Ready),
+            // Cold-starting now would collide with the in-flight teardown: the
+            // create is rejected while the old object still holds the name.
+            RuntimeState::Terminating => {
+                return Ok(EnsurePod::Failed(
+                    "the server is still shutting down; try again in a few minutes".to_owned(),
+                ));
+            }
             RuntimeState::Down => {}
         }
         match begin_start(ctx.client, ctx.namespace, ctx.domain, ctx.catalog, instance).await? {

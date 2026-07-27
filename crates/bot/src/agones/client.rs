@@ -10,6 +10,7 @@ use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
 use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_gameserver_target};
 use super::ports::{friend_facing_node_port, node_ports_by_gameserver};
+use super::provision::{DeletionState, deletion_state};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, ServerSummary, summarize};
 use crate::domain::{GameId, GuildId, InstanceName};
@@ -64,7 +65,13 @@ pub(crate) async fn list_active_servers(
         // takes precedence over the (still Ready/Allocated) Agones state.
         let paused = label_value(gameserver.metadata.labels.as_ref(), PROCESS_LABEL_KEY)
             == Some(PROCESS_LABEL_STOPPED);
-        let state = if paused {
+        // A GameServer being torn down keeps reporting its last Agones state
+        // until the finalizer clears, so listing that state would show a server
+        // as Ready while it is on its way out — and, if its node is gone, keep
+        // showing it indefinitely.
+        let state = if deletion_state(&gameserver.metadata) == DeletionState::Terminating {
+            ServerState::Stopping
+        } else if paused {
             ServerState::Paused
         } else {
             gameserver

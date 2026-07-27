@@ -857,6 +857,7 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
             }
         },
         Ok(RuntimeState::Down) => exec_cold_start(ctx, server).await,
+        Ok(RuntimeState::Terminating) => prompts::StartStillStopping { server }.render(),
         Ok(RuntimeState::Absent) => no_such(server),
         Err(err) => {
             error!(error = ?err, %server, "agent: start state lookup failed");

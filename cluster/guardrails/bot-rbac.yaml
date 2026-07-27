@@ -7,6 +7,13 @@
 # or execs — Gary operates a running server entirely through that supervisor
 # HTTP API, not through K8s exec/patch — and is namespace-scoped, never
 # cluster-wide.
+#
+# It can delete pods, but only to force out one already terminating past its
+# grace period: that is the single action that frees an instance stranded on a
+# node whose kubelet has stopped answering (see ADR-009). The cluster-scoped
+# alternative — tainting the node node.kubernetes.io/out-of-service — is
+# deliberately not granted, since it would take this identity outside the
+# namespace its whole guardrail design confines it to.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -36,10 +43,13 @@ rules:
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "delete"]
   # Resolve a running instance's pod IP to reach its in-pod supervisor control
-  # API for /stop, /start (warm) and /restart. Read-only — still no exec/patch.
+  # API for /stop, /start (warm) and /restart. Delete is the reconciler's one
+  # lever for a pod stuck terminating on an unresponsive node — Agones won't
+  # release the GameServer's finalizer until that pod is gone, so without it a
+  # dead node pins a world in place indefinitely. Still no patch, still no exec.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

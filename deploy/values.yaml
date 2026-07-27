@@ -63,6 +63,12 @@ bot:
   backup:
     intervalHours: 24 # scheduled snapshot cadence for every running server
     retention: 7 # backups kept per server before the cycle prunes older ones
+  reconcile:
+    intervalMinutes: 5 # how often to sweep for servers stranded on a dead node
+    # How long a pod must sit terminating before it counts as stranded. Well
+    # clear of the game pods' 120s graceful-stop window so a slow but healthy
+    # world-save is never cut short.
+    strandedDwellMinutes: 15
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:

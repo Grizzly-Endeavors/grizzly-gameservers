@@ -59,8 +59,14 @@ pub(crate) enum ShutdownOutcome {
 }
 
 pub(crate) enum StartOutcome {
-    Started { address: String, ready: bool },
+    Started {
+        address: String,
+        ready: bool,
+    },
     AlreadyRunning,
+    /// A teardown is still in flight, so there is nothing to resume in place and
+    /// nothing to recreate yet — the old `GameServer` still holds the name.
+    StillStopping,
     NotFound,
     NotManaged,
     UnknownGame(String),
@@ -443,7 +449,7 @@ pub(crate) async fn list_instance_names(
     Ok(names)
 }
 
-fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObject> {
+pub(super) fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObject> {
     let gvk = GroupVersionKind::gvk("agones.dev", "v1", "GameServer");
     let resource = ApiResource::from_gvk(&gvk);
     Api::namespaced_with(client.clone(), namespace, &resource)
@@ -598,7 +604,7 @@ pub(crate) enum DeleteWait {
 ///
 /// Returns an error if the delete fails for a reason other than the object
 /// already being absent, or if the object cannot be polled afterwards.
-async fn delete_and_confirm<K>(api: &Api<K>, name: &str) -> Result<DeleteWait>
+pub(super) async fn delete_and_confirm<K>(api: &Api<K>, name: &str) -> Result<DeleteWait>
 where
     K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + kube::Resource,
 {

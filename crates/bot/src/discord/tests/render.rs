@@ -181,6 +181,20 @@ fn shutdown_and_destroy_success_stay_neutral() {
     );
 }
 
+#[test]
+fn starting_mid_teardown_is_pending_and_says_to_wait() {
+    let spec = start_spec(&StartOutcome::StillStopping, "palworld");
+    assert_eq!(
+        spec.colour, COLOUR_PENDING,
+        "a start blocked by an in-flight shutdown is in-progress, not failed"
+    );
+    assert!(
+        spec.body.contains("shutting down"),
+        "the message should say why it can't start yet, got: {}",
+        spec.body
+    );
+}
+
 // An unconfirmed teardown is amber, not red: the world is intact and recovery is
 // automatic, so it isn't a failure the friend has to act on.
 #[test]

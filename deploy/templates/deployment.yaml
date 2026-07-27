@@ -148,6 +148,10 @@ spec:
               value: {{ .Values.bot.backup.intervalHours | quote }}
             - name: GAMESERVERS_BACKUP_RETENTION
               value: {{ .Values.bot.backup.retention | quote }}
+            - name: GAMESERVERS_RECONCILE_INTERVAL_MINUTES
+              value: {{ .Values.bot.reconcile.intervalMinutes | quote }}
+            - name: GAMESERVERS_STRANDED_DWELL_MINUTES
+              value: {{ .Values.bot.reconcile.strandedDwellMinutes | quote }}
             # In-game agent endpoint: game-pod supervisors POST player `@Gary`
             # chat triggers here (the reverse loop). The token authenticates
             # those POSTs; it's the same grizzly-gameservers-ingame Secret the
