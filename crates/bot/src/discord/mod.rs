@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kube::Client;
-use tokio::sync::Mutex;
+use poise::serenity_prelude as serenity;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -30,6 +31,41 @@ use crate::store::{GuildConfig, HomeChannels};
 /// friend to respond before the interaction expires. Shared so `/destroy`'s
 /// confirm dialog and other component collectors stay in lockstep.
 pub(crate) const COMPONENT_TIMEOUT: Duration = Duration::from_mins(2);
+
+/// The live gateway [`serenity::Context`], published on every `Ready`. The HTTP
+/// surface is served before Discord connects, so a route that needs to post a
+/// message or collect an interaction has to reach the Context late — and answer
+/// honestly when there isn't one yet.
+///
+/// `watch` rather than a `OnceLock`: `Ready` re-fires on every reconnect, and the
+/// freshest Context is the one whose shard messenger is still live. Pinning the
+/// first-connect Context would leave a `ComponentInteractionCollector` waiting on
+/// a dead shard after any reconnect — a confirmation prompt that silently never
+/// resolves, which is the failure mode this project refuses to ship.
+#[derive(Clone)]
+pub(crate) struct GatewayHandle {
+    current: Arc<watch::Sender<Option<serenity::Context>>>,
+}
+
+impl GatewayHandle {
+    pub(crate) fn new() -> Self {
+        Self {
+            current: Arc::new(watch::Sender::new(None)),
+        }
+    }
+
+    /// Publish (or refresh) the live Context. Idempotent, so calling it on every
+    /// `Ready` is correct rather than merely tolerated.
+    pub(crate) fn publish(&self, ctx: &serenity::Context) {
+        self.current.send_replace(Some(ctx.clone()));
+    }
+
+    /// The live Context, or `None` before the gateway's first `Ready`. Clones out
+    /// of the borrow immediately so no caller can hold the lock across an await.
+    pub(crate) fn current(&self) -> Option<serenity::Context> {
+        self.current.borrow().clone()
+    }
+}
 
 /// Per-command state shared with every poise command handler. `Clone` is cheap
 /// (handles are `Arc`/client clones) so an event handler can hand an owned copy
@@ -83,6 +119,9 @@ pub(crate) struct Data {
     /// The shared shutdown signal, so a deferred watcher's long wait can be
     /// cancelled promptly instead of blocking the drain for its full ceiling.
     pub(crate) shutdown: CancellationToken,
+    /// The live gateway Context, for the HTTP routes that are served before
+    /// Discord connects. Holds a Context and never `Data`, so there's no cycle.
+    pub(crate) gateway: GatewayHandle,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

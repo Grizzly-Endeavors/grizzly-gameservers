@@ -9,7 +9,7 @@
 //! tool executors in [`tools`].
 
 mod recovery;
-mod tools;
+pub(crate) mod tools;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -21,6 +21,8 @@ use poise::serenity_prelude as serenity;
 use serenity::CreateMessage;
 use tokio::sync::watch;
 use tracing::{error, trace, warn};
+
+pub(crate) use self::tools::ConfirmMode;
 
 use super::auth::{AccessCheck, AccessLevel, access_level};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
@@ -189,6 +191,7 @@ async fn handle_message(
         author_id: message.author.id,
         access,
         scope,
+        confirmations: ConfirmMode::Interactive,
     };
     // On a hard error, run_gary_turn already logged and posted a friendly message;
     // the prior session is left untouched so a retry doesn't inherit a half-finished
@@ -215,6 +218,9 @@ pub(crate) struct GaryTurn<'a> {
     pub(crate) author_id: serenity::UserId,
     pub(crate) access: AccessLevel,
     pub(crate) scope: ServerScope,
+    /// How this turn's destructive tools obtain their confirmation. Spelled out
+    /// at every construction site rather than defaulted — see [`ConfirmMode`].
+    pub(crate) confirmations: ConfirmMode,
 }
 
 /// Run the tool-calling loop for a seeded transcript, keeping a typing indicator
@@ -249,6 +255,7 @@ pub(crate) async fn run_gary_turn(
         author_id: turn.author_id,
         access: turn.access,
         scope: turn.scope.clone(),
+        confirmations: turn.confirmations,
         pending_change: std::sync::Mutex::new(None),
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the session

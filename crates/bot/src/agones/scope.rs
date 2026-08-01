@@ -10,7 +10,7 @@ use super::labels::{GUILD_KEY, label_value};
 /// stamped with one Discord guild id. [`All`](ServerScope::All) is the
 /// allowlisted cross-guild operator's view: every server, across every guild,
 /// including pre-scoping ones that carry no guild label.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ServerScope {
     All,
     Guild(String),

@@ -11,6 +11,7 @@ mod config;
 mod defer;
 mod discord;
 mod domain;
+mod http;
 mod ingame;
 mod kv;
 mod memory;
@@ -129,27 +130,6 @@ pub async fn run(config: BotConfig) -> Result<()> {
         std::sync::Arc::clone(&operator_ids),
     );
 
-    // Start the in-game agent endpoint the game-pod supervisors POST `@Gary` chat
-    // triggers to. Shares Gary's core and session store via cloned handles (the
-    // same pattern as the backup cycle); stays off when Gary isn't configured.
-    ingame::spawn(
-        ingame::IngameDeps {
-            client: kube_client.clone(),
-            http: http.clone(),
-            namespace: namespace.clone(),
-            domain: domain.clone(),
-            control_port,
-            catalog: std::sync::Arc::clone(&catalog),
-            ollama: ollama.clone(),
-            sessions: std::sync::Arc::clone(&sessions),
-            notifier: notifier.clone(),
-        },
-        config.agent_port,
-        config.ingame_token,
-        &tasks,
-        shutdown.clone(),
-    );
-
     let data = Data {
         kube_client,
         http,
@@ -169,7 +149,26 @@ pub async fn run(config: BotConfig) -> Result<()> {
         notifier,
         defer,
         shutdown: shutdown.clone(),
+        gateway: discord::GatewayHandle::new(),
     };
+
+    // Start the inbound HTTP surface, whose in-game trigger route the game-pod
+    // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
+    // clones carved from the command `Data` (the same pattern as the backup
+    // cycle), so it must be built after `Data` — and before the gateway, so the
+    // k8s probes have a `/health` target while Discord is still connecting.
+    http::spawn(
+        http::HttpDeps {
+            ingame: ingame::IngameDeps::from_data(&data),
+            operator: http::operator::OperatorDeps::from_data(&data),
+            port: config.agent_port,
+            ingame_token: config.ingame_token,
+            operator_token: config.operator_token,
+        },
+        &tasks,
+        shutdown.clone(),
+    );
+
     run_gateway(config.token, data, shutdown, tasks).await
 }
 
@@ -258,9 +257,13 @@ async fn on_gateway_event(
             "registered slash commands for guild"
         );
     }
-    // On the first Ready (a Context now exists), rebuild deferred-task watchers
-    // from Valkey so a pending run_when survives the redeploy that just happened.
     if let serenity::FullEvent::Ready { .. } = event {
+        // Publish first: it's a single store, and it's what unblocks the HTTP
+        // routes that can't act until a Context exists. Reconciling can take a
+        // while (Valkey round-trips plus a watcher spawn per pending task).
+        data.gateway.publish(ctx);
+        // A Context now exists, so rebuild deferred-task watchers from Valkey and
+        // let a pending run_when survive the redeploy that just happened.
         data.defer.reconcile(data, ctx).await;
     }
     discord::gary::on_event(ctx, event, framework, data).await

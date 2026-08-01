@@ -18,7 +18,7 @@ use crate::agones::{
     FsOutcome, ReadyWait, ServerScope, guild_of, supervisor_occupancy, wait_for_ready_within,
 };
 use crate::discord::gary::{
-    GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
+    ConfirmMode, GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
 };
 use crate::discord::{AccessLevel, Data};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
@@ -241,6 +241,7 @@ async fn run_batch(
         author_id: serenity::UserId::new(author_id),
         access: AccessLevel::Manager,
         scope,
+        confirmations: ConfirmMode::Interactive,
     };
     let outcome = run_gary_turn(&turn, &mut messages).await;
     deliver_extras(ctx, primary_channel, &tasks, &outcome).await;
