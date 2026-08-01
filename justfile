@@ -4,6 +4,9 @@
 # in README.md as raw commands; `just` is convenience, not required.
 
 set shell := ["bash", "-cu"]
+# Recipe bodies see their arguments as "$@", so a quoted argument survives with
+# its spaces and quoting intact instead of being word-split by interpolation.
+set positional-arguments
 
 # Default target runs the full local CI suite.
 default: ci-local
@@ -29,8 +32,10 @@ bot-logs:
     ./scripts/local-bot.sh logs
 
 # Drive the DEPLOYED bot: run a tool, ask Gary, list tools (`--help` for usage).
+# `set positional-arguments` above is what keeps a quoted JSON argument or a
+# prompt with spaces intact — plain `{{args}}` interpolation re-splits them.
 operator *args:
-    ./scripts/operator.sh {{args}}
+    ./scripts/operator.sh "$@"
 
 # Follow the DEPLOYED bot's logs. (`bot-logs` above tails the local process.)
 bot-logs-deployed *args:

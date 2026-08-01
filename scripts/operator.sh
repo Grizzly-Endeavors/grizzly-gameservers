@@ -137,19 +137,27 @@ build_body() {
 
     case "$command" in
         tool)
-            local name="${positional[1]:-}" args="${positional[2]:-{\}}"
-            [[ -n "$name" ]] || { echo "tool needs a name — try: scripts/operator.sh tools" >&2; exit 1; }
+            local name="${positional[1]:-}"
+            local args="${positional[2]:-{\}}"
+            [[ -n "$name" ]] || { echo "tool needs a name — try: scripts/operator.sh tools" >&2; return 1; }
+            # Validate before --argjson so a malformed argument reports itself
+            # rather than surfacing as jq's parser error on an unnamed input.
+            if ! jq -e . >/dev/null 2>&1 <<<"$args"; then
+                echo "tool arguments must be a JSON object, got: ${args}" >&2
+                echo "quote them as one shell word, e.g. '{\"name\":\"mc\",\"lines\":50}'" >&2
+                return 1
+            fi
             jq --arg tool "$name" --argjson arguments "$args" \
                 '. + {tool: $tool, arguments: $arguments}' <<<"$body"
             ;;
         gary)
             local prompt="${positional[*]:1}"
-            [[ -n "${prompt// /}" ]] || { echo "gary needs something to say" >&2; exit 1; }
+            [[ -n "${prompt// /}" ]] || { echo "gary needs something to say" >&2; return 1; }
             body="$(jq --arg prompt "$prompt" '. + {prompt: $prompt}' <<<"$body")"
             "$new_session" && body="$(jq '. + {new_session: true}' <<<"$body")"
             printf '%s' "$body"
             ;;
-        *) echo "unknown command: $command" >&2; usage ;;
+        *) echo "unknown command: $command" >&2; return 1 ;;
     esac
 }
 
@@ -186,11 +194,15 @@ case "$command" in
         response="$(request GET "$url")"
         ;;
     tool)
-        response="$(request POST "${base}/operator/tool" "$(build_body)")"
+        # Built on its own line, not nested inside the request substitution: a
+        # failure in there would be swallowed and we'd POST an empty body.
+        body="$(build_body)" || exit 1
+        response="$(request POST "${base}/operator/tool" "$body")"
         ;;
     gary)
+        body="$(build_body)" || exit 1
         echo "==> asking gary (this can take a couple of minutes)" >&2
-        response="$(request POST "${base}/operator/gary" "$(build_body)")"
+        response="$(request POST "${base}/operator/gary" "$body")"
         ;;
     *) usage ;;
 esac
@@ -199,8 +211,11 @@ status="$(tail -n1 <<<"$response")"
 payload="$(sed '$d' <<<"$response")"
 
 if [[ "$status" != "200" ]]; then
-    echo "request failed (HTTP ${status}):" >&2
-    jq -r '.error // .' <<<"$payload" 2>/dev/null >&2 || printf '%s\n' "$payload" >&2
+    # Extract first, print second. Redirecting jq's stdout to stderr in the same
+    # command as `2>/dev/null` would point it at /dev/null instead, and the whole
+    # reason for failing here is to say why.
+    message="$(jq -r '.error // empty' <<<"$payload" 2>/dev/null || true)"
+    echo "request failed (HTTP ${status}): ${message:-$payload}" >&2
     exit 1
 fi
 
