@@ -152,6 +152,16 @@ impl SupervisorState {
         }
     }
 
+    /// Forget the crashes counted so far, giving the process a full crash budget
+    /// again.
+    ///
+    /// Called only when a child recovers from an escalation, never on ordinary
+    /// readiness: a game that crashes some way *into* every boot would otherwise
+    /// reset the counter each cycle and loop forever instead of escalating.
+    pub fn clear_crash_history(&mut self) {
+        self.crash_times.clear();
+    }
+
     /// Snapshot for the `GET /status` control route.
     #[must_use]
     pub fn status(&self, now: Instant) -> StatusResponse {

@@ -113,6 +113,55 @@ fn repeated_crashes_in_window_escalate() {
 }
 
 #[test]
+fn clearing_crash_history_restores_the_full_budget() {
+    let base = Instant::now();
+    let mut state = SupervisorState::new();
+    state.on_started(1, base);
+    state.on_ready();
+
+    state.on_child_exit(base, WINDOW, THRESHOLD);
+    state.on_child_exit(base + Duration::from_secs(10), WINDOW, THRESHOLD);
+    let escalated = state.on_child_exit(base + Duration::from_secs(20), WINDOW, THRESHOLD);
+    assert_eq!(escalated, ExitDisposition::Escalate, "the budget is spent");
+
+    // A repaired child booted and reached readiness, so the pod recovered.
+    state.on_started(2, base + Duration::from_secs(30));
+    state.on_ready();
+    state.clear_crash_history();
+
+    let after_recovery = state.on_child_exit(base + Duration::from_secs(40), WINDOW, THRESHOLD);
+    assert_eq!(
+        after_recovery,
+        ExitDisposition::Relaunch,
+        "a crash after recovery starts a fresh window rather than re-escalating at once"
+    );
+}
+
+#[test]
+fn crash_history_survives_readiness_that_is_not_a_recovery() {
+    let base = Instant::now();
+    let mut state = SupervisorState::new();
+    state.on_started(1, base);
+    state.on_ready();
+
+    // A game that dies partway into every boot still reaches readiness each
+    // cycle; those readies must not refund the crash budget.
+    state.on_child_exit(base, WINDOW, THRESHOLD);
+    state.on_started(2, base + Duration::from_secs(5));
+    state.on_ready();
+    state.on_child_exit(base + Duration::from_secs(10), WINDOW, THRESHOLD);
+    state.on_started(3, base + Duration::from_secs(15));
+    state.on_ready();
+    let third = state.on_child_exit(base + Duration::from_secs(20), WINDOW, THRESHOLD);
+
+    assert_eq!(
+        third,
+        ExitDisposition::Escalate,
+        "a slow crash loop still escalates"
+    );
+}
+
+#[test]
 fn crashes_outside_window_do_not_accumulate() {
     let base = Instant::now();
     let mut state = SupervisorState::new();

@@ -8,13 +8,14 @@ use grizzly_control_api::{
 };
 use tokio::process::Child;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 use crate::autoupdate::{AutoUpdater, RelaunchReason};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
+use crate::heartbeat::Heartbeat;
 use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
@@ -89,47 +90,47 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         }
     });
 
-    let health_stop = Arc::new(Notify::new());
+    let heartbeat = Heartbeat::new();
     tokio::spawn(health_loop(
         sdk.clone(),
         cfg.health_interval,
-        Arc::clone(&health_stop),
+        heartbeat.clone(),
     ));
 
-    supervise(cfg, sdk, control_rx, health_stop, logs, rcon, chat_tx).await
+    supervise(cfg, sdk, control_rx, heartbeat, logs, rcon, chat_tx).await
 }
 
 /// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
 /// so the pod is only torn down when the supervisor *decides* it should be
 /// (crash escalation), not because a stopped game stopped answering.
-async fn health_loop(sdk: SdkClient, interval: Duration, stop: Arc<Notify>) {
+///
+/// Ticks for the life of the process, skipping the ping while the [`Heartbeat`]
+/// is suspended; the transitions are logged at the sites that decide them, so
+/// this loop stays silent about the gate.
+async fn health_loop(sdk: SdkClient, interval: Duration, heartbeat: Heartbeat) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Track health across ticks so a sustained outage warns once on the way down
     // and once on recovery, rather than every `interval` for as long as it lasts.
     let mut healthy = true;
     loop {
-        tokio::select! {
-            () = stop.notified() => {
-                info!("stopping agones health heartbeat");
-                return;
+        ticker.tick().await;
+        if !heartbeat.is_beating() {
+            continue;
+        }
+        match sdk.health().await {
+            Ok(()) => {
+                if !healthy {
+                    info!("agones health ping recovered");
+                    healthy = true;
+                }
             }
-            _ = ticker.tick() => {
-                match sdk.health().await {
-                    Ok(()) => {
-                        if !healthy {
-                            info!("agones health ping recovered");
-                            healthy = true;
-                        }
-                    }
-                    Err(err) => {
-                        if healthy {
-                            warn!(error = ?err, "agones health ping failing; the sdk sidecar may be unreachable");
-                            healthy = false;
-                        } else {
-                            debug!(error = ?err, "agones health ping still failing");
-                        }
-                    }
+            Err(err) => {
+                if healthy {
+                    warn!(error = ?err, "agones health ping failing; the sdk sidecar may be unreachable");
+                    healthy = false;
+                } else {
+                    debug!(error = ?err, "agones health ping still failing");
                 }
             }
         }
@@ -155,7 +156,7 @@ async fn supervise(
     cfg: SupervisorConfig,
     sdk: SdkClient,
     mut control_rx: mpsc::Receiver<ControlRequest>,
-    health_stop: Arc<Notify>,
+    heartbeat: Heartbeat,
     logs: Arc<LogBuffer>,
     rcon: Option<Arc<RconRuntime>>,
     chat_tx: Option<mpsc::Sender<String>>,
@@ -215,10 +216,10 @@ async fn supervise(
                 handle_request(&deps, &mut state, &mut child, request).await;
             }
             exit = process::wait_optional(&mut child) => {
-                handle_unexpected_exit(&deps, &mut state, &mut child, &health_stop, exit).await;
+                handle_unexpected_exit(&deps, &mut state, &mut child, &heartbeat, exit).await;
             }
             Some(()) = ready_rx.recv() => {
-                settle_ready(&sdk, &mut state).await;
+                settle_ready(&sdk, &mut state, &heartbeat).await;
             }
             _ = occupancy_ticker.tick(), if auto_update_active => {
                 spawn_occupancy_poll(&state, rcon_poll.as_ref(), &occupancy_tx);
@@ -315,9 +316,19 @@ fn spawn_readiness_probe(port: u16, give_up: Duration, ready_tx: mpsc::Sender<()
 
 /// First time the game is accepting, signal Agones `Ready`; always (re)assert the
 /// running process label.
-async fn settle_ready(sdk: &SdkClient, state: &mut SupervisorState) {
+///
+/// Also the recovery point for a pod that crash-escalated: a child that gets this
+/// far booted cleanly, so the heartbeat resumes and the crash budget starts over.
+/// Only a repair reaches here — a still-broken child never becomes ready, so it
+/// stays condemned.
+async fn settle_ready(sdk: &SdkClient, state: &mut SupervisorState, heartbeat: &Heartbeat) {
     let first_ready = !state.is_ready();
     state.on_ready();
+    if !heartbeat.is_beating() {
+        heartbeat.resume();
+        state.clear_crash_history();
+        info!("game recovered after crash escalation; resuming agones health heartbeat");
+    }
     if first_ready && let Err(err) = sdk.ready().await {
         warn!(error = ?err, "agones ready signal failed");
     }
@@ -462,7 +473,7 @@ async fn handle_unexpected_exit(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
-    health_stop: &Arc<Notify>,
+    heartbeat: &Heartbeat,
     exit: std::io::Result<std::process::ExitStatus>,
 ) {
     match exit {
@@ -484,9 +495,10 @@ async fn handle_unexpected_exit(
         }
         ExitDisposition::Escalate => {
             error!(
-                "crash threshold exceeded; stopping health heartbeat so agones recreates the pod"
+                "crash threshold exceeded; stopping health heartbeat so agones recreates the pod \
+                 unless the game is repaired and relaunched first"
             );
-            health_stop.notify_one();
+            heartbeat.suspend();
             publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
         }
     }

@@ -6,7 +6,7 @@
 //! intentionally paused, and exposes an HTTP control API the Discord bot drives.
 //!
 //! The pure decision logic ([`config`], [`state`], [`autoupdate`], [`palworld`],
-//! [`child_env`]) is separated from the IO shell ([`process`], [`readiness`],
+//! [`child_env`], [`heartbeat`]) is separated from the IO shell ([`process`], [`readiness`],
 //! [`sdk`], [`control`], [`runner`], [`rcon`], [`archive`], [`chat_watcher`],
 //! [`fs`], [`logs`]) so the state machine is unit-testable without spawning
 //! processes or opening sockets.
@@ -18,6 +18,7 @@ pub mod child_env;
 pub mod config;
 pub mod control;
 pub mod fs;
+pub mod heartbeat;
 pub mod logs;
 pub mod palworld;
 pub mod process;
