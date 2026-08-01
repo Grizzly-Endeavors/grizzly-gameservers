@@ -31,7 +31,14 @@ spec:
     # /health (it does so only once the game is accepting connections).
     initialDelaySeconds: 180
     periodSeconds: 15
-    failureThreshold: 5
+    # 150s of missed pings before Agones condemns the pod. That window is the
+    # supervisor's recovery budget after a crash escalation: the bot answers a
+    # failed config change by restoring the file's snapshot and restarting, and
+    # the heartbeat only resumes once the repaired child is accepting
+    # connections. A modded Minecraft boot re-resolves its Modrinth downloads
+    # before the world even loads, so the 75s a threshold of 5 would give is not
+    # enough for that repair to land.
+    failureThreshold: 10
   template:
     metadata:
       labels:
@@ -64,6 +71,13 @@ spec:
               value: "TRUE"
             - name: MEMORY
               value: "2G"
+            # Pinned, not LATEST: mod compatibility is scoped to a Minecraft
+            # version, so an unpinned server would silently break its own mod set
+            # the first time upstream ships a release. An instance that needs a
+            # newer version raises it through the overlay below — never lower it,
+            # since world formats upgrade one way.
+            - name: VERSION
+              value: "26.2"
             # In-game chat → Gary reverse loop. The chat watcher forwards a
             # player's `@Gary` message to the bot's agent endpoint, which answers
             # read-only and broadcasts the reply back over RCON. The GameServer
