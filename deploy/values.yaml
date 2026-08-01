@@ -15,8 +15,11 @@ image:
 # full list and the OpenBao paths behind it.
 externalSecrets:
   enabled: true
-  secretStore: openbao # ClusterSecretStore provisioned in grizzly-platform
-  refreshInterval: 1h
+  secretStore: onepassword # ClusterSecretStore provisioned in grizzly-platform
+  # OnChange rather than polling: 1Password meters requests per account per
+  # day across every service account, so hourly polling would consume the
+  # shared ceiling. Rotating a value means touching this ExternalSecret.
+  refreshPolicy: OnChange
 # Discord bot / ops-agent workload.
 bot:
   enabled: true
