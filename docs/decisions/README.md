@@ -11,5 +11,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-007 — Deferred-task queue for the ops agent (`run_when`)](007-deferred-task-queue.md)
 - [ADR-008 — Tool results are LLM-facing; only Gary's own replies adapt per surface](008-tool-result-formatting.md)
 - [ADR-009 — Recover stranded instances by force-deleting the pod, not tainting the node](009-stranded-instance-recovery.md)
+- [ADR-010 — Crash escalation suspends the health heartbeat instead of stopping it](010-recoverable-crash-escalation.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).
