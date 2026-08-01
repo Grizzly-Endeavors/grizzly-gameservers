@@ -50,6 +50,8 @@ Six times under the bot's `READY_WAIT_TIMEOUT`, so the verify loop reaches a ver
 
 One case remains open by design: an overlay value that *nothing* rolls back is re-read by the recreated pod off the same PVC, so it crash-loops identically. Phase 3's `mod_info` is the pre-write validation that closes it.
 
+**Archive → restore keeps the mod set.** A modded instance archived to S3 and recovered came back on a freshly provisioned PVC with `.grizzly/env` byte-identical (109 bytes), its `.grizzly.bak` sibling intact — so the snapshot lineage survives the round trip and the rollback guardrail is armed from the first edit after a recovery — and both jars plus the datapack in place. The world's four region files matched, and the recovered boot resolved the overlay (`keys=TYPE, VERSION, MODRINTH_PROJECTS, MODRINTH_DOWNLOAD_DEPENDENCIES`) and loaded Fabric. The purge-before-extract path re-seeds correctly: `child_env::seed` is `create_new`, so it treats the restored file as already present rather than truncating it.
+
 **`VERSION` is now pinned.** The catalog previously set neither `TYPE` nor `VERSION`, so itzg resolved `LATEST` at every boot — meaning an upstream release would silently break a pinned mod set on the next restart. The catalog pins `VERSION: "26.2"` (the version instances were already running, so no world is downgraded), and instances raise it through the overlay. Confirmed live: `Resolved version given 26.2 into 26.2`.
 
 ## Phase 3 — Modrinth discovery tools in the bot
