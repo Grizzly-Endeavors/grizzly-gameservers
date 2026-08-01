@@ -94,6 +94,11 @@ ENV SUPERVISOR_CHILD_CMD=REPLACE_CHILD_CMD
 # worked example. Leave unset to disable in-game triggers for this game.
 # ENV SUPERVISOR_CHAT_FORMAT=REPLACE_FORMAT
 # ENV SUPERVISOR_CHAT_TRIGGER=@Gary
+# NOT HERE (optional): the per-instance env overlay
+# (SUPERVISOR_CHILD_ENV_FILE / SUPERVISOR_CHILD_ENV_ALLOWLIST) lets an instance
+# override selected env vars from a file on its own PVC. Both belong in
+# gameserver.yaml rather than this ENV block — see the README's Notes and
+# games/minecraft/gameserver.yaml for the worked example.
 # REPLACE: does this base image's startup need root (e.g. to chown a fresh data
 # volume, like itzg's does)? If not, add `USER REPLACE_UID` here and keep
 # gameserver.yaml's pod hardening as-is — rootless is the security baseline's

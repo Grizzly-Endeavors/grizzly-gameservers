@@ -20,7 +20,7 @@ use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
-use crate::{chat_watcher, palworld, process, readiness};
+use crate::{chat_watcher, child_env, palworld, process, readiness};
 
 /// Brief pause before relaunching a crashed child, so a hard crash-loop backs
 /// off rather than spinning the CPU until escalation.
@@ -65,6 +65,15 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     };
 
     let chat_tx = spawn_chat_watcher(&cfg)?;
+
+    // Seed the env overlay up front as well as per-launch: a server that boots
+    // paused for an archive restore never reaches `spawn_child`, and the friend
+    // may well want to edit the overlay before issuing the /start.
+    if let Some(overlay) = cfg.child_env.as_ref()
+        && let Err(err) = child_env::seed(&cfg.data_dir, &overlay.file)
+    {
+        warn!(error = ?err, file = %overlay.file, "could not seed the per-instance env overlay at startup");
+    }
 
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
     let logs = Arc::new(LogBuffer::new());
@@ -397,11 +406,15 @@ async fn do_restart(
 }
 
 /// Seed any config the supervisor owns into place, then launch the game child.
-/// Today only Palworld needs seeding — its RCON keys written into the on-PVC ini
-/// before the game reads it, since the image disables the upstream's destructive
-/// env-driven regeneration (see [`palworld`]). Every other game passes straight
-/// through to [`process::spawn`]. Runs before each launch so a fresh PVC and a
-/// per-pod-rotated password both converge before the child starts.
+/// Runs before each launch so a fresh PVC, a per-pod-rotated password, and an
+/// edited overlay all converge before the child starts. Two seed steps today:
+///
+/// - Palworld's RCON keys, written into the on-PVC ini before the game reads it,
+///   since the image disables the upstream's destructive env-driven regeneration
+///   (see [`palworld`]). Skipped for every other game.
+/// - The per-instance env overlay for games whose catalog entry opts in (see
+///   [`child_env`]), which seeds the file and resolves it into the child's env.
+///   Never fails: an unusable overlay yields no overrides, not a dead server.
 ///
 /// # Errors
 ///
@@ -413,7 +426,8 @@ fn spawn_child(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Chi
         palworld::seed_rcon(ini, port, rcon.password())
             .context("failed to seed palworld rcon settings")?;
     }
-    process::spawn(cfg, rcon)
+    let overlay = child_env::prepare(cfg);
+    process::spawn(cfg, rcon, &overlay)
 }
 
 /// Spawn a fresh child, record it, kick off a readiness probe, and assert the

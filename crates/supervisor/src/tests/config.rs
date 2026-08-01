@@ -62,6 +62,10 @@ fn applies_defaults_with_empty_environment() {
     assert!(!config.start_paused, "starts unpaused by default");
     assert_eq!(config.chat_watch, None, "chat watching off by default");
     assert_eq!(
+        config.child_env, None,
+        "per-instance env overlay off by default"
+    );
+    assert_eq!(
         config.ready_log_pattern, None,
         "TCP connect probe by default (no log-pattern readiness)"
     );
@@ -165,6 +169,51 @@ fn chat_watch_rejects_unknown_format() {
     assert!(
         err.to_string().contains("SUPERVISOR_CHAT_FORMAT"),
         "an unknown format should name the key, got: {err}"
+    );
+}
+
+#[test]
+fn child_env_assembles_when_configured() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_CHILD_ENV_FILE", ".grizzly/env"),
+        ("SUPERVISOR_CHILD_ENV_ALLOWLIST", "TYPE,MODRINTH_PROJECTS"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let overlay = config.child_env.expect("overlay should be configured");
+    assert_eq!(overlay.file, ".grizzly/env");
+    assert_eq!(overlay.allowlist, vec!["TYPE", "MODRINTH_PROJECTS"]);
+}
+
+#[test]
+fn child_env_allowlist_tolerates_spacing_and_stray_commas() {
+    // YAML makes it easy to hand-wrap or trailing-comma this value; neither
+    // should produce a key that can never match.
+    let env = lookup_from(&[
+        ("SUPERVISOR_CHILD_ENV_FILE", ".grizzly/env"),
+        ("SUPERVISOR_CHILD_ENV_ALLOWLIST", " TYPE , ,VERSION ,"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let overlay = config.child_env.expect("overlay should be configured");
+    assert_eq!(overlay.allowlist, vec!["TYPE", "VERSION"]);
+}
+
+#[test]
+fn child_env_absent_without_a_file() {
+    // An allowlist alone has nothing to read; the config warns and stays off
+    // rather than half-arming the injection path.
+    let env = lookup_from(&[("SUPERVISOR_CHILD_ENV_ALLOWLIST", "TYPE")]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(config.child_env, None);
+}
+
+#[test]
+fn child_env_without_an_allowlist_fails_closed() {
+    let env = lookup_from(&[("SUPERVISOR_CHILD_ENV_FILE", ".grizzly/env")]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let overlay = config.child_env.expect("overlay should be configured");
+    assert!(
+        overlay.allowlist.is_empty(),
+        "no allowlist means the overlay injects nothing"
     );
 }
 

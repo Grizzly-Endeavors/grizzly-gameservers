@@ -14,27 +14,40 @@ use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 
-/// Launch the supervised game-server process. Inherits the environment so the
-/// itzg image reads its `EULA`/`MEMORY`/etc. knobs, and `kill_on_drop` so a
-/// supervisor crash can't orphan the game. stdout/stderr are piped (not
-/// inherited) so [`capture_output`] can both tee them to the supervisor's own
-/// output and retain a tail for the control API.
+/// Launch the supervised game-server process. `kill_on_drop` so a supervisor
+/// crash can't orphan the game; stdout/stderr are piped (not inherited) so
+/// [`capture_output`] can both tee them to the supervisor's own output and retain
+/// a tail for the control API.
 ///
-/// When `rcon` is set, the minted password is injected into the child's
-/// environment under [`SupervisorConfig::rcon_password_env`] so the game
-/// configures its RCON server with the same value the supervisor authenticates
-/// with — keeping the password out of git and any Kubernetes object.
+/// The child's environment is layered in three tiers, each overriding the last:
+///
+/// 1. The supervisor's own inherited environment — the per-game catalog tier,
+///    which is how the itzg image reads its `EULA`/`MEMORY`/etc. knobs.
+/// 2. `overlay` — the per-instance tier, read off the data volume by
+///    [`child_env::prepare`](crate::child_env::prepare).
+/// 3. Platform-owned injection: when `rcon` is set, the minted password under
+///    [`SupervisorConfig::rcon_password_env`], so the game configures its RCON
+///    server with the same value the supervisor authenticates with — keeping the
+///    password out of git and any Kubernetes object. Applied last so it wins
+///    even if the overlay's own denies were somehow bypassed.
 ///
 /// # Errors
 ///
 /// Returns an error if the child command cannot be spawned.
-pub fn spawn(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child> {
+pub fn spawn(
+    cfg: &SupervisorConfig,
+    rcon: Option<&RconRuntime>,
+    overlay: &[(String, String)],
+) -> Result<Child> {
     let mut cmd = Command::new(&cfg.child_command);
     cmd.kill_on_drop(true);
     // No interactive console; stop/restart go through SIGTERM, not stdin.
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    for (key, value) in overlay {
+        cmd.env(key, value);
+    }
     if let Some(rcon) = rcon {
         cmd.env(&cfg.rcon_password_env, rcon.password());
     }
