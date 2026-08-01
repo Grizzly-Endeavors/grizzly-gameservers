@@ -28,6 +28,15 @@ bot-restart:
 bot-logs:
     ./scripts/local-bot.sh logs
 
+# Drive the DEPLOYED bot: run a tool, ask Gary, list tools (`--help` for usage).
+operator *args:
+    ./scripts/operator.sh {{args}}
+
+# Follow the DEPLOYED bot's logs. (`bot-logs` above tails the local process.)
+bot-logs-deployed *args:
+    kubectl -n game-servers logs -f --tail=200 \
+        -l app.kubernetes.io/name=grizzly-gameservers,app.kubernetes.io/component=bot {{args}}
+
 # Build a game's composite image and push it to the in-cluster registry (dev).
 game-push game="minecraft" tag="dev":
     ./scripts/push-game-image.sh {{game}} {{tag}}
