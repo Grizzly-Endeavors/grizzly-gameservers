@@ -129,6 +129,9 @@ pub struct SupervisorConfig {
     /// it (no `SUPERVISOR_CHAT_FORMAT`). Its presence spawns the watcher that
     /// forwards `@Gary` triggers to the bot.
     pub chat_watch: Option<ChatWatchConfig>,
+    /// Per-instance child-environment overlay, or `None` when the game's catalog
+    /// entry doesn't opt in (no `SUPERVISOR_CHILD_ENV_FILE`).
+    pub child_env: Option<ChildEnvOverlay>,
     /// Whether the update-on-empty auto-updater runs. On by default; it only has
     /// any effect when the game enables RCON (the loop needs a player count), so a
     /// no-RCON game is reactive-only regardless. Set `SUPERVISOR_AUTO_UPDATE` to a
@@ -138,6 +141,19 @@ pub struct SupervisorConfig {
     pub auto_update_poll_interval: Duration,
     /// Thresholds the auto-updater applies to decide when to relaunch for an update.
     pub auto_update_policy: AutoUpdatePolicy,
+}
+
+/// The game's opt-in to the per-instance child-environment overlay: where the
+/// file lives and which keys it may set. Built as a unit so the injection path
+/// can't be handed a file with no policy attached — an absent allowlist is still
+/// represented here (as empty), and injects nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildEnvOverlay {
+    /// Overlay file path, relative to [`SupervisorConfig::data_dir`].
+    pub file: String,
+    /// Keys the overlay may set, matched case-sensitively and exactly. Empty
+    /// means nothing is injected — the mechanism fails closed rather than open.
+    pub allowlist: Vec<String>,
 }
 
 /// Configuration for the in-game chat watcher, present only when the game enables
@@ -221,6 +237,7 @@ impl SupervisorConfig {
         let palworld_ini_path = optional(lookup, "SUPERVISOR_PALWORLD_INI").map(PathBuf::from);
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
+        let child_env = parse_child_env(lookup);
         let auto_update_enabled = optional_flag_or(lookup, "SUPERVISOR_AUTO_UPDATE", true);
         let auto_update_poll_interval = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_POLL_SECS")?
@@ -242,6 +259,7 @@ impl SupervisorConfig {
         };
 
         warn_if_rcon_settings_without_port(lookup, rcon_port);
+        warn_if_child_env_half_configured(lookup, child_env.as_ref());
 
         Ok(Self {
             child_command,
@@ -262,6 +280,7 @@ impl SupervisorConfig {
             palworld_ini_path,
             start_paused,
             chat_watch,
+            child_env,
             auto_update_enabled,
             auto_update_poll_interval,
             auto_update_policy,
@@ -299,6 +318,49 @@ fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
         agent_token,
         server,
     }))
+}
+
+/// Assemble the child-env overlay config, or `None` when the game doesn't opt in
+/// (`SUPERVISOR_CHILD_ENV_FILE` unset). The allowlist is comma-separated; entries
+/// are trimmed and blank ones dropped, so a trailing comma or a line-wrapped YAML
+/// value doesn't produce a key nothing can ever match.
+fn parse_child_env(lookup: EnvLookup) -> Option<ChildEnvOverlay> {
+    let file = optional(lookup, "SUPERVISOR_CHILD_ENV_FILE")?;
+    let allowlist = optional(lookup, "SUPERVISOR_CHILD_ENV_ALLOWLIST")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ChildEnvOverlay { file, allowlist })
+}
+
+/// Warn on either half-configured state of the overlay pair: a file with no
+/// allowlist (injects nothing, since the mechanism fails closed) or an allowlist
+/// with no file (nothing to read). Both look like "working, no overrides" from
+/// the outside, so a catalog typo would otherwise only surface as a mod install
+/// that quietly never takes effect. A warning rather than a hard error, for the
+/// same reason as [`warn_if_rcon_settings_without_port`].
+fn warn_if_child_env_half_configured(lookup: EnvLookup, child_env: Option<&ChildEnvOverlay>) {
+    match child_env {
+        Some(overlay) if overlay.allowlist.is_empty() => warn!(
+            file = %overlay.file,
+            "SUPERVISOR_CHILD_ENV_FILE is set but SUPERVISOR_CHILD_ENV_ALLOWLIST is empty; \
+             the per-instance env overlay will inject nothing"
+        ),
+        Some(_) => {}
+        None => {
+            if optional(lookup, "SUPERVISOR_CHILD_ENV_ALLOWLIST").is_some() {
+                warn!(
+                    "SUPERVISOR_CHILD_ENV_ALLOWLIST is set but SUPERVISOR_CHILD_ENV_FILE is not; \
+                     the per-instance env overlay is inert"
+                );
+            }
+        }
+    }
 }
 
 /// Warn when one or more RCON-dependent settings (`rcon_dialect`,

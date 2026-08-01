@@ -83,6 +83,26 @@ spec:
                   name: grizzly-gameservers-ingame
                   key: ingame_token
                   optional: true
+            # Mods and datapacks. The supervisor injects allowlisted keys from
+            # /data/.grizzly/env into itzg's environment before each launch, and
+            # itzg re-resolves its Modrinth downloads on every start — so Gary
+            # edits one file and restarts in place. The allowlist is the whole
+            # mutable surface: loader and version (mod compatibility is scoped to
+            # both), the slug list, and its dependency/release-channel knobs.
+            # Everything else about the server stays a catalog decision.
+            #
+            # Deliberately no MODS/PLUGINS/DATAPACKS: those take arbitrary URLs,
+            # and every installed artifact must come from a moderated registry by
+            # slug so provenance survives an agent being talked into a bad link.
+            #
+            # These two live here rather than in the Dockerfile ENV (where the
+            # rest of this game's SUPERVISOR_* tuning sits) because the allowlist
+            # is per-game *policy*: changing it should be a reviewable catalog
+            # edit that lands on the next /create, not an image rebuild.
+            - name: SUPERVISOR_CHILD_ENV_FILE
+              value: ".grizzly/env"
+            - name: SUPERVISOR_CHILD_ENV_ALLOWLIST
+              value: "TYPE,VERSION,MODRINTH_PROJECTS,MODRINTH_DOWNLOAD_DEPENDENCIES,MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE"
           ports:
             - name: minecraft
               containerPort: 25565

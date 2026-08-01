@@ -10,7 +10,7 @@ Each `games/<game>/` directory declares the base template for one game: containe
 
 Catalog entries:
 
-- `minecraft/` — the reference entry (composite image: grizzly-supervisor as PID 1 wrapping itzg/minecraft-server, driving the Agones SDK `/ready` + `/health`), with native RCON wired for Gary's `send_command` and the in-game `@Gary` chat loop.
+- `minecraft/` — the reference entry (composite image: grizzly-supervisor as PID 1 wrapping itzg/minecraft-server, driving the Agones SDK `/ready` + `/health`), with native RCON wired for Gary's `send_command` and the in-game `@Gary` chat loop. The only game on the per-instance env overlay (`SUPERVISOR_CHILD_ENV_FILE` / `SUPERVISOR_CHILD_ENV_ALLOWLIST` in its `gameserver.yaml`), which exposes itzg's mod/datapack vars — `TYPE`, `VERSION`, `MODRINTH_PROJECTS`, `MODRINTH_DOWNLOAD_DEPENDENCIES`, `MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE` — for Gary to set per server via `/data/.grizzly/env`.
 - `factorio/`, `palworld/` — native Source RCON, so Gary can issue live console commands. Palworld caps its admin/RCON password at 30 chars, handled by the supervisor's `SUPERVISOR_RCON_PASSWORD_MAX_LEN`; Factorio takes its password from a file, seeded by a small wrapper.
 - `terraria/`, `valheim/`, `satisfactory/` — no console protocol the supervisor speaks, so they run **without** live commands (Gary still reads/writes config and restarts). Terraria is vanilla (no RCON); Valheim is UDP-only and signals readiness off a log marker (`SUPERVISOR_READY_LOG_PATTERN`); Satisfactory comes up and is manageable but full internet multiplayer needs the two-port provisioner follow-up (issue #29).
 
