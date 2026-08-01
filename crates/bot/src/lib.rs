@@ -11,6 +11,7 @@ mod config;
 mod defer;
 mod discord;
 mod domain;
+mod http;
 mod ingame;
 mod kv;
 mod memory;
@@ -129,27 +130,6 @@ pub async fn run(config: BotConfig) -> Result<()> {
         std::sync::Arc::clone(&operator_ids),
     );
 
-    // Start the in-game agent endpoint the game-pod supervisors POST `@Gary` chat
-    // triggers to. Shares Gary's core and session store via cloned handles (the
-    // same pattern as the backup cycle); stays off when Gary isn't configured.
-    ingame::spawn(
-        ingame::IngameDeps {
-            client: kube_client.clone(),
-            http: http.clone(),
-            namespace: namespace.clone(),
-            domain: domain.clone(),
-            control_port,
-            catalog: std::sync::Arc::clone(&catalog),
-            ollama: ollama.clone(),
-            sessions: std::sync::Arc::clone(&sessions),
-            notifier: notifier.clone(),
-        },
-        config.agent_port,
-        config.ingame_token,
-        &tasks,
-        shutdown.clone(),
-    );
-
     let data = Data {
         kube_client,
         http,
@@ -170,6 +150,32 @@ pub async fn run(config: BotConfig) -> Result<()> {
         defer,
         shutdown: shutdown.clone(),
     };
+
+    // Start the inbound HTTP surface, whose in-game trigger route the game-pod
+    // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
+    // clones carved from the command `Data` (the same pattern as the backup
+    // cycle), so it must be built after `Data` — and before the gateway, so the
+    // k8s probes have a `/health` target while Discord is still connecting.
+    http::spawn(
+        http::HttpDeps {
+            ingame: ingame::IngameDeps {
+                client: data.kube_client.clone(),
+                http: data.http.clone(),
+                namespace: data.namespace.clone(),
+                domain: data.domain.clone(),
+                control_port: data.control_port,
+                catalog: std::sync::Arc::clone(&data.catalog),
+                ollama: data.ollama.clone(),
+                sessions: std::sync::Arc::clone(&data.sessions),
+                notifier: data.notifier.clone(),
+            },
+            port: config.agent_port,
+            ingame_token: config.ingame_token,
+        },
+        &tasks,
+        shutdown.clone(),
+    );
+
     run_gateway(config.token, data, shutdown, tasks).await
 }
 
