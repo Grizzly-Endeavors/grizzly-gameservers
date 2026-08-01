@@ -164,6 +164,18 @@ spec:
                   name: grizzly-gameservers-ingame
                   key: ingame_token
                   optional: true
+            # Operator harness (/operator/*): the authenticated surface a coding
+            # agent drives this bot through from a dev box, over a port-forward
+            # to the ClusterIP Service. A *different* token from the in-game one
+            # above, because that one is mounted into every game pod while this
+            # one reaches Gary's full admin surface. Optional, but absent means
+            # the routes don't mount at all rather than running open.
+            - name: GAMESERVERS_OPERATOR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-operator
+                  key: operator_token
+                  optional: true
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           ports:
