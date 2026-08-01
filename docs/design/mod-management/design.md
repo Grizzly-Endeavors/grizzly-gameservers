@@ -1,0 +1,101 @@
+# Minecraft Mods & Datapacks — Design
+
+**Status:** Ready for implementation — phases in `phases.md` (same directory), each implemented in its own session.
+
+> Systems level only. No file or line references. This document must stand on its own: it will be implemented later in fresh sessions that have only this doc, phases.md, and the codebase — not the conversation that produced it.
+
+## Goal & context
+
+Friends should be able to ask Gary for mods and datapacks on their Minecraft servers — "add a minimap mod", "install Terralith" — and get them installed, verified, and rolled back automatically if they break the server. Today the platform has no way to do this: a Minecraft instance runs whatever the vanilla catalog template describes, and the only per-instance mutation surface is text-file edits on the PVC, which cannot install a mod (a jar is binary, and modded servers additionally need a loader such as Fabric installed server-side).
+
+The insight this design builds on: the itzg/minecraft-server image the catalog already uses has first-class, env-var-driven mod management built in. Setting `TYPE=FABRIC` auto-installs the Fabric loader; `MODRINTH_PROJECTS=<slugs>` downloads mods (and, with a `datapack:` prefix, datapacks) from Modrinth at every container start, resolves versions against the server's Minecraft version and loader, and even removes jars when an entry is dropped from the list. The game-servers namespace egress leash already permits public-internet fetches from game pods. So the missing capability is not "download and install mods" — itzg owns that — it is **per-instance environment variables**, plus a way for Gary to discover what exists on Modrinth instead of guessing from stale training data.
+
+Two upstream facts constrain the design and were verified against current itzg documentation: the env-var contract is `MODRINTH_PROJECTS` / `MODRINTH_DOWNLOAD_DEPENDENCIES` / `MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE` (a previously assumed `MODRINTH_ALLOWED_VERSION_TYPE` does not exist), and the mod-resolution pass runs on **every** start of itzg's entrypoint, not only first boot — which is exactly what makes an env overlay applied at child launch sufficient.
+
+## Shape
+
+Four components, in dependency order:
+
+### 1. Per-instance child-env overlay (supervisor)
+
+The supervisor gains one generic mechanism: immediately before each child launch — first boot, in-place restart, any relaunch — it reads a reserved text file from the instance's data volume and injects a filtered subset of its keys into the child process environment. Nothing else about child launching changes.
+
+The contract:
+
+- **File**: `.grizzly/env`, relative to the data root. Dotenv-subset format: one `KEY=VALUE` per line, `#`-prefixed comment lines and blank lines ignored; the key is everything before the first `=` and the value everything after it, both trimmed of surrounding whitespace, with no quoting or escape semantics. Keys are case-sensitive and matched exactly (itzg's vars are uppercase; a mis-cased key simply fails the allowlist match below). If a key appears more than once, the last occurrence wins and a warning names the duplicate. A missing file is a silent no-op; an unreadable file or malformed line (no `=`, or an empty key) is skipped with a warning log, never a launch failure — the server must always be able to boot so the operator loop can repair the file.
+- **Seeding**: the supervisor owns the reserved `.grizzly/` directory and the overlay file's existence. When `SUPERVISOR_CHILD_ENV_FILE` is configured, it creates the parent directory **and an empty overlay file** if absent — at startup and again in the per-launch preparation step (idempotent), so flows that wipe the data volume mid-life (archive restore purges it before extracting) re-seed on the next launch. An empty file is behaviorally identical to a missing one. This seeding is load-bearing for the safety story: the platform's change-verification loop only arms itself for writes that overwrote an existing file (a freshly created file has no snapshot to roll back to, so creations are exempt from auto-rollback). Because the file always exists before any operator touches it, the very first mod install is an overwrite of the empty file — snapshotted, verified, and auto-rolled-back exactly like every later change. Seeding failure (permissions, full volume) logs a loud warning and continues with the overlay inert for that boot — a mod-management defect must never prevent a server from booting.
+- **Opt-in**: the mechanism is off unless the supervisor's own environment names the file via `SUPERVISOR_CHILD_ENV_FILE` (data-root-relative path). Games that don't declare it are unaffected.
+- **Allowlist**: `SUPERVISOR_CHILD_ENV_ALLOWLIST` (comma-separated key names, matched case-sensitively) declares which keys the overlay may set. A key not on the allowlist is skipped with a warning log naming the key. If the file is configured but the allowlist is unset or empty, nothing is injected (fail closed).
+- **Hard denies**: independent of the allowlist, the overlay may never set a key beginning with `SUPERVISOR_`, nor the RCON password variable — checked against the instance's *resolved* password env name (games may rename it), not a fixed literal. Platform-owned injection (the RCON password) is applied after the overlay, so platform values always win.
+- **Precedence**: pod-template env (the per-game catalog tier) is the base; overlay keys override it; supervisor-injected platform keys override everything.
+- **Misconfiguration is loud**: a half-configured pair — file path set with no allowlist, or an allowlist set with no file path — logs a warning at supervisor startup (matching the existing precedent for half-configured feature pairs), so a catalog typo is diagnosable from logs rather than looking like "working, no overrides".
+
+This mechanism is deliberately game-agnostic: it is the platform's **per-instance config tier for environment variables**, usable later by any game whose tuning surface is env-driven, with the per-game catalog tier deciding (via the allowlist) exactly how much of that surface an instance may override.
+
+### 2. Minecraft catalog enablement (per-game tier)
+
+The Minecraft catalog entry opts in by setting, in its pod template: `SUPERVISOR_CHILD_ENV_FILE=.grizzly/env` and an allowlist of exactly five keys: `TYPE`, `VERSION`, `MODRINTH_PROJECTS`, `MODRINTH_DOWNLOAD_DEPENDENCIES`, `MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE`.
+
+That set is the entire mod-management surface and intentionally nothing more:
+
+- `TYPE` — vanilla vs. loader (`FABRIC` is the supported loader for mods; `VANILLA` suffices for datapacks).
+- `VERSION` — Minecraft version pin, needed because mod compatibility is version-scoped.
+- `MODRINTH_PROJECTS` — the mod/datapack list itself: comma-separated Modrinth slugs, each optionally prefixed (`datapack:`) or version-pinned (`slug:version`).
+- `MODRINTH_DOWNLOAD_DEPENDENCIES=required` — so mods that need a library (most Fabric mods need `fabric-api`) pull it automatically.
+- `MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE` — release-channel gate (`release`/`beta`/`alpha`) for the rare mod that only ships betas.
+
+Excluded by design: itzg's direct-URL vars (`MODS`, `PLUGINS`, `DATAPACKS`, `MODS_FILE`, …) — every installed artifact must come from Modrinth by slug, so provenance is always a moderated registry rather than an arbitrary URL an LLM was talked into; `MEMORY` and JVM tuning — resource sizing stays a catalog/operator concern; CurseForge vars — that path needs an API key and has messier redistribution terms.
+
+### 3. Modrinth discovery (bot)
+
+The bot gains a small Modrinth API client and two Gary tools backed by it, so mod identification is grounded in the live registry rather than model memory:
+
+- `search_mods` — parameters: a free-text query (required), and optional filters for project type (`mod` or `datapack`), loader, and Minecraft version. Returns the top handful of hits, each rendered as: slug, title, a truncated one-line description, download count, server/client-side support flags, and supported loaders and recent game versions.
+- `mod_info` — parameter: a slug. Returns the same fields for one project, for validating a mod a friend names directly and checking version/loader compatibility before an install.
+
+Both are read-only, target no server (so guild scoping does not apply), and sit at the **manager** tier — the same tier that can act on the results by editing files and restarting. They are Discord/DM-surface tools only: the in-game chat surface keeps its small fixed tool list unchanged.
+
+The client contract: production Modrinth API v2, called with a request timeout sized for public-internet latency (order of ten seconds) rather than the bot's short in-cluster default — following the precedent of the bot's other external-API calls; an identifying User-Agent naming this project (Modrinth policy requires it); no API key (read-only endpoints are unauthenticated). Results are bounded because mod titles/descriptions are third-party text entering Gary's context — same untrusted-text posture as game logs: at most 5 hits per search, titles truncated to 80 characters, descriptions to 200. API failures (network, rate limit, malformed response) surface to Gary as plain explanatory tool-result text, never as raised errors.
+
+### 4. Gary workflow (prompt surface)
+
+New prompt guidance (additive text — no rewriting of existing tuned prompts) teaches Gary the Minecraft mod workflow end to end:
+
+- Discover with `search_mods` / validate with `mod_info`; prefer server-side-supported projects; when a mod is client-`required`, say so plainly — players must install it (and the matching loader) on their own machines, which no server-side change can do for them. Datapacks and server-side-only mods avoid that entirely and are the default recommendation.
+- Install by authoring `.grizzly/env` through the existing file tools and restarting. The file always exists (the supervisor seeds it empty), so both file tools work from the first change: the full-file **write** tool suits the initial population, the search-and-replace **edit** tool suits later slug additions and removals. Either way the restart applies the change, and the existing self-guarding restart machinery verifies health and auto-rolls the file back on failure. One change at a time, per existing discipline.
+- Take a backup before the first `TYPE` switch on a world that has state, and never lower `VERSION` (world formats upgrade one-way). The `VERSION` rule is deliberately prompt-only discipline, like "one change at a time" — a mechanical guard would mean parsing world save internals, which is out of scope; the routine backup cycle and the backup-before-`TYPE`-switch habit are the accepted safety net for it.
+- Verify outcomes from the server logs (itzg logs its mod-resolution pass) rather than assuming success.
+
+## Reasoning & alternatives
+
+**Why an env overlay on the PVC, not per-instance env stored bot-side and applied at pod render.** A bot-side store (a database table consulted when the pod spec is rendered) was considered and rejected: env changes would then require full pod recreation rather than the seconds-fast in-place restart; it creates a second home for per-instance config, violating the established two-tier config model (per-game in git, per-instance on the PVC); and it would need new snapshot/rollback machinery, whereas a file on the PVC inherits the existing per-file snapshot, restore, and self-guarding restart loop unchanged. The overlay also survives archive/restore cycles for free, since those operate on the whole data volume.
+
+**Why not have Gary manage jars directly** (a supervisor route that downloads a URL to a path, with Gary picking files). Rejected: it reimplements — worse, and inside an LLM loop — the dependency and version resolution itzg already performs; it requires a new binary-write surface on the supervisor; and it turns "what got installed" into scattered filesystem state instead of one declarative line that can be read, diffed, snapshotted, and rolled back.
+
+**Why Modrinth only.** One moderated registry with an open, unauthenticated search API, slugs as stable identifiers, and native itzg integration including cleanup-on-removal. CurseForge adds an API key, redistribution restrictions, and a second identifier scheme for marginal catalog gain at friends-scale.
+
+**Why no live datapack reload.** Minecraft can hot-reload datapacks, which tempts a restart-free path (write file, run reload command). Rejected for now: it would need the binary-fetch route rejected above, bypasses the self-guarding restart verification, and saves only a ~restart's worth of downtime on a friends-scale server. The declarative env line covers datapacks through the same single mechanism as mods.
+
+**Why the allowlist lives in the catalog, not the supervisor.** The supervisor stays game-agnostic; which env keys are safe to expose per-instance is exactly the kind of per-game knowledge the catalog tier exists to hold, and it ships through git review like every other catalog change.
+
+**Accepted tradeoffs.** Mod installs re-query Modrinth at every server start (upstream behavior), so a Modrinth outage degrades modded-server starts — acceptable at this scale, and version-pinned entries reduce the query surface. The env file is plainly visible and editable through Gary's general file tools even outside the curated workflow — acceptable because the allowlist bounds what the file can do, and edits through any path still get the snapshot/rollback guardrail.
+
+## External touchpoints
+
+- **itzg/minecraft-server image** (existing base). Contract consumed: `TYPE`, `VERSION`, `MODRINTH_PROJECTS` (slug list with `datapack:`/version-pin syntax, removal-deletes-jars semantics), `MODRINTH_DOWNLOAD_DEPENDENCIES`, `MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE`; resolution runs at every start and needs outbound internet. Risk: the project moves fast and env names have churned before; the names above were verified against current upstream docs and must be re-verified against the pinned image digest at implementation time. Two behaviors are upstream-undocumented and are validated empirically as part of this work rather than assumed: switching `TYPE` on a data volume that already has a world, and what a bad `MODRINTH_PROJECTS` entry (nonexistent slug, or no version compatible with the pinned Minecraft version/loader) does at boot — a hard startup failure engages the auto-rollback loop, whereas warn-and-continue would mean a typo'd slug is only caught by log inspection, so which one it is determines what the deterministic guardrail actually covers.
+- **Modrinth API v2.** `GET /v2/search` (query + facets for project type, loader/category, game version; limit; this client requests the endpoint's default relevance sort) and `GET /v2/project/{slug}`. Unauthenticated read-only; 300 requests/min per IP (far above this workload); identifying User-Agent required. Response fields consumed: slug, title, description, downloads, `server_side`/`client_side` (`required`/`optional`/`unsupported`/`unknown`), loaders, game versions, project type. Search hits are third-party text: truncate and render minimally. Same re-verification caveat as itzg: confirm the endpoint shapes and field names against current Modrinth docs at implementation time rather than trusting this snapshot.
+- **Cluster network policy.** No change. Game-pod egress to public internet (for itzg's Modrinth fetches) and bot egress to public internet (for the discovery client) are both already permitted by the existing namespace leash.
+- **Discord.** No new slash commands; the feature is conversational through Gary. Tier model unchanged: managers and admins get the new tools, everyone-tier does not.
+
+## Integration with existing system
+
+- **Supervisor child lifecycle.** The overlay lands in the existing per-launch call chain — the stretch that already runs game-specific file seeding and platform env injection before each spawn (these are adjacent steps in one chain, not a single hook point; the overlay's only ordering requirement is the precedence rule stated in the contract: after the base environment, before platform-owned injection). In-place restart therefore applies env changes with no pod recreation, no Agones reallocation, and no address change. Cold starts and archive-recovery starts pass through the same launch path and pick the overlay up identically.
+- **Snapshot → apply → verify → auto-rollback.** Untouched and load-bearing: editing `.grizzly/env` through the existing file-write tools produces the standard sibling snapshot; the existing restart-verification loop watches readiness and performs its single bounded auto-rollback (restore file, restart again) exactly as it does for any config file today. This design adds no rollback machinery — that reuse is a primary reason for the shape. One boundary to know: the verification wait is bounded by a **bot-side** readiness ceiling (a hardcoded constant, minutes-scale) — not by the catalog's health-probe timings, which govern Agones' own healthcheck and do not reach the bot's verify loop. A first modded boot downloads a loader plus mods and is slower than a config-tweak boot; if it overruns that ceiling the loop degrades safely to "inconclusive — no rollback, no confirmation, human follows up" rather than false-failing. The phase plan validates a real first modded boot against the window empirically; if it genuinely doesn't fit, the remedy is raising (or making configurable) the bot-side verify ceiling, and prompt guidance should have Gary tell the friend a first mod install can take a few minutes.
+- **Config two-tier model.** Extended, not changed: per-game tier (catalog, git) now also declares which env keys instances may override; per-instance tier (PVC, never git) now includes `.grizzly/env` alongside the game's own config files. The `.grizzly/` directory becomes the reserved home for any future platform-owned per-instance state; it is not hidden from Gary's file tools (deliberately — Gary is its editor).
+- **Gary's tool surface.** Two new manager-tier read-only tools following every existing convention: prompt-lib-defined names/descriptions/params with the annotations contract, one private result formatter per tool per the single-format rule (ADR-008), parse failures and API failures returned as explanatory text. No changes to existing tools, tiers, or the wire contract between bot and supervisor — this feature adds **zero control-API routes**.
+- **Other games.** Nothing changes for them: no catalog entry besides Minecraft declares `SUPERVISOR_CHILD_ENV_FILE`, so the overlay is inert elsewhere. The mechanism is the intended future path for env-tunable settings in other games (server password, difficulty, etc.), each behind its own catalog-declared allowlist; the Modrinth client stays Minecraft-specific.
+- **Documentation of record.** The decision to route per-instance env through a PVC overlay file (vs. render-time injection) gets an ADR when implementation lands; the platform overview's config-tier section gets a pointer to this capability.
+
+## Open questions
+
+None — the two identified risks (upstream env-name churn against the pinned digest; undocumented `TYPE`-switch behavior on an existing world) are closed empirically by dedicated verification steps in the phase plan rather than left open here.
