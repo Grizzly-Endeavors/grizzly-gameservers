@@ -122,6 +122,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add deploy/values.yaml
+          # A push that doesn't change the image (a docs-only merge) rebuilds to
+          # a byte-identical layer set, so the resolved digest is the one already
+          # pinned. `git commit` exits non-zero on an empty index, which would
+          # fail the deploy even though the right image is already live.
+          if git diff --cached --quiet; then
+            echo "deploy/values.yaml already pins ${DIGEST}; nothing to reconcile"
+            exit 0
+          fi
           git commit -m "ci: deploy gate-signed bot image [skip ci]" \
             -m "image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
           git push origin HEAD:main
