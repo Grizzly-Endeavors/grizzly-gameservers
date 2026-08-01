@@ -511,3 +511,11 @@ fn logs_render_or_report_absence() {
     assert!(rendered.contains("[12:00] starting"));
     assert!(rendered.contains("[12:01] ready"));
 }
+
+#[test]
+fn confirmations_default_to_a_human_click() {
+    // The whole safety story rests on a new surface having to *ask* for
+    // pre-approval. If the default ever flips, every caller that doesn't spell
+    // its posture out inherits the ability to destroy a world unprompted.
+    assert_eq!(ConfirmMode::default(), ConfirmMode::Interactive);
+}

@@ -18,7 +18,7 @@ use crate::agones::ReadyWait;
 /// last such edit is tracked — that mirrors `restore_file`, which itself only undoes
 /// the most recent write to a given file.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PendingChange {
+pub(crate) struct PendingChange {
     pub(super) server: String,
     pub(super) path: String,
 }

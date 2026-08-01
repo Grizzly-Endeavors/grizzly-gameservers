@@ -290,6 +290,47 @@ fn zero_ports_are_rejected() {
 }
 
 #[test]
+fn bearer_tokens_are_absent_when_unset() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(config.ingame_token, None, "in-game token defaults absent");
+    assert_eq!(
+        config.operator_token, None,
+        "operator token defaults absent, leaving the harness routes unmounted"
+    );
+}
+
+#[test]
+fn bearer_tokens_are_read_when_set() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_INGAME_TOKEN", "ingame-secret"),
+        ("GAMESERVERS_OPERATOR_TOKEN", "operator-secret"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(config.ingame_token.as_deref(), Some("ingame-secret"));
+    assert_eq!(config.operator_token.as_deref(), Some("operator-secret"));
+}
+
+#[test]
+fn blank_bearer_tokens_read_as_absent() {
+    // ESO renders an unprovisioned OpenBao key as an empty string rather than
+    // omitting it, so a blank value must degrade exactly like an unset one — for
+    // the operator routes that means unmounted, not mounted-and-open.
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_INGAME_TOKEN", ""),
+        ("GAMESERVERS_OPERATOR_TOKEN", ""),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+
+    assert_eq!(config.ingame_token, None);
+    assert_eq!(config.operator_token, None);
+}
+
+#[test]
 fn zero_backup_interval_is_rejected() {
     // 0 would flow into tokio::time::interval, which panics on a zero period.
     let env = lookup_from(&[

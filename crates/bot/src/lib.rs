@@ -149,6 +149,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         notifier,
         defer,
         shutdown: shutdown.clone(),
+        gateway: discord::GatewayHandle::new(),
     };
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
@@ -158,19 +159,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // k8s probes have a `/health` target while Discord is still connecting.
     http::spawn(
         http::HttpDeps {
-            ingame: ingame::IngameDeps {
-                client: data.kube_client.clone(),
-                http: data.http.clone(),
-                namespace: data.namespace.clone(),
-                domain: data.domain.clone(),
-                control_port: data.control_port,
-                catalog: std::sync::Arc::clone(&data.catalog),
-                ollama: data.ollama.clone(),
-                sessions: std::sync::Arc::clone(&data.sessions),
-                notifier: data.notifier.clone(),
-            },
+            ingame: ingame::IngameDeps::from_data(&data),
+            operator: http::operator::OperatorDeps::from_data(&data),
             port: config.agent_port,
             ingame_token: config.ingame_token,
+            operator_token: config.operator_token,
         },
         &tasks,
         shutdown.clone(),
@@ -264,9 +257,13 @@ async fn on_gateway_event(
             "registered slash commands for guild"
         );
     }
-    // On the first Ready (a Context now exists), rebuild deferred-task watchers
-    // from Valkey so a pending run_when survives the redeploy that just happened.
     if let serenity::FullEvent::Ready { .. } = event {
+        // Publish first: it's a single store, and it's what unblocks the HTTP
+        // routes that can't act until a Context exists. Reconciling can take a
+        // while (Valkey round-trips plus a watcher spawn per pending task).
+        data.gateway.publish(ctx);
+        // A Context now exists, so rebuild deferred-task watchers from Valkey and
+        // let a pending run_when survive the redeploy that just happened.
         data.defer.reconcile(data, ctx).await;
     }
     discord::gary::on_event(ctx, event, framework, data).await

@@ -45,6 +45,24 @@ pub(crate) struct IngameDeps {
     pub(crate) notifier: crate::notify::OperatorNotifier,
 }
 
+impl IngameDeps {
+    /// Carve the endpoint's handles out of the command `Data`, so both halves of
+    /// the bot share one cluster client, catalog, and session store.
+    pub(crate) fn from_data(data: &crate::discord::Data) -> Self {
+        Self {
+            client: data.kube_client.clone(),
+            http: data.http.clone(),
+            namespace: data.namespace.clone(),
+            domain: data.domain.clone(),
+            control_port: data.control_port,
+            catalog: Arc::clone(&data.catalog),
+            ollama: data.ollama.clone(),
+            sessions: Arc::clone(&data.sessions),
+            notifier: data.notifier.clone(),
+        }
+    }
+}
+
 /// The route's shared state.
 #[derive(Clone)]
 struct IngameServer {

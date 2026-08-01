@@ -2,12 +2,19 @@
 //!
 //! This module is the transport — it binds the socket, serves the always-on
 //! `GET /health` the kubelet probes, owns the shared bearer-token gate, and
-//! merges the feature routers onto one listener. A router itself lives with the
-//! feature it serves: the in-game trigger path stays in [`crate::ingame`], which
-//! also owns its serenity-free answer orchestrator.
+//! merges the feature routers onto one listener. A router lives with the feature
+//! it serves where it has a home: the in-game trigger path stays in
+//! [`crate::ingame`], which also owns its serenity-free answer orchestrator,
+//! while the operator harness has no other home and lives here in [`operator`].
 //!
 //! How a router degrades without its token is decided at the mount site rather
-//! than inside the gate, so each feature states its own posture.
+//! than inside the gate, so each feature states its own posture. The in-game
+//! route runs **open** (NetworkPolicy-only) when its secret isn't provisioned, so
+//! an unprovisioned key doesn't quietly break the reverse loop. The operator
+//! routes instead go **unmounted**: they reach Gary's full admin surface, so
+//! running them open is never the safer failure.
+
+pub(crate) mod operator;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -33,10 +40,13 @@ const HEALTH_PATH: &str = "/health";
 /// Everything the HTTP server needs to mount its routers.
 pub(crate) struct HttpDeps {
     pub(crate) ingame: IngameDeps,
+    pub(crate) operator: operator::OperatorDeps,
     pub(crate) port: u16,
     /// Shared bearer token for the in-game trigger route. `None` runs that route
     /// open, protected by `NetworkPolicy` alone.
     pub(crate) ingame_token: Option<String>,
+    /// Bearer token for the operator routes. `None` leaves them unmounted.
+    pub(crate) operator_token: Option<String>,
 }
 
 /// The expected bearer token for one router. `None` means that router runs open.
@@ -67,8 +77,10 @@ pub(crate) fn spawn(deps: HttpDeps, tasks: &TaskTracker, shutdown: CancellationT
 async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) -> Result<()> {
     let HttpDeps {
         ingame,
+        operator,
         port,
         ingame_token,
+        operator_token,
     } = deps;
 
     // `GET /health` is always served: unauthenticated, stateless, and independent
@@ -90,11 +102,21 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
         info!("in-game trigger route disabled (Gary not configured)");
     }
 
+    let operator_routes = operator_token.is_some();
+    if let Some(token) = operator_token {
+        app = app.merge(operator::router(operator, token));
+    } else {
+        info!("operator routes disabled (GAMESERVERS_OPERATOR_TOKEN unset)");
+    }
+
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind agent http endpoint on {addr}"))?;
-    info!(port, ingame_route, "agent http endpoint listening");
+    info!(
+        port,
+        ingame_route, operator_routes, "agent http endpoint listening"
+    );
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await

@@ -120,6 +120,13 @@ pub struct BotConfig {
     /// Shared bearer token the in-game agent endpoint requires. `None` runs it
     /// open (NetworkPolicy-only); synced from `OpenBao` via ESO in-cluster.
     pub(crate) ingame_token: Option<String>,
+    /// Bearer token the operator harness routes require — the authenticated
+    /// surface a coding agent drives the deployed bot through from a dev box over
+    /// `kubectl port-forward`. Deliberately **not** the in-game token: that one is
+    /// mounted into every game pod in this namespace, while this one reaches
+    /// Gary's full admin tool surface and can pre-approve destructive actions.
+    /// `None` leaves the routes unmounted entirely — fail-closed, never open.
+    pub(crate) operator_token: Option<String>,
 }
 
 /// Connection settings for the backups S3 bucket. Only the access/secret keys are
@@ -220,6 +227,8 @@ impl BotConfig {
             optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
         let ingame_token =
             optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.is_empty());
+        let operator_token =
+            optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.is_empty());
 
         Ok(Self {
             token,
@@ -240,6 +249,7 @@ impl BotConfig {
             stranded_dwell,
             agent_port,
             ingame_token,
+            operator_token,
         })
     }
 }

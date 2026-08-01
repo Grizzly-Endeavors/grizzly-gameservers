@@ -49,6 +49,24 @@ use crate::prompts::{
     WriteFile, WriteFileParams,
 };
 
+/// How a destructive tool obtains the human approval it requires.
+///
+/// [`Interactive`](ConfirmMode::Interactive) is the default so that any new
+/// surface must state its posture out loud; a defaulted field is exactly how a
+/// future caller would inherit pre-approval without anyone deciding it should.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ConfirmMode {
+    /// Post Danger/Cancel buttons in the channel and block on the caller's click.
+    #[default]
+    Interactive,
+    /// The caller approved this action out of band, before the request was made.
+    /// Only the operator harness selects this, per request — no Discord client can
+    /// click a button, so a headless caller would otherwise only ever time out. The
+    /// action still posts a visible audit line to the channel, and refuses to
+    /// proceed if that line can't be posted.
+    Preapproved,
+}
+
 /// Everything a tool executor needs: the shared bot state plus the Discord
 /// handles the destructive-confirmation flow uses, and the caller's access tier
 /// (so mutating tools can refuse at execution time as defense in depth).
@@ -66,6 +84,10 @@ pub(crate) struct ToolCtx<'a> {
     /// existing server by name is gated on it in [`dispatch`], and the listing
     /// tools query within it.
     pub(crate) scope: ServerScope,
+    /// How the destructive tools obtain their confirmation. Every Discord-driven
+    /// surface sets [`ConfirmMode::Interactive`]; only the operator harness may
+    /// pre-approve, and only per request.
+    pub(crate) confirmations: ConfirmMode,
     /// The last config edit that saved a snapshot and hasn't been verified by a
     /// restart yet, tracked for the duration of one Gary turn. When a restart
     /// applies this change, [`exec_restart`] watches it come back up and rolls it
@@ -144,6 +166,16 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
         tools.extend(admin_only_tools());
     }
     tools
+}
+
+/// Whether `name` is a tool at all, at any tier. Distinguishes a typo (which a
+/// caller naming tools by hand should be told about) from a real tool the caller
+/// isn't allowed to use — the latter still dispatches, so it can produce the tier
+/// refusal rather than a "no such tool" that hides the actual reason.
+pub(crate) fn known_tool(name: &str) -> bool {
+    available_tools(AccessLevel::Admin)
+        .iter()
+        .any(|tool| tool.function.name == name)
 }
 
 /// The lifecycle and file-tuning tools offered to managers and admins — the
@@ -909,10 +941,25 @@ async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Permanent deletion is gated behind an explicit Discord confirmation: the
-/// model can request it, but a human must click through before any world is
-/// destroyed. The returned text tells the model what the human decided.
+/// Permanent deletion is gated behind an explicit confirmation: the model can
+/// request it, but a human must approve before any world is destroyed. The
+/// returned text tells the model what was decided.
 async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
+    match ctx.confirmations {
+        ConfirmMode::Interactive => confirm_destroy_by_click(ctx, server).await,
+        ConfirmMode::Preapproved => {
+            let Some(mut prompt) =
+                post_preapproval_audit(ctx, server, "destroy", destroy_confirm_embed(server)).await
+            else {
+                return prompts::DestroyNoConfirmChannel::render();
+            };
+            apply_destroy(ctx, server, &mut prompt).await
+        }
+    }
+}
+
+/// Post the Danger/Cancel buttons and wait for the invoking user's click.
+async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new("gary_destroy_confirm")
             .label("Delete it")
@@ -992,15 +1039,23 @@ async fn finish_destroy(
         .render();
     }
 
+    apply_destroy(ctx, server, &mut prompt).await
+}
+
+/// Delete the instance and swap the confirmation card for the result, once
+/// approval has been established. `prompt` is whichever message carries that
+/// card — the button prompt a human clicked, or the audit line a pre-approved
+/// request posted — so the channel tells the same before/after story either way.
+async fn apply_destroy(ctx: &ToolCtx<'_>, server: &str, prompt: &mut serenity::Message) -> String {
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(outcome) => {
-            edit_prompt(ctx, &mut prompt, destroy_result_embed(&outcome, server)).await;
+            edit_prompt(ctx, prompt, destroy_result_embed(&outcome, server)).await;
             format_destroy(server, &outcome)
         }
         Err(err) => {
             error!(error = ?err, %server, "agent: destroy failed");
             let message = cluster_error();
-            edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+            edit_prompt(ctx, prompt, error_embed(&message)).await;
             message
         }
     }
@@ -1341,6 +1396,8 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
     let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
+        server,
+        "archive",
         archive_confirm_embed(server),
         "gary_archive_confirm",
         prompts::ConfirmAborted {
@@ -1407,6 +1464,8 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
     let timed_out = prompts::AbortTimedOut::render();
     match confirm_destructive(
         ctx,
+        server,
+        "restore",
         restore_confirm_embed(server, &label),
         "gary_restore_confirm",
         prompts::ConfirmAborted {
@@ -1497,15 +1556,74 @@ enum Confirm {
     Declined(String),
 }
 
-/// Post a Danger/Cancel confirmation in-channel and wait for the invoking user's
-/// click, mirroring the destroy-confirmation gate for archive/restore.
+/// Posted in-channel whenever a destructive action runs without a button click.
+/// The visible trail is the entire reason pre-approval is acceptable, so an
+/// action that can't post this is refused rather than run unrecorded.
+const PREAPPROVED_AUDIT_LINE: &str = "⚠️ Pre-approved by the operator harness — this was approved \
+                                      out of band, not by a button click here.";
+
+/// Announce a pre-approved destructive action in-channel: the same card the
+/// interactive prompt shows, with no buttons, above a line saying nobody clicked.
+/// Returns the posted message so the caller can swap in the result card, or
+/// `None` when it couldn't be delivered — in which case the action must not run.
+async fn post_preapproval_audit(
+    ctx: &ToolCtx<'_>,
+    server: &str,
+    action: &str,
+    card: serenity::CreateEmbed,
+) -> Option<serenity::Message> {
+    warn!(
+        %server,
+        action,
+        user = %ctx.author_id,
+        channel = %ctx.channel_id,
+        "destructive action pre-approved by the operator harness; no human clicked through"
+    );
+    match ctx
+        .channel_id
+        .send_message(
+            ctx.serenity,
+            CreateMessage::new()
+                .content(PREAPPROVED_AUDIT_LINE)
+                .embed(card),
+        )
+        .await
+    {
+        Ok(message) => Some(message),
+        Err(err) => {
+            error!(
+                error = ?err, %server, action,
+                "agent: couldn't post the pre-approval audit line; refusing the action"
+            );
+            None
+        }
+    }
+}
+
+/// Obtain approval for a destructive action, mirroring the destroy gate for
+/// archive/restore. Interactively that means posting Danger/Cancel buttons and
+/// waiting for the invoking user's click; pre-approved, it means posting the
+/// audit line and proceeding.
 async fn confirm_destructive(
     ctx: &ToolCtx<'_>,
+    server: &str,
+    action: &str,
     prompt: serenity::CreateEmbed,
     confirm_id: &str,
     cancel_line: String,
     timeout_line: String,
 ) -> Confirm {
+    match ctx.confirmations {
+        ConfirmMode::Interactive => {}
+        ConfirmMode::Preapproved => {
+            return post_preapproval_audit(ctx, server, action, prompt)
+                .await
+                .map_or_else(
+                    || Confirm::Declined(prompts::ConfirmNoChannel::render()),
+                    |message| Confirm::Confirmed(Box::new(message)),
+                );
+        }
+    }
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new(confirm_id)
             .label("Do it")
