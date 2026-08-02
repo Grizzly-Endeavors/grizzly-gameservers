@@ -75,3 +75,21 @@ The phase also closed **issue #45** first: `search_mods` and `mod_info` would ot
 - **Preconditions:** Phases 1–3 all live.
 - **Shape when done:** Gary's manager-tier guidance covers the full workflow from `design.md` §"Gary workflow": discover → validate compatibility → warn on client-`required` mods → backup before first `TYPE` switch → never lower `VERSION` → author `.grizzly/env` with the existing file tools → restart and let the self-guarding loop verify → confirm from logs → set expectations that a first mod install takes a minute or so. Two rules the Phase 2 findings force are non-negotiable in that guidance: **removals set `MODRINTH_PROJECTS` to the remaining list and never delete the line** (an absent key is a silent no-op — itzg skips reconciliation and the artifact stays installed while the file claims otherwise), and **`VERSION` is written alongside the first `MODRINTH_PROJECTS`**, pinning the exact version the mods were validated against rather than relying on the catalog floor. The ADR records the overlay-on-PVC decision with the render-time alternative and its rejection reasoning. The design doc's status line is updated to reflect shipped reality.
 - **Verification:** on the deployed bot, one end-to-end conversation per flow on a scratch server: a friend-style request installs a datapack via search → confirm → env edit → restart → verified healthy; a mod install on a vanilla server correctly triggers the backup-then-`TYPE`-switch path; a request for a client-`required` mod (e.g. a minimap) gets the plain-language "players must install this on their machines" warning; a deliberately broken install rolls back automatically and Gary reports it honestly. Docs merged; annotations test green.
+
+### Phase 4 findings
+
+The guidance shipped as two additive manager-tier blocks — `DiscordManagerModChoice` (what to install) and `DiscordManagerModInstall` (how) — appended unconditionally after `DiscordManagerTuning`. Everything the design's §"Gary workflow" prescribed was exercised on the `modflow` scratch server against the deployed bot; every flow passed on the first attempt, so nothing in this phase forced a change to the mechanism beneath it.
+
+| flow | what Gary did |
+|---|---|
+| datapack ("more interesting terrain") | `search_mods` → `mod_info` → read `.grizzly/env` → wrote `TYPE=VANILLA`, `VERSION=26.2`, `MODRINTH_PROJECTS=datapack:terralith` → restart → `read_logs` confirmed the zip loaded |
+| mod on a world with state | flagged the `TYPE` switch and the minute-or-so wait, asked first, then `backup_server` → `edit_file` → restart → healthy, `fabric-api` auto-resolved |
+| client-`required` mod (minimap) | refused to install silently; explained in plain words that each player must install Fabric and the mod themselves, then asked whether to proceed |
+| removal | rewrote `MODRINTH_PROJECTS` to the remaining slug rather than deleting the line; the jar was genuinely reconciled away (`mods/` empty afterwards) |
+| bad slug | escalation → snapshot restored → healthy, reported honestly as a rollback rather than a success |
+
+Two things are worth keeping in mind for later work. **The removal rule held, but nothing except the prompt makes it hold** — an absent key still reconciles nothing, so this is the phase's most fragile guarantee and the first thing to re-check if that block is ever reworded. And **`browse_files` does list `.grizzly/`**, so the reserved directory is genuinely discoverable rather than depending on Gary knowing the path from the prompt alone.
+
+The bad-slug flow also re-confirmed [ADR-010](../../decisions/010-recoverable-crash-escalation.md) in place: the `GameServer` never left `Ready` and the pod's restart count stayed 0 through the crash-and-repair cycle.
+
+Not fixed here: the two blocks are the first game-specific prose in the system prompt and every manager turn pays for them regardless of guild. Filed as issue #61 — a third path is wanted for guidance that is load-bearing (so not prunable like Gary's memory) but game-scoped (so not unconditional like a block).
