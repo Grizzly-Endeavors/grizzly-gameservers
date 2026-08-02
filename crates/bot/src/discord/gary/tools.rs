@@ -39,14 +39,19 @@ use crate::backup::{
 };
 use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
+use crate::modrinth::{
+    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, recent_versions,
+    search_projects, short_description, short_title,
+};
 use crate::notify::Escalation;
 use crate::prompts::{
     self, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
-    ListServers, NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer,
-    Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams,
-    SendCommand, SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer,
-    WriteFile, WriteFileParams,
+    ListServers, ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs,
+    ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer, RestoreFile,
+    RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
+    SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer, WriteFile,
+    WriteFileParams,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -154,7 +159,7 @@ struct TargetName {
 /// so a tool's tier is stated exactly once.
 ///
 /// The tiers, in the order they appear: read-only lookups anyone may run;
-/// manager lifecycle, file-tuning, and memory tools — the day-to-day
+/// manager lifecycle, file-tuning, mod-discovery, and memory tools — the day-to-day
 /// operations, none of which permanently destroy a world; and the admin-only
 /// destructive set (permanent deletion, world overwrites, archival, live console
 /// commands). The "do not confirm" steer on `destroy_server` and the
@@ -179,6 +184,8 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, RestoreFile::spec().into()),
         (AccessLevel::Manager, RunWhen::spec().into()),
         (AccessLevel::Manager, BackupServer::spec().into()),
+        (AccessLevel::Manager, SearchMods::spec().into()),
+        (AccessLevel::Manager, ModInfo::spec().into()),
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
         (AccessLevel::Admin, DestroyServer::spec().into()),
@@ -263,6 +270,16 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
+        // Registry lookups target no server at all — they read Modrinth, not the
+        // cluster — so they take neither the scope gate nor a server argument.
+        SearchMods::NAME => match parse::<SearchModsParams>(args) {
+            Ok(params) => exec_search_mods(ctx, params).await,
+            Err(message) => message,
+        },
+        ModInfo::NAME => match parse::<ModInfoParams>(args) {
+            Ok(params) => exec_mod_info(ctx, &params.slug).await,
+            Err(message) => message,
+        },
         // Memory tools carry no server name (memory is shared across guilds), so
         // they skip the scope gate above and dispatch on their own.
         Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
@@ -423,7 +440,10 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 /// the scope gate applies to. Excluded because they enforce tenancy themselves:
 /// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
 /// (no existing target — stamps the current guild), and `recover_server` (resolves
-/// the archive within the caller's scope). Keep this in sync with those tools.
+/// the archive within the caller's scope). Also excluded because they reach no
+/// server at all: `remember`/`forget` (memory is cross-guild) and
+/// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
+/// there is no tenant to confine). Keep this in sync with those tools.
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
@@ -1345,6 +1365,37 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
+/// Search Modrinth. Reaches no server, so it needs nothing from the cluster —
+/// only the shared HTTP client.
+async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String {
+    let query = SearchQuery {
+        text: params.query,
+        kind: params.kind.map(Kind::from),
+        loader: params.loader.map(Loader::from),
+        game_version: params.game_version,
+    };
+    match search_projects(&ctx.data.http, &query).await {
+        Ok(hits) => format_mod_search(&query.text, &hits),
+        Err(err) => {
+            error!(error = ?err, query = %query.text, "agent: modrinth search failed");
+            modrinth_unavailable()
+        }
+    }
+}
+
+/// Look one Modrinth project up by slug. A slug the registry doesn't know is an
+/// ordinary answer — the exact case this tool exists to catch — not an error.
+async fn exec_mod_info(ctx: &ToolCtx<'_>, slug: &str) -> String {
+    match fetch_project(&ctx.data.http, slug).await {
+        Ok(Some(project)) => format_mod_info(&project),
+        Ok(None) => prompts::ModNotFound { slug }.render(),
+        Err(err) => {
+            error!(error = ?err, %slug, "agent: modrinth project lookup failed");
+            modrinth_unavailable()
+        }
+    }
+}
+
 async fn exec_backup(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
@@ -2064,6 +2115,63 @@ fn archives_unavailable_text() -> String {
 
 fn not_managed(server: &str) -> String {
     prompts::NotManaged { server }.render()
+}
+
+fn modrinth_unavailable() -> String {
+    prompts::ModrinthUnavailable::render()
+}
+
+/// Render a `search_mods` listing: one bounded line per hit.
+fn format_mod_search(query: &str, hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return prompts::ModSearchEmpty { query }.render();
+    }
+    let results = hits
+        .iter()
+        .map(format_mod_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    prompts::ModSearchHeader {
+        query,
+        results: &results,
+    }
+    .render()
+}
+
+/// One search hit as a single line. A hit reports no loaders of its own, so they
+/// are recovered from its categories.
+fn format_mod_line(hit: &SearchHit) -> String {
+    let loaders = list_or_none(&hit.loaders());
+    let versions = list_or_none(&recent_versions(&hit.versions));
+    prompts::ModSummaryLine {
+        slug: &hit.slug,
+        title: &short_title(&hit.title),
+        description: &short_description(&hit.description),
+        downloads: &hit.downloads.to_string(),
+        server_side: &hit.server_side,
+        client_side: &hit.client_side,
+        loaders: &loaders,
+        versions: &versions,
+    }
+    .render()
+}
+
+/// Render a resolved `mod_info` lookup. Unlike a search hit, a project reports
+/// its loaders and game versions as fields of its own.
+fn format_mod_info(project: &Project) -> String {
+    let loaders = list_or_none(&project.loaders);
+    let versions = list_or_none(&recent_versions(&project.game_versions));
+    prompts::ModProjectDetail {
+        slug: &project.slug,
+        title: &short_title(&project.title),
+        description: &short_description(&project.description),
+        downloads: &project.downloads.to_string(),
+        server_side: &project.server_side,
+        client_side: &project.client_side,
+        loaders: &loaders,
+        versions: &versions,
+    }
+    .render()
 }
 
 /// Delegates to [`super::game_catalog_list`] for the `&ToolCtx`-shaped call
