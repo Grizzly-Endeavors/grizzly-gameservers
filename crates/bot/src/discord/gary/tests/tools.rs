@@ -19,8 +19,9 @@ const ADMIN_ONLY: [&str; 5] = [
     RecoverServer::NAME,
 ];
 
-/// The lifecycle and file tools a manager gets on top of the read-only set.
-const MANAGER_ADDED: [&str; 15] = [
+/// The lifecycle, file, discovery, and memory tools a manager gets on top of the
+/// read-only set.
+const MANAGER_ADDED: [&str; 17] = [
     CreateServer::NAME,
     StopServer::NAME,
     StartServer::NAME,
@@ -34,6 +35,8 @@ const MANAGER_ADDED: [&str; 15] = [
     RestoreFile::NAME,
     RunWhen::NAME,
     BackupServer::NAME,
+    SearchMods::NAME,
+    ModInfo::NAME,
     Remember::NAME,
     Forget::NAME,
 ];
@@ -75,8 +78,8 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        19,
-        "four read tools plus the fifteen manager lifecycle/file/memory tools"
+        21,
+        "four read tools plus the seventeen manager lifecycle/file/discovery/memory tools"
     );
 }
 
@@ -91,48 +94,59 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        24,
-        "the four read tools, fifteen manager tools, and five admin-only tools"
+        26,
+        "the four read tools, seventeen manager tools, and five admin-only tools"
     );
 }
 
 #[test]
-fn tier_refusal_matches_each_tools_real_tier() {
-    // Derived from the live manager_tools()/admin_only_tools() sets rather than a
-    // hand-copied list, so a tool added to one of those but not to tier_refusal's
-    // matching arm fails here — instead of silently telling a below-tier caller
-    // "no such tool" instead of "an admin has to do that".
-    let admin_names: Vec<String> = admin_only_tools()
-        .into_iter()
-        .map(|tool| tool.function.name)
-        .collect();
-    let manager_names: Vec<String> = manager_tools()
-        .into_iter()
-        .map(|tool| tool.function.name)
-        // remember/forget are manager-tier but dispatch through dispatch_memory,
-        // never dispatch_mutating's fallthrough, so tier_refusal never sees them.
-        .filter(|name| name.as_str() != Remember::NAME && name.as_str() != Forget::NAME)
-        .collect();
+fn tier_refusal_names_the_tier_each_tool_actually_needs() {
+    // Walks the live table so the refusal prose can't be wired to the wrong tier:
+    // telling a read-only caller "no such tool" when the real answer is "an admin
+    // has to do that" hides the actual reason and sends Gary down a dead end.
+    for (tier, tool) in tool_table() {
+        let name = tool.function.name;
+        let expected = match tier {
+            AccessLevel::Admin => {
+                "that action needs an admin — I can only look things up or run day-to-day changes for you here.".to_owned()
+            }
+            AccessLevel::Manager => {
+                "that action needs a manager or an admin — I can only look things up for you here."
+                    .to_owned()
+            }
+            // Read-only tools sit below every caller's tier, so they can never be
+            // refused for tier; asking anyway is asking about a name, not a tier.
+            AccessLevel::ReadOnly => format!("'{name}' isn't a tool I have."),
+        };
+        assert_eq!(tier_refusal(&name), expected, "{name}: wrong tier refusal");
+    }
+}
 
-    for name in tool_names(AccessLevel::Admin) {
-        let refusal = tier_refusal(&name);
-        if admin_names.contains(&name) {
-            assert_eq!(
-                refusal,
-                "that action needs an admin — I can only look things up or run day-to-day changes for you here.",
-                "{name} is admin-only; tier_refusal should give the admin refusal"
-            );
-        } else if manager_names.contains(&name) {
-            assert_eq!(
-                refusal,
-                "that action needs a manager or an admin — I can only look things up for you here.",
-                "{name} is manager-tier; tier_refusal should give the manager refusal"
-            );
-        } else {
-            assert_eq!(
-                refusal,
-                format!("'{name}' isn't a tool I have."),
-                "{name} never reaches dispatch_mutating's fallthrough; tier_refusal should call it unknown"
+#[test]
+fn an_unknown_name_has_no_tier_and_reads_as_unknown() {
+    assert_eq!(tier_of("frobnicate"), None);
+    assert!(!known_tool("frobnicate"));
+    assert_eq!(
+        tier_refusal("frobnicate"),
+        "'frobnicate' isn't a tool I have."
+    );
+}
+
+#[test]
+fn every_offered_tool_is_known_and_within_the_callers_tier() {
+    // The offer list and the dispatch gate read the same table; this pins that
+    // they agree, so a caller is never offered a tool the gate would refuse.
+    for access in [
+        AccessLevel::ReadOnly,
+        AccessLevel::Manager,
+        AccessLevel::Admin,
+    ] {
+        for name in tool_names(access) {
+            assert!(known_tool(&name), "{name} is offered but not a known tool");
+            let required = tier_of(&name).expect("offered tool has a tier");
+            assert!(
+                access >= required,
+                "{name} was offered to {access:?} but needs {required:?}"
             );
         }
     }
@@ -146,12 +160,15 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // Derived from the live tool set so a newly added tool can't slip past the
     // gate without this failing.
     for name in tool_names(AccessLevel::Admin) {
-        // remember/forget carry no server name (memory is cross-guild), so they're
-        // spared the gate alongside the listing/create tools.
+        // remember/forget carry no server name (memory is cross-guild), and the
+        // Modrinth lookups read a public registry rather than the cluster, so
+        // they're spared the gate alongside the listing/create tools.
         let should_gate = name != ListServers::NAME
             && name != CreateServer::NAME
             && name != ListArchives::NAME
             && name != RecoverServer::NAME
+            && name != SearchMods::NAME
+            && name != ModInfo::NAME
             && name != Remember::NAME
             && name != Forget::NAME;
         assert_eq!(
@@ -411,6 +428,155 @@ fn browse_listing_describes_files_and_folders() {
 #[test]
 fn empty_directory_is_reported() {
     assert_eq!(format_entries("config", &[]), "config is empty");
+}
+
+fn terralith_hit() -> SearchHit {
+    serde_json::from_str(
+        r#"{"slug":"terralith","title":"Terralith","description":"Adds over 95 biomes.",
+            "downloads":20538127,"client_side":"optional","server_side":"required",
+            "categories":["datapack","fabric","forge","worldgen"],
+            "versions":["1.18","26.1","26.2"],"latest_version":"EyCqftOK"}"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_mod_line_leads_with_the_slug_and_names_both_install_sides() {
+    // The slug leads because it's the only field copied verbatim into a server's
+    // config; both side flags appear because a client-required project means
+    // every player has work to do that no server change can cover.
+    let line = format_mod_line(&terralith_hit());
+    assert!(line.starts_with("terralith — Terralith:"), "{line}");
+    assert!(line.contains("needed on the server: required"), "{line}");
+    assert!(
+        line.contains("needed on players' machines: optional"),
+        "{line}"
+    );
+    assert!(line.contains("downloads: 20538127"), "{line}");
+}
+
+#[test]
+fn a_mod_line_lists_loaders_without_the_genuine_categories() {
+    // Loaders come back mixed into a hit's categories alongside real tags, so a
+    // sloppy split would advertise "worldgen" as something to set TYPE to.
+    let line = format_mod_line(&terralith_hit());
+    assert!(line.contains("loaders: datapack, fabric, forge"), "{line}");
+    assert!(!line.contains("worldgen"), "{line}");
+}
+
+#[test]
+fn a_search_listing_heads_the_hits_and_says_it_is_capped() {
+    let rendered = format_mod_search("world generation", &[terralith_hit()]);
+    assert!(rendered.contains("for world generation"), "{rendered}");
+    assert!(rendered.contains("best five only"), "{rendered}");
+    assert!(rendered.contains("terralith — Terralith:"), "{rendered}");
+}
+
+#[test]
+fn no_matches_reads_as_empty_rather_than_broken() {
+    // An empty result must not look like an outage, or the model reports the
+    // registry down instead of widening the search.
+    let rendered = format_mod_search("nonexistent thing", &[]);
+    assert!(
+        rendered.contains("nothing on Modrinth matched"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("nonexistent thing"), "{rendered}");
+    assert!(!rendered.contains("couldn't reach"), "{rendered}");
+}
+
+#[test]
+fn project_detail_reports_its_own_loaders_and_states_the_version_rule() {
+    let project: Project = serde_json::from_str(
+        r#"{"slug":"chunky","title":"Chunky","description":"Pre-generates chunks.",
+            "downloads":1000,"client_side":"unsupported","server_side":"required",
+            "loaders":["fabric","neoforge"],"game_versions":["26.1","26.2"]}"#,
+    )
+    .unwrap();
+    let rendered = format_mod_info(&project);
+    assert!(rendered.contains("loaders: fabric, neoforge"), "{rendered}");
+    assert!(
+        rendered.contains("recent Minecraft versions: 26.1, 26.2"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("stops the server from starting"),
+        "the version rule must be stated, not implied: {rendered}"
+    );
+}
+
+#[test]
+fn a_missing_slug_steers_back_to_search_instead_of_installing() {
+    // This is the case mod_info exists to catch: a guessed slug written into the
+    // config fails the boot, and the replacement pod re-reads it and fails too.
+    let rendered = prompts::ModNotFound { slug: "terrilith" }.render();
+    assert!(rendered.contains("terrilith"), "{rendered}");
+    assert!(rendered.contains("search_mods"), "{rendered}");
+    assert!(rendered.contains("don't install this one"), "{rendered}");
+}
+
+#[test]
+fn an_unreachable_registry_does_not_read_as_a_missing_mod() {
+    let rendered = modrinth_unavailable();
+    assert!(rendered.contains("couldn't reach Modrinth"), "{rendered}");
+    assert!(
+        rendered.contains("doesn't mean the mod is missing"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn the_search_schema_offers_closed_enums_for_kind_and_loader() {
+    // Open strings would let the model invent a project type or loader the
+    // registry doesn't index, which silently returns nothing.
+    let schema = SearchMods::spec().parameters;
+    let kinds = schema
+        .pointer("/properties/kind/enum")
+        .and_then(serde_json::Value::as_array)
+        .expect("kind is an enum");
+    assert_eq!(
+        kinds,
+        &[serde_json::json!("mod"), serde_json::json!("datapack")]
+    );
+    let loaders = schema
+        .pointer("/properties/loader/enum")
+        .and_then(serde_json::Value::as_array)
+        .expect("loader is an enum");
+    assert_eq!(
+        loaders,
+        &[
+            serde_json::json!("fabric"),
+            serde_json::json!("forge"),
+            serde_json::json!("neoforge"),
+            serde_json::json!("quilt")
+        ]
+    );
+}
+
+#[test]
+fn only_the_search_query_is_required() {
+    let schema = SearchMods::spec().parameters;
+    let required = schema
+        .pointer("/required")
+        .and_then(serde_json::Value::as_array)
+        .expect("the schema names its required params");
+    assert_eq!(required, &[serde_json::json!("query")]);
+}
+
+#[test]
+fn discovery_tools_are_manager_and_up() {
+    let read_only = tool_names(AccessLevel::ReadOnly);
+    let managers = tool_names(AccessLevel::Manager);
+    for tool in [SearchMods::NAME, ModInfo::NAME] {
+        assert!(
+            !read_only.iter().any(|name| name == tool),
+            "{tool} must not be offered to read-only callers"
+        );
+        assert!(
+            managers.iter().any(|name| name == tool),
+            "{tool} should be offered to managers"
+        );
+    }
 }
 
 #[test]

@@ -6,7 +6,7 @@ annotations:
   sent_when: offered on the Discord surface to every caller — read-only, manager, and admin.
   used_by:
     - file: discord/gary/tools.rs
-      function: available_tools
+      function: tool_table
     - file: discord/gary/tools.rs
       function: dispatch
   reasoning:

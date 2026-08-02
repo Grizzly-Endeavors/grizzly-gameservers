@@ -4,13 +4,11 @@ type: prompt
 annotations:
   sent_when: >-
     tool result when a read-only caller reaches a manager-tier tool (lifecycle,
-    file edits, memory, backup) — defense in depth, since those tools aren't
-    offered below manager
+    file edits, mod discovery, memory, backup) — defense in depth, since those
+    tools aren't offered below manager
   used_by:
     - file: discord/gary/tools.rs
       function: tier_refusal
-    - file: discord/gary/tools.rs
-      function: dispatch_memory
   reasoning:
     - >-
       The read-only tier's refusal: Gary can look things up but not change them.

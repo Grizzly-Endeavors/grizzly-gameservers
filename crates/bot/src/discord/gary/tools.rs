@@ -39,14 +39,19 @@ use crate::backup::{
 };
 use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
+use crate::modrinth::{
+    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, recent_versions,
+    search_projects, short_description, short_title,
+};
 use crate::notify::Escalation;
 use crate::prompts::{
     self, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
-    ListServers, NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer,
-    Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams,
-    SendCommand, SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer,
-    WriteFile, WriteFileParams,
+    ListServers, ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs,
+    ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer, RestoreFile,
+    RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
+    SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer, WriteFile,
+    WriteFileParams,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -149,23 +154,64 @@ struct TargetName {
     name: String,
 }
 
-/// The tools advertised to the model for a given caller. Everyone gets the
-/// read-only set; managers additionally get the lifecycle and file-tuning tools;
-/// admins additionally get the destructive tools and console commands.
+/// Every Discord tool paired with the lowest tier that may call it — the single
+/// home the offer list, the dispatch gate, and the below-tier refusal all read,
+/// so a tool's tier is stated exactly once.
+///
+/// The tiers, in the order they appear: read-only lookups anyone may run;
+/// manager lifecycle, file-tuning, mod-discovery, and memory tools — the day-to-day
+/// operations, none of which permanently destroy a world; and the admin-only
+/// destructive set (permanent deletion, world overwrites, archival, live console
+/// commands). The "do not confirm" steer on `destroy_server` and the
+/// confirmation phrasing on `archive_server`/`restore_server` live in those
+/// tools' prompt files.
+fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
+    vec![
+        (AccessLevel::ReadOnly, ListServers::spec().into()),
+        (AccessLevel::ReadOnly, ServerStatus::spec().into()),
+        (AccessLevel::ReadOnly, ListBackups::spec().into()),
+        (AccessLevel::ReadOnly, ListArchives::spec().into()),
+        (AccessLevel::Manager, CreateServer::spec().into()),
+        (AccessLevel::Manager, StopServer::spec().into()),
+        (AccessLevel::Manager, StartServer::spec().into()),
+        (AccessLevel::Manager, RestartServer::spec().into()),
+        (AccessLevel::Manager, ShutdownServer::spec().into()),
+        (AccessLevel::Manager, BrowseFiles::spec().into()),
+        (AccessLevel::Manager, ReadFile::spec().into()),
+        (AccessLevel::Manager, ReadLogs::spec().into()),
+        (AccessLevel::Manager, EditFile::spec().into()),
+        (AccessLevel::Manager, WriteFile::spec().into()),
+        (AccessLevel::Manager, RestoreFile::spec().into()),
+        (AccessLevel::Manager, RunWhen::spec().into()),
+        (AccessLevel::Manager, BackupServer::spec().into()),
+        (AccessLevel::Manager, SearchMods::spec().into()),
+        (AccessLevel::Manager, ModInfo::spec().into()),
+        (AccessLevel::Manager, Remember::spec().into()),
+        (AccessLevel::Manager, Forget::spec().into()),
+        (AccessLevel::Admin, DestroyServer::spec().into()),
+        (AccessLevel::Admin, ArchiveServer::spec().into()),
+        (AccessLevel::Admin, RestoreServer::spec().into()),
+        (AccessLevel::Admin, RecoverServer::spec().into()),
+        (AccessLevel::Admin, SendCommand::spec().into()),
+    ]
+}
+
+/// The tools advertised to the model for a given caller: everything at or below
+/// the caller's tier.
 pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
-    let mut tools: Vec<ToolDef> = vec![
-        ListServers::spec().into(),
-        ServerStatus::spec().into(),
-        ListBackups::spec().into(),
-        ListArchives::spec().into(),
-    ];
-    if access >= AccessLevel::Manager {
-        tools.extend(manager_tools());
-    }
-    if access >= AccessLevel::Admin {
-        tools.extend(admin_only_tools());
-    }
-    tools
+    tool_table()
+        .into_iter()
+        .filter(|(tier, _)| access >= *tier)
+        .map(|(_, tool)| tool)
+        .collect()
+}
+
+/// The lowest tier that may call `name`, or `None` if it isn't a tool at all.
+fn tier_of(name: &str) -> Option<AccessLevel> {
+    tool_table()
+        .into_iter()
+        .find(|(_, tool)| tool.function.name == name)
+        .map(|(tier, _)| tier)
 }
 
 /// Whether `name` is a tool at all, at any tier. Distinguishes a typo (which a
@@ -173,50 +219,16 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
 /// isn't allowed to use — the latter still dispatches, so it can produce the tier
 /// refusal rather than a "no such tool" that hides the actual reason.
 pub(crate) fn known_tool(name: &str) -> bool {
-    available_tools(AccessLevel::Admin)
-        .iter()
-        .any(|tool| tool.function.name == name)
-}
-
-/// The lifecycle and file-tuning tools offered to managers and admins — the
-/// day-to-day operations, none of which permanently destroy a world.
-fn manager_tools() -> Vec<ToolDef> {
-    vec![
-        CreateServer::spec().into(),
-        StopServer::spec().into(),
-        StartServer::spec().into(),
-        RestartServer::spec().into(),
-        ShutdownServer::spec().into(),
-        BrowseFiles::spec().into(),
-        ReadFile::spec().into(),
-        ReadLogs::spec().into(),
-        EditFile::spec().into(),
-        WriteFile::spec().into(),
-        RestoreFile::spec().into(),
-        RunWhen::spec().into(),
-        BackupServer::spec().into(),
-        Remember::spec().into(),
-        Forget::spec().into(),
-    ]
-}
-
-/// The destructive and heavy-handed tools offered only to admin callers:
-/// permanent deletion, world overwrites, archival, and live console commands.
-/// The "do not confirm" steer on `destroy_server` and the confirmation phrasing
-/// on `archive_server`/`restore_server` live in those tools' prompt files.
-fn admin_only_tools() -> Vec<ToolDef> {
-    vec![
-        DestroyServer::spec().into(),
-        ArchiveServer::spec().into(),
-        RestoreServer::spec().into(),
-        RecoverServer::spec().into(),
-        SendCommand::spec().into(),
-    ]
+    tier_of(name).is_some()
 }
 
 /// Run one tool call and return the text result to feed back to the model. Bad
-/// arguments, unknown names, and non-admin attempts at mutating tools all return
-/// an explanatory string rather than failing the loop.
+/// arguments, unknown names, and below-tier attempts all return an explanatory
+/// string rather than failing the loop.
+///
+/// The tier gate runs first, once, against [`tool_table`] — defense in depth,
+/// since a below-tier tool was never offered to this caller in the first place.
+/// Because it is checked here, the arms below carry no tier guards of their own.
 ///
 /// Before dispatching, any tool that targets an existing server by name is
 /// confined to the caller's [`ServerScope`](ToolCtx::scope): a server in another
@@ -228,6 +240,18 @@ fn admin_only_tools() -> Vec<ToolDef> {
 /// listing (see `exec_recover`).
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
+    match tier_of(call.function.name.as_str()) {
+        Some(required) if ctx.access < required => {
+            return tier_refusal(call.function.name.as_str());
+        }
+        Some(_) => {}
+        None => {
+            return prompts::UnknownTool {
+                name: &call.function.name,
+            }
+            .render();
+        }
+    }
     if targets_existing_server(call.function.name.as_str())
         && let Ok(TargetName { name }) = serde_json::from_str::<TargetName>(args)
         && let Some(refusal) = scope_refusal(ctx, &name).await
@@ -246,6 +270,16 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
+        // Registry lookups target no server at all — they read Modrinth, not the
+        // cluster — so they take neither the scope gate nor a server argument.
+        SearchMods::NAME => match parse::<SearchModsParams>(args) {
+            Ok(params) => exec_search_mods(ctx, params).await,
+            Err(message) => message,
+        },
+        ModInfo::NAME => match parse::<ModInfoParams>(args) {
+            Ok(params) => exec_mod_info(ctx, &params.slug).await,
+            Err(message) => message,
+        },
         // Memory tools carry no server name (memory is shared across guilds), so
         // they skip the scope gate above and dispatch on their own.
         Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
@@ -253,13 +287,10 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     }
 }
 
-/// Dispatch the memory tools. Manager-gated like the mutating set (defense in
-/// depth — they aren't offered below manager either), but kept out of
-/// [`dispatch_mutating`] because they target no server and take no scope gate.
+/// Dispatch the memory tools, kept out of [`dispatch_mutating`] because they
+/// target no server and take no scope gate. Their manager tier is enforced by
+/// the gate in [`dispatch`], like every other tool's.
 async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
-    if ctx.access < AccessLevel::Manager {
-        return prompts::NonManagerRefusal::render();
-    }
     match name {
         Remember::NAME => match parse::<RememberParams>(args) {
             Ok(params) => exec_remember(ctx, &params.scope, &params.note).await,
@@ -274,54 +305,51 @@ async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
 }
 
 /// Dispatch the mutating tools — the manager-tier lifecycle/file set and the
-/// admin-only destructive set — gating each on the caller's tier and rejecting
-/// unknown names. Split out of [`dispatch`] so each stays under the line cap.
-/// The tier guards mirror [`available_tools`]: a tool the caller couldn't be
-/// offered falls through to the tier-appropriate refusal (defense in depth).
+/// admin-only destructive set. Split out of [`dispatch`] so each stays under the
+/// line cap. Tiering is already settled by the gate in [`dispatch`], so the arms
+/// here are plain name matches.
 async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
-    let manager = ctx.access >= AccessLevel::Manager;
-    let admin = ctx.access >= AccessLevel::Admin;
     match name {
-        CreateServer::NAME if manager => match parse::<CreateServerParams>(args) {
+        CreateServer::NAME => match parse::<CreateServerParams>(args) {
             Ok(params) => exec_create(ctx, &params.game, params.name.as_deref()).await,
             Err(message) => message,
         },
-        StopServer::NAME if manager => match parse::<NameParams>(args) {
+        StopServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_stop(ctx, &params.name).await,
             Err(message) => message,
         },
-        StartServer::NAME if manager => match parse::<NameParams>(args) {
+        StartServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_start(ctx, &params.name).await,
             Err(message) => message,
         },
-        RestartServer::NAME if manager => match parse::<NameParams>(args) {
+        RestartServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_restart(ctx, &params.name).await,
             Err(message) => message,
         },
-        ShutdownServer::NAME if manager => match parse::<NameParams>(args) {
+        ShutdownServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        BrowseFiles::NAME if manager => match parse::<PathParams>(args) {
+        BrowseFiles::NAME => match parse::<PathParams>(args) {
             Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        ReadFile::NAME if manager => match parse::<PathParams>(args) {
+        ReadFile::NAME => match parse::<PathParams>(args) {
             Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        ReadLogs::NAME if manager => match parse::<ReadLogsParams>(args) {
+        ReadLogs::NAME => match parse::<ReadLogsParams>(args) {
             Ok(params) => match narrow_lines(params.lines) {
                 Ok(lines) => exec_read_logs(ctx, &params.name, lines).await,
                 Err(message) => message,
             },
             Err(message) => message,
         },
-        WriteFile::NAME if manager => match parse::<WriteFileParams>(args) {
+        WriteFile::NAME => match parse::<WriteFileParams>(args) {
             Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
             Err(message) => message,
         },
-        EditFile::NAME if manager => match parse::<EditFileParams>(args) {
+        EditFile::NAME => match parse::<EditFileParams>(args) {
             Ok(params) => {
                 exec_edit_file(
                     ctx,
@@ -334,78 +362,54 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             }
             Err(message) => message,
         },
-        RestoreFile::NAME if manager => match parse::<PathParams>(args) {
+        RestoreFile::NAME => match parse::<PathParams>(args) {
             Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        RunWhen::NAME if manager => match parse::<RunWhenParams>(args) {
+        RunWhen::NAME => match parse::<RunWhenParams>(args) {
             Ok(params) => {
                 exec_run_when(ctx, &params.name, params.condition.into(), &params.task).await
             }
             Err(message) => message,
         },
-        BackupServer::NAME if manager => match parse::<NameParams>(args) {
+        BackupServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_backup(ctx, &params.name).await,
             Err(message) => message,
         },
-        DestroyServer::NAME if admin => match parse::<NameParams>(args) {
+        DestroyServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
-        SendCommand::NAME if admin => match parse::<SendCommandParams>(args) {
+        SendCommand::NAME => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
         },
-        ArchiveServer::NAME if admin => match parse::<NameParams>(args) {
+        ArchiveServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_archive(ctx, &params.name).await,
             Err(message) => message,
         },
-        RestoreServer::NAME if admin => match parse::<NameParams>(args) {
+        RestoreServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_restore(ctx, &params.name).await,
             Err(message) => message,
         },
-        RecoverServer::NAME if admin => match parse::<NameParams>(args) {
+        RecoverServer::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_recover(ctx, &params.name).await,
             Err(message) => message,
         },
-        // A known tool the caller's tier couldn't be offered (defense in depth),
-        // or an unknown name — classified into the right refusal.
-        other => tier_refusal(other),
+        other => prompts::UnknownTool { name: other }.render(),
     }
 }
 
-/// The response for a mutating tool that fell through every guarded arm: a
-/// tier-appropriate refusal for a real-but-out-of-tier tool (defense in depth —
-/// these aren't offered below their tier), or the unknown-tool message otherwise.
+/// The refusal for a tool the caller's tier may not use, naming the tier that
+/// could. Reads the same [`tool_table`] the offer list does, so the ceiling it
+/// relays can't drift from the one actually enforced.
 fn tier_refusal(name: &str) -> String {
-    if matches!(
-        name,
-        DestroyServer::NAME
-            | SendCommand::NAME
-            | ArchiveServer::NAME
-            | RestoreServer::NAME
-            | RecoverServer::NAME
-    ) {
-        prompts::NonAdminRefusal::render()
-    } else if matches!(
-        name,
-        CreateServer::NAME
-            | StopServer::NAME
-            | StartServer::NAME
-            | RestartServer::NAME
-            | ShutdownServer::NAME
-            | BrowseFiles::NAME
-            | ReadFile::NAME
-            | ReadLogs::NAME
-            | WriteFile::NAME
-            | EditFile::NAME
-            | RestoreFile::NAME
-            | RunWhen::NAME
-            | BackupServer::NAME
-    ) {
-        prompts::NonManagerRefusal::render()
-    } else {
-        prompts::UnknownTool { name }.render()
+    match tier_of(name) {
+        Some(AccessLevel::Admin) => prompts::NonAdminRefusal::render(),
+        Some(AccessLevel::Manager) => prompts::NonManagerRefusal::render(),
+        // A read-only tool is below every caller's tier, so reaching here means
+        // the name isn't a tool at all.
+        Some(AccessLevel::ReadOnly) | None => prompts::UnknownTool { name }.render(),
     }
 }
 
@@ -436,7 +440,10 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 /// the scope gate applies to. Excluded because they enforce tenancy themselves:
 /// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
 /// (no existing target — stamps the current guild), and `recover_server` (resolves
-/// the archive within the caller's scope). Keep this in sync with those tools.
+/// the archive within the caller's scope). Also excluded because they reach no
+/// server at all: `remember`/`forget` (memory is cross-guild) and
+/// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
+/// there is no tenant to confine). Keep this in sync with those tools.
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
@@ -1358,6 +1365,37 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
+/// Search Modrinth. Reaches no server, so it needs nothing from the cluster —
+/// only the shared HTTP client.
+async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String {
+    let query = SearchQuery {
+        text: params.query,
+        kind: params.kind.map(Kind::from),
+        loader: params.loader.map(Loader::from),
+        game_version: params.game_version,
+    };
+    match search_projects(&ctx.data.http, &query).await {
+        Ok(hits) => format_mod_search(&query.text, &hits),
+        Err(err) => {
+            error!(error = ?err, query = %query.text, "agent: modrinth search failed");
+            modrinth_unavailable()
+        }
+    }
+}
+
+/// Look one Modrinth project up by slug. A slug the registry doesn't know is an
+/// ordinary answer — the exact case this tool exists to catch — not an error.
+async fn exec_mod_info(ctx: &ToolCtx<'_>, slug: &str) -> String {
+    match fetch_project(&ctx.data.http, slug).await {
+        Ok(Some(project)) => format_mod_info(&project),
+        Ok(None) => prompts::ModNotFound { slug }.render(),
+        Err(err) => {
+            error!(error = ?err, %slug, "agent: modrinth project lookup failed");
+            modrinth_unavailable()
+        }
+    }
+}
+
 async fn exec_backup(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
@@ -2077,6 +2115,63 @@ fn archives_unavailable_text() -> String {
 
 fn not_managed(server: &str) -> String {
     prompts::NotManaged { server }.render()
+}
+
+fn modrinth_unavailable() -> String {
+    prompts::ModrinthUnavailable::render()
+}
+
+/// Render a `search_mods` listing: one bounded line per hit.
+fn format_mod_search(query: &str, hits: &[SearchHit]) -> String {
+    if hits.is_empty() {
+        return prompts::ModSearchEmpty { query }.render();
+    }
+    let results = hits
+        .iter()
+        .map(format_mod_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    prompts::ModSearchHeader {
+        query,
+        results: &results,
+    }
+    .render()
+}
+
+/// One search hit as a single line. A hit reports no loaders of its own, so they
+/// are recovered from its categories.
+fn format_mod_line(hit: &SearchHit) -> String {
+    let loaders = list_or_none(&hit.loaders());
+    let versions = list_or_none(&recent_versions(&hit.versions));
+    prompts::ModSummaryLine {
+        slug: &hit.slug,
+        title: &short_title(&hit.title),
+        description: &short_description(&hit.description),
+        downloads: &hit.downloads.to_string(),
+        server_side: &hit.server_side,
+        client_side: &hit.client_side,
+        loaders: &loaders,
+        versions: &versions,
+    }
+    .render()
+}
+
+/// Render a resolved `mod_info` lookup. Unlike a search hit, a project reports
+/// its loaders and game versions as fields of its own.
+fn format_mod_info(project: &Project) -> String {
+    let loaders = list_or_none(&project.loaders);
+    let versions = list_or_none(&recent_versions(&project.game_versions));
+    prompts::ModProjectDetail {
+        slug: &project.slug,
+        title: &short_title(&project.title),
+        description: &short_description(&project.description),
+        downloads: &project.downloads.to_string(),
+        server_side: &project.server_side,
+        client_side: &project.client_side,
+        loaders: &loaders,
+        versions: &versions,
+    }
+    .render()
 }
 
 /// Delegates to [`super::game_catalog_list`] for the `&ToolCtx`-shaped call

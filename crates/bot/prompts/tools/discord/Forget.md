@@ -11,7 +11,7 @@ annotations:
   sent_when: offered on the Discord surface to managers and admins.
   used_by:
     - file: discord/gary/tools.rs
-      function: manager_tools
+      function: tool_table
     - file: discord/gary/tools.rs
       function: dispatch_memory
   reasoning:

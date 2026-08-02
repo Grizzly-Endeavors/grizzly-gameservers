@@ -15,6 +15,7 @@ mod http;
 mod ingame;
 mod kv;
 mod memory;
+mod modrinth;
 mod notify;
 mod prompts;
 mod store;
