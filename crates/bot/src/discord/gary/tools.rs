@@ -40,8 +40,8 @@ use crate::backup::{
 use crate::defer::{Condition, DeferredTask};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
-    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, recent_versions,
-    search_projects, short_description, short_title,
+    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
+    short_description, short_title, versions_for_display,
 };
 use crate::notify::Escalation;
 use crate::prompts::{
@@ -1375,7 +1375,7 @@ async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String
         game_version: params.game_version,
     };
     match search_projects(&ctx.data.http, &query).await {
-        Ok(hits) => format_mod_search(&query.text, &hits),
+        Ok(hits) => format_mod_search(&query.text, query.game_version.as_deref(), &hits),
         Err(err) => {
             error!(error = ?err, query = %query.text, "agent: modrinth search failed");
             modrinth_unavailable()
@@ -2121,14 +2121,15 @@ fn modrinth_unavailable() -> String {
     prompts::ModrinthUnavailable::render()
 }
 
-/// Render a `search_mods` listing: one bounded line per hit.
-fn format_mod_search(query: &str, hits: &[SearchHit]) -> String {
+/// Render a `search_mods` listing: one bounded line per hit. `asked_for` is the
+/// game version the search filtered on, if any, so each line keeps it visible.
+fn format_mod_search(query: &str, asked_for: Option<&str>, hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return prompts::ModSearchEmpty { query }.render();
     }
     let results = hits
         .iter()
-        .map(format_mod_line)
+        .map(|hit| format_mod_line(hit, asked_for))
         .collect::<Vec<_>>()
         .join("\n");
     prompts::ModSearchHeader {
@@ -2140,9 +2141,9 @@ fn format_mod_search(query: &str, hits: &[SearchHit]) -> String {
 
 /// One search hit as a single line. A hit reports no loaders of its own, so they
 /// are recovered from its categories.
-fn format_mod_line(hit: &SearchHit) -> String {
+fn format_mod_line(hit: &SearchHit, asked_for: Option<&str>) -> String {
     let loaders = list_or_none(&hit.loaders());
-    let versions = list_or_none(&recent_versions(&hit.versions));
+    let versions = list_or_none(&versions_for_display(&hit.versions, asked_for));
     prompts::ModSummaryLine {
         slug: &hit.slug,
         title: &short_title(&hit.title),
@@ -2160,7 +2161,7 @@ fn format_mod_line(hit: &SearchHit) -> String {
 /// its loaders and game versions as fields of its own.
 fn format_mod_info(project: &Project) -> String {
     let loaders = list_or_none(&project.loaders);
-    let versions = list_or_none(&recent_versions(&project.game_versions));
+    let versions = list_or_none(&versions_for_display(&project.game_versions, None));
     prompts::ModProjectDetail {
         slug: &project.slug,
         title: &short_title(&project.title),

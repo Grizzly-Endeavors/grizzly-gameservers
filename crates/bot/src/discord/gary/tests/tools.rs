@@ -445,7 +445,7 @@ fn a_mod_line_leads_with_the_slug_and_names_both_install_sides() {
     // The slug leads because it's the only field copied verbatim into a server's
     // config; both side flags appear because a client-required project means
     // every player has work to do that no server change can cover.
-    let line = format_mod_line(&terralith_hit());
+    let line = format_mod_line(&terralith_hit(), None);
     assert!(line.starts_with("terralith — Terralith:"), "{line}");
     assert!(line.contains("needed on the server: required"), "{line}");
     assert!(
@@ -459,14 +459,14 @@ fn a_mod_line_leads_with_the_slug_and_names_both_install_sides() {
 fn a_mod_line_lists_loaders_without_the_genuine_categories() {
     // Loaders come back mixed into a hit's categories alongside real tags, so a
     // sloppy split would advertise "worldgen" as something to set TYPE to.
-    let line = format_mod_line(&terralith_hit());
+    let line = format_mod_line(&terralith_hit(), None);
     assert!(line.contains("loaders: datapack, fabric, forge"), "{line}");
     assert!(!line.contains("worldgen"), "{line}");
 }
 
 #[test]
 fn a_search_listing_heads_the_hits_and_says_it_is_capped() {
-    let rendered = format_mod_search("world generation", &[terralith_hit()]);
+    let rendered = format_mod_search("world generation", None, &[terralith_hit()]);
     assert!(rendered.contains("for world generation"), "{rendered}");
     assert!(rendered.contains("best five only"), "{rendered}");
     assert!(rendered.contains("terralith — Terralith:"), "{rendered}");
@@ -476,7 +476,7 @@ fn a_search_listing_heads_the_hits_and_says_it_is_capped() {
 fn no_matches_reads_as_empty_rather_than_broken() {
     // An empty result must not look like an outage, or the model reports the
     // registry down instead of widening the search.
-    let rendered = format_mod_search("nonexistent thing", &[]);
+    let rendered = format_mod_search("nonexistent thing", None, &[]);
     assert!(
         rendered.contains("nothing on Modrinth matched"),
         "{rendered}"
