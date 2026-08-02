@@ -13,27 +13,29 @@ fn an_unfiltered_search_sends_no_facets() {
 }
 
 #[test]
-fn a_mod_search_subtracts_datapacks() {
-    // Datapacks are project_type "mod" on Modrinth, so without the exclusion a
-    // search for "a mod" answers with datapacks like Terralith.
+fn a_mod_search_selects_the_mod_project_type() {
     let facets = SearchQuery {
         kind: Some(Kind::Mod),
         ..query("chunky")
     }
     .facets()
     .expect("kind sets a facet");
-    assert_eq!(facets, r#"[["project_type:mod"],["categories!=datapack"]]"#);
+    assert_eq!(facets, r#"[["project_type:mod"]]"#);
 }
 
 #[test]
-fn a_datapack_search_selects_the_datapack_category() {
+fn a_datapack_search_selects_the_datapack_project_type() {
+    // datapack is a valid project_type *facet* value even though the response
+    // field never returns one. Filtering by the returned value instead — mod
+    // plus a datapack category — matches almost nothing, because the index
+    // holds a separate document per project type rather than one tagged both.
     let facets = SearchQuery {
         kind: Some(Kind::Datapack),
         ..query("terralith")
     }
     .facets()
     .expect("kind sets a facet");
-    assert_eq!(facets, r#"[["project_type:mod"],["categories:datapack"]]"#);
+    assert_eq!(facets, r#"[["project_type:datapack"]]"#);
 }
 
 #[test]
@@ -60,7 +62,7 @@ fn every_filter_together_produces_one_group_each() {
     .expect("filters set facets");
     assert_eq!(
         facets,
-        r#"[["project_type:mod"],["categories!=datapack"],["categories:neoforge"],["versions:26.2"]]"#
+        r#"[["project_type:mod"],["categories:neoforge"],["versions:26.2"]]"#
     );
 }
 
