@@ -10,15 +10,28 @@ pub(crate) const SEARCH_LIMIT: usize = 5;
 
 /// What kind of project the caller is after.
 ///
-/// Modrinth v2 has no `datapack` project type — a datapack is a `mod` that lists
-/// `datapack` among its loaders — so this distinction is expressed through the
-/// `categories` facet rather than `project_type`.
+/// `project_type` means two different things in v2 and they must not be
+/// conflated: as a *facet* its vocabulary includes `datapack`, but as a
+/// *response field* it never returns one — a datapack always reads back as
+/// `mod`. The index holds a separate document per project type, so a project
+/// shipping both a datapack and a jar (Terralith does) is found under either,
+/// which is the correct answer for both questions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// A server-installed jar: excludes datapacks so "a mod" doesn't return them.
+    /// A server-installed jar, needing a loader such as Fabric.
     Mod,
     /// A datapack: vanilla-compatible, no loader needed on the server.
     Datapack,
+}
+
+impl Kind {
+    /// The `project_type` facet value that selects this kind.
+    fn facet_value(self) -> &'static str {
+        match self {
+            Self::Mod => "mod",
+            Self::Datapack => "datapack",
+        }
+    }
 }
 
 impl From<crate::prompts::SearchModsKind> for Kind {
@@ -72,10 +85,6 @@ pub(crate) struct SearchQuery {
     pub(crate) game_version: Option<String>,
 }
 
-/// The `datapack` category, which Modrinth uses as both a loader and the only
-/// way to tell datapacks apart from ordinary mods.
-const DATAPACK_CATEGORY: &str = "datapack";
-
 impl SearchQuery {
     /// Compile the filters into Modrinth's facet syntax: a JSON array of arrays,
     /// where entries within an inner array are OR'd and the outer arrays are
@@ -83,18 +92,11 @@ impl SearchQuery {
     /// parameter entirely rather than sending an empty one.
     pub(crate) fn facets(&self) -> Option<String> {
         let mut groups: Vec<String> = Vec::new();
-        match self.kind {
-            Some(Kind::Mod) => {
-                groups.push(facet_group(&["project_type:mod"]));
-                // Datapacks are project_type "mod" too, so "a mod" has to
-                // subtract them explicitly or Terralith answers "a mod" queries.
-                groups.push(facet_group(&[&format!("categories!={DATAPACK_CATEGORY}")]));
-            }
-            Some(Kind::Datapack) => {
-                groups.push(facet_group(&["project_type:mod"]));
-                groups.push(facet_group(&[&format!("categories:{DATAPACK_CATEGORY}")]));
-            }
-            None => {}
+        if let Some(kind) = self.kind {
+            groups.push(facet_group(&[&format!(
+                "project_type:{}",
+                kind.facet_value()
+            )]));
         }
         if let Some(loader) = self.loader {
             groups.push(facet_group(&[&format!("categories:{loader}")]));

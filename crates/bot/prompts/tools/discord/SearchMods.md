@@ -51,10 +51,9 @@ annotations:
       config.
     - >-
       kind and loader are closed enums so the model can't invent a project type
-      or a loader the registry doesn't index. kind is deliberately not a
-      passthrough of the registry's own project type, which has no datapack
-      value; the mapping to category filters is code's business, and the model
-      is offered the distinction a user actually means.
+      or a loader the registry doesn't index. kind omitted searches both, which
+      matters because a project can ship as each — asking for one kind is a
+      narrowing, not a classification of the project.
     - >-
       The kind descriptions carry the client-install consequence, since that is
       the single most important thing to get right when recommending something

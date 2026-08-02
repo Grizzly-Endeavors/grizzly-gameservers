@@ -22,6 +22,7 @@
 //! one shared one.
 
 pub(crate) mod client;
+mod live;
 pub(crate) mod query;
 pub(crate) mod types;
 
