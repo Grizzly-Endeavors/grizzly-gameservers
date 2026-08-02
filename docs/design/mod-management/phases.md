@@ -61,6 +61,12 @@ One case remains open by design: an overlay value that *nothing* rolls back is r
 - **Shape when done:** `search_mods` (query, optional project-type/loader/Minecraft-version filters) and `mod_info` (slug) exist at the manager tier per `design.md` §"Modrinth discovery": ≤5 results, 80/200-character title/description truncation, server/client-side flags rendered, one private formatter per tool per the single-format rule, API failures returned as plain explanatory text. The Modrinth endpoint shapes are re-verified against current upstream docs during implementation, per the design's caveat. Response parsing, facet construction, truncation, and formatting live in pure, unit-tested code; the annotations test passes.
 - **Verification:** `cargo test --quiet` green including the new unit tests and the prompt-annotations test; after deploy through the normal bot CI, a manager-tier Discord conversation gets real, correctly-formatted results from `search_mods` and `mod_info`, everyone-tier does not see the tools, and an unknown slug to `mod_info` yields a friendly not-found result rather than an error.
 
+### Phase 3 findings
+
+Three assumptions this plan inherited from the design's API snapshot did not survive verification against the live endpoint, and the design's "External touchpoints" section now records the corrected contract: v2 has **no `datapack` project type** (datapacks are `project_type: mod` carrying a `datapack` loader, so the `kind` filter compiles to `categories` facets), a **search hit carries no `loaders` field** (they are folded into `categories` beside genuine tags, while a project lookup does return a clean array — hence two response shapes rather than one), and a hit's **`latest_version` is a base62 version id**, not the Minecraft version its documentation claims, so it is never rendered.
+
+The phase also closed **issue #45** first: `search_mods` and `mod_info` would otherwise have had to be hand-registered in four places. The manager/admin partition now lives in one `tool_table()` of `(tier, spec)` pairs that the offer list, a single dispatch-time tier gate, and the below-tier refusal all read.
+
 ## Phase 4 — Gary workflow guidance & ship polish
 
 - **Modules:** bot prompt files (new, additive guidance text — no rewrites of existing tuned prompt bodies), the decisions log (one ADR for the per-instance env overlay decision), and the platform overview's config-tier section (pointer to the new capability). Code changes only if Phase 2's findings demanded a verify-ceiling adjustment that hasn't landed yet.
