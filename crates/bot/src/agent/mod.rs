@@ -7,9 +7,17 @@
 //! surfaces reuse live there as `type: params` files (e.g. `NameParams`).
 
 pub(crate) mod llm;
+pub(crate) mod recorder;
 pub(crate) mod session;
 pub(crate) mod store;
+pub(crate) mod turn;
 
-pub(crate) use llm::{ChatMessage, OllamaConfig, Role, ToolCall, ToolDef, send_chat_completion};
-pub(crate) use session::{DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, run_session};
-pub(crate) use store::SessionStore;
+pub(crate) use llm::{
+    ChatMessage, Completion, OllamaConfig, Role, ToolCall, ToolDef, send_chat_completion,
+};
+pub(crate) use recorder::TurnRecorder;
+pub(crate) use session::{
+    DEFAULT_MAX_ROUNDS, Generation, SessionEvent, SessionOutcome, run_session,
+};
+pub(crate) use store::{SessionId, SessionStore};
+pub(crate) use turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};

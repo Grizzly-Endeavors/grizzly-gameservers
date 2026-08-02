@@ -151,6 +151,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         defer,
         shutdown: shutdown.clone(),
         gateway: discord::GatewayHandle::new(),
+        environment: config.environment,
     };
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod

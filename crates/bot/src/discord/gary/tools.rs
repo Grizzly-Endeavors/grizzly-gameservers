@@ -24,7 +24,7 @@ use super::super::render::{
     error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
-use crate::agent::{ToolCall, ToolDef};
+use crate::agent::{ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
     ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
@@ -78,6 +78,9 @@ pub(crate) enum ConfirmMode {
 pub(crate) struct ToolCtx<'a> {
     pub(crate) data: &'a Data,
     pub(crate) serenity: &'a serenity::Context,
+    /// Which entry point these tools are running under. Carried so the audit
+    /// trail names the real surface instead of deducing one from `confirmations`.
+    pub(crate) origin: TurnOrigin,
     pub(crate) channel_id: serenity::ChannelId,
     /// The guild this conversation is in, stamped on a server Gary creates so it's
     /// owned by that guild. `None` in an operator's DM — a server created there is
@@ -1613,9 +1616,10 @@ async fn post_preapproval_audit(
     warn!(
         %server,
         action,
+        origin = ?ctx.origin,
         user = %ctx.author_id,
         channel = %ctx.channel_id,
-        "destructive action pre-approved by the operator harness; no human clicked through"
+        "destructive action pre-approved; no human clicked through"
     );
     match ctx
         .channel_id

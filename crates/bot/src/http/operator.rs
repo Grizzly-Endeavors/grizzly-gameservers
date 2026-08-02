@@ -8,7 +8,8 @@
 //! - `POST /operator/tool` runs one of Gary's tools directly. No model, so the
 //!   result is deterministic and costs nothing — this is the ordinary path.
 //! - `POST /operator/gary` runs a full model turn and returns the reply along
-//!   with a trace of every tool the model called and what each returned.
+//!   with a trace of every tool the model called and what each returned, plus
+//!   what the turn cost in tokens and latency.
 //! - `GET /operator/tools` lists the tools a tier may call, with their schemas.
 //!
 //! Both POST routes take the access tier as a parameter. That is deliberate: it
@@ -19,6 +20,8 @@
 //! so the render path is genuinely exercised and every action the harness takes
 //! leaves a visible trail where a human can read it.
 
+use std::time::Duration;
+
 use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -28,7 +31,7 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::agent::{ChatMessage, Role, SessionOutcome, ToolCall, ToolDef};
+use crate::agent::{ChatMessage, Generation, Role, SessionOutcome, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
 use crate::discord::gary::{GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn};
@@ -137,7 +140,35 @@ struct GaryResponse {
     escalated: bool,
     /// Model turns this request took.
     rounds: usize,
+    /// What each model call cost, in the order they ran.
+    generations: Vec<GenerationTrace>,
+    /// Token totals across the whole turn. Every count is `None` if the provider
+    /// reported none — an unknown total, never a zero one.
+    usage: UsageTotals,
+    /// Model latency summed across the turn, which is most of its wall clock.
+    latency_ms: u64,
     tool_calls: Vec<ToolTrace>,
+}
+
+/// One model call as the harness reports it.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct GenerationTrace {
+    model: String,
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+    finish_reason: Option<String>,
+    latency_ms: u64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+struct UsageTotals {
+    #[serde(rename = "prompt_tokens")]
+    prompt: Option<u32>,
+    #[serde(rename = "completion_tokens")]
+    completion: Option<u32>,
+    #[serde(rename = "total_tokens")]
+    total: Option<u32>,
 }
 
 /// One tool the model ran during a turn, as the model saw it.
@@ -222,6 +253,7 @@ async fn run_tool(
     let tool_ctx = ToolCtx {
         data,
         serenity: &serenity_ctx,
+        origin: TurnOrigin::Operator,
         channel_id: acting.channel_id,
         guild: acting.guild,
         author_id: acting.author_id,
@@ -270,9 +302,10 @@ async fn run_gary(
     }
     let games = game_catalog_list(data);
     let memories = data.memory.render_for_prompt().await;
-    let mut messages = data.sessions.checkout(key, std::time::Instant::now(), || {
+    let session = data.sessions.checkout(key, std::time::Instant::now(), || {
         build_system_prompt(acting.access, &games, &memories)
     });
+    let mut messages = session.messages;
     messages.push(ChatMessage::user(request.prompt.clone()));
     // Everything already in the transcript is prior history; the trace is only
     // what this turn added.
@@ -281,6 +314,8 @@ async fn run_gary(
     let turn = GaryTurn {
         ctx: &serenity_ctx,
         data,
+        origin: TurnOrigin::Operator,
+        session: Some(session.id.clone()),
         channel_id: acting.channel_id,
         guild: acting.guild,
         author_id: acting.author_id,
@@ -296,18 +331,25 @@ async fn run_gary(
         ))
     })?;
 
-    let SessionOutcome { reply, escalated } = outcome;
+    let SessionOutcome {
+        reply,
+        escalated,
+        generations,
+    } = outcome;
     let turn_slice = messages.get(mark..).unwrap_or_default();
     let tool_calls = tool_trace(turn_slice);
     let rounds = rounds(turn_slice);
     // Commit last: it moves the transcript the trace was read from.
     data.sessions
-        .commit(key, messages, std::time::Instant::now());
+        .commit(key, session.id, messages, std::time::Instant::now());
 
     Ok(axum::Json(GaryResponse {
         reply,
         escalated,
         rounds,
+        usage: usage_totals(&generations),
+        latency_ms: generations.iter().map(|g| millis(g.latency)).sum(),
+        generations: generations.iter().map(generation_trace).collect(),
         tool_calls,
     }))
 }
@@ -482,6 +524,45 @@ fn result_for(slice: &[ChatMessage], call_id: &str) -> Option<String> {
             message.role == Role::Tool && message.tool_call_id.as_deref() == Some(call_id)
         })
         .and_then(|message| message.content.clone())
+}
+
+/// One model call, flattened for the harness response.
+fn generation_trace(generation: &Generation) -> GenerationTrace {
+    let usage = generation.usage.as_ref();
+    GenerationTrace {
+        model: generation.model.clone(),
+        prompt_tokens: usage.and_then(|usage| usage.prompt),
+        completion_tokens: usage.and_then(|usage| usage.completion),
+        total_tokens: usage.and_then(|usage| usage.total),
+        finish_reason: generation.finish_reason.clone(),
+        latency_ms: millis(generation.latency),
+    }
+}
+
+/// A turn's token counts summed across its model calls. A count stays `None`
+/// unless at least one call reported it, so "the provider didn't say" can never
+/// be misread as "it cost nothing".
+fn usage_totals(generations: &[Generation]) -> UsageTotals {
+    let mut totals = UsageTotals::default();
+    for usage in generations
+        .iter()
+        .filter_map(|generation| generation.usage.as_ref())
+    {
+        accumulate(&mut totals.prompt, usage.prompt);
+        accumulate(&mut totals.completion, usage.completion);
+        accumulate(&mut totals.total, usage.total);
+    }
+    totals
+}
+
+fn accumulate(total: &mut Option<u32>, value: Option<u32>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0).saturating_add(value));
+    }
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Model turns this slice represents — one per assistant message the loop

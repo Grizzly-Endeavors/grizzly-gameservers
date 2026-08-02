@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 
 use super::condition::{Condition, compose_batch_prompt, next_empty_since, wait_key};
 use super::task::DeferredTask;
-use crate::agent::{ChatMessage, SessionOutcome};
+use crate::agent::{ChatMessage, SessionOutcome, TurnOrigin};
 use crate::agones::{
     FsOutcome, ReadyWait, ServerScope, guild_of, supervisor_occupancy, wait_for_ready_within,
 };
@@ -236,6 +236,10 @@ async fn run_batch(
     let turn = GaryTurn {
         ctx,
         data,
+        origin: TurnOrigin::Deferred,
+        // A batch is a one-shot conversation built from scratch, so there is no
+        // session-store transcript for it to belong to.
+        session: None,
         channel_id: serenity::ChannelId::new(primary_channel),
         guild: guild_id,
         author_id: serenity::UserId::new(author_id),

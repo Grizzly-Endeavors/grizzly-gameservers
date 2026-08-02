@@ -685,6 +685,26 @@ fn game_manifests_grant_the_supervisor_its_full_shutdown_window() {
 }
 
 #[test]
+fn a_pod_reports_production_and_a_dev_box_does_not() {
+    let deployed = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("KUBERNETES_SERVICE_HOST", "10.96.0.1"),
+    ]);
+    assert_eq!(
+        BotConfig::from_env_with(&deployed).unwrap().environment,
+        Environment::Production,
+        "a running pod is serving real friends"
+    );
+
+    let local = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    assert_eq!(
+        BotConfig::from_env_with(&local).unwrap().environment,
+        Environment::Development,
+        "an off-cluster run must never be counted as production traffic"
+    );
+}
+
+#[test]
 fn game_manifests_pin_the_shared_control_port() {
     for (game, manifest) in load_game_manifests() {
         assert_eq!(

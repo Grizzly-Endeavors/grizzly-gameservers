@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use tracing::warn;
 
+use crate::agent::Environment;
+
 /// Closure that resolves an environment variable to its raw value, mirroring
 /// `std::env::var_os`. Injected so config parsing is testable without the
 /// `unsafe` `set_var`/`remove_var` of Rust 2024.
@@ -66,6 +68,10 @@ const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
 const DEFAULT_BACKUP_RETENTION: usize = 7;
 /// How often the reconciler sweeps for servers stranded on an unresponsive node.
 const DEFAULT_RECONCILE_INTERVAL_MINUTES: u64 = 5;
+/// Set by the kubelet in every pod. Its presence is how the process tells a
+/// cluster deployment from a developer's box, which is what separates real
+/// traffic from a local run in anything the bot reports about itself.
+const IN_CLUSTER_MARKER: &str = "KUBERNETES_SERVICE_HOST";
 /// How long a pod must sit terminating before the reconciler forces it out. Well
 /// clear of the game pods' 120s graceful-stop window, so a slow but healthy
 /// world-save is never cut short — this is only meant to catch a kubelet that
@@ -127,6 +133,10 @@ pub struct BotConfig {
     /// Gary's full admin tool surface and can pre-approve destructive actions.
     /// `None` leaves the routes unmounted entirely — fail-closed, never open.
     pub(crate) operator_token: Option<String>,
+    /// Which population this process's ordinary traffic belongs to. Operator-
+    /// harness turns override it to [`Environment::Operator`] per turn; this is
+    /// the baseline everything else inherits.
+    pub(crate) environment: Environment,
 }
 
 /// Connection settings for the backups S3 bucket. Only the access/secret keys are
@@ -229,6 +239,7 @@ impl BotConfig {
             optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.is_empty());
         let operator_token =
             optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.is_empty());
+        let environment = environment_from_env(lookup);
 
         Ok(Self {
             token,
@@ -250,7 +261,19 @@ impl BotConfig {
             agent_port,
             ingame_token,
             operator_token,
+            environment,
         })
+    }
+}
+
+/// Which population this process's traffic belongs to. Derived rather than
+/// configured: a running pod is production and a dev box is not, and there is no
+/// setting to get wrong.
+fn environment_from_env(lookup: EnvLookup) -> Environment {
+    if lookup(IN_CLUSTER_MARKER).is_some() {
+        Environment::Production
+    } else {
+        Environment::Development
     }
 }
 

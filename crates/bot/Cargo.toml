@@ -12,6 +12,9 @@ grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["c
 [dependencies]
 anyhow = "1.0.103"
 dotenvy = "0.15.7"
+# Mints the opaque per-transcript session id off the system CSPRNG. Same crate
+# (and same use) as the supervisor's rcon password minting.
+getrandom = "0.4.3"
 grizzly-control-api = { path = "../control-api", version = "0.1.0" }
 # Runtime face: the ToolSpec type generated tool specs assemble into. Referenced
 # by generated code starting with the tool migration (Phase 5); declared now per

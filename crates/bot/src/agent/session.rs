@@ -6,10 +6,12 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::llm::{ChatMessage, ToolCall, ToolDef};
+use super::llm::{ChatMessage, Completion, TokenUsage, ToolCall, ToolDef};
+use super::recorder::TurnRecorder;
 
 /// Default ceiling on model turns per request. A bounded loop is the lightweight
 /// version of the design's escalation exit: a model that keeps calling tools
@@ -31,11 +33,13 @@ const EMPTY_REPLY_FALLBACK: &str =
     "I finished, but didn't have anything to report back. Try asking again?";
 
 /// One model turn: given the running transcript and the advertised tools, return
-/// the assistant's next message.
+/// the assistant's next message along with what the call cost. Returning the
+/// whole [`Completion`] rather than the bare message is what makes usage capture
+/// structural — a shell can't drop it and still compile.
 pub(crate) type CompleteFn<'a> = dyn Fn(
         Vec<ChatMessage>,
         Vec<ToolDef>,
-    ) -> Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>
     + Sync
     + 'a;
 
@@ -59,12 +63,36 @@ pub(crate) enum SessionEvent {
 pub(crate) type ProgressFn<'a> =
     dyn Fn(SessionEvent) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Sync + 'a;
 
-/// The end state of a session: the text to send back, and whether it ended by
-/// escalating (round budget exhausted) so the caller can log/flag accordingly.
+/// What one model call cost and how it ended. The message itself isn't repeated
+/// here — it's already in the transcript the loop appended it to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Generation {
+    pub(crate) model: String,
+    pub(crate) usage: Option<TokenUsage>,
+    pub(crate) finish_reason: Option<String>,
+    pub(crate) latency: Duration,
+}
+
+impl From<&Completion> for Generation {
+    fn from(completion: &Completion) -> Self {
+        Self {
+            model: completion.model.clone(),
+            usage: completion.usage.clone(),
+            finish_reason: completion.finish_reason.clone(),
+            latency: completion.latency,
+        }
+    }
+}
+
+/// The end state of a session: the text to send back, whether it ended by
+/// escalating (round budget exhausted) so the caller can log/flag accordingly,
+/// and what each of its model calls cost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionOutcome {
     pub(crate) reply: String,
     pub(crate) escalated: bool,
+    /// One entry per model call, in the order they ran.
+    pub(crate) generations: Vec<Generation>,
 }
 
 /// Drive the tool-calling loop to a final reply.
@@ -72,7 +100,9 @@ pub(crate) struct SessionOutcome {
 /// `messages` is the seeded transcript — `[system, ...prior turns, user]` — and
 /// is appended to in place as the model answers, so on return the caller holds
 /// the full updated transcript to persist for the next turn. `progress` receives
-/// the model's interim narration as it arrives.
+/// the model's interim narration as it arrives. `recorder` observes every model
+/// call and every tool call, so instrumentation coverage is a property of the
+/// loop rather than of each shell remembering to wrap something.
 ///
 /// # Errors
 ///
@@ -83,12 +113,27 @@ pub(crate) async fn run_session(
     messages: &mut Vec<ChatMessage>,
     tools: Vec<ToolDef>,
     max_rounds: usize,
+    recorder: &TurnRecorder,
     complete: &CompleteFn<'_>,
     dispatch: &DispatchFn<'_>,
     progress: &ProgressFn<'_>,
 ) -> Result<SessionOutcome> {
+    recorder.turn_started();
+    let mut generations = Vec::new();
+
     for _ in 0..max_rounds {
-        let assistant = complete(messages.clone(), tools.clone()).await?;
+        // `messages` is untouched until the reply lands, so it still holds exactly
+        // what was sent — no second clone needed to show the recorder the request.
+        let completion = match complete(messages.clone(), tools.clone()).await {
+            Ok(completion) => completion,
+            Err(err) => {
+                recorder.turn_failed(&err);
+                return Err(err);
+            }
+        };
+        recorder.record_generation(messages, &completion);
+        generations.push(Generation::from(&completion));
+        let assistant = completion.message;
 
         let Some(calls) = assistant.requested_tool_calls().map(<[_]>::to_vec) else {
             let reply = assistant
@@ -102,10 +147,13 @@ pub(crate) async fn run_session(
             // again. Tool rounds already append their turns above; this is the one
             // exit that otherwise wouldn't.
             messages.push(assistant);
-            return Ok(SessionOutcome {
+            let outcome = SessionOutcome {
                 reply,
                 escalated: false,
-            });
+                generations,
+            };
+            recorder.turn_finished(&outcome);
+            return Ok(outcome);
         };
 
         // Deliver any words the model wrote alongside its tool calls before we
@@ -121,17 +169,35 @@ pub(crate) async fn run_session(
         }
 
         messages.push(assistant);
-        for call in calls {
-            let id = call.id.clone();
-            let result = dispatch(call).await;
-            messages.push(ChatMessage::tool_result(id, result));
-        }
+        run_tool_round(messages, calls, recorder, dispatch).await;
     }
 
-    Ok(SessionOutcome {
+    let outcome = SessionOutcome {
         reply: ESCALATION_REPLY.to_owned(),
         escalated: true,
-    })
+        generations,
+    };
+    recorder.turn_finished(&outcome);
+    Ok(outcome)
+}
+
+/// Run one round's tool calls in order, appending each result to the transcript
+/// and timing it for the recorder.
+async fn run_tool_round(
+    messages: &mut Vec<ChatMessage>,
+    calls: Vec<ToolCall>,
+    recorder: &TurnRecorder,
+    dispatch: &DispatchFn<'_>,
+) {
+    for call in calls {
+        let id = call.id.clone();
+        let name = call.function.name.clone();
+        let arguments = call.function.arguments.clone();
+        let started = Instant::now();
+        let result = dispatch(call).await;
+        recorder.record_tool(&name, &arguments, &result, started.elapsed());
+        messages.push(ChatMessage::tool_result(id, result));
+    }
 }
 
 #[cfg(test)]
