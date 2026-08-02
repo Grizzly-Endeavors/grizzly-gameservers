@@ -261,6 +261,7 @@ async fn run_tool(
         scope: acting.scope,
         confirmations: acting.confirmations,
         pending_change: std::sync::Mutex::new(None),
+        guardrail: std::sync::Mutex::new(None),
     };
     info!(
         tool = %request.tool,

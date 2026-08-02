@@ -22,6 +22,17 @@ pub(crate) enum TurnOrigin {
     Operator,
 }
 
+impl TurnOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Discord => "discord",
+            Self::Ingame => "ingame",
+            Self::Deferred => "deferred",
+            Self::Operator => "operator",
+        }
+    }
+}
+
 /// Which population a turn's telemetry belongs to. Kept separate from
 /// [`TurnOrigin`] because it answers a different question: origin says how the
 /// turn arrived, environment says whether it counts as real traffic.
@@ -44,6 +55,16 @@ impl Environment {
         match origin {
             TurnOrigin::Operator => Self::Operator,
             TurnOrigin::Discord | TurnOrigin::Ingame | TurnOrigin::Deferred => deployment,
+        }
+    }
+
+    /// The Langfuse environment name. Dashboards filter on these, so they are a
+    /// published vocabulary rather than a rendering detail.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Operator => "operator",
+            Self::Development => "development",
         }
     }
 }

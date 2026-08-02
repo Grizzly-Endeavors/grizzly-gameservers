@@ -125,6 +125,9 @@ pub(crate) struct Data {
     /// Which population this process's ordinary traffic belongs to, stamped on
     /// every turn's identity.
     pub(crate) environment: Environment,
+    /// Exports every model-driven turn to Langfuse. Disabled (and silently
+    /// discarding) when the key pair isn't configured.
+    pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

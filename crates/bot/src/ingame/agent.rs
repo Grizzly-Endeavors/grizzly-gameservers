@@ -10,6 +10,7 @@
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -84,15 +85,18 @@ pub(crate) async fn handle_ingame_question(
 
     // The in-game surface has no Discord identity and no tier of its own: its
     // tool set is a fixed read-only subset, so that's what the turn runs at.
-    let recorder = TurnRecorder::new(TurnIdentity {
-        origin: TurnOrigin::Ingame,
-        deployment: deps.environment,
-        guild: guild.parse::<u64>().ok(),
-        channel: None,
-        actor: TurnActor::Player(player.to_owned()),
-        access: AccessLevel::ReadOnly,
-        session: Some(session.id.clone()),
-    });
+    let recorder = TurnRecorder::new(
+        TurnIdentity {
+            origin: TurnOrigin::Ingame,
+            deployment: deps.environment,
+            guild: guild.parse::<u64>().ok(),
+            channel: None,
+            actor: TurnActor::Player(player.to_owned()),
+            access: AccessLevel::ReadOnly,
+            session: Some(session.id.clone()),
+        },
+        Arc::clone(&deps.telemetry),
+    );
 
     let http = &deps.http;
     let scope_ref = &scope;

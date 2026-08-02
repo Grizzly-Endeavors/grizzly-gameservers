@@ -46,6 +46,8 @@ pub(crate) struct IngameDeps {
     /// Which population this process's ordinary traffic belongs to, stamped on
     /// every in-game turn's identity.
     pub(crate) environment: Environment,
+    /// Exports every in-game turn to Langfuse, sharing the bot's one exporter.
+    pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
 }
 
 impl IngameDeps {
@@ -63,6 +65,7 @@ impl IngameDeps {
             sessions: Arc::clone(&data.sessions),
             notifier: data.notifier.clone(),
             environment: data.environment,
+            telemetry: Arc::clone(&data.telemetry),
         }
     }
 }

@@ -11,6 +11,8 @@ grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["c
 
 [dependencies]
 anyhow = "1.0.103"
+# Encodes the Langfuse key pair into the OTLP exporter's HTTP Basic header.
+base64 = "0.22.1"
 dotenvy = "0.15.7"
 # Mints the opaque per-transcript session id off the system CSPRNG. Same crate
 # (and same use) as the supervisor's rcon password minting.
@@ -21,6 +23,23 @@ grizzly-control-api = { path = "../control-api", version = "0.1.0" }
 # the three-declaration contract (build-deps codegen / deps default / dev-deps verify).
 grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0" }
 k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
+# Langfuse turn telemetry. Only the trace signal and the primitive span types are
+# used: spans are built as `SpanData` literals and handed straight to a
+# `BatchSpanProcessor`, because 0.32's `SpanBuilder` can no longer carry a
+# caller-minted span id — and a turn's child observations must name the root's
+# span id before the root exists. See ADR-013.
+opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace"] }
+# `reqwest-blocking-client` is not a preference: the default BatchSpanProcessor
+# runs on a dedicated std thread and does not support async HTTP clients. Its
+# reqwest dependency is default-features = false, so no TLS backend is pulled and
+# the native-tls/rustls split the deps below curate is untouched — in-cluster
+# Langfuse is plain HTTP, the same as Postgres/Valkey/S3.
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = [
+    "trace",
+    "http-proto",
+    "reqwest-blocking-client",
+] }
 # Client for the in-pod supervisor control API. Default (native-tls) backend
 # unifies with serenity's; the control calls themselves are plaintext http to
 # pod IPs.
@@ -84,6 +103,9 @@ jiff = "0.2.31"
 # Verify face: the conventional annotations test (tests/prompt_annotations.rs)
 # cross-checks each prompt file's used_by entries against the source tree.
 grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["verify"] }
+# `testing` brings InMemorySpanExporter, which lets the turn-shape test assert a
+# simulated turn's span tree (one root, correct parentage) without a collector.
+opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
 
 [lints]
 workspace = true

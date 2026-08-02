@@ -284,6 +284,7 @@ pub(crate) async fn run_gary_turn(
         scope: turn.scope.clone(),
         confirmations: turn.confirmations,
         pending_change: std::sync::Mutex::new(None),
+        guardrail: std::sync::Mutex::new(None),
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the session
     // may call them across several rounds.
@@ -308,7 +309,7 @@ pub(crate) async fn run_gary_turn(
         }) as ProgressFuture<'_>
     };
 
-    let recorder = TurnRecorder::new(turn.identity());
+    let recorder = TurnRecorder::new(turn.identity(), Arc::clone(&turn.data.telemetry));
     let typing = start_typing(turn.ctx, turn.channel_id);
     let outcome = run_session(
         messages,
@@ -321,6 +322,13 @@ pub(crate) async fn run_gary_turn(
     )
     .await;
     drop(typing);
+
+    // The restart guardrail's verdict is reached inside a tool, so the loop only
+    // ever saw it as result prose. Score it here, where both the tool context and
+    // the recorder are still in scope.
+    if let Some(verdict) = tool_ctx.guardrail_verdict() {
+        recorder.record_guardrail(verdict);
+    }
 
     match &outcome {
         Ok(SessionOutcome { reply, .. }) => send_chunks(turn.ctx, turn.channel_id, reply).await,

@@ -19,6 +19,7 @@ mod modrinth;
 mod notify;
 mod prompts;
 mod store;
+mod telemetry;
 
 pub use config::BotConfig;
 
@@ -72,6 +73,17 @@ pub async fn run(config: BotConfig) -> Result<()> {
         .build()
         .context("failed to build supervisor control http client")?;
 
+    // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
+    // spawned subsystem watches it, and `tasks` tracks their handles so the drain
+    // can await in-flight work (a running backup, an unfinished Gary turn) before
+    // the process exits — not just close the gateway socket.
+    let shutdown = CancellationToken::new();
+    let tasks = TaskTracker::new();
+
+    // Both Gary surfaces record through this one exporter, so it is built before
+    // anything that carries it.
+    let telemetry = setup_telemetry(&config, http.clone(), &tasks, shutdown.clone());
+
     let schedule = CycleSchedule::from_config(&config);
     let namespace = config.namespace;
     let domain = config.domain;
@@ -88,13 +100,6 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let defer = std::sync::Arc::new(defer::DeferRuntime::new(
         kv::ValkeyClient::connect(config.valkey.as_ref()).await,
     ));
-
-    // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
-    // spawned subsystem watches it, and `tasks` tracks their handles so the drain
-    // can await in-flight work (a running backup, an unfinished Gary turn) before
-    // the process exits — not just close the gateway socket.
-    let shutdown = CancellationToken::new();
-    let tasks = TaskTracker::new();
 
     // Starts the scheduled background work — stranded-server recovery always,
     // world backups when S3 is configured. The backup handle it returns also
@@ -152,6 +157,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         shutdown: shutdown.clone(),
         gateway: discord::GatewayHandle::new(),
         environment: config.environment,
+        telemetry: std::sync::Arc::clone(&telemetry),
     };
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
@@ -171,7 +177,25 @@ pub async fn run(config: BotConfig) -> Result<()> {
         shutdown.clone(),
     );
 
-    run_gateway(config.token, data, shutdown, tasks).await
+    run_gateway(config.token, data, shutdown, tasks, telemetry).await
+}
+
+/// Stand up turn telemetry and put its score poster on the tracked task set, so
+/// queued scores are flushed by the shutdown drain rather than dropped.
+fn setup_telemetry(
+    config: &BotConfig,
+    http: reqwest::Client,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) -> std::sync::Arc<telemetry::Telemetry> {
+    let (telemetry, score_poster) = telemetry::Telemetry::new(
+        config.langfuse.as_ref(),
+        config.release.clone(),
+        http,
+        shutdown,
+    );
+    tasks.spawn(score_poster);
+    std::sync::Arc::new(telemetry)
 }
 
 /// Build the poise framework around a pre-constructed [`Data`], connect the
@@ -183,6 +207,7 @@ async fn run_gateway(
     data: Data,
     shutdown: CancellationToken,
     tasks: TaskTracker,
+    telemetry: std::sync::Arc<telemetry::Telemetry>,
 ) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -234,6 +259,10 @@ async fn run_gateway(
     } else {
         info!("in-flight work drained cleanly");
     }
+    // Only now: a turn still finishing inside the drain above is still emitting
+    // spans, so flushing any earlier would ship an incomplete trace and lose the
+    // rest. `Data` is gone by here, leaving this the last handle.
+    telemetry.drain().await;
     gateway
 }
 
