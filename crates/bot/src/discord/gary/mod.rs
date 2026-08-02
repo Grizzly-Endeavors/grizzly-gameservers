@@ -472,12 +472,15 @@ fn push_block(prompt: &mut String, block: &str) {
 
 /// Append the manager-and-above guidance to `prompt`: the lifecycle grant, the
 /// inspect/tune-and-restart workflow (including that a restart self-guards a config
-/// change it applies), the occupancy check before a restart, and the durable-memory
-/// habit, plus any saved notes. Split out of [`build_system_prompt`] to keep the
-/// tier gating readable.
+/// change it applies), the Minecraft mod-and-datapack workflow (choosing one, then
+/// installing it through the per-instance env overlay), the occupancy check before a
+/// restart, and the durable-memory habit, plus any saved notes. Split out of
+/// [`build_system_prompt`] to keep the tier gating readable.
 fn append_manager_guidance(prompt: &mut String, memories: &str) {
     push_block(prompt, &prompts::DiscordManagerLifecycle::render());
     push_block(prompt, &prompts::DiscordManagerTuning::render());
+    push_block(prompt, &prompts::DiscordManagerModChoice::render());
+    push_block(prompt, &prompts::DiscordManagerModInstall::render());
     push_block(prompt, &prompts::DiscordManagerOccupancy::render());
     push_block(prompt, &prompts::DiscordManagerScheduling::render());
     push_block(prompt, &prompts::DiscordMemoryHabit::render());

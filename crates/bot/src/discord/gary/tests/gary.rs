@@ -67,6 +67,32 @@ fn manager_prompt_grants_lifecycle_and_files_but_reserves_destruction() {
 }
 
 #[test]
+fn manager_prompt_carries_the_mod_workflow() {
+    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft", "");
+    assert!(
+        prompt.contains("search_mods") && prompt.contains("mod_info"),
+        "manager is told to ground a mod choice in the registry"
+    );
+    assert!(
+        prompt.contains(".grizzly/env"),
+        "manager is told which file an install actually touches"
+    );
+    assert!(
+        prompt.contains("never delete the line"),
+        "the removal rule has no mechanical guard, so it must be stated"
+    );
+}
+
+#[test]
+fn read_only_prompt_omits_the_mod_workflow() {
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft", "");
+    assert!(
+        !prompt.contains(".grizzly/env"),
+        "read-only callers can't edit files, so the install workflow isn't offered"
+    );
+}
+
+#[test]
 fn read_only_prompt_scopes_to_lookups() {
     let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft", "");
     assert!(prompt.contains("cannot"), "read-only caller can't mutate");
