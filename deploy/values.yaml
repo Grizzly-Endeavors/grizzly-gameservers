@@ -5,7 +5,7 @@ image:
   # CI (deploy.yml) overwrites `digest` with the gate-signed digest per ADR-020;
   # when set, the chart pins repository@digest (immutable — what cosign signs and
   # Kyverno verifies) and ignores tag/pullPolicy below.
-  digest: "sha256:be7f0a29498478746542f7990209dc9865049928f28d9f0bae7db22df3cbe8d6"
+  digest: "sha256:ad15051ad01d34d16f810bfce9fa6991d58338b71ec672ae027b0fe0b1b85987"
   # Dev fallback: a mutable tag pushed by hand (just bot-push). Used only when
   # digest is empty.
   tag: "dev"
