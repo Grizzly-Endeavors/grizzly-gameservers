@@ -5,6 +5,7 @@ fn body(value: ScoreValue, name: &'static str) -> ScoreBody {
         trace_id: TraceId::from_bytes([1; 16]),
         name,
         value,
+        environment: "operator",
     })
 }
 
@@ -21,6 +22,17 @@ fn a_false_boolean_score_posts_as_zero() {
     assert_eq!(
         body(ScoreValue::Boolean(false), "escalated").value,
         serde_json::json!(0)
+    );
+}
+
+/// A score filed under Langfuse's `default` environment would put harness
+/// traffic in the same bucket as production, and escalation rate is defined as a
+/// score aggregation filtered to `production`.
+#[test]
+fn a_score_carries_the_environment_of_its_turn() {
+    assert_eq!(
+        body(ScoreValue::Boolean(true), "escalated").environment,
+        "operator"
     );
 }
 
@@ -52,5 +64,8 @@ fn the_body_serializes_with_the_field_names_langfuse_expects() {
     let object = json.as_object().unwrap();
     let mut keys = object.keys().map(String::as_str).collect::<Vec<_>>();
     keys.sort_unstable();
-    assert_eq!(keys, ["dataType", "id", "name", "traceId", "value"]);
+    assert_eq!(
+        keys,
+        ["dataType", "environment", "id", "name", "traceId", "value"]
+    );
 }

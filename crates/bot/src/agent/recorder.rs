@@ -181,6 +181,7 @@ impl TurnRecorder {
             trace_id: self.trace_id,
             name: ESCALATED_SCORE,
             value: ScoreValue::Boolean(outcome.escalated),
+            environment: self.identity.environment().as_str(),
         });
     }
 
@@ -214,6 +215,7 @@ impl TurnRecorder {
             trace_id: self.trace_id,
             name: GUARDRAIL_SCORE,
             value: ScoreValue::Categorical(verdict.as_str()),
+            environment: self.identity.environment().as_str(),
         });
     }
 

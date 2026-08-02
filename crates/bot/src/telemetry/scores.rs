@@ -37,6 +37,11 @@ pub(crate) struct ScorePost {
     pub(crate) trace_id: TraceId,
     pub(crate) name: &'static str,
     pub(crate) value: ScoreValue,
+    /// Must match the trace's own environment. Langfuse files an unset one under
+    /// `default`, which would put harness and production scores in the same
+    /// bucket — and escalation rate is defined as a score aggregation filtered to
+    /// `production`.
+    pub(crate) environment: &'static str,
 }
 
 /// The wire shape of a score. `id` is Langfuse's idempotency key: deriving it
@@ -51,6 +56,7 @@ struct ScoreBody {
     value: serde_json::Value,
     #[serde(rename = "dataType")]
     data_type: &'static str,
+    environment: &'static str,
 }
 
 impl From<&ScorePost> for ScoreBody {
@@ -65,6 +71,7 @@ impl From<&ScorePost> for ScoreBody {
             name: post.name,
             value,
             data_type,
+            environment: post.environment,
         }
     }
 }
