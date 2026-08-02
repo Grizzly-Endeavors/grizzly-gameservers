@@ -4,11 +4,15 @@ type: prompt
 annotations:
   sent_when: >-
     tool result when the model calls a tool name that doesn't exist (not a
-    tier-gated one, just unknown) — returned from both the memory and mutating
-    dispatchers
+    tier-gated one, just unknown) — returned from the tier gate and from either
+    dispatcher's fallthrough
   used_by:
     - file: discord/gary/tools.rs
+      function: dispatch
+    - file: discord/gary/tools.rs
       function: dispatch_memory
+    - file: discord/gary/tools.rs
+      function: dispatch_mutating
     - file: discord/gary/tools.rs
       function: tier_refusal
   variables:

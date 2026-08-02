@@ -97,42 +97,53 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
 }
 
 #[test]
-fn tier_refusal_matches_each_tools_real_tier() {
-    // Derived from the live manager_tools()/admin_only_tools() sets rather than a
-    // hand-copied list, so a tool added to one of those but not to tier_refusal's
-    // matching arm fails here — instead of silently telling a below-tier caller
-    // "no such tool" instead of "an admin has to do that".
-    let admin_names: Vec<String> = admin_only_tools()
-        .into_iter()
-        .map(|tool| tool.function.name)
-        .collect();
-    let manager_names: Vec<String> = manager_tools()
-        .into_iter()
-        .map(|tool| tool.function.name)
-        // remember/forget are manager-tier but dispatch through dispatch_memory,
-        // never dispatch_mutating's fallthrough, so tier_refusal never sees them.
-        .filter(|name| name.as_str() != Remember::NAME && name.as_str() != Forget::NAME)
-        .collect();
+fn tier_refusal_names_the_tier_each_tool_actually_needs() {
+    // Walks the live table so the refusal prose can't be wired to the wrong tier:
+    // telling a read-only caller "no such tool" when the real answer is "an admin
+    // has to do that" hides the actual reason and sends Gary down a dead end.
+    for (tier, tool) in tool_table() {
+        let name = tool.function.name;
+        let expected = match tier {
+            AccessLevel::Admin => {
+                "that action needs an admin — I can only look things up or run day-to-day changes for you here.".to_owned()
+            }
+            AccessLevel::Manager => {
+                "that action needs a manager or an admin — I can only look things up for you here."
+                    .to_owned()
+            }
+            // Read-only tools sit below every caller's tier, so they can never be
+            // refused for tier; asking anyway is asking about a name, not a tier.
+            AccessLevel::ReadOnly => format!("'{name}' isn't a tool I have."),
+        };
+        assert_eq!(tier_refusal(&name), expected, "{name}: wrong tier refusal");
+    }
+}
 
-    for name in tool_names(AccessLevel::Admin) {
-        let refusal = tier_refusal(&name);
-        if admin_names.contains(&name) {
-            assert_eq!(
-                refusal,
-                "that action needs an admin — I can only look things up or run day-to-day changes for you here.",
-                "{name} is admin-only; tier_refusal should give the admin refusal"
-            );
-        } else if manager_names.contains(&name) {
-            assert_eq!(
-                refusal,
-                "that action needs a manager or an admin — I can only look things up for you here.",
-                "{name} is manager-tier; tier_refusal should give the manager refusal"
-            );
-        } else {
-            assert_eq!(
-                refusal,
-                format!("'{name}' isn't a tool I have."),
-                "{name} never reaches dispatch_mutating's fallthrough; tier_refusal should call it unknown"
+#[test]
+fn an_unknown_name_has_no_tier_and_reads_as_unknown() {
+    assert_eq!(tier_of("frobnicate"), None);
+    assert!(!known_tool("frobnicate"));
+    assert_eq!(
+        tier_refusal("frobnicate"),
+        "'frobnicate' isn't a tool I have."
+    );
+}
+
+#[test]
+fn every_offered_tool_is_known_and_within_the_callers_tier() {
+    // The offer list and the dispatch gate read the same table; this pins that
+    // they agree, so a caller is never offered a tool the gate would refuse.
+    for access in [
+        AccessLevel::ReadOnly,
+        AccessLevel::Manager,
+        AccessLevel::Admin,
+    ] {
+        for name in tool_names(access) {
+            assert!(known_tool(&name), "{name} is offered but not a known tool");
+            let required = tier_of(&name).expect("offered tool has a tier");
+            assert!(
+                access >= required,
+                "{name} was offered to {access:?} but needs {required:?}"
             );
         }
     }

@@ -14,7 +14,7 @@ annotations:
   sent_when: offered on the Discord surface to admins only.
   used_by:
     - file: discord/gary/tools.rs
-      function: admin_only_tools
+      function: tool_table
     - file: discord/gary/tools.rs
       function: dispatch_mutating
   reasoning:
