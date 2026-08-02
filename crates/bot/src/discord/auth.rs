@@ -21,6 +21,16 @@ pub(crate) enum AccessLevel {
     Admin,
 }
 
+impl AccessLevel {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::Manager => "manager",
+            Self::Admin => "admin",
+        }
+    }
+}
+
 /// Everything the access policy weighs for one caller in one guild. Bundled so
 /// the decision is a pure function of explicit inputs, unit-testable without a
 /// live interaction. `guild_owner`, `guild_admins`, and `guild_managers` are

@@ -72,6 +72,16 @@ const DEFAULT_RECONCILE_INTERVAL_MINUTES: u64 = 5;
 /// cluster deployment from a developer's box, which is what separates real
 /// traffic from a local run in anything the bot reports about itself.
 const IN_CLUSTER_MARKER: &str = "KUBERNETES_SERVICE_HOST";
+/// The platform's Langfuse (grizzly-platform ADR-064), reached in-cluster so
+/// traces never leave the lab. Plain HTTP: TLS terminates at the VPS edge, and
+/// the exporter's HTTP client is deliberately built without a TLS backend. Must
+/// match the hardcoded pod selector/port in
+/// `cluster/guardrails/bot-to-langfuse-egress.yaml` (see issue #42).
+const DEFAULT_LANGFUSE_HOST: &str = "http://langfuse-web.langfuse.svc.cluster.local:3000";
+/// Stands in for the image digest on an off-cluster run, where there is no
+/// digest to report. Traces from such a run are quarantined by their
+/// `development` environment anyway.
+const DEFAULT_RELEASE: &str = "dev";
 /// How long a pod must sit terminating before the reconciler forces it out. Well
 /// clear of the game pods' 120s graceful-stop window, so a slow but healthy
 /// world-save is never cut short — this is only meant to catch a kubelet that
@@ -137,6 +147,24 @@ pub struct BotConfig {
     /// harness turns override it to [`Environment::Operator`] per turn; this is
     /// the baseline everything else inherits.
     pub(crate) environment: Environment,
+    /// Langfuse credentials for turn telemetry. `None` when the key pair isn't
+    /// set — traces and scores are then dropped and nothing else changes, the
+    /// same graceful-degrade shape as `db`/`ollama`.
+    pub(crate) langfuse: Option<LangfuseConfig>,
+    /// Which build this process is, stamped on every trace so a behaviour change
+    /// can be attributed to a deploy. The gate-signed image digest in-cluster —
+    /// which, because prompt-lib compiles every model-visible string into the
+    /// binary, also identifies the exact prompt set.
+    pub(crate) release: String,
+}
+
+/// Connection settings for turn telemetry. Only the key pair is secret (synced
+/// from 1Password via ESO); the host carries an infra default.
+#[derive(Clone, Debug)]
+pub(crate) struct LangfuseConfig {
+    pub(crate) host: String,
+    pub(crate) public_key: String,
+    pub(crate) secret_key: String,
 }
 
 /// Connection settings for the backups S3 bucket. Only the access/secret keys are
@@ -240,6 +268,9 @@ impl BotConfig {
         let operator_token =
             optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.is_empty());
         let environment = environment_from_env(lookup);
+        let langfuse = langfuse_config_from_env(lookup);
+        let release =
+            optional(lookup, "GAMESERVERS_RELEASE").unwrap_or_else(|| DEFAULT_RELEASE.to_owned());
 
         Ok(Self {
             token,
@@ -262,6 +293,8 @@ impl BotConfig {
             ingame_token,
             operator_token,
             environment,
+            langfuse,
+            release,
         })
     }
 }
@@ -275,6 +308,21 @@ fn environment_from_env(lookup: EnvLookup) -> Environment {
     } else {
         Environment::Development
     }
+}
+
+/// Build the Langfuse settings from the environment, or `None` when either key is
+/// unset/empty — the key pair is the part sourced from 1Password, so its absence
+/// is the signal that turn telemetry isn't wired and should degrade to off rather
+/// than fail. Only the host carries a default, and it points inside the cluster.
+fn langfuse_config_from_env(lookup: EnvLookup) -> Option<LangfuseConfig> {
+    let public_key = optional(lookup, "LANGFUSE_PUBLIC_KEY").filter(|value| !value.is_empty());
+    let secret_key = optional(lookup, "LANGFUSE_SECRET_KEY").filter(|value| !value.is_empty());
+    let (public_key, secret_key) = (public_key?, secret_key?);
+    Some(LangfuseConfig {
+        host: optional(lookup, "LANGFUSE_HOST").unwrap_or_else(|| DEFAULT_LANGFUSE_HOST.to_owned()),
+        public_key,
+        secret_key,
+    })
 }
 
 /// Build the S3 connection settings from the environment, or `None` when either

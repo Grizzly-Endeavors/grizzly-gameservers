@@ -1,0 +1,51 @@
+# Bot → platform Langfuse ingestion.
+#
+# The egress leash (networkpolicy.yaml, endpointSelector: {}) puts every pod in
+# this namespace into default-deny egress, and its RFC1918 `except` on the
+# internet rule deliberately makes in-cluster and LAN addresses unreachable. That
+# keeps a confused or prompt-injected game pod from pivoting into the platform —
+# but it also silently drops the bot's turn telemetry, since the Langfuse Service
+# sits in 10.0.0.0/8 like everything else in-cluster.
+#
+# Cilium policies are additive, so this widens the bot's egress by exactly one
+# path: the bot identity → the langfuse-web pods in the langfuse namespace, TCP
+# 3000 only. Nothing else in the platform becomes reachable, and the untrusted
+# game-server pods stay fully leashed — they neither produce telemetry nor have
+# any business talking to Langfuse.
+#
+# The alternative — letting the bot reach Langfuse over its public hostname —
+# would route every trace (user messages, config file contents) out through
+# Cloudflare and back in via the VPS edge, and couple telemetry to that edge being
+# up. Keeping it in-cluster is why this carve-out exists.
+#
+# This is the first cross-namespace peer in this directory: the other bot
+# carve-outs target a fixed LAN host or same-namespace pods. Cilium's
+# `toEndpoints` selects *pods*, so the namespace goes in as the
+# `k8s:io.kubernetes.pod.namespace` label (same shape as the leash's kube-dns
+# rule), not as a namespace selector.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-to-langfuse-egress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  egress:
+    - toEndpoints:
+        # `component: web` is load-bearing: langfuse-worker carries the same
+        # app.kubernetes.io/name and only the web deployment serves ingestion.
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: langfuse
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/component: web
+      toPorts:
+        - ports:
+            # Must match the port in DEFAULT_LANGFUSE_HOST in
+            # crates/bot/src/config.rs and bot.langfuse.host in
+            # deploy/values.yaml — a mismatch here is a silent Cilium drop, not
+            # an error. No single source of truth yet (tracked as issue #42).
+            - port: "3000"
+              protocol: TCP

@@ -69,15 +69,24 @@ fn canned(turns: Vec<ChatMessage>) -> Mutex<VecDeque<ChatMessage>> {
 /// A recorder for the loop to observe through. Its behavior is trace logging, so
 /// the identity only has to be well-formed, not specific to a test.
 fn recorder() -> TurnRecorder {
-    TurnRecorder::new(TurnIdentity {
-        origin: TurnOrigin::Discord,
-        deployment: Environment::Production,
-        guild: Some(1),
-        channel: Some(2),
-        actor: TurnActor::Discord(3),
-        access: AccessLevel::Manager,
-        session: None,
-    })
+    let (telemetry, _poster) = crate::telemetry::Telemetry::new(
+        None,
+        "test".to_owned(),
+        reqwest::Client::new(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    TurnRecorder::new(
+        TurnIdentity {
+            origin: TurnOrigin::Discord,
+            deployment: Environment::Production,
+            guild: Some(1),
+            channel: Some(2),
+            actor: TurnActor::Discord(3),
+            access: AccessLevel::Manager,
+            session: None,
+        },
+        std::sync::Arc::new(telemetry),
+    )
 }
 
 type ProgressFuture = Pin<Box<dyn Future<Output = ()> + Send>>;

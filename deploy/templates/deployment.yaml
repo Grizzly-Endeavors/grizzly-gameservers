@@ -176,6 +176,35 @@ spec:
                   name: grizzly-gameservers-operator
                   key: operator_token
                   optional: true
+            # Turn telemetry: every model-driven Gary turn exports to the
+            # platform's Langfuse (grizzly-platform ADR-064) as a trace. Host is
+            # plain config; only the key pair is secret, marked optional so a
+            # missing secret leaves telemetry off (one log line, everything else
+            # intact) rather than crash-looping — same shape as DB/Ollama/S3.
+            # Reached in-cluster, which needs cluster/guardrails/
+            # bot-to-langfuse-egress.yaml — without it the traffic is silently
+            # dropped by the namespace egress leash.
+            - name: LANGFUSE_HOST
+              value: {{ .Values.bot.langfuse.host | quote }}
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-langfuse
+                  key: langfuse_public_key
+                  optional: true
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-langfuse
+                  key: langfuse_secret_key
+                  optional: true
+            # Which build this is, stamped on every trace. Kubernetes gives a
+            # container no way to read its own image field, so the digest CI
+            # already pins into values.yaml is passed in explicitly. Content
+            # addressing makes this the prompt version too, since prompt-lib
+            # compiles every model-visible string into the binary.
+            - name: GAMESERVERS_RELEASE
+              value: {{ .Values.image.digest | default .Values.image.tag | quote }}
             - name: RUST_LOG
               value: {{ .Values.bot.logLevel | quote }}
           ports:

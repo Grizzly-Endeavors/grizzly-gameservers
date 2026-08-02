@@ -7,6 +7,7 @@
 //! surfaces reuse live there as `type: params` files (e.g. `NameParams`).
 
 pub(crate) mod llm;
+pub(crate) mod observations;
 pub(crate) mod recorder;
 pub(crate) mod session;
 pub(crate) mod store;

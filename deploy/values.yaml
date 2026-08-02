@@ -64,6 +64,12 @@ bot:
     endpoint: http://10.0.0.200:7072
     bucket: grizzly-gameservers
     region: us-east-1
+  # Turn telemetry to the platform's Langfuse. The key pair comes from the
+  # grizzly-gameservers-langfuse Secret (ESO); absent keys leave telemetry off.
+  # In-cluster and plain HTTP — TLS terminates at the VPS edge, and reaching the
+  # public hostname would send every trace through Cloudflare.
+  langfuse:
+    host: http://langfuse-web.langfuse.svc.cluster.local:3000
   backup:
     intervalHours: 24 # scheduled snapshot cadence for every running server
     retention: 7 # backups kept per server before the cycle prunes older ones

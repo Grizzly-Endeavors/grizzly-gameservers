@@ -24,6 +24,7 @@ use super::super::render::{
     error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
+use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
@@ -103,6 +104,12 @@ pub(crate) struct ToolCtx<'a> {
     /// Guarded by a plain mutex because dispatch runs the tools one at a time and
     /// never holds the lock across an await.
     pub(crate) pending_change: std::sync::Mutex<Option<PendingChange>>,
+    /// How this turn's config change came out, once a restart verified it. Read
+    /// by the shell after the loop returns, because the verdict is reached inside
+    /// a tool and the loop never sees it as anything but result prose. Last write
+    /// wins: a turn with several edit-and-restart cycles is scored on the final
+    /// verdict, and the per-cycle history is already in its tool observations.
+    pub(crate) guardrail: std::sync::Mutex<Option<GuardrailVerdict>>,
 }
 
 impl ToolCtx<'_> {
@@ -145,6 +152,23 @@ impl ToolCtx<'_> {
     /// held, and the tracked state is advisory, so the last value is safe to reuse.
     fn pending_lock(&self) -> std::sync::MutexGuard<'_, Option<PendingChange>> {
         self.pending_change
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record how a verified config change came out, for the turn's guardrail
+    /// score.
+    fn note_guardrail_verdict(&self, verdict: GuardrailVerdict) {
+        *self
+            .guardrail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);
+    }
+
+    /// The verdict this turn's config change reached, if it reached one.
+    pub(crate) fn guardrail_verdict(&self) -> Option<GuardrailVerdict> {
+        *self
+            .guardrail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -744,11 +768,17 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 error!(error = ?err, %server, "agent: post-restart readiness check failed");
                 // Can't confirm health either way — leave the change in place and
                 // tell the model plainly, rather than rolling back a maybe-fine server.
+                ctx.note_guardrail_verdict(GuardrailVerdict::Unverified);
                 return prompts::ChangeRestartedUnverified { server }.render();
             }
         };
         match next_step(&outcome, rollback_spent) {
             RecoveryStep::Healthy => {
+                ctx.note_guardrail_verdict(if rollback_spent {
+                    GuardrailVerdict::RolledBack
+                } else {
+                    GuardrailVerdict::Healthy
+                });
                 return if rollback_spent {
                     warn!(%server, path = %change.path, "agent: rolled a crashing config change back and the server recovered");
                     prompts::ChangeRolledBackHealthy {
@@ -765,9 +795,13 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 Ok(()) => {
                     rollback_spent = true;
                 }
-                Err(message) => return message,
+                Err(message) => {
+                    ctx.note_guardrail_verdict(GuardrailVerdict::RollbackFailed);
+                    return message;
+                }
             },
             RecoveryStep::Escalate => {
+                ctx.note_guardrail_verdict(GuardrailVerdict::RollbackFailed);
                 error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
                 notify_crash_rollback(ctx, server, &change.path).await;
                 let escalation = prompts::OperatorFlagged::render();
@@ -778,7 +812,10 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 }
                 .render();
             }
-            RecoveryStep::Inconclusive => return format_ready_wait(server, &outcome),
+            RecoveryStep::Inconclusive => {
+                ctx.note_guardrail_verdict(GuardrailVerdict::Inconclusive);
+                return format_ready_wait(server, &outcome);
+            }
         }
     }
 }

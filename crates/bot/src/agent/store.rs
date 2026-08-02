@@ -63,6 +63,13 @@ impl SessionId {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A fixed id for tests. Minting stays private so the store remains the only
+    /// source of real ids.
+    #[cfg(test)]
+    pub(crate) fn from_raw(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
 }
 
 /// A transcript handed out for one turn, with the id of the conversation
