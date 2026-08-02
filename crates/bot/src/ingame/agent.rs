@@ -17,12 +17,13 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolCall, ToolDef, run_session,
-    send_chat_completion,
+    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolCall, ToolDef,
+    TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
 };
+use crate::discord::AccessLevel;
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
@@ -32,7 +33,7 @@ use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
 /// reply can't flood the world, not the primary length control.
 const MAX_REPLY_CHARS: usize = 600;
 
-type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>;
+type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
@@ -75,10 +76,23 @@ pub(crate) async fn handle_ingame_question(
     let tool_defs = ingame_tools();
 
     let key = session_key(&guild, player);
-    let mut messages = deps
+    let session = deps
         .sessions
         .checkout(key, Instant::now(), || build_ingame_system_prompt(&games));
+    let mut messages = session.messages;
     messages.push(ChatMessage::user(framed_question(player, question)));
+
+    // The in-game surface has no Discord identity and no tier of its own: its
+    // tool set is a fixed read-only subset, so that's what the turn runs at.
+    let recorder = TurnRecorder::new(TurnIdentity {
+        origin: TurnOrigin::Ingame,
+        deployment: deps.environment,
+        guild: guild.parse::<u64>().ok(),
+        channel: None,
+        actor: TurnActor::Player(player.to_owned()),
+        access: AccessLevel::ReadOnly,
+        session: Some(session.id.clone()),
+    });
 
     let http = &deps.http;
     let scope_ref = &scope;
@@ -97,6 +111,7 @@ pub(crate) async fn handle_ingame_question(
         &mut messages,
         tool_defs,
         DEFAULT_MAX_ROUNDS,
+        &recorder,
         &complete,
         &dispatch,
         &progress,
@@ -104,7 +119,9 @@ pub(crate) async fn handle_ingame_question(
     .await;
 
     let reply = match outcome {
-        Ok(SessionOutcome { reply, escalated }) => {
+        Ok(SessionOutcome {
+            reply, escalated, ..
+        }) => {
             if escalated {
                 warn!(server, player, "in-game session hit the round budget");
                 deps.notifier
@@ -120,7 +137,8 @@ pub(crate) async fn handle_ingame_question(
                     })
                     .await;
             }
-            deps.sessions.commit(key, messages, Instant::now());
+            deps.sessions
+                .commit(key, session.id, messages, Instant::now());
             reply
         }
         Err(err) => {

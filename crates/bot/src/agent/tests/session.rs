@@ -5,7 +5,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::super::llm::{FunctionCall, Role};
+use super::super::turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};
 use super::*;
+use crate::discord::AccessLevel;
 
 /// An assistant turn that calls one tool, optionally with narration text.
 fn tool_turn(id: &str, name: &str, arguments: &str, content: Option<&str>) -> ChatMessage {
@@ -34,6 +36,26 @@ fn text_turn(text: &str) -> ChatMessage {
     }
 }
 
+/// Wrap a canned assistant message as a completion, with token counts and a
+/// latency standing in for what a provider would report.
+fn completion(message: ChatMessage) -> Completion {
+    completion_costing(message, 10)
+}
+
+fn completion_costing(message: ChatMessage, prompt_tokens: u32) -> Completion {
+    Completion {
+        message,
+        model: "test-model".to_owned(),
+        usage: Some(TokenUsage {
+            prompt: Some(prompt_tokens),
+            completion: Some(2),
+            total: Some(prompt_tokens + 2),
+        }),
+        finish_reason: Some("stop".to_owned()),
+        latency: Duration::from_millis(5),
+    }
+}
+
 /// The seeded transcript the shell hands to `run_session`.
 fn seed(user: &str) -> Vec<ChatMessage> {
     vec![ChatMessage::system("sys"), ChatMessage::user(user)]
@@ -42,6 +64,20 @@ fn seed(user: &str) -> Vec<ChatMessage> {
 /// Build a `complete` closure that hands back the given canned turns in order.
 fn canned(turns: Vec<ChatMessage>) -> Mutex<VecDeque<ChatMessage>> {
     Mutex::new(VecDeque::from(turns))
+}
+
+/// A recorder for the loop to observe through. Its behavior is trace logging, so
+/// the identity only has to be well-formed, not specific to a test.
+fn recorder() -> TurnRecorder {
+    TurnRecorder::new(TurnIdentity {
+        origin: TurnOrigin::Discord,
+        deployment: Environment::Production,
+        guild: Some(1),
+        channel: Some(2),
+        actor: TurnActor::Discord(3),
+        access: AccessLevel::Manager,
+        session: None,
+    })
 }
 
 type ProgressFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -58,7 +94,7 @@ async fn returns_text_reply_without_calling_tools() {
 
     let complete: &CompleteFn = &|_, _| {
         let next = turns.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { Ok(next) })
+        Box::pin(async move { Ok(completion(next)) })
     };
     let dispatch: &DispatchFn = &|_| {
         dispatched.fetch_add(1, Ordering::SeqCst);
@@ -71,6 +107,7 @@ async fn returns_text_reply_without_calling_tools() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,
@@ -107,7 +144,7 @@ async fn runs_one_tool_round_then_replies() {
 
     let complete: &CompleteFn = &|_, _| {
         let next = turns.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { Ok(next) })
+        Box::pin(async move { Ok(completion(next)) })
     };
     let dispatch: &DispatchFn = &|call: ToolCall| {
         seen.lock().unwrap().push(call.function.name.clone());
@@ -120,6 +157,7 @@ async fn runs_one_tool_round_then_replies() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,
@@ -139,6 +177,86 @@ async fn runs_one_tool_round_then_replies() {
 }
 
 #[tokio::test]
+async fn every_model_call_is_reported_in_order() {
+    // Two rounds with different costs, so a caller can tell them apart and a
+    // dropped or reordered entry can't pass.
+    let turns = canned(vec![
+        tool_turn("c1", "list_servers", "{}", None),
+        text_turn("here they are"),
+    ]);
+    let round = AtomicUsize::new(0);
+
+    let complete: &CompleteFn = &|_, _| {
+        let next = turns.lock().unwrap().pop_front().unwrap();
+        let prompt_tokens = if round.fetch_add(1, Ordering::SeqCst) == 0 {
+            100
+        } else {
+            200
+        };
+        Box::pin(async move { Ok(completion_costing(next, prompt_tokens)) })
+    };
+    let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
+    let progress = ignore_progress();
+
+    let mut messages = seed("list servers");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        complete,
+        dispatch,
+        &progress,
+    )
+    .await
+    .unwrap();
+
+    let prompts: Vec<Option<u32>> = outcome
+        .generations
+        .iter()
+        .map(|generation| generation.usage.as_ref().and_then(|usage| usage.prompt))
+        .collect();
+    assert_eq!(
+        prompts,
+        [Some(100), Some(200)],
+        "one entry per model call, in the order they ran"
+    );
+    assert_eq!(
+        outcome.generations.first().map(|g| g.latency),
+        Some(Duration::from_millis(5)),
+        "each call's measured latency rides along with its usage"
+    );
+}
+
+#[tokio::test]
+async fn an_escalating_turn_still_reports_what_it_spent() {
+    let complete: &CompleteFn =
+        &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "list_servers", "{}", None))) });
+    let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
+    let progress = ignore_progress();
+
+    let mut messages = seed("loop forever");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        3,
+        &recorder(),
+        complete,
+        dispatch,
+        &progress,
+    )
+    .await
+    .unwrap();
+
+    assert!(outcome.escalated);
+    assert_eq!(
+        outcome.generations.len(),
+        3,
+        "a turn that gave up still burned its whole budget, and that cost is real"
+    );
+}
+
+#[tokio::test]
 async fn emits_interim_text_only_when_the_model_narrates() {
     let turns = canned(vec![
         tool_turn("c1", "list_servers", "{}", Some("let me check on that")),
@@ -150,7 +268,7 @@ async fn emits_interim_text_only_when_the_model_narrates() {
 
     let complete: &CompleteFn = &|_, _| {
         let next = turns.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { Ok(next) })
+        Box::pin(async move { Ok(completion(next)) })
     };
     let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
     let progress = |event: SessionEvent| {
@@ -163,6 +281,7 @@ async fn emits_interim_text_only_when_the_model_narrates() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,
@@ -191,7 +310,7 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
 
     let complete: &CompleteFn = &|_, _| {
         let next = turns.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { Ok(next) })
+        Box::pin(async move { Ok(completion(next)) })
     };
     let dispatch: &DispatchFn = &|_| {
         order.lock().unwrap().push("dispatch");
@@ -207,6 +326,7 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,
@@ -225,14 +345,22 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
 async fn escalates_when_round_budget_is_exhausted() {
     // The model never stops calling tools — every turn is another call.
     let complete: &CompleteFn =
-        &|_, _| Box::pin(async { Ok(tool_turn("c", "list_servers", "{}", None)) });
+        &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "list_servers", "{}", None))) });
     let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
     let progress = ignore_progress();
 
     let mut messages = seed("loop forever");
-    let outcome = run_session(&mut messages, Vec::new(), 3, complete, dispatch, &progress)
-        .await
-        .unwrap();
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        3,
+        &recorder(),
+        complete,
+        dispatch,
+        &progress,
+    )
+    .await
+    .unwrap();
 
     assert!(outcome.escalated, "an unbounded tool loop must escalate");
     assert_eq!(outcome.reply, ESCALATION_REPLY);
@@ -243,7 +371,7 @@ async fn empty_text_reply_falls_back_to_a_prompt() {
     let turns = canned(vec![text_turn("   ")]);
     let complete: &CompleteFn = &|_, _| {
         let next = turns.lock().unwrap().pop_front().unwrap();
-        Box::pin(async move { Ok(next) })
+        Box::pin(async move { Ok(completion(next)) })
     };
     let dispatch: &DispatchFn = &|_| Box::pin(async { String::new() });
     let progress = ignore_progress();
@@ -253,6 +381,7 @@ async fn empty_text_reply_falls_back_to_a_prompt() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,
@@ -279,6 +408,7 @@ async fn propagates_completion_errors() {
         &mut messages,
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
+        &recorder(),
         complete,
         dispatch,
         &progress,

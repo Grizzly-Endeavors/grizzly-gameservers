@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::llm::TokenUsage;
 
 /// The text of a rejection, so a test can assert the harness is *told* what to
 /// fix rather than just handed a status code.
@@ -242,6 +243,97 @@ fn an_escalated_turn_reports_every_round_it_burned() {
     }
     assert_eq!(rounds(&slice), crate::agent::DEFAULT_MAX_ROUNDS);
     assert_eq!(tool_trace(&slice).len(), crate::agent::DEFAULT_MAX_ROUNDS);
+}
+
+fn generation(model: &str, usage: Option<TokenUsage>, latency_ms: u64) -> Generation {
+    Generation {
+        model: model.to_owned(),
+        usage,
+        finish_reason: Some("stop".to_owned()),
+        latency: Duration::from_millis(latency_ms),
+    }
+}
+
+#[test]
+fn each_model_call_is_reported_with_its_own_cost() {
+    let generations = vec![
+        generation(
+            "glm-5.2",
+            Some(TokenUsage {
+                prompt: Some(900),
+                completion: Some(40),
+                total: Some(940),
+            }),
+            1200,
+        ),
+        generation(
+            "glm-5.2",
+            Some(TokenUsage {
+                prompt: Some(1100),
+                completion: Some(12),
+                total: Some(1112),
+            }),
+            800,
+        ),
+    ];
+
+    let traced: Vec<GenerationTrace> = generations.iter().map(generation_trace).collect();
+    assert_eq!(
+        traced.first().map(|trace| trace.prompt_tokens),
+        Some(Some(900))
+    );
+    assert_eq!(traced.first().map(|trace| trace.latency_ms), Some(1200));
+    assert_eq!(
+        usage_totals(&generations),
+        UsageTotals {
+            prompt: Some(2000),
+            completion: Some(52),
+            total: Some(2052),
+        },
+        "the turn's cost is the sum of its calls"
+    );
+}
+
+#[test]
+fn a_turn_the_provider_reported_nothing_for_totals_to_unknown() {
+    let generations = vec![generation("glm-5.2", None, 700)];
+
+    assert_eq!(
+        usage_totals(&generations),
+        UsageTotals::default(),
+        "absent counts must stay absent — reporting zero would understate real spend"
+    );
+    assert_eq!(
+        generations.iter().map(|g| millis(g.latency)).sum::<u64>(),
+        700,
+        "latency is measured here, so it's known even when the provider says nothing"
+    );
+}
+
+#[test]
+fn partial_reporting_sums_only_what_was_reported() {
+    let generations = vec![
+        generation("glm-5.2", None, 100),
+        generation(
+            "glm-5.2",
+            Some(TokenUsage {
+                prompt: Some(5),
+                completion: None,
+                total: None,
+            }),
+            100,
+        ),
+    ];
+
+    assert_eq!(
+        usage_totals(&generations),
+        UsageTotals {
+            prompt: Some(5),
+            completion: None,
+            total: None,
+        },
+        "a count only one call reported is still a real count; the others stay unknown"
+    );
 }
 
 #[test]

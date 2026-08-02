@@ -20,7 +20,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::agent::{OllamaConfig, SessionStore};
+use crate::agent::{Environment, OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 use crate::backup::MaybeBackups;
 use crate::defer::DeferRuntime;
@@ -122,6 +122,9 @@ pub(crate) struct Data {
     /// The live gateway Context, for the HTTP routes that are served before
     /// Discord connects. Holds a Context and never `Data`, so there's no cycle.
     pub(crate) gateway: GatewayHandle,
+    /// Which population this process's ordinary traffic belongs to, stamped on
+    /// every turn's identity.
+    pub(crate) environment: Environment,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

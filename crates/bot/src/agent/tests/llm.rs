@@ -65,6 +65,70 @@ fn empty_tool_calls_reads_as_no_tool_calls() {
 }
 
 #[test]
+fn parses_the_usage_and_finish_reason_the_provider_sends() {
+    let raw = serde_json::json!({
+        "model": "glm-5.2-turbo",
+        "choices": [{
+            "message": { "role": "assistant", "content": "done" },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290 }
+    });
+    let parsed: ChatResponse = serde_json::from_value(raw).unwrap();
+
+    assert_eq!(parsed.model.as_deref(), Some("glm-5.2-turbo"));
+    assert_eq!(
+        parsed.usage,
+        Some(TokenUsage {
+            prompt: Some(1234),
+            completion: Some(56),
+            total: Some(1290),
+        }),
+        "token usage is the cost signal; it must survive deserialization"
+    );
+    assert_eq!(
+        parsed
+            .choices
+            .first()
+            .and_then(|choice| choice.finish_reason.as_deref()),
+        Some("stop")
+    );
+}
+
+#[test]
+fn a_provider_that_reports_nothing_reads_as_unknown_not_zero() {
+    let raw = serde_json::json!({
+        "choices": [{ "message": { "role": "assistant", "content": "done" } }]
+    });
+    let parsed: ChatResponse = serde_json::from_value(raw).unwrap();
+
+    assert!(
+        parsed.usage.is_none(),
+        "absent usage must stay absent — a zero here would understate real cost"
+    );
+    assert!(
+        parsed.model.is_none(),
+        "the caller falls back to its config"
+    );
+    assert!(
+        parsed
+            .choices
+            .first()
+            .is_some_and(|choice| choice.finish_reason.is_none())
+    );
+}
+
+#[test]
+fn partial_usage_keeps_the_counts_it_was_given() {
+    let raw = serde_json::json!({ "prompt_tokens": 40 });
+    let usage: TokenUsage = serde_json::from_value(raw).unwrap();
+
+    assert_eq!(usage.prompt, Some(40));
+    assert_eq!(usage.completion, None);
+    assert_eq!(usage.total, None);
+}
+
+#[test]
 fn tool_def_serializes_as_openai_function() {
     let def = ToolDef::function(
         "stop_server",

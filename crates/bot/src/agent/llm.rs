@@ -2,7 +2,7 @@
 //! Cloud). Only the request/response shape the agent loop needs is modelled;
 //! everything else in the provider's schema is ignored on deserialize.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -153,15 +153,51 @@ struct ChatRequest<'a> {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<TokenUsage>,
+    /// The provider's echo of which model actually answered, which can differ
+    /// from the tag we asked for (aliases, routing).
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ChatMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
-/// Send one chat-completion turn and return the assistant message. Advertises
-/// `tools` (with `tool_choice: auto`) when any are supplied.
+/// Token accounting for one model call, as the provider reported it. Every count
+/// is optional because providers differ in what they return, and a count that
+/// wasn't sent must read as *unknown* rather than as zero.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub(crate) struct TokenUsage {
+    #[serde(default, rename = "prompt_tokens")]
+    pub(crate) prompt: Option<u32>,
+    #[serde(default, rename = "completion_tokens")]
+    pub(crate) completion: Option<u32>,
+    #[serde(default, rename = "total_tokens")]
+    pub(crate) total: Option<u32>,
+}
+
+/// One model call's full result: the assistant's message plus everything
+/// measurable about the call that produced it.
+#[derive(Clone, Debug)]
+pub(crate) struct Completion {
+    pub(crate) message: ChatMessage,
+    /// Whichever model answered — the provider's own echo when it sends one,
+    /// else the configured tag.
+    pub(crate) model: String,
+    pub(crate) usage: Option<TokenUsage>,
+    pub(crate) finish_reason: Option<String>,
+    /// Wall-clock time for the whole round trip, request sent through body parsed.
+    pub(crate) latency: Duration,
+}
+
+/// Send one chat-completion turn and return the assistant message with the call's
+/// usage, finish reason, and measured latency. Advertises `tools` (with
+/// `tool_choice: auto`) when any are supplied.
 ///
 /// # Errors
 ///
@@ -173,7 +209,7 @@ pub(crate) async fn send_chat_completion(
     cfg: &OllamaConfig,
     messages: &[ChatMessage],
     tools: &[ToolDef],
-) -> Result<ChatMessage> {
+) -> Result<Completion> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
     let request = ChatRequest {
         model: &cfg.model,
@@ -182,6 +218,7 @@ pub(crate) async fn send_chat_completion(
         tool_choice: (!tools.is_empty()).then_some("auto"),
     };
 
+    let started = Instant::now();
     let response = http
         .post(&url)
         .bearer_auth(&cfg.api_key)
@@ -201,12 +238,24 @@ pub(crate) async fn send_chat_completion(
         .json()
         .await
         .with_context(|| format!("failed to parse chat-completions reply from {url}"))?;
-    parsed
-        .choices
+    let latency = started.elapsed();
+
+    let ChatResponse {
+        choices,
+        usage,
+        model,
+    } = parsed;
+    let choice = choices
         .into_iter()
         .next()
-        .map(|choice| choice.message)
-        .context("chat-completions reply contained no choices")
+        .context("chat-completions reply contained no choices")?;
+    Ok(Completion {
+        message: choice.message,
+        model: model.unwrap_or_else(|| cfg.model.clone()),
+        usage,
+        finish_reason: choice.finish_reason,
+        latency,
+    })
 }
 
 #[cfg(test)]

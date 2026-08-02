@@ -28,8 +28,8 @@ use super::auth::{AccessCheck, AccessLevel, access_level};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
-    ChatMessage, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolDef, run_session,
-    send_chat_completion,
+    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, SessionEvent, SessionId, SessionOutcome, ToolDef,
+    TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
@@ -43,7 +43,7 @@ const TYPING_INTERVAL: Duration = Duration::from_secs(8);
 /// and, as defense in depth, inside [`run_gary_turn`] itself.
 const GARY_NOT_CONFIGURED_REPLY: &str = "Gary isn't set up yet — no model is configured.";
 
-type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<ChatMessage>> + Send + 'a>>;
+type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
@@ -178,14 +178,17 @@ async fn handle_message(
     // Continue this person's conversation in this channel if it's still live,
     // else start fresh; the appended user turn is what the model answers.
     let key = (message.channel_id.get(), message.author.id.get());
-    let mut messages = data.sessions.checkout(key, Instant::now(), || {
+    let session = data.sessions.checkout(key, Instant::now(), || {
         build_system_prompt(access, &games, &memories)
     });
+    let mut messages = session.messages;
     messages.push(ChatMessage::user(prompt.clone()));
 
     let turn = GaryTurn {
         ctx,
         data,
+        origin: TurnOrigin::Discord,
+        session: Some(session.id.clone()),
         channel_id: message.channel_id,
         guild: message.guild_id.map(serenity::GuildId::get),
         author_id: message.author.id,
@@ -201,7 +204,8 @@ async fn handle_message(
             warn!(user = %message.author.id, "agent escalated: round budget exhausted");
             notify_operators_escalated(data, message, &prompt, &messages).await;
         }
-        data.sessions.commit(key, messages, Instant::now());
+        data.sessions
+            .commit(key, session.id, messages, Instant::now());
     }
 }
 
@@ -212,6 +216,12 @@ async fn handle_message(
 pub(crate) struct GaryTurn<'a> {
     pub(crate) ctx: &'a serenity::Context,
     pub(crate) data: &'a Data,
+    /// Which entry point started this turn. Spelled out at every construction
+    /// site rather than inferred downstream from circumstantial evidence.
+    pub(crate) origin: TurnOrigin,
+    /// The conversation instance this turn belongs to, or `None` for a one-shot
+    /// turn that never touches the session store.
+    pub(crate) session: Option<SessionId>,
     /// Where the reply (and interim narration) is posted.
     pub(crate) channel_id: serenity::ChannelId,
     pub(crate) guild: Option<u64>,
@@ -221,6 +231,21 @@ pub(crate) struct GaryTurn<'a> {
     /// How this turn's destructive tools obtain their confirmation. Spelled out
     /// at every construction site rather than defaulted — see [`ConfirmMode`].
     pub(crate) confirmations: ConfirmMode,
+}
+
+impl GaryTurn<'_> {
+    /// This turn's delivery-agnostic identity, for the recorder.
+    fn identity(&self) -> TurnIdentity {
+        TurnIdentity {
+            origin: self.origin,
+            deployment: self.data.environment,
+            guild: self.guild,
+            channel: Some(self.channel_id.get()),
+            actor: TurnActor::Discord(self.author_id.get()),
+            access: self.access,
+            session: self.session.clone(),
+        }
+    }
 }
 
 /// Run the tool-calling loop for a seeded transcript, keeping a typing indicator
@@ -243,6 +268,7 @@ pub(crate) async fn run_gary_turn(
         return Ok(SessionOutcome {
             reply: String::new(),
             escalated: false,
+            generations: Vec::new(),
         });
     };
 
@@ -250,6 +276,7 @@ pub(crate) async fn run_gary_turn(
     let tool_ctx = tools::ToolCtx {
         data: turn.data,
         serenity: turn.ctx,
+        origin: turn.origin,
         channel_id: turn.channel_id,
         guild: turn.guild,
         author_id: turn.author_id,
@@ -281,11 +308,13 @@ pub(crate) async fn run_gary_turn(
         }) as ProgressFuture<'_>
     };
 
+    let recorder = TurnRecorder::new(turn.identity());
     let typing = start_typing(turn.ctx, turn.channel_id);
     let outcome = run_session(
         messages,
         tool_defs,
         DEFAULT_MAX_ROUNDS,
+        &recorder,
         &complete,
         &dispatch,
         &progress,

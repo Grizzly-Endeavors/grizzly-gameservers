@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use tracing::warn;
 
 use super::llm::{ChatMessage, Role};
 
@@ -22,7 +25,55 @@ const MAX_TRANSCRIPT: usize = 30;
 /// module free of Discord types (and trivially testable).
 pub(crate) type SessionKey = (u64, u64);
 
+/// How many random bytes back a session id. Two `u64`s of CSPRNG output are
+/// collision-free at any volume this bot will ever see.
+const SESSION_ID_BYTES: usize = 8;
+
+/// Last-resort source of unique session ids if the system random source can't be
+/// read. Telemetry must never be the reason a turn fails, so an unreadable
+/// CSPRNG degrades to process-unique instead of erroring.
+static FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Opaque identifier for one conversation *instance*. Minted when a transcript
+/// starts and retired with it, deliberately unrelated to [`SessionKey`] — so a
+/// later change to how conversations are scoped can't silently re-key anything
+/// downstream that grouped turns by this id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SessionId(String);
+
+impl SessionId {
+    fn mint() -> Self {
+        let mut high = [0_u8; SESSION_ID_BYTES];
+        let mut low = [0_u8; SESSION_ID_BYTES];
+        if let Err(err) = getrandom::fill(&mut high).and_then(|()| getrandom::fill(&mut low)) {
+            let counter = FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+            warn!(
+                error = ?err,
+                "no system random source for a session id; falling back to a process counter"
+            );
+            return Self(format!("fallback{counter:016x}"));
+        }
+        Self(format!(
+            "{:016x}{:016x}",
+            u64::from_le_bytes(high),
+            u64::from_le_bytes(low)
+        ))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A transcript handed out for one turn, with the id of the conversation
+/// instance it belongs to. The id comes back on [`SessionStore::commit`].
+pub(crate) struct SessionCheckout {
+    pub(crate) id: SessionId,
+    pub(crate) messages: Vec<ChatMessage>,
+}
+
 struct Entry {
+    id: SessionId,
     messages: Vec<ChatMessage>,
     last_seen: Instant,
 }
@@ -48,30 +99,47 @@ impl SessionStore {
     /// Hand back a clone of this key's transcript to run the next turn against,
     /// or a fresh `[system]` transcript when there's no live session (absent, or
     /// idle past the TTL). The lock is released before the caller awaits anything.
+    ///
+    /// A live session keeps its existing id; anything else mints a new one, so a
+    /// conversation that timed out is a new conversation downstream too.
     pub(crate) fn checkout(
         &self,
         key: SessionKey,
         now: Instant,
         fresh_system: impl FnOnce() -> String,
-    ) -> Vec<ChatMessage> {
+    ) -> SessionCheckout {
         if let Ok(store) = self.inner.lock()
             && let Some(entry) = store.get(&key)
             && now.duration_since(entry.last_seen) <= self.ttl
         {
-            return entry.messages.clone();
+            return SessionCheckout {
+                id: entry.id.clone(),
+                messages: entry.messages.clone(),
+            };
         }
-        vec![ChatMessage::system(fresh_system())]
+        SessionCheckout {
+            id: SessionId::mint(),
+            messages: vec![ChatMessage::system(fresh_system())],
+        }
     }
 
     /// Persist the transcript produced by a completed turn, trimmed to
-    /// [`MAX_TRANSCRIPT`], and stamp it as just-used.
-    pub(crate) fn commit(&self, key: SessionKey, messages: Vec<ChatMessage>, now: Instant) {
+    /// [`MAX_TRANSCRIPT`], under the id it was checked out with, and stamp it as
+    /// just-used.
+    pub(crate) fn commit(
+        &self,
+        key: SessionKey,
+        id: SessionId,
+        messages: Vec<ChatMessage>,
+        now: Instant,
+    ) {
         let Ok(mut store) = self.inner.lock() else {
             return;
         };
         store.insert(
             key,
             Entry {
+                id,
                 messages: trim(messages),
                 last_seen: now,
             },

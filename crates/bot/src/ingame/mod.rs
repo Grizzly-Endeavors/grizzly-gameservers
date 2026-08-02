@@ -21,7 +21,7 @@ use axum::routing::post;
 use grizzly_control_api::{INGAME_TRIGGER_PATH, IngameTriggerRequest};
 use tokio_util::task::TaskTracker;
 
-use crate::agent::{OllamaConfig, SessionStore};
+use crate::agent::{Environment, OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
 
 /// Cloneable handles the in-game endpoint shares with the rest of the bot. Every
@@ -43,6 +43,9 @@ pub(crate) struct IngameDeps {
     /// DMs the operators when an in-game `@Gary` question exhausts the round
     /// budget, so the escalation reaches a human instead of only a `warn` log.
     pub(crate) notifier: crate::notify::OperatorNotifier,
+    /// Which population this process's ordinary traffic belongs to, stamped on
+    /// every in-game turn's identity.
+    pub(crate) environment: Environment,
 }
 
 impl IngameDeps {
@@ -59,6 +62,7 @@ impl IngameDeps {
             ollama: data.ollama.clone(),
             sessions: Arc::clone(&data.sessions),
             notifier: data.notifier.clone(),
+            environment: data.environment,
         }
     }
 }

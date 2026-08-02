@@ -29,7 +29,8 @@ Usage: scripts/operator.sh [options] <command>
 
 Commands:
   tool <name> [json-args]   Run one of Gary's tools directly (no model). The default path.
-  gary <prompt>             Run a full Gary turn; returns the reply and a tool-call trace.
+  gary <prompt>             Run a full Gary turn; returns the reply, a tool-call trace,
+                            and the turn's token usage and latency.
   tools                     List the tools a tier may call, with their JSON schemas.
 
 Options:
@@ -237,6 +238,8 @@ case "$command" in
             | (if ($calls | length) > 0 then
                  "--- tools ---\n" + ([$calls[] | "→ \(.name)(\(.arguments))\n  \(.result | gsub("\n"; "\n  "))"] | join("\n")) + "\n"
                else "" end)
+            + "--- cost (\(.generations // [] | length) model calls, \(.latency_ms)ms) ---\n"
+            + "tokens: in \(.usage.prompt_tokens // "?"), out \(.usage.completion_tokens // "?"), total \(.usage.total_tokens // "?")\n"
             + "--- reply (rounds: \(.rounds)\(if .escalated then ", ESCALATED" else "" end)) ---\n"
             + .reply
         ' <<<"$payload"
