@@ -8,4 +8,5 @@ resources:
   - bot-to-postgres-egress.yaml
   - bot-to-s3-egress.yaml
   - bot-to-kv-cache-egress.yaml
+  - bot-to-langfuse-egress.yaml
   - game-to-bot-agent-egress.yaml

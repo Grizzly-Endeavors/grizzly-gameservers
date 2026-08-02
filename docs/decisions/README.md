@@ -14,5 +14,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-010 — Crash escalation suspends the health heartbeat instead of stopping it](010-recoverable-crash-escalation.md)
 - [ADR-011 — An operator harness for driving the deployed bot](011-operator-harness.md)
 - [ADR-012 — Per-instance environment lives in an overlay file on the PVC](012-per-instance-env-overlay.md)
+- [ADR-013 — Build OTLP spans as `SpanData`, and take a second `reqwest` for the exporter](013-langfuse-span-construction.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).
