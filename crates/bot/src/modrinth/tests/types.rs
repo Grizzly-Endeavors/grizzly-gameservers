@@ -122,6 +122,52 @@ fn a_short_version_list_is_returned_whole() {
 }
 
 #[test]
+fn an_unfiltered_search_just_shows_the_recent_versions() {
+    let versions: Vec<String> = (1..=10).map(|n| format!("26.{n}")).collect();
+    assert_eq!(
+        versions_for_display(&versions, None),
+        recent_versions(&versions)
+    );
+}
+
+#[test]
+fn the_version_searched_for_stays_visible_when_newer_ones_crowd_it_out() {
+    // The real case: a project supports 26.2 and also six newer snapshots, so
+    // the newest-six view hides the one version known to match — and a reader
+    // comparing that list against the server rules the project out wrongly.
+    let versions = vec![
+        "26.2".to_owned(),
+        "26.3-snapshot-1".to_owned(),
+        "26.3-snapshot-2".to_owned(),
+        "26.3-snapshot-3".to_owned(),
+        "26.3-snapshot-4".to_owned(),
+        "26.3-snapshot-5".to_owned(),
+        "26.3-snapshot-6".to_owned(),
+    ];
+    assert!(
+        !recent_versions(&versions).contains(&"26.2".to_owned()),
+        "precondition: the plain recent view hides it"
+    );
+    let shown = versions_for_display(&versions, Some("26.2"));
+    assert_eq!(shown.first().map(String::as_str), Some("26.2"));
+    assert_eq!(shown.len(), 6, "the list stays bounded");
+}
+
+#[test]
+fn a_version_already_in_the_recent_view_is_not_duplicated() {
+    let versions = vec!["26.1".to_owned(), "26.2".to_owned()];
+    assert_eq!(versions_for_display(&versions, Some("26.2")), versions);
+}
+
+#[test]
+fn a_version_the_project_lacks_is_never_invented() {
+    // Prepending an unsupported version would claim compatibility the registry
+    // never reported — worse than hiding a supported one.
+    let versions = vec!["26.1".to_owned(), "26.2".to_owned()];
+    assert_eq!(versions_for_display(&versions, Some("1.7.10")), versions);
+}
+
+#[test]
 fn an_empty_list_renders_as_words_not_a_blank() {
     assert_eq!(list_or_none(&[]), "none listed");
     assert_eq!(

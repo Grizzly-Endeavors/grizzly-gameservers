@@ -29,5 +29,5 @@ pub(crate) mod types;
 pub(crate) use client::{fetch_project, search_projects};
 pub(crate) use query::{Kind, Loader, SearchQuery};
 pub(crate) use types::{
-    Project, SearchHit, list_or_none, recent_versions, short_description, short_title,
+    Project, SearchHit, list_or_none, short_description, short_title, versions_for_display,
 };

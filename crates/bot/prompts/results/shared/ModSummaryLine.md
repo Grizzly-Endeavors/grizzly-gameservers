@@ -39,11 +39,15 @@ annotations:
         the loader names joined by commas, or the literal "none listed" when the
         project names none — the fallback is applied in code before rendering
     versions:
-      source: the newest few Minecraft versions the project supports
+      source: >-
+        up to six Minecraft versions the project supports — the newest few, and
+        the version the search filtered on when one was given
       contents: >-
-        up to six version strings joined by commas, oldest first, or the literal
-        "none listed" when the project names none — the fallback is applied in
-        code before rendering
+        up to six version strings joined by commas, or the literal "none listed"
+        when the project names none — the fallback is applied in code before
+        rendering. A version the search filtered on leads the list even when
+        newer releases would otherwise crowd it out, so the one version known to
+        match is never the one missing from the line
   reasoning:
     - >-
       One line per hit so a listing stays scannable. The slug leads because it

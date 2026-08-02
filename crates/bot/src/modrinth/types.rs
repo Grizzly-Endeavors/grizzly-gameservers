@@ -110,6 +110,29 @@ pub(crate) fn recent_versions(versions: &[String]) -> Vec<String> {
     versions.iter().skip(skip).cloned().collect()
 }
 
+/// The versions to show for a hit, keeping `asked_for` visible when the search
+/// filtered on one.
+///
+/// The newest few alone are misleading here: a project can support the version
+/// the caller filtered on and still have six newer snapshot releases above it,
+/// so the one version known to match would be the one version not displayed —
+/// and a reader comparing the list against the server would rule the project
+/// out for supporting exactly what they asked for.
+pub(crate) fn versions_for_display(versions: &[String], asked_for: Option<&str>) -> Vec<String> {
+    let recent = recent_versions(versions);
+    let Some(asked_for) = asked_for else {
+        return recent;
+    };
+    if recent.iter().any(|version| version == asked_for)
+        || !versions.iter().any(|version| version == asked_for)
+    {
+        return recent;
+    }
+    let mut shown = vec![asked_for.to_owned()];
+    shown.extend(recent.into_iter().take(VERSIONS_SHOWN - 1));
+    shown
+}
+
 /// Join a list for display, or name it empty so a blank never reads as an
 /// omission the model should fill in.
 pub(crate) fn list_or_none(items: &[String]) -> String {
