@@ -1,6 +1,6 @@
 # Minecraft Mods & Datapacks — Design
 
-**Status:** Ready for implementation — phases in `phases.md` (same directory), each implemented in its own session.
+**Status:** Shipped. This is the design of record; the decision rationale is [ADR-012](../../decisions/012-per-instance-env-overlay.md), and the empirical findings from each phase's live verification are recorded in `phases.md` (same directory).
 
 > Systems level only. No file or line references. This document must stand on its own: it will be implemented later in fresh sessions that have only this doc, phases.md, and the codebase — not the conversation that produced it.
 
@@ -99,7 +99,7 @@ New prompt guidance (additive text — no rewriting of existing tuned prompts) t
 - **Config two-tier model.** Extended, not changed: per-game tier (catalog, git) now also declares which env keys instances may override; per-instance tier (PVC, never git) now includes `.grizzly/env` alongside the game's own config files. The `.grizzly/` directory becomes the reserved home for any future platform-owned per-instance state; it is not hidden from Gary's file tools (deliberately — Gary is its editor).
 - **Gary's tool surface.** Two new manager-tier read-only tools following every existing convention: prompt-lib-defined names/descriptions/params with the annotations contract, one private result formatter per tool per the single-format rule (ADR-008), parse failures and API failures returned as explanatory text. No changes to existing tools, tiers, or the wire contract between bot and supervisor — this feature adds **zero control-API routes**.
 - **Other games.** Nothing changes for them: no catalog entry besides Minecraft declares `SUPERVISOR_CHILD_ENV_FILE`, so the overlay is inert elsewhere. The mechanism is the intended future path for env-tunable settings in other games (server password, difficulty, etc.), each behind its own catalog-declared allowlist; the Modrinth client stays Minecraft-specific.
-- **Documentation of record.** The decision to route per-instance env through a PVC overlay file (vs. render-time injection) gets an ADR when implementation lands; the platform overview's config-tier section gets a pointer to this capability.
+- **Documentation of record.** The decision to route per-instance env through a PVC overlay file (vs. render-time injection) is [ADR-012](../../decisions/012-per-instance-env-overlay.md); the platform overview's config-tier section points at this capability.
 
 ## Open questions
 
