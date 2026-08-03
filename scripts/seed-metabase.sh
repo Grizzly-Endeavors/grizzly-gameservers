@@ -85,6 +85,11 @@ render_query() {
         rest = substr($0, s + 1)
         e = index(rest, "\047")
         if (e > 0) vars[name] = substr(rest, 1, e - 1)
+      } else if (NF >= 3) {
+        # psql accepts unquoted values (`\set rate 1.50`) and still expands
+        # :'\''name'\'' to a quoted literal, so capture those too — otherwise the
+        # site survives un-replaced and Metabase chokes on the colon.
+        vars[name] = $3
       }
       next
     }
