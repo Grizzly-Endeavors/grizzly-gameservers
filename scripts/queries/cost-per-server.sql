@@ -19,8 +19,8 @@
 
 \set window '30 days'
 \set max_span '15 minutes'
-\set ram_usd_gb_month 1.50
-\set storage_usd_gb_month 0.004
+\set ram_usd_gb_month '1.50'
+\set storage_usd_gb_month '0.004'
 
 WITH spans AS (
     SELECT instance,

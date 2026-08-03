@@ -17,8 +17,8 @@
 -- cannot join across databases. A month is 730 hours.
 
 \set max_span '15 minutes'
-\set ram_usd_gb_month 1.50
-\set storage_usd_gb_month 0.004
+\set ram_usd_gb_month '1.50'
+\set storage_usd_gb_month '0.004'
 
 WITH spans AS (
     SELECT date_trunc('month', sampled_at)::date AS month,
