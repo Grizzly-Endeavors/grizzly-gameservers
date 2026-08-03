@@ -36,9 +36,23 @@ just db-query archive-churn          # archived and never recovered
 just db-query capacity-rejections    # creates refused for want of ports
 
 just db-psql                         # interactive shell
+
+just seed-metabase                   # push those queries into Metabase
 ```
 
 Queries live in [`scripts/queries/`](../../scripts/queries), one file per metric, each carrying its caveats as comments. Read the comments before believing a result.
+
+## Metabase
+
+Every query above is also a saved question at <https://analytics.grizzly-endeavors.com>, in the **Grizzly Gameservers** collection with a **Gameservers** dashboard over them. Use it when the question is exploratory — filter to one guild, drill into a spike, watch a trend across weeks — and `just db-query` when you want the exact documented number.
+
+`just seed-metabase` is what puts them there: it reads `scripts/queries/*.sql`, inlines the two files' psql `\set` variables (Metabase's editor speaks SQL, not psql), carries each file's leading comment block across as the question's description, and rebuilds the dashboard. Re-run it after editing a query — an existing question is updated in place, not duplicated.
+
+**The SQL files stay the source of truth.** Editing a question in Metabase works and will be silently overwritten on the next seed; the dashboard layout is rebuilt from scratch every run. If you want an arrangement that persists, duplicate the dashboard and rearrange the copy.
+
+Metabase reads the database as `metabase_ro`, which holds `SELECT` and nothing else — a native query cannot write to `events` or `occupancy_samples` no matter who runs it. Access is gated to `grizzly-admins` at Authentik. The service itself belongs to grizzly-platform: [ADR-065](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/main/docs/decisions/065-metabase-analytics-service.md) for the why, the [runbook](https://github.com/Grizzly-Endeavors/grizzly-platform/blob/main/docs/runbooks/metabase.md) for operating it.
+
+Langfuse's ClickHouse is connected too, so Gary's traces are queryable beside the event log — but its schema is internal and unversioned, so anything built on it can break on a Langfuse upgrade. The Langfuse read paths below remain the supported way to get those numbers.
 
 ## Langfuse
 

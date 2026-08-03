@@ -54,6 +54,10 @@ db-query name:
 metric *args:
     ./scripts/langfuse-metric.sh "$@"
 
+# Push scripts/queries/ into Metabase as questions + a dashboard.
+seed-metabase *args:
+    ./scripts/seed-metabase.sh "$@"
+
 # Build a game's composite image and push it to the in-cluster registry (dev).
 game-push game="minecraft" tag="dev":
     ./scripts/push-game-image.sh {{game}} {{tag}}
