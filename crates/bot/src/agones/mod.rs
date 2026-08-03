@@ -18,7 +18,7 @@ mod supervisor_fs;
 mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
-pub(crate) use client::{BackupTarget, list_active_servers, list_backup_targets};
+pub(crate) use client::{LiveInstance, list_active_servers, list_live_instances};
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,
@@ -30,9 +30,10 @@ pub(crate) use scope::{
 };
 pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
-    ControlReady, PodTarget, ReadyWait, RuntimeState, SupervisorOutcome, instance_runtime_state,
-    resolve_managed_pod, supervisor_restart, supervisor_start, supervisor_stop,
-    wait_for_control_reachable, wait_for_ready, wait_for_ready_within,
+    ControlReady, PodTarget, ReadyWait, RuntimeState, StatusPoll, SupervisorOutcome,
+    instance_runtime_state, resolve_managed_pod, supervisor_restart, supervisor_start,
+    supervisor_status, supervisor_stop, wait_for_control_reachable, wait_for_ready,
+    wait_for_ready_within,
 };
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,

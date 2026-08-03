@@ -152,6 +152,11 @@ spec:
               value: {{ .Values.bot.reconcile.intervalMinutes | quote }}
             - name: GAMESERVERS_STRANDED_DWELL_MINUTES
               value: {{ .Values.bot.reconcile.strandedDwellMinutes | quote }}
+            # Occupancy sampling: one row per running server per tick, on the
+            # same Postgres the event log uses. No credential of its own — an
+            # absent DB_PASSWORD disables the sampler along with the event log.
+            - name: GAMESERVERS_SAMPLE_INTERVAL_MINUTES
+              value: {{ .Values.bot.sampling.intervalMinutes | quote }}
             # In-game agent endpoint: game-pod supervisors POST player `@Gary`
             # chat triggers here (the reverse loop). The token authenticates
             # those POSTs; it's the same grizzly-gameservers-ingame Secret the

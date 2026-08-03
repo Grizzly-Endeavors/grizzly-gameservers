@@ -18,6 +18,22 @@ async fn a_disabled_log_accepts_and_discards() {
 }
 
 #[tokio::test]
+async fn a_disabled_log_accepts_and_discards_samples() {
+    let log = EventLog::connect(None).await;
+
+    // Same contract on the sampler's path: a tick with nowhere to land is a
+    // no-op, so the sampler never has to check before writing.
+    log.record_samples(&[OccupancySample {
+        instance: crate::domain::InstanceName::new("worldly-otter"),
+        game: None,
+        guild: None,
+        players: Some(2),
+        restarts: 0,
+    }])
+    .await;
+}
+
+#[tokio::test]
 async fn a_disabled_log_never_reports_a_guild_as_newly_joined() {
     let log = EventLog::connect(None).await;
     assert!(!log.claim_guild(42).await);

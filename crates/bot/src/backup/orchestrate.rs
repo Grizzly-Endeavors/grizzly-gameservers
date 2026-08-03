@@ -20,9 +20,9 @@ use super::{
     RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 use crate::agones::{
-    BackupTarget, ControlReady, DestroyOutcome, PodTarget, ProvisionOutcome, ReadyWait,
+    ControlReady, DestroyOutcome, LiveInstance, PodTarget, ProvisionOutcome, ReadyWait,
     RuntimeState, ServerScope, StartBegin, SupervisorOutcome, begin_start, destroy_instance,
-    instance_runtime_state, list_backup_targets, provision_paused_instance, resolve_managed_pod,
+    instance_runtime_state, list_live_instances, provision_paused_instance, resolve_managed_pod,
     supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
 };
 use crate::agones::{InstanceOwner, owner_of};
@@ -101,7 +101,7 @@ impl BackupService {
     /// limit. Driven by the scheduled timer in `crate::run`; logs a summary once
     /// rather than a line per server.
     pub(crate) async fn run_backup_cycle(&self, ctx: &BackupCtx<'_>) {
-        let targets = match list_backup_targets(ctx.client, ctx.namespace).await {
+        let targets = match list_live_instances(ctx.client, ctx.namespace).await {
             Ok(targets) => targets,
             Err(err) => {
                 error!(error = ?err, "scheduled backup cycle could not list servers");
@@ -200,7 +200,7 @@ impl BackupService {
     fn snapshot_event(
         kind: EventKind,
         attribution: &Attribution,
-        target: &BackupTarget,
+        target: &LiveInstance,
         outcome: &BackupOutcome,
     ) -> ProductEvent {
         let event = ProductEvent::new(kind, attribution, mapping::backup(outcome))
@@ -709,7 +709,7 @@ impl BackupService {
     async fn snapshot_target(
         &self,
         ctx: &BackupCtx<'_>,
-        target: &BackupTarget,
+        target: &LiveInstance,
         created_by: &str,
     ) -> Result<BackupOutcome> {
         let instance = target.instance.as_str();
@@ -969,13 +969,13 @@ impl BackupService {
         )
     }
 
-    /// Look up a live server's backup target (game/guild/running) by name.
+    /// Look up a live server's labels (game/guild/running) by name.
     async fn find_target(
         &self,
         ctx: &BackupCtx<'_>,
         instance: &str,
-    ) -> Result<Option<BackupTarget>> {
-        let targets = list_backup_targets(ctx.client, ctx.namespace).await?;
+    ) -> Result<Option<LiveInstance>> {
+        let targets = list_live_instances(ctx.client, ctx.namespace).await?;
         Ok(targets
             .into_iter()
             .find(|target| target.instance.as_str() == instance))

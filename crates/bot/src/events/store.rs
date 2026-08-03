@@ -20,8 +20,9 @@ use sqlx::postgres::PgPool;
 use tracing::{error, info, warn};
 
 use super::catalog::ProductEvent;
+use super::sampler::OccupancySample;
 use crate::config::DbConfig;
-use crate::domain::InstanceName;
+use crate::domain::{GameId, GuildId, InstanceName};
 
 /// Postgres pool size for the event log. Two is ample: writes are one small
 /// insert per product action at friends scale, never a hot path.
@@ -37,6 +38,13 @@ const EVENT_LOG_MAX_CONNECTIONS: u32 = 2;
 ///
 /// `known_guilds` exists so `guild_joined` survives a gateway reconnect, which
 /// replays `GuildCreate` for every guild the bot is already in.
+///
+/// `occupancy_samples` is the time-series half of the plane: one row per running
+/// instance per sampler tick, which the derivation layer integrates into playtime
+/// and differences into crash frequency. `players` is nullable and null means
+/// *unknown* — the game has no working occupancy probe, or its console wasn't
+/// reachable this tick — never a definite zero. Both counters are `BIGINT` so the
+/// supervisor's `u32`s bind without a fallible narrowing conversion.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     id BIGSERIAL PRIMARY KEY, \
     kind TEXT NOT NULL, \
@@ -52,7 +60,17 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     CREATE INDEX IF NOT EXISTS events_guild_kind_idx ON events (guild_id, kind, created_at); \
     CREATE TABLE IF NOT EXISTS known_guilds (\
     guild_id TEXT PRIMARY KEY, \
-    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now())";
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
+    CREATE TABLE IF NOT EXISTS occupancy_samples (\
+    id BIGSERIAL PRIMARY KEY, \
+    instance TEXT NOT NULL, \
+    game TEXT, \
+    guild_id TEXT, \
+    players BIGINT, \
+    restarts BIGINT NOT NULL, \
+    sampled_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
+    CREATE INDEX IF NOT EXISTS occupancy_samples_sampled_at_idx ON occupancy_samples (sampled_at); \
+    CREATE INDEX IF NOT EXISTS occupancy_samples_instance_idx ON occupancy_samples (instance, sampled_at)";
 
 /// `details` is bound as text and cast, because sqlx is pinned without its `json`
 /// feature — the cast costs nothing and keeps the dependency surface as it is.
@@ -67,6 +85,14 @@ const CLAIM_GUILD: &str =
 
 const SEED_GUILDS: &str =
     "INSERT INTO known_guilds (guild_id) SELECT unnest($1::text[]) ON CONFLICT DO NOTHING";
+
+/// A whole sampler tick in one statement, via parallel arrays. Batching isn't
+/// about throughput at this scale — it's that a database outage then costs one
+/// error log per tick instead of one per server per tick, which is the
+/// difference between a signal and a flood.
+const INSERT_SAMPLES: &str = "INSERT INTO occupancy_samples \
+    (instance, game, guild_id, players, restarts) \
+    SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[])";
 
 /// The product event log, or a disabled no-op when persistence isn't configured.
 pub(crate) struct EventLog {
@@ -142,8 +168,8 @@ impl EventLog {
         };
         let result = sqlx::query(INSERT_EVENT)
             .bind(event.kind.as_str())
-            .bind(event.guild.as_ref().map(crate::domain::GuildId::as_str))
-            .bind(event.game.as_ref().map(crate::domain::GameId::as_str))
+            .bind(event.guild.as_ref().map(GuildId::as_str))
+            .bind(event.game.as_ref().map(GameId::as_str))
             .bind(event.instance.as_ref().map(InstanceName::as_str))
             .bind(event.actor.label())
             .bind(event.surface.as_str())
@@ -195,6 +221,54 @@ impl EventLog {
             }
         }
         self.record(event).await;
+    }
+
+    /// Append one sampler tick's occupancy readings. Like [`record`](Self::record),
+    /// failure is logged and swallowed — a sample nobody is waiting on must never
+    /// surface anywhere.
+    pub(crate) async fn record_samples(&self, samples: &[OccupancySample]) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        if samples.is_empty() {
+            return;
+        }
+        let instances: Vec<&str> = samples
+            .iter()
+            .map(|sample| sample.instance.as_str())
+            .collect();
+        let games: Vec<Option<&str>> = samples
+            .iter()
+            .map(|sample| sample.game.as_ref().map(GameId::as_str))
+            .collect();
+        let guilds: Vec<Option<&str>> = samples
+            .iter()
+            .map(|sample| sample.guild.as_ref().map(GuildId::as_str))
+            .collect();
+        let players: Vec<Option<i64>> = samples
+            .iter()
+            .map(|sample| sample.players.map(i64::from))
+            .collect();
+        let restarts: Vec<i64> = samples
+            .iter()
+            .map(|sample| i64::from(sample.restarts))
+            .collect();
+
+        let result = sqlx::query(INSERT_SAMPLES)
+            .bind(&instances)
+            .bind(&games)
+            .bind(&guilds)
+            .bind(&players)
+            .bind(&restarts)
+            .execute(pool)
+            .await;
+        if let Err(err) = result {
+            error!(
+                error = ?err,
+                samples = samples.len(),
+                "failed to record occupancy samples"
+            );
+        }
     }
 
     /// Reconcile the known-guilds set against the guilds this process is in,

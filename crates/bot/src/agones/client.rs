@@ -95,29 +95,36 @@ pub(crate) async fn list_active_servers(
     Ok(summaries)
 }
 
-/// A managed server the scheduled backup cycle should snapshot: it has a live
-/// `GameServer` (pod up), so its supervisor is reachable to stream `/data`.
-pub(crate) struct BackupTarget {
+/// A managed server with a live pod, and therefore a reachable supervisor: who
+/// owns it, what it runs, and whether its game process is up.
+///
+/// The `running` flag carries different weight per consumer. The backup cycle
+/// uses it to decide whether to quiesce (flush) before snapshotting — a paused
+/// server's `/data` is already saved and its RCON is down, so quiescing would
+/// only log a spurious failure. The occupancy sampler uses it to skip paused
+/// instances outright.
+pub(crate) struct LiveInstance {
     pub(crate) instance: InstanceName,
     pub(crate) game: GameId,
     pub(crate) guild: GuildId,
-    /// Whether the game process is up — drives whether the snapshot quiesces
-    /// (flushes) first. A paused server's `/data` is already saved, and its RCON
-    /// is down, so quiescing it would only log a spurious failure.
     pub(crate) running: bool,
 }
 
-/// The managed `GameServer`s with a live pod, for the scheduled backup cycle.
-/// Shut-down instances (Service only, no pod) are absent — there is no supervisor
-/// to stream from — and are recovered via archive, not backed up.
+/// The managed `GameServer`s with a live pod, for the consumers that need to
+/// reach a supervisor: the scheduled backup cycle and the occupancy sampler.
+/// Shut-down instances (Service only, no pod) are absent — there is nothing in
+/// the cluster to talk to — and are recovered via archive, not backed up.
+///
+/// This is the one listing that surfaces the owning guild, which the labels
+/// carry but [`list_active_servers`]'s friend-facing summary does not.
 ///
 /// # Errors
 ///
 /// Returns an error if the gameservers can't be listed from the Kubernetes API.
-pub(crate) async fn list_backup_targets(
+pub(crate) async fn list_live_instances(
     client: &Client,
     namespace: &str,
-) -> Result<Vec<BackupTarget>> {
+) -> Result<Vec<LiveInstance>> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
     let list = gameservers
         .list(&ListParams::default())
@@ -133,7 +140,7 @@ pub(crate) async fn list_backup_targets(
             continue;
         };
         let running = label_value(labels, PROCESS_LABEL_KEY) != Some(PROCESS_LABEL_STOPPED);
-        targets.push(BackupTarget {
+        targets.push(LiveInstance {
             instance: InstanceName::new(instance),
             game: GameId::new(label_value(labels, GAME_KEY).unwrap_or_default()),
             guild: GuildId::new(label_value(labels, GUILD_KEY).unwrap_or_default()),

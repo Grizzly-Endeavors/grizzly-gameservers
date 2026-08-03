@@ -8,9 +8,10 @@
 //! the shapes SQL answers well (distinct active guilds per week, time from join
 //! to first server, archive-and-never-recover as the churn signal).
 //!
-//! Three pieces: [`catalog`] is the closed vocabulary that lands in the columns,
-//! [`mapping`] turns each orchestration outcome into that vocabulary, and
-//! [`store`] is the sink. Events are emitted at the layer that *executes* an
+//! Four pieces: [`catalog`] is the closed vocabulary that lands in the columns,
+//! [`mapping`] turns each orchestration outcome into that vocabulary, [`store`]
+//! is the sink for both tables, and [`sampler`] is the background writer of the
+//! occupancy time series. Events are emitted at the layer that *executes* an
 //! action rather than inside the agones orchestration functions, because those
 //! functions double as internal building blocks — an archive tears a server down
 //! through the same `destroy_instance` a friend does — and because a create's
@@ -18,7 +19,9 @@
 
 mod catalog;
 pub(crate) mod mapping;
+mod sampler;
 mod store;
 
 pub(crate) use catalog::{Actor, Attribution, EventKind, ProductEvent, Surface};
+pub(crate) use sampler::{SamplerCtx, run_occupancy_cycle};
 pub(crate) use store::EventLog;
