@@ -4,7 +4,7 @@
 
 ## Context
 
-`docs/design/data-collection/design.md` settles *what* the product plane records — a closed event catalog, one append-only table in the bot's existing Postgres, attributed by actor and surface — and *why* it is separate from the Langfuse plane. What it leaves open is where in the code an event is emitted, which turns out to be the load-bearing question.
+`docs/archive/data-collection/design.md` settles *what* the product plane records — a closed event catalog, one append-only table in the bot's existing Postgres, attributed by actor and surface — and *why* it is separate from the Langfuse plane. What it leaves open is where in the code an event is emitted, which turns out to be the load-bearing question.
 
 The design says events are emitted "at the orchestration layers where the action actually executes (not where it is requested)". Read literally, that points at the `agones` functions — `provision_instance`, `shutdown_instance`, `destroy_instance`, `begin_start`, `supervisor_stop`/`start`/`restart` — and instrumenting there would make coverage structural: a new caller could not forget to record. That is the same argument that put turn telemetry in the session loop rather than in 26 tool executors (ADR-013).
 

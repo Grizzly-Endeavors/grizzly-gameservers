@@ -1,6 +1,8 @@
 # Data Collection for Productization — Implementation Phases
 
-> Module level only. No file or line references — those get mapped in each phase's own session. Each phase is self-contained, depends only on phases before it, and is verifiable on its own. The companion design is [design.md](design.md); read it first in every phase session.
+> **Archived.** All five phases are complete. Kept as the record of how the work was sequenced. For the shipped subsystem, see [`docs/operations/data-collection.md`](../../operations/data-collection.md).
+>
+> Module level only. No file or line references. Each phase is self-contained, depends only on phases before it, and is verifiable on its own. The companion design is [design.md](design.md).
 
 ## Phase 1 — Turn identity and completion widening
 
