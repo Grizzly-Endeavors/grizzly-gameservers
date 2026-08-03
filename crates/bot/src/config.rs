@@ -68,6 +68,10 @@ const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
 const DEFAULT_BACKUP_RETENTION: usize = 7;
 /// How often the reconciler sweeps for servers stranded on an unresponsive node.
 const DEFAULT_RECONCILE_INTERVAL_MINUTES: u64 = 5;
+/// How often the sampler records each running server's player count. Minutes,
+/// not seconds: the samples are integrated into playtime and differenced into
+/// crash frequency, and neither gets meaningfully sharper by polling harder.
+const DEFAULT_SAMPLE_INTERVAL_MINUTES: u64 = 5;
 /// Set by the kubelet in every pod. Its presence is how the process tells a
 /// cluster deployment from a developer's box, which is what separates real
 /// traffic from a local run in anything the bot reports about itself.
@@ -131,6 +135,9 @@ pub struct BotConfig {
     /// How long a pod must have been terminating before the reconciler treats it
     /// as stranded and forces it out.
     pub(crate) stranded_dwell: Duration,
+    /// How often the occupancy sampler records each running server's player
+    /// count and restart counter.
+    pub(crate) sample_interval: Duration,
     /// Port the in-game agent endpoint binds for supervisor-posted chat triggers.
     pub(crate) agent_port: u16,
     /// Shared bearer token the in-game agent endpoint requires. `None` runs it
@@ -261,6 +268,11 @@ impl BotConfig {
                 .unwrap_or(DEFAULT_STRANDED_DWELL_MINUTES)
                 .saturating_mul(60),
         );
+        let sample_interval = Duration::from_secs(
+            optional_positive_u64(lookup, "GAMESERVERS_SAMPLE_INTERVAL_MINUTES")?
+                .unwrap_or(DEFAULT_SAMPLE_INTERVAL_MINUTES)
+                .saturating_mul(60),
+        );
         let agent_port =
             optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
         let ingame_token =
@@ -289,6 +301,7 @@ impl BotConfig {
             backup_retention,
             reconcile_interval,
             stranded_dwell,
+            sample_interval,
             agent_port,
             ingame_token,
             operator_token,

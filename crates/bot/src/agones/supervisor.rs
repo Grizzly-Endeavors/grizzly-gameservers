@@ -342,7 +342,7 @@ pub(crate) enum ReadyWait {
 /// One `GET /status` poll: the parsed body, or why it couldn't be read this tick.
 /// The transient reasons ([`Self::PodNotReady`], [`Self::Unreachable`]) are
 /// expected during a cold start and mean "keep polling", not "give up".
-enum StatusPoll {
+pub(crate) enum StatusPoll {
     Ok(StatusResponse),
     NotFound,
     NotManaged,
@@ -398,7 +398,7 @@ pub(crate) async fn wait_for_ready_within(
 
     loop {
         ticker.tick().await;
-        match poll_status(client, http, namespace, instance, control_port).await? {
+        match supervisor_status(client, http, namespace, instance, control_port).await? {
             StatusPoll::Ok(status) => match status.process {
                 ProcessPhase::Running => return Ok(ReadyWait::Ready),
                 ProcessPhase::Crashed => return Ok(ReadyWait::Crashed),
@@ -452,7 +452,7 @@ pub(crate) async fn wait_for_control_reachable(
 
     loop {
         ticker.tick().await;
-        match poll_status(client, http, namespace, instance, control_port).await? {
+        match supervisor_status(client, http, namespace, instance, control_port).await? {
             StatusPoll::Ok(_) => return Ok(ControlReady::Reachable),
             StatusPoll::NotFound => return Ok(ControlReady::NotFound),
             StatusPoll::NotManaged => return Ok(ControlReady::NotManaged),
@@ -465,8 +465,18 @@ pub(crate) async fn wait_for_control_reachable(
     }
 }
 
-/// Fetch and parse one `GET /status` from the instance's supervisor.
-async fn poll_status(
+/// Fetch and parse one `GET /status` from the instance's supervisor — the
+/// process phase, whether Agones readiness has been signalled, uptime, and the
+/// count of unexpected exits the supervisor has relaunched from.
+///
+/// The single status client in the bot: the readiness waits above and the
+/// occupancy sampler all come through here, so a change to how a status is read
+/// (timeout, error classification) can't apply to one caller and not another.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn supervisor_status(
     client: &Client,
     http: &reqwest::Client,
     namespace: &str,

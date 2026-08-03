@@ -404,6 +404,7 @@ struct CycleSchedule {
     backup_retention: usize,
     reconcile_interval: std::time::Duration,
     stranded_dwell: std::time::Duration,
+    sample_interval: std::time::Duration,
 }
 
 impl CycleSchedule {
@@ -413,6 +414,7 @@ impl CycleSchedule {
             backup_retention: config.backup_retention,
             reconcile_interval: config.reconcile_interval,
             stranded_dwell: config.stranded_dwell,
+            sample_interval: config.sample_interval,
         }
     }
 }
@@ -462,6 +464,12 @@ async fn setup_cycles(
         tasks,
         shutdown.clone(),
     );
+    spawn_occupancy_sampler(
+        SamplerHandles::from_cycle(&handles),
+        schedule.sample_interval,
+        tasks,
+        shutdown.clone(),
+    );
     setup_backups(
         s3,
         db,
@@ -507,6 +515,72 @@ fn spawn_stranded_cycle(
     info!(
         interval_secs = interval.as_secs(),
         "stranded-server reconciler enabled"
+    );
+}
+
+/// Owned handles the occupancy sampler needs: the cluster and supervisor reach
+/// to take a reading, and the store to append it to.
+struct SamplerHandles {
+    client: kube::Client,
+    http: reqwest::Client,
+    namespace: String,
+    control_port: u16,
+    events: std::sync::Arc<events::EventLog>,
+}
+
+impl SamplerHandles {
+    fn from_cycle(handles: &CycleHandles) -> Self {
+        Self {
+            client: handles.client.clone(),
+            http: handles.http.clone(),
+            namespace: handles.namespace.clone(),
+            control_port: handles.control_port,
+            events: std::sync::Arc::clone(&handles.events),
+        }
+    }
+}
+
+/// Record each running server's player count and restart counter on the sampler
+/// interval, in a tracked background task that stops at the next tick boundary
+/// once `shutdown` is cancelled.
+///
+/// Unlike the stranded reconciler this does *not* start unconditionally: without
+/// a database the samples have nowhere to land, so polling every supervisor
+/// forever would be pure cluster chatter for no record.
+fn spawn_occupancy_sampler(
+    handles: SamplerHandles,
+    interval: std::time::Duration,
+    tasks: &TaskTracker,
+    shutdown: CancellationToken,
+) {
+    if !handles.events.enabled() {
+        warn!("no database; occupancy sampling disabled (nothing else changes)");
+        return;
+    }
+    tasks.spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick fires immediately; skip it so a redeploy doesn't sample
+        // before the cluster has settled, only once per interval thereafter.
+        ticker.tick().await;
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                () = shutdown.cancelled() => break,
+            }
+            let ctx = events::SamplerCtx {
+                client: &handles.client,
+                http: &handles.http,
+                namespace: &handles.namespace,
+                control_port: handles.control_port,
+                events: &handles.events,
+            };
+            events::run_occupancy_cycle(&ctx).await;
+        }
+    });
+    info!(
+        interval_secs = interval.as_secs(),
+        "occupancy sampling enabled"
     );
 }
 

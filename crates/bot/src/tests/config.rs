@@ -371,6 +371,38 @@ fn positive_backup_settings_are_accepted() {
     assert_eq!(config.backup_retention, 3);
 }
 
+#[test]
+fn the_sample_interval_defaults_to_five_minutes() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+    assert_eq!(config.sample_interval, std::time::Duration::from_mins(5));
+}
+
+#[test]
+fn the_sample_interval_is_read_as_minutes() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_SAMPLE_INTERVAL_MINUTES", "15"),
+    ]);
+    let config = BotConfig::from_env_with(&env).unwrap();
+    assert_eq!(config.sample_interval, std::time::Duration::from_mins(15));
+}
+
+#[test]
+fn zero_sample_interval_is_rejected() {
+    // 0 would flow into tokio::time::interval, which panics on a zero period.
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_SAMPLE_INTERVAL_MINUTES", "0"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("GAMESERVERS_SAMPLE_INTERVAL_MINUTES"),
+        "a zero sample interval should be rejected, got: {err}"
+    );
+}
+
 // ---- control-plane egress drift guard (issue #42) ----
 //
 // The control-plane host/port values are pinned in independent places Cilium

@@ -79,6 +79,11 @@ bot:
     # clear of the game pods' 120s graceful-stop window so a slow but healthy
     # world-save is never cut short.
     strandedDwellMinutes: 15
+  sampling:
+    # How often each running server's player count and restart counter are
+    # recorded. Minutes, not seconds: the rows are integrated into playtime and
+    # differenced into crash frequency, and neither sharpens by polling harder.
+    intervalMinutes: 5
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:
