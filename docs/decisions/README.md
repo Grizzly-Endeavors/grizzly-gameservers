@@ -16,5 +16,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-012 — Per-instance environment lives in an overlay file on the PVC](012-per-instance-env-overlay.md)
 - [ADR-013 — Build OTLP spans as `SpanData`, and take a second `reqwest` for the exporter](013-langfuse-span-construction.md)
 - [ADR-014 — Record product events at the executing caller, in one wide table](014-product-event-log.md)
+- [ADR-015 — A market-proxy cost plane: quantities in Postgres, money only at query time](015-market-proxy-cost-plane.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

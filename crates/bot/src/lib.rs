@@ -464,7 +464,7 @@ async fn setup_cycles(
         tasks,
         shutdown.clone(),
     );
-    spawn_occupancy_sampler(
+    spawn_sampler(
         SamplerHandles::from_cycle(&handles),
         schedule.sample_interval,
         tasks,
@@ -518,8 +518,8 @@ fn spawn_stranded_cycle(
     );
 }
 
-/// Owned handles the occupancy sampler needs: the cluster and supervisor reach
-/// to take a reading, and the store to append it to.
+/// Owned handles the sampler needs: the cluster and supervisor reach to take a
+/// reading, and the store to append it to.
 struct SamplerHandles {
     client: kube::Client,
     http: reqwest::Client,
@@ -540,21 +540,22 @@ impl SamplerHandles {
     }
 }
 
-/// Record each running server's player count and restart counter on the sampler
-/// interval, in a tracked background task that stops at the next tick boundary
-/// once `shutdown` is cancelled.
+/// Record each running server's player count and restart counter, and every
+/// existing instance's resource footprint, on the sampler interval — in a
+/// tracked background task that stops at the next tick boundary once `shutdown`
+/// is cancelled.
 ///
 /// Unlike the stranded reconciler this does *not* start unconditionally: without
 /// a database the samples have nowhere to land, so polling every supervisor
 /// forever would be pure cluster chatter for no record.
-fn spawn_occupancy_sampler(
+fn spawn_sampler(
     handles: SamplerHandles,
     interval: std::time::Duration,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
     if !handles.events.enabled() {
-        warn!("no database; occupancy sampling disabled (nothing else changes)");
+        warn!("no database; occupancy and resource sampling disabled (nothing else changes)");
         return;
     }
     tasks.spawn(async move {
@@ -576,11 +577,12 @@ fn spawn_occupancy_sampler(
                 events: &handles.events,
             };
             events::run_occupancy_cycle(&ctx).await;
+            events::run_resource_cycle(&ctx).await;
         }
     });
     info!(
         interval_secs = interval.as_secs(),
-        "occupancy sampling enabled"
+        "occupancy and resource sampling enabled"
     );
 }
 

@@ -20,6 +20,7 @@ use sqlx::postgres::PgPool;
 use tracing::{error, info, warn};
 
 use super::catalog::ProductEvent;
+use super::resources::ResourceSample;
 use super::sampler::OccupancySample;
 use crate::config::DbConfig;
 use crate::domain::{GameId, GuildId, InstanceName};
@@ -28,7 +29,7 @@ use crate::domain::{GameId, GuildId, InstanceName};
 /// insert per product action at friends scale, never a hot path.
 const EVENT_LOG_MAX_CONNECTIONS: u32 = 2;
 
-/// Idempotent schema for both tables of the product plane.
+/// Idempotent schema for the tables of the product plane.
 ///
 /// One wide `events` table rather than a table per action: the catalog is closed
 /// and every row answers the same question ("who did what, where, and how did it
@@ -39,12 +40,20 @@ const EVENT_LOG_MAX_CONNECTIONS: u32 = 2;
 /// `known_guilds` exists so `guild_joined` survives a gateway reconnect, which
 /// replays `GuildCreate` for every guild the bot is already in.
 ///
-/// `occupancy_samples` is the time-series half of the plane: one row per running
+/// `occupancy_samples` is the occupancy time series: one row per running
 /// instance per sampler tick, which the derivation layer integrates into playtime
 /// and differences into crash frequency. `players` is nullable and null means
 /// *unknown* — the game has no working occupancy probe, or its console wasn't
 /// reachable this tick — never a definite zero. Both counters are `BIGINT` so the
 /// supervisor's `u32`s bind without a fallible narrowing conversion.
+///
+/// `resource_samples` is the cost time series: one row per *existing* instance
+/// per tick — running, paused, or shut down — holding raw quantities only
+/// (millicores, bytes), never money. Rates live in the query layer
+/// (`scripts/queries/`), so a rate revision reprices history instead of being
+/// baked into rows. Every quantity column is nullable and null means that
+/// reading wasn't available this tick (no pod, or metrics-server had nothing) —
+/// never zero; see [`ResourceSample`] for the exact per-state row shapes.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     id BIGSERIAL PRIMARY KEY, \
     kind TEXT NOT NULL, \
@@ -70,7 +79,22 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     restarts BIGINT NOT NULL, \
     sampled_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
     CREATE INDEX IF NOT EXISTS occupancy_samples_sampled_at_idx ON occupancy_samples (sampled_at); \
-    CREATE INDEX IF NOT EXISTS occupancy_samples_instance_idx ON occupancy_samples (instance, sampled_at)";
+    CREATE INDEX IF NOT EXISTS occupancy_samples_instance_idx ON occupancy_samples (instance, sampled_at); \
+    CREATE TABLE IF NOT EXISTS resource_samples (\
+    id BIGSERIAL PRIMARY KEY, \
+    instance TEXT NOT NULL, \
+    game TEXT, \
+    guild_id TEXT, \
+    cpu_millicores BIGINT, \
+    mem_bytes BIGINT, \
+    cpu_request_millicores BIGINT, \
+    mem_request_bytes BIGINT, \
+    cpu_limit_millicores BIGINT, \
+    mem_limit_bytes BIGINT, \
+    pvc_bytes BIGINT, \
+    sampled_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
+    CREATE INDEX IF NOT EXISTS resource_samples_sampled_at_idx ON resource_samples (sampled_at); \
+    CREATE INDEX IF NOT EXISTS resource_samples_instance_idx ON resource_samples (instance, sampled_at)";
 
 /// `details` is bound as text and cast, because sqlx is pinned without its `json`
 /// feature — the cast costs nothing and keeps the dependency surface as it is.
@@ -93,6 +117,15 @@ const SEED_GUILDS: &str =
 const INSERT_SAMPLES: &str = "INSERT INTO occupancy_samples \
     (instance, game, guild_id, players, restarts) \
     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[])";
+
+/// One statement per resource tick, for the same reason as [`INSERT_SAMPLES`] —
+/// and the shared `sampled_at` default it produces is what lets queries group a
+/// tick's rows into one fleet-wide reading.
+const INSERT_RESOURCE_SAMPLES: &str = "INSERT INTO resource_samples \
+    (instance, game, guild_id, cpu_millicores, mem_bytes, cpu_request_millicores, \
+    mem_request_bytes, cpu_limit_millicores, mem_limit_bytes, pvc_bytes) \
+    SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], \
+    $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::bigint[])";
 
 /// The product event log, or a disabled no-op when persistence isn't configured.
 pub(crate) struct EventLog {
@@ -267,6 +300,69 @@ impl EventLog {
                 error = ?err,
                 samples = samples.len(),
                 "failed to record occupancy samples"
+            );
+        }
+    }
+
+    /// Append one sampler tick's resource readings. Same contract as
+    /// [`record_samples`](Self::record_samples): failure is logged and swallowed.
+    pub(crate) async fn record_resource_samples(&self, samples: &[ResourceSample]) {
+        let Some(pool) = self.pool.as_ref() else {
+            return;
+        };
+        if samples.is_empty() {
+            return;
+        }
+        let instances: Vec<&str> = samples
+            .iter()
+            .map(|sample| sample.instance.as_str())
+            .collect();
+        let games: Vec<Option<&str>> = samples
+            .iter()
+            .map(|sample| sample.game.as_ref().map(GameId::as_str))
+            .collect();
+        let guilds: Vec<Option<&str>> = samples
+            .iter()
+            .map(|sample| sample.guild.as_ref().map(GuildId::as_str))
+            .collect();
+        let cpu: Vec<Option<i64>> = samples.iter().map(|sample| sample.cpu_millicores).collect();
+        let mem: Vec<Option<i64>> = samples.iter().map(|sample| sample.mem_bytes).collect();
+        let cpu_request: Vec<Option<i64>> = samples
+            .iter()
+            .map(|sample| sample.cpu_request_millicores)
+            .collect();
+        let mem_request: Vec<Option<i64>> = samples
+            .iter()
+            .map(|sample| sample.mem_request_bytes)
+            .collect();
+        let cpu_limit: Vec<Option<i64>> = samples
+            .iter()
+            .map(|sample| sample.cpu_limit_millicores)
+            .collect();
+        let mem_limit: Vec<Option<i64>> = samples
+            .iter()
+            .map(|sample| sample.mem_limit_bytes)
+            .collect();
+        let pvc: Vec<Option<i64>> = samples.iter().map(|sample| sample.pvc_bytes).collect();
+
+        let result = sqlx::query(INSERT_RESOURCE_SAMPLES)
+            .bind(&instances)
+            .bind(&games)
+            .bind(&guilds)
+            .bind(&cpu)
+            .bind(&mem)
+            .bind(&cpu_request)
+            .bind(&mem_request)
+            .bind(&cpu_limit)
+            .bind(&mem_limit)
+            .bind(&pvc)
+            .execute(pool)
+            .await;
+        if let Err(err) = result {
+            error!(
+                error = ?err,
+                samples = samples.len(),
+                "failed to record resource samples"
             );
         }
     }

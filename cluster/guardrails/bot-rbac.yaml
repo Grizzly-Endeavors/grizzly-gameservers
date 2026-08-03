@@ -50,6 +50,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
+  # Read actual per-pod CPU/memory from metrics-server for the resource
+  # sampler (the cost time series). Read-only and namespace-scoped like
+  # everything else here.
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

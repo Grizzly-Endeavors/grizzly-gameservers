@@ -8,3 +8,7 @@ CLAUDE.local.md
 
 # grizzly-gate local run output
 grizzly-gate-report/
+
+# browser-session artifacts from the playwright MCP
+.playwright-mcp/
+/*.png
