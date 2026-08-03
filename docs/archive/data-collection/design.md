@@ -1,6 +1,8 @@
 # Data Collection for Productization — Design
 
-> Systems level only. No file or line references. This document must stand on its own: it will be implemented later in fresh sessions that have only this doc, phases.md, and the codebase — not the conversation that produced it.
+> **Archived.** This design is fully implemented and shipped. It is kept as the record of what was decided and why; it is not a description of the current system and is not maintained. For how the shipped subsystem actually behaves and how to get numbers out of it, see [`docs/operations/data-collection.md`](../../operations/data-collection.md); for the decisions that outlived it, [ADR-013](../../decisions/013-langfuse-span-construction.md) and [ADR-014](../../decisions/014-product-event-log.md).
+>
+> Systems level only. No file or line references.
 
 ## Goal & context
 

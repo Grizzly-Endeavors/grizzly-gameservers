@@ -42,6 +42,18 @@ bot-logs-deployed *args:
     kubectl -n game-servers logs -f --tail=200 \
         -l app.kubernetes.io/name=grizzly-gameservers,app.kubernetes.io/component=bot {{args}}
 
+# Open psql against the bot's database (args pass through to psql).
+db-psql *args:
+    ./scripts/db-psql.sh "$@"
+
+# Run a derivation-layer query by name, e.g. `just db-query playtime`.
+db-query name:
+    ./scripts/db-psql.sh -f scripts/queries/{{name}}.sql
+
+# Read a metric out of Langfuse, e.g. `just metric escalation-rate`.
+metric *args:
+    ./scripts/langfuse-metric.sh "$@"
+
 # Build a game's composite image and push it to the in-cluster registry (dev).
 game-push game="minecraft" tag="dev":
     ./scripts/push-game-image.sh {{game}} {{tag}}
