@@ -15,6 +15,8 @@ Gary turn ──► Langfuse            (traces, generations, tool calls, scores
 Lifecycle ──► Postgres `events`             (who did what, where, with what outcome)
 Sampler   ──► Postgres `occupancy_samples`  (players + restart counter, every 5 min)
                                     → retention, playtime, packing, crash frequency
+Sampler   ──► Postgres `resource_samples`   (pod usage, requests, pvc bytes, every 5 min)
+                                    → cost per server, packing ratio
 ```
 
 Neither plane can delay or fail a user-visible action. No Langfuse keys means no traces and one log line; no `DB_PASSWORD` means no events and no samples. Both absent and the bot behaves exactly as it did before any of this shipped.
@@ -34,6 +36,9 @@ just db-query crash-frequency        # restart-counter deltas
 just db-query acquisition-funnel     # guild_joined → first server
 just db-query archive-churn          # archived and never recovered
 just db-query capacity-rejections    # creates refused for want of ports
+just db-query cost-per-server        # market-proxy USD per instance
+just db-query cost-monthly-summary   # fleet USD per month, by component
+just db-query packing-ratio          # actual over requested; the margin input
 
 just db-psql                         # interactive shell
 
@@ -166,7 +171,7 @@ Defaults mirror the bot's own config (`crates/bot/src/config.rs`): host `10.0.0.
 
 ### Schema
 
-Three tables, created idempotently at startup. There is no migration tool.
+Four tables, created idempotently at startup. There is no migration tool.
 
 **`events`** — one row per product-meaningful action, written where the action *executes*, not where it is requested, so slash commands, Gary tools, deferred batches, the harness and automatic cycles all land in one stream.
 
@@ -183,6 +188,8 @@ The 5 surfaces: `command` (slash handler), `agent` (a tool in a production Gary 
 **`known_guilds`** — `guild_id`, `first_seen_at`. Backs `guild_joined` so gateway reconnects, which replay guild events, don't re-fire it. Guilds already connected when the event log first shipped were seeded here *without* events, so the acquisition timeline starts honestly at deployment instead of backdating every existing guild as a join.
 
 **`occupancy_samples`** — `id`, `instance`, `game`, `guild_id`, `players`, `restarts`, `sampled_at`. Appended every `GAMESERVERS_SAMPLE_INTERVAL_MINUTES` (default 5) for each *running* server.
+
+**`resource_samples`** — `id`, `instance`, `game`, `guild_id`, `cpu_millicores`, `mem_bytes`, `cpu_request_millicores`, `mem_request_bytes`, `cpu_limit_millicores`, `mem_limit_bytes`, `pvc_bytes`, `sampled_at`. Appended on the same interval for each *existing* instance — running, paused, or shut down. Actuals come from metrics-server, declared figures off the live pod spec (whole-pod sums, Agones sidecar included), `pvc_bytes` from the claim. Raw quantities only, never money: the rate card lives in the query files, so a rate change reprices all of history at read time ([ADR-015](../decisions/015-market-proxy-cost-plane.md)).
 
 ## The metrics
 
@@ -209,6 +216,16 @@ SQL, via `just db-query <name>`:
 - **`archive-churn`** — archived and never recovered past a grace window; the closest thing to a silent cancellation this product has.
 - **`capacity-rejections`** — creates refused because the port range was full. Recorded separately so a capacity ceiling is never misread as disinterest.
 
+### Operational cost (market proxy)
+
+Also SQL, over `resource_samples`:
+
+- **`cost-per-server`** — market-proxy USD per instance over the window: RAM GB-hours on requests-basis (what capacity has to be provisioned for) and actual-basis (the right-sized floor), core-hours as unpriced quantities, storage GB-months.
+- **`cost-monthly-summary`** — fleet USD per month as component lines: RAM both bases, PVC storage, and the current S3 backup/archive footprint as a run-rate line. The inference line is *not* here — it lives in the Langfuse plane (`just metric cost-per-turn`), since Metabase cannot join across databases.
+- **`packing-ratio`** — actual over requested, per game and fleet-coincident. The `(fleet, coincident)` row's max is peak coincident packing — the assessment's declared-unmeasured number, and what capacity actually has to be sized for.
+
+The cost model is [ADR-015](../decisions/015-market-proxy-cost-plane.md): quantities in Postgres, money only in the query files' `\set` rate variables, priced at read time in USD. Two rates exist — `ram_usd_gb_month` (1.50) and `storage_usd_gb_month` (0.004) — derived 2026-08-03 from rented-dedicated list prices (Hetzner AX42-1, OVH Rise-S/Rise-Game-2; Hetzner Storage Box BX11 for storage; EUR→USD 1.15). RAM carries the whole compute price because the proxy is a box's price over its GB of RAM — pricing core-hours as well would double-count the box. To revise a rate: edit the `\set` lines and the derivation comment in each cost query, then `just seed-metabase`; no deploy, and history reprices itself.
+
 ## Reading the data honestly
 
 The traps, each one a real property of the shipped schema. They are repeated in the relevant `.sql` file's comments.
@@ -228,6 +245,14 @@ The traps, each one a real property of the shipped schema. They are repeated in 
 **`details` keys are present even when their value is JSON null.** Use `details->>'key' IS NULL`, not `details ? 'key'` — the two disagree here.
 
 **`archives` is append-only.** Query it with `DISTINCT ON (guild_id, name)` newest-first, as the bot's own reads do.
+
+**Paused instances DO produce resource rows — the opposite of occupancy.** A paused pod still reserves its RAM, so `resource_samples` keeps recording it. In that table a full row means "pod exists" (running or paused), a PVC-only row (all compute columns null) means "shut down", and absence means "destroyed". Don't infer running-ness from `resource_samples`; that's what `occupancy_samples` is for.
+
+**Null actuals mean metrics-server had no reading, never "idle".** A young pod, an unreachable metrics API, or missing RBAC all read as null `cpu_millicores`/`mem_bytes` with the declared columns intact. Summing treats them as absent — an undercount, not a zero.
+
+**Resource figures are whole-pod sums including the Agones sidecar.** Both the declared and actual sides count every container, so packing ratios compare like with like — but neither is "just the game". The limit columns sum only the containers that declare one (the sidecar typically declares none), so they are in practice the game container's burst envelope.
+
+**Never join `resource_samples` to `occupancy_samples` on `sampled_at` equality.** The two tables are written by separate statements in the same tick, so their timestamps are close but never identical. Join on time buckets (`date_trunc`) if you must correlate them.
 
 ## Corpus curation
 
