@@ -19,6 +19,10 @@ mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{LiveInstance, list_active_servers, list_live_instances};
+pub(crate) use labels::{
+    GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
+    label_value,
+};
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,

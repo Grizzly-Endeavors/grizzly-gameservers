@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Push scripts/queries/*.sql into Metabase as saved questions and lay them out
-# on a "Gameservers" dashboard.
+# Push scripts/queries/*.sql (against the grizzly_gameservers Postgres) and
+# scripts/queries/clickhouse/*.sql (against the langfuse ClickHouse) into
+# Metabase as saved questions and lay them out on a "Gameservers" dashboard.
 #
 # Why this exists: a dashboard built by clicking lives only inside Metabase's
 # database, where it can't be reviewed, grepped, or explained. The SQL in
@@ -16,9 +17,15 @@
 # Auth: reads the Metabase API key from 1Password (platform-metabase/api_key),
 # or from MB_API_KEY if it is already set.
 #
-# Prerequisites: the grizzly_gameservers data source must already exist in
-# Metabase — that is grizzly-platform's scripts/metabase-add-database.sh, not
-# this script's job. See grizzly-platform docs/integration/metabase.md.
+# Prerequisites: the data sources must already exist in Metabase — the
+# grizzly_gameservers Postgres for scripts/queries/*.sql, and the langfuse
+# ClickHouse for scripts/queries/clickhouse/*.sql. Registering them is
+# grizzly-platform's scripts/metabase-add-database.sh, not this script's job.
+# See grizzly-platform docs/integration/metabase.md.
+#
+# The subdirectory is the database marker: a file's location decides which
+# data source its question queries. `just db-query` only ever runs the
+# top-level (Postgres) files, so psql can never be pointed at ClickHouse SQL.
 
 set -euo pipefail
 
@@ -27,6 +34,7 @@ DRY_RUN=""
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 QUERY_DIR="${REPO_ROOT}/scripts/queries"
+CH_QUERY_DIR="${QUERY_DIR}/clickhouse"
 
 OP_TOKEN_FILE="${OP_TOKEN_FILE:-${HOME}/.config/op-tokens/operator}"
 OP_VAULT="${OP_VAULT:-grizzly-platform}"
@@ -34,6 +42,7 @@ NAMESPACE="metabase"
 SERVICE="svc/metabase"
 LOCAL_PORT="${MB_LOCAL_PORT:-3456}"
 DATA_SOURCE="grizzly_gameservers"
+CH_DATA_SOURCE="langfuse"
 COLLECTION_NAME="Grizzly Gameservers"
 DASHBOARD_NAME="Gameservers"
 
@@ -118,11 +127,20 @@ QUERY_FILES=()
 while IFS= read -r f; do QUERY_FILES+=("$f"); done < <(find "${QUERY_DIR}" -maxdepth 1 -name '*.sql' | sort)
 [[ ${#QUERY_FILES[@]} -gt 0 ]] || die "no .sql files in ${QUERY_DIR}"
 
+CH_QUERY_FILES=()
+if [[ -d "${CH_QUERY_DIR}" ]]; then
+  while IFS= read -r f; do CH_QUERY_FILES+=("$f"); done < <(find "${CH_QUERY_DIR}" -maxdepth 1 -name '*.sql' | sort)
+fi
+
 if [[ -n "${DRY_RUN}" ]]; then
-  log "would seed ${#QUERY_FILES[@]} question(s) into '${COLLECTION_NAME}':"
+  log "would seed $((${#QUERY_FILES[@]} + ${#CH_QUERY_FILES[@]})) question(s) into '${COLLECTION_NAME}':"
   for f in "${QUERY_FILES[@]}"; do
     NAME="$(render_name "${f}")"
-    log "  - ${NAME}  (from $(basename "${f}"))"
+    log "  - ${NAME}  (from $(basename "${f}"), against ${DATA_SOURCE})"
+  done
+  for f in "${CH_QUERY_FILES[@]}"; do
+    NAME="$(render_name "${f}")"
+    log "  - ${NAME}  (from clickhouse/$(basename "${f}"), against ${CH_DATA_SOURCE})"
   done
   exit 0
 fi
@@ -170,6 +188,13 @@ DB_ID="$(printf '%s' "${DATABASES}" | jq -r --arg n "${DATA_SOURCE}" '.data[]? |
 [[ -n "${DB_ID}" ]] \
   || die "no '${DATA_SOURCE}' data source in Metabase — run grizzly-platform's scripts/metabase-add-database.sh postgres ${DATA_SOURCE}"
 
+CH_DB_ID=""
+if [[ ${#CH_QUERY_FILES[@]} -gt 0 ]]; then
+  CH_DB_ID="$(printf '%s' "${DATABASES}" | jq -r --arg n "${CH_DATA_SOURCE}" '.data[]? | select(.name == $n) | .id')"
+  [[ -n "${CH_DB_ID}" ]] \
+    || die "no '${CH_DATA_SOURCE}' data source in Metabase — run grizzly-platform's scripts/metabase-add-database.sh clickhouse ${CH_DATA_SOURCE}"
+fi
+
 COLLECTIONS="$(api GET /api/collection)"
 COLLECTION_ID="$(printf '%s' "${COLLECTIONS}" | jq -r --arg n "${COLLECTION_NAME}" 'map(select(.name == $n)) | .[0].id // empty')"
 if [[ -z "${COLLECTION_ID}" ]]; then
@@ -185,7 +210,12 @@ EXISTING_ITEMS="$(api GET "/api/collection/${COLLECTION_ID}/items?models=card")"
 # --- seed the questions -----------------------------------------------------
 
 CARD_IDS=()
-for f in "${QUERY_FILES[@]}"; do
+
+# Upsert one query file as a saved question against the given database id,
+# appending the resulting card id to CARD_IDS for the dashboard layout.
+seed_card() {
+  local f="$1" db_id="$2"
+  local NAME SQL DESCRIPTION PAYLOAD CARD_ID RESPONSE ACTION REASON
   NAME="$(render_name "${f}")"
   SQL="$(render_query "${f}")"
   DESCRIPTION="$(render_description "${f}")"
@@ -194,7 +224,7 @@ for f in "${QUERY_FILES[@]}"; do
     --arg name "${NAME}" \
     --arg description "${DESCRIPTION}" \
     --arg sql "${SQL}" \
-    --argjson db "${DB_ID}" \
+    --argjson db "${db_id}" \
     --argjson collection "${COLLECTION_ID}" \
     '{
        name: $name,
@@ -227,7 +257,10 @@ for f in "${QUERY_FILES[@]}"; do
 
   CARD_IDS+=("${CARD_ID}")
   log "${ACTION} question '${NAME}' (${CARD_ID})"
-done
+}
+
+for f in "${QUERY_FILES[@]}"; do seed_card "${f}" "${DB_ID}"; done
+for f in "${CH_QUERY_FILES[@]}"; do seed_card "${f}" "${CH_DB_ID}"; done
 
 # --- assemble the dashboard -------------------------------------------------
 
