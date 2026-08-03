@@ -48,6 +48,9 @@ pub(crate) struct IngameDeps {
     pub(crate) environment: Environment,
     /// Exports every in-game turn to Langfuse, sharing the bot's one exporter.
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
+    /// Records an in-game escalation in the product event log. In-game tools are
+    /// read-only, so this is the only event the endpoint emits.
+    pub(crate) events: Arc<crate::events::EventLog>,
 }
 
 impl IngameDeps {
@@ -66,6 +69,7 @@ impl IngameDeps {
             notifier: data.notifier.clone(),
             environment: data.environment,
             telemetry: Arc::clone(&data.telemetry),
+            events: Arc::clone(&data.events),
         }
     }
 }

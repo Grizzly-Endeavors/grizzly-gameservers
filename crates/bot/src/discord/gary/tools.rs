@@ -33,12 +33,15 @@ use crate::agones::{
     list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
     supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
     supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
-    supervisor_start, supervisor_stop, supervisor_write_file, verify_scope, wait_for_ready,
+    supervisor_start, supervisor_stop, supervisor_write_file, verify_scope,
+    wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
     ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
 };
 use crate::defer::{Condition, DeferredTask};
+use crate::domain::{GuildId, InstanceName};
+use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
     Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
@@ -171,6 +174,39 @@ impl ToolCtx<'_> {
             .guardrail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Who this tool is acting for, for the product event log. The surface comes
+    /// from the turn's origin, so a `run_when` batch and an operator-harness turn
+    /// are separable from a friend's live conversation without any extra
+    /// threading — the executors already carry both.
+    pub(crate) fn attribution(&self) -> Attribution {
+        Attribution::new(
+            Actor::Discord(self.author_id.get()),
+            Surface::from_origin(self.origin),
+        )
+    }
+
+    /// Record a lifecycle action the model just took, against the server it acted
+    /// on. Emitted after the action resolves, never before.
+    async fn record_action(&self, kind: EventKind, server: &str, outcome: &'static str) {
+        self.record_event(
+            ProductEvent::new(kind, &self.attribution(), outcome)
+                .instance(InstanceName::new(server)),
+        )
+        .await;
+    }
+
+    /// Record an already-built event, filling in the guild the turn ran in.
+    async fn record_event(&self, event: ProductEvent) {
+        self.data
+            .events
+            .record_lifecycle(
+                &self.data.kube_client,
+                &self.data.namespace,
+                event.guild(self.guild.map(|guild| GuildId::new(guild.to_string()))),
+            )
+            .await;
     }
 }
 
@@ -621,20 +657,82 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
     {
         // Don't block the loop on first-boot world generation (minutes). Report
         // the address now; the user can ask for status to see when it's ready.
-        Ok(ProvisionOutcome::Provisioned { address }) => prompts::CreateCreated {
-            server: &server,
-            address: &address,
+        Ok(ProvisionOutcome::Provisioned { address }) => {
+            watch_boot(ctx, EventKind::ServerCreated, &server, &address);
+            prompts::CreateCreated {
+                server: &server,
+                address: &address,
+            }
+            .render()
         }
-        .render(),
         Ok(ProvisionOutcome::AlreadyExists) => {
+            ctx.record_action(
+                EventKind::ServerCreated,
+                &server,
+                mapping::provision(&ProvisionOutcome::AlreadyExists),
+            )
+            .await;
             prompts::CreateNameTaken { server: &server }.render()
         }
-        Ok(ProvisionOutcome::PortsExhausted) => prompts::CreatePortsExhausted::render(),
+        Ok(ProvisionOutcome::PortsExhausted) => {
+            ctx.record_action(
+                EventKind::ServerCreated,
+                &server,
+                mapping::provision(&ProvisionOutcome::PortsExhausted),
+            )
+            .await;
+            prompts::CreatePortsExhausted::render()
+        }
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
+            ctx.record_action(EventKind::ServerCreated, &server, mapping::FAILED)
+                .await;
             cluster_error()
         }
     }
+}
+
+/// Resolve a create or cold start's readiness in the background and record its
+/// terminal outcome.
+///
+/// The tool itself must not wait — first-boot world generation runs for minutes
+/// and the model would stall mid-turn — but the event still has to be terminal,
+/// and time-to-ready can only be measured by whoever waits. So the wait moves off
+/// the turn instead of off the record. The task is tracked, so the shutdown drain
+/// knows about it, and races the shutdown token so a redeploy isn't held for the
+/// full readiness budget.
+fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
+    let (client, namespace) = (ctx.data.kube_client.clone(), ctx.data.namespace.clone());
+    let events = std::sync::Arc::clone(&ctx.data.events);
+    let shutdown = ctx.data.shutdown.clone();
+    let attribution = ctx.attribution();
+    let guild = ctx.guild.map(|guild| GuildId::new(guild.to_string()));
+    let (server, address) = (server.to_owned(), address.to_owned());
+
+    ctx.data.tasks.spawn(async move {
+        let started = std::time::Instant::now();
+        let ready = tokio::select! {
+            resolved = wait_for_instance_ready(&client, &namespace, &server) => match resolved {
+                Ok(ready) => ready,
+                Err(err) => {
+                    error!(error = ?err, %server, "agent: failed to wait for readiness");
+                    false
+                }
+            },
+            () = shutdown.cancelled() => return,
+        };
+        let elapsed = ready.then(|| started.elapsed());
+        events
+            .record_lifecycle(
+                &client,
+                &namespace,
+                ProductEvent::new(kind, &attribution, mapping::readiness(ready))
+                    .instance(InstanceName::new(server))
+                    .guild(guild)
+                    .details(mapping::boot_details(Some(&address), elapsed)),
+            )
+            .await;
+    });
 }
 
 async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
@@ -695,9 +793,19 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(outcome) => format_supervisor(server, &outcome),
+        Ok(outcome) => {
+            ctx.record_action(
+                EventKind::ServerStopped,
+                server,
+                mapping::supervisor(&outcome),
+            )
+            .await;
+            format_supervisor(server, &outcome)
+        }
         Err(err) => {
             error!(error = ?err, %server, "agent: stop failed");
+            ctx.record_action(EventKind::ServerStopped, server, mapping::FAILED)
+                .await;
             cluster_error()
         }
     }
@@ -716,9 +824,17 @@ async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
         Ok(outcome) => outcome,
         Err(err) => {
             error!(error = ?err, %server, "agent: restart failed");
+            ctx.record_action(EventKind::ServerRestarted, server, mapping::FAILED)
+                .await;
             return cluster_error();
         }
     };
+    ctx.record_action(
+        EventKind::ServerRestarted,
+        server,
+        mapping::supervisor(&outcome),
+    )
+    .await;
     // Only a server that genuinely bounced applies a pending config change, so only
     // then is there something to verify. Any other outcome (already paused,
     // unreachable, gone) reports as before and leaves the pending change in place
@@ -905,13 +1021,17 @@ async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String 
 /// shared notify step behind every "I've flagged this for an operator" promise
 /// in [`verify_change`]/[`roll_back`].
 async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
-    ctx.data
-        .notifier
-        .notify(&Escalation::CrashRollback {
-            server: server.to_owned(),
-            path: path.to_owned(),
-        })
-        .await;
+    let escalation = Escalation::CrashRollback {
+        server: server.to_owned(),
+        path: path.to_owned(),
+    };
+    ctx.record_event(mapping::escalation_event(
+        &escalation,
+        &ctx.attribution(),
+        ctx.guild.map(|guild| GuildId::new(guild.to_string())),
+    ))
+    .await;
+    ctx.data.notifier.notify(&escalation).await;
 }
 
 /// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in
@@ -929,9 +1049,19 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
         )
         .await
         {
-            Ok(outcome) => format_supervisor(server, &outcome),
+            Ok(outcome) => {
+                ctx.record_action(
+                    EventKind::ServerStarted,
+                    server,
+                    mapping::supervisor(&outcome),
+                )
+                .await;
+                format_supervisor(server, &outcome)
+            }
             Err(err) => {
                 error!(error = ?err, %server, "agent: warm start failed");
+                ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+                    .await;
                 cluster_error()
             }
         },
@@ -946,7 +1076,7 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
-    match begin_start(
+    let begin = match begin_start(
         &ctx.data.kube_client,
         &ctx.data.namespace,
         &ctx.data.domain,
@@ -955,36 +1085,67 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     )
     .await
     {
-        Ok(StartBegin::Starting { address }) => prompts::ColdStartStarting {
+        Ok(begin) => begin,
+        Err(err) => {
+            error!(error = ?err, %server, "agent: cold start failed");
+            ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+                .await;
+            return cluster_error();
+        }
+    };
+
+    // A start that's underway isn't terminal yet — the background watcher records
+    // it once readiness resolves. Everything else is already its own ending.
+    if let StartBegin::Starting { address } = &begin {
+        watch_boot(ctx, EventKind::ServerStarted, server, address);
+    } else {
+        ctx.record_action(
+            EventKind::ServerStarted,
+            server,
+            mapping::start_begin(&begin),
+        )
+        .await;
+    }
+
+    match begin {
+        StartBegin::Starting { address } => prompts::ColdStartStarting {
             server,
             address: &address,
         }
         .render(),
-        Ok(StartBegin::AlreadyRunning) => prompts::ServerAlreadyRunning { server }.render(),
-        Ok(StartBegin::NotFound) => no_such(server),
-        Ok(StartBegin::NotManaged) => not_managed(server),
-        Ok(StartBegin::UnknownGame(game)) => prompts::ColdStartUnknownGame {
+        StartBegin::AlreadyRunning => prompts::ServerAlreadyRunning { server }.render(),
+        StartBegin::NotFound => no_such(server),
+        StartBegin::NotManaged => not_managed(server),
+        StartBegin::UnknownGame(game) => prompts::ColdStartUnknownGame {
             server,
             game: &game,
         }
         .render(),
-        Err(err) => {
-            error!(error = ?err, %server, "agent: cold start failed");
-            cluster_error()
-        }
     }
 }
 
 async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
-    match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
-        Ok(ShutdownOutcome::Down) => prompts::ShutdownStopped { server }.render(),
-        Ok(ShutdownOutcome::Stranded) => prompts::ShutdownStranded { server }.render(),
-        Ok(ShutdownOutcome::NotFound) => no_such(server),
-        Ok(ShutdownOutcome::NotManaged) => not_managed(server),
+    let outcome = match shutdown_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await
+    {
+        Ok(outcome) => outcome,
         Err(err) => {
             error!(error = ?err, %server, "agent: shutdown failed");
-            cluster_error()
+            ctx.record_action(EventKind::ServerShutdown, server, mapping::FAILED)
+                .await;
+            return cluster_error();
         }
+    };
+    ctx.record_action(
+        EventKind::ServerShutdown,
+        server,
+        mapping::shutdown(&outcome),
+    )
+    .await;
+    match outcome {
+        ShutdownOutcome::Down => prompts::ShutdownStopped { server }.render(),
+        ShutdownOutcome::Stranded => prompts::ShutdownStranded { server }.render(),
+        ShutdownOutcome::NotFound => no_such(server),
+        ShutdownOutcome::NotManaged => not_managed(server),
     }
 }
 
@@ -1096,11 +1257,19 @@ async fn finish_destroy(
 async fn apply_destroy(ctx: &ToolCtx<'_>, server: &str, prompt: &mut serenity::Message) -> String {
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(outcome) => {
+            ctx.record_action(
+                EventKind::ServerDestroyed,
+                server,
+                mapping::destroy(&outcome),
+            )
+            .await;
             edit_prompt(ctx, prompt, destroy_result_embed(&outcome, server)).await;
             format_destroy(server, &outcome)
         }
         Err(err) => {
             error!(error = ?err, %server, "agent: destroy failed");
+            ctx.record_action(EventKind::ServerDestroyed, server, mapping::FAILED)
+                .await;
             let message = cluster_error();
             edit_prompt(ctx, prompt, error_embed(&message)).await;
             message
@@ -1441,11 +1610,7 @@ async fn exec_backup(ctx: &ToolCtx<'_>, server: &str) -> String {
         return backups_not_configured();
     };
     match service
-        .backup_instance(
-            &backup_ctx(ctx.data),
-            server,
-            &ctx.author_id.get().to_string(),
-        )
+        .backup_instance(&backup_ctx(ctx.data), server, &ctx.attribution())
         .await
     {
         Ok(outcome) => {
@@ -1496,11 +1661,7 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
         Confirm::Declined(text) => text,
         Confirm::Confirmed(mut prompt) => {
             match service
-                .archive_instance(
-                    &backup_ctx(ctx.data),
-                    server,
-                    &ctx.author_id.get().to_string(),
-                )
+                .archive_instance(&backup_ctx(ctx.data), server, &ctx.attribution())
                 .await
             {
                 Ok(outcome) => {
@@ -1564,7 +1725,7 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
         Confirm::Declined(text) => text,
         Confirm::Confirmed(mut prompt) => {
             match service
-                .restore_backup(&backup_ctx(ctx.data), server, &key)
+                .restore_backup(&backup_ctx(ctx.data), server, &key, &ctx.attribution())
                 .await
             {
                 Ok(outcome) => {
@@ -1609,7 +1770,7 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
         }
     };
     match service
-        .recover_archive(&backup_ctx(ctx.data), &guild, name)
+        .recover_archive(&backup_ctx(ctx.data), &guild, name, &ctx.attribution())
         .await
     {
         Ok(outcome) => {

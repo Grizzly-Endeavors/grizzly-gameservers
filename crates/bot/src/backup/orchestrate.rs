@@ -25,8 +25,10 @@ use crate::agones::{
     instance_runtime_state, list_backup_targets, provision_paused_instance, resolve_managed_pod,
     supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
 };
+use crate::agones::{InstanceOwner, owner_of};
 use crate::config::{DbConfig, S3Config};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::events::{Attribution, EventKind, ProductEvent, mapping};
 
 /// `created_by` recorded for a safety backup the restore path takes before it
 /// overwrites a world, so an overwrite is always undoable.
@@ -63,6 +65,7 @@ impl BackupService {
         db_config: Option<&DbConfig>,
         retention: usize,
         interval: Duration,
+        events: std::sync::Arc<crate::events::EventLog>,
     ) -> Result<Self> {
         // No global timeout: a multi-gigabyte world can stream for minutes. The
         // per-op work is bounded by the supervisor and S3 responding, not a clock.
@@ -77,7 +80,16 @@ impl BackupService {
             stream_http,
             retention,
             interval,
+            events,
         })
+    }
+
+    /// Record a backup-flow event. Guild and game are filled from the instance's
+    /// labels when the flow didn't already have a target in hand.
+    async fn record(&self, ctx: &BackupCtx<'_>, event: ProductEvent) {
+        self.events
+            .record_lifecycle(ctx.client, ctx.namespace, event)
+            .await;
     }
 
     /// How often the scheduled backup cycle should run.
@@ -96,10 +108,14 @@ impl BackupService {
                 return;
             }
         };
+        // An empty pass still gets a row: a cycle that recorded nothing and a
+        // cycle that never ran look identical otherwise.
+        let servers = targets.len();
         if targets.is_empty() {
+            self.record_cycle(servers, 0, 0).await;
             return;
         }
-        info!(servers = targets.len(), "starting scheduled backup cycle");
+        info!(servers, "starting scheduled backup cycle");
         let (mut backed_up, mut failed) = (0_usize, 0_usize);
         for target in targets {
             match self.snapshot_target(ctx, &target, CREATED_BY_AUTO).await {
@@ -119,6 +135,22 @@ impl BackupService {
             }
         }
         info!(backed_up, failed, "scheduled backup cycle complete");
+        self.record_cycle(servers, backed_up, failed).await;
+    }
+
+    /// Record one completed pass of the scheduled cycle. Not per-server: each
+    /// snapshot already emits its own `backup_taken`.
+    async fn record_cycle(&self, servers: usize, succeeded: usize, failed: usize) {
+        self.events
+            .record(
+                ProductEvent::new(
+                    EventKind::BackupCycle,
+                    &Attribution::system(),
+                    mapping::COMPLETED,
+                )
+                .details(mapping::cycle_details(servers, succeeded, failed)),
+            )
+            .await;
     }
 
     /// Take one on-demand backup of a live server.
@@ -131,19 +163,59 @@ impl BackupService {
         &self,
         ctx: &BackupCtx<'_>,
         instance: &str,
-        created_by: &str,
+        attribution: &Attribution,
     ) -> Result<BackupOutcome> {
         let Some(target) = self.find_target(ctx, instance).await? else {
-            return Ok(
-                match instance_runtime_state(ctx.client, ctx.namespace, instance).await? {
-                    RuntimeState::Absent => BackupOutcome::NotFound,
-                    RuntimeState::Down | RuntimeState::PodUp | RuntimeState::Terminating => {
-                        BackupOutcome::NotRunning
-                    }
-                },
-            );
+            let outcome = match instance_runtime_state(ctx.client, ctx.namespace, instance).await? {
+                RuntimeState::Absent => BackupOutcome::NotFound,
+                RuntimeState::Down | RuntimeState::PodUp | RuntimeState::Terminating => {
+                    BackupOutcome::NotRunning
+                }
+            };
+            self.record(
+                ctx,
+                ProductEvent::new(
+                    EventKind::BackupTaken,
+                    attribution,
+                    mapping::backup(&outcome),
+                )
+                .instance(InstanceName::new(instance)),
+            )
+            .await;
+            return Ok(outcome);
         };
-        self.snapshot_target(ctx, &target, created_by).await
+        let outcome = self
+            .snapshot_target(ctx, &target, &attribution.actor.label())
+            .await?;
+        self.record(
+            ctx,
+            Self::snapshot_event(EventKind::BackupTaken, attribution, &target, &outcome),
+        )
+        .await;
+        Ok(outcome)
+    }
+
+    /// Build a snapshot event from a target the flow already resolved, so the
+    /// guild and game come from the labels it read rather than a second lookup.
+    fn snapshot_event(
+        kind: EventKind,
+        attribution: &Attribution,
+        target: &BackupTarget,
+        outcome: &BackupOutcome,
+    ) -> ProductEvent {
+        let event = ProductEvent::new(kind, attribution, mapping::backup(outcome))
+            .instance(target.instance.clone())
+            .guild(Some(target.guild.clone()))
+            .game(Some(target.game.clone()));
+        match outcome {
+            BackupOutcome::BackedUp { size_bytes } => {
+                event.details(mapping::size_details(*size_bytes))
+            }
+            BackupOutcome::NotFound
+            | BackupOutcome::NotManaged
+            | BackupOutcome::NotRunning
+            | BackupOutcome::Unreachable(_) => event,
+        }
     }
 
     /// List a server's backups, newest first.
@@ -195,6 +267,48 @@ impl BackupService {
     ///
     /// Returns an error only on an unexpected cluster/S3/DB fault.
     pub(crate) async fn archive_instance(
+        &self,
+        ctx: &BackupCtx<'_>,
+        instance: &str,
+        attribution: &Attribution,
+    ) -> Result<ArchiveOutcome> {
+        // Resolve the tenant *first*: a successful archive releases the Service
+        // the guild and game labels live on, so afterwards there is nothing left
+        // to read them off.
+        let owner = owner_before(ctx, instance).await;
+        let archived = self
+            .run_archive(ctx, instance, &attribution.actor.label())
+            .await;
+        let event = ProductEvent::new(
+            EventKind::ServerArchived,
+            attribution,
+            archived
+                .as_ref()
+                .map_or(mapping::FAILED, |outcome| mapping::archive(outcome)),
+        )
+        .instance(InstanceName::new(instance))
+        .guild(owner.guild)
+        .game(owner.game);
+        let event = match archived.as_ref() {
+            Ok(
+                ArchiveOutcome::Archived { size_bytes, .. }
+                | ArchiveOutcome::ArchivedNotReleased { size_bytes, .. },
+            ) => event.details(mapping::size_details(*size_bytes)),
+            Ok(
+                ArchiveOutcome::NotFound
+                | ArchiveOutcome::NotManaged
+                | ArchiveOutcome::Unavailable
+                | ArchiveOutcome::Failed(_),
+            )
+            | Err(_) => event,
+        };
+        self.record(ctx, event).await;
+        archived
+    }
+
+    /// The archive flow itself. Split from [`Self::archive_instance`] so its many
+    /// early returns are all covered by one emission point.
+    async fn run_archive(
         &self,
         ctx: &BackupCtx<'_>,
         instance: &str,
@@ -325,6 +439,38 @@ impl BackupService {
         ctx: &BackupCtx<'_>,
         instance: &str,
         tarball_key: &str,
+        attribution: &Attribution,
+    ) -> Result<RestoreOutcome> {
+        let restored = self.run_restore(ctx, instance, tarball_key).await;
+        let event = ProductEvent::new(
+            EventKind::ServerRestored,
+            attribution,
+            restored
+                .as_ref()
+                .map_or(mapping::FAILED, |outcome| mapping::restore(outcome)),
+        )
+        .instance(InstanceName::new(instance));
+        let event = match restored.as_ref() {
+            Ok(RestoreOutcome::Restored {
+                boot,
+                safety_backup,
+            }) => event.details(mapping::restore_details(*boot, *safety_backup)),
+            Ok(
+                RestoreOutcome::NotFound | RestoreOutcome::NotManaged | RestoreOutcome::Failed(_),
+            )
+            | Err(_) => event,
+        };
+        self.record(ctx, event).await;
+        restored
+    }
+
+    /// The restore flow itself. Split from [`Self::restore_backup`] so its early
+    /// returns are all covered by one emission point.
+    async fn run_restore(
+        &self,
+        ctx: &BackupCtx<'_>,
+        instance: &str,
+        tarball_key: &str,
     ) -> Result<RestoreOutcome> {
         match self.ensure_pod_reachable(ctx, instance).await? {
             EnsurePod::Ready => {}
@@ -414,6 +560,44 @@ impl BackupService {
     ///
     /// Returns an error only on an unexpected cluster/S3/DB fault.
     pub(crate) async fn recover_archive(
+        &self,
+        ctx: &BackupCtx<'_>,
+        guild: &str,
+        name: &str,
+        attribution: &Attribution,
+    ) -> Result<RecoverOutcome> {
+        let recovered = self.run_recover(ctx, guild, name).await;
+        let event = ProductEvent::new(
+            EventKind::ServerRecovered,
+            attribution,
+            recovered
+                .as_ref()
+                .map_or(mapping::FAILED, |outcome| mapping::recover(outcome)),
+        )
+        .instance(InstanceName::new(name));
+        let event = match recovered.as_ref() {
+            Ok(RecoverOutcome::Recovered { address, boot }) => {
+                event.details(mapping::recover_details(address, *boot))
+            }
+            Ok(
+                RecoverOutcome::NoSuchArchive
+                | RecoverOutcome::NameInUse
+                | RecoverOutcome::Unavailable
+                | RecoverOutcome::UnknownGame(_)
+                | RecoverOutcome::PortsExhausted
+                | RecoverOutcome::Failed(_),
+            )
+            | Err(_) => event,
+        };
+        // Recorded after the flow, not before: the server the guild and game
+        // labels live on is what a recover creates.
+        self.record(ctx, event).await;
+        recovered
+    }
+
+    /// The recover flow itself. Split from [`Self::recover_archive`] so its many
+    /// early returns are all covered by one emission point.
+    async fn run_recover(
         &self,
         ctx: &BackupCtx<'_>,
         guild: &str,
@@ -822,6 +1006,20 @@ enum StartResult {
 /// Stop a server's process so its `/data` is flushed and consistent before a
 /// snapshot. Returns `None` when the stop landed (paused or already stopped), or
 /// the blocking reason otherwise.
+/// The guild and game owning `instance`, read before a flow that may remove the
+/// object those labels live on. Best-effort by design: a failed lookup costs the
+/// event its tenant columns, never the action its result.
+async fn owner_before(ctx: &BackupCtx<'_>, instance: &str) -> InstanceOwner {
+    match owner_of(ctx.client, ctx.namespace, instance).await {
+        Ok(Some(owner)) => owner,
+        Ok(None) => InstanceOwner::default(),
+        Err(err) => {
+            warn!(error = ?err, instance, "could not resolve the owner for a backup event");
+            InstanceOwner::default()
+        }
+    }
+}
+
 async fn stop_for_snapshot(ctx: &BackupCtx<'_>, instance: &str) -> Result<Option<StopBlock>> {
     Ok(
         match supervisor_stop(

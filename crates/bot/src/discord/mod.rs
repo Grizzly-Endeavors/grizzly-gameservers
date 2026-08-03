@@ -128,6 +128,10 @@ pub(crate) struct Data {
     /// Exports every model-driven turn to Langfuse. Disabled (and silently
     /// discarding) when the key pair isn't configured.
     pub(crate) telemetry: Arc<crate::telemetry::Telemetry>,
+    /// The permanent product record: who created, started, and destroyed what,
+    /// from which surface. Backed by Postgres; a disabled log accepts and
+    /// discards, so emission sites never branch on it.
+    pub(crate) events: Arc<crate::events::EventLog>,
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

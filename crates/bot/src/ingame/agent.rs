@@ -25,6 +25,8 @@ use crate::agones::{
     ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
 };
 use crate::discord::AccessLevel;
+use crate::domain::GuildId;
+use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
@@ -85,18 +87,17 @@ pub(crate) async fn handle_ingame_question(
 
     // The in-game surface has no Discord identity and no tier of its own: its
     // tool set is a fixed read-only subset, so that's what the turn runs at.
-    let recorder = TurnRecorder::new(
-        TurnIdentity {
-            origin: TurnOrigin::Ingame,
-            deployment: deps.environment,
-            guild: guild.parse::<u64>().ok(),
-            channel: None,
-            actor: TurnActor::Player(player.to_owned()),
-            access: AccessLevel::ReadOnly,
-            session: Some(session.id.clone()),
-        },
-        Arc::clone(&deps.telemetry),
-    );
+    let identity = TurnIdentity {
+        origin: TurnOrigin::Ingame,
+        deployment: deps.environment,
+        guild: guild.parse::<u64>().ok(),
+        channel: None,
+        actor: TurnActor::Player(player.to_owned()),
+        access: AccessLevel::ReadOnly,
+        session: Some(session.id.clone()),
+    };
+    let attribution = Attribution::new(Actor::from_turn(&identity.actor), Surface::Agent);
+    let recorder = TurnRecorder::new(identity, Arc::clone(&deps.telemetry));
 
     let http = &deps.http;
     let scope_ref = &scope;
@@ -128,18 +129,18 @@ pub(crate) async fn handle_ingame_question(
         }) => {
             if escalated {
                 warn!(server, player, "in-game session hit the round budget");
-                deps.notifier
-                    .notify(&Escalation::RoundBudgetExhausted {
-                        context: EscalationContext::InGame {
-                            player: player.to_owned(),
-                            server: server.to_owned(),
-                            guild: guild.clone(),
-                        },
-                        request: question.to_owned(),
-                        attempts: summarize_attempts(&messages),
-                        rounds: DEFAULT_MAX_ROUNDS,
-                    })
-                    .await;
+                escalate(
+                    deps,
+                    &attribution,
+                    &messages,
+                    Asked {
+                        server,
+                        player,
+                        question,
+                        guild: &guild,
+                    },
+                )
+                .await;
             }
             deps.sessions
                 .commit(key, session.id, messages, Instant::now());
@@ -160,6 +161,43 @@ pub(crate) async fn handle_ingame_question(
         &format!("Gary: {}", truncate(&reply, MAX_REPLY_CHARS)),
     )
     .await;
+}
+
+/// Who asked what, and where — the locators an in-game escalation carries.
+struct Asked<'a> {
+    server: &'a str,
+    player: &'a str,
+    question: &'a str,
+    guild: &'a str,
+}
+
+/// Record an in-game give-up and hand it to the operators. Recorded beside the
+/// DM rather than inside it, so an escalation lands in the product record whether
+/// or not there is an operator configured to hear about it.
+async fn escalate(
+    deps: &IngameDeps,
+    attribution: &Attribution,
+    messages: &[ChatMessage],
+    asked: Asked<'_>,
+) {
+    let escalation = Escalation::RoundBudgetExhausted {
+        context: EscalationContext::InGame {
+            player: asked.player.to_owned(),
+            server: asked.server.to_owned(),
+            guild: asked.guild.to_owned(),
+        },
+        request: asked.question.to_owned(),
+        attempts: summarize_attempts(messages),
+        rounds: DEFAULT_MAX_ROUNDS,
+    };
+    deps.events
+        .record(mapping::escalation_event(
+            &escalation,
+            attribution,
+            Some(GuildId::new(asked.guild)),
+        ))
+        .await;
+    deps.notifier.notify(&escalation).await;
 }
 
 /// Wrap the raw player text so the model can't mistake it for its own

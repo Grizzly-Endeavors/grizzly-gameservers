@@ -23,6 +23,8 @@ use crate::agones::{
     wait_for_instance_ready,
 };
 use crate::backup::{ArtifactSummary, BackupService};
+use crate::domain::{GuildId, InstanceName};
+use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
 use crate::memory::{ForgetOutcome, Memory};
 use crate::store::{ConfigChange, HomeToggle};
 
@@ -220,7 +222,7 @@ async fn finish_create(
         )
         .await?;
 
-    match provision_instance(
+    let provisioned = provision_instance(
         &data.kube_client,
         &data.namespace,
         &data.domain,
@@ -229,12 +231,22 @@ async fn finish_create(
         &server,
         &guild_id_string(ctx),
     )
-    .await
-    {
+    .await;
+
+    record_provision(ctx, &server, &provisioned).await;
+
+    match provisioned {
         Ok(ProvisionOutcome::Provisioned { address }) => {
-            await_ready(ctx, reply, &server, address, |address, ready| {
-                create_result_embed(&CreateOutcome::Created { address, ready }, &server)
-            })
+            await_ready(
+                ctx,
+                reply,
+                &server,
+                address,
+                EventKind::ServerCreated,
+                |address, ready| {
+                    create_result_embed(&CreateOutcome::Created { address, ready }, &server)
+                },
+            )
             .await?;
         }
         Ok(ProvisionOutcome::AlreadyExists) => {
@@ -268,6 +280,29 @@ async fn finish_create(
     Ok(())
 }
 
+/// Record a create that never got as far as booting. A successful provision is
+/// deliberately silent here: its terminal outcome is the readiness resolution,
+/// which [`await_ready`] records once it knows how long the boot took.
+async fn record_provision(
+    ctx: Context<'_>,
+    server: &str,
+    provisioned: &Result<ProvisionOutcome, anyhow::Error>,
+) {
+    match provisioned {
+        Ok(ProvisionOutcome::Provisioned { .. }) => {}
+        Ok(rejected @ (ProvisionOutcome::AlreadyExists | ProvisionOutcome::PortsExhausted)) => {
+            record_action(
+                ctx,
+                EventKind::ServerCreated,
+                server,
+                mapping::provision(rejected),
+            )
+            .await;
+        }
+        Err(_) => record_action(ctx, EventKind::ServerCreated, server, mapping::FAILED).await,
+    }
+}
+
 /// Show the connection address immediately, then poll until the server reports
 /// Ready and write the final embed. Shared by `/create` and `/start`, whose
 /// readiness wait can run for minutes — `finalize` builds the done-embed from the
@@ -277,6 +312,7 @@ async fn await_ready(
     reply: &poise::ReplyHandle<'_>,
     server: &str,
     address: String,
+    kind: EventKind,
     finalize: impl FnOnce(String, bool) -> serenity::CreateEmbed,
 ) -> Result<(), Error> {
     let data = ctx.data();
@@ -292,9 +328,22 @@ async fn await_ready(
         )
         .await?;
 
+    // This is where a create or cold start becomes terminal, so it is also where
+    // it is recorded — and the only place that can time the boot.
+    let started = std::time::Instant::now();
+    let booted = address.clone();
     match wait_for_instance_ready(&data.kube_client, &data.namespace, server).await {
         Ok(ready) => {
             reply.edit(ctx, cleared(finalize(address, ready))).await?;
+            let elapsed = ready.then(|| started.elapsed());
+            record_boot(
+                ctx,
+                kind,
+                server,
+                mapping::readiness(ready),
+                Some(mapping::boot_details(Some(&booted), elapsed)),
+            )
+            .await;
         }
         Err(err) => {
             error!(error = ?err, %server, "failed to wait for readiness");
@@ -307,6 +356,15 @@ async fn await_ready(
                     )),
                 )
                 .await?;
+            // The objects exist; only the answer to "is it up yet" is missing.
+            record_boot(
+                ctx,
+                kind,
+                server,
+                mapping::readiness(false),
+                Some(mapping::boot_details(Some(&booted), None)),
+            )
+            .await;
         }
     }
     Ok(())
@@ -340,6 +398,13 @@ pub(crate) async fn stop(
             reply
                 .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
                 .await?;
+            record_action(
+                ctx,
+                EventKind::ServerStopped,
+                &server,
+                mapping::supervisor(&outcome),
+            )
+            .await;
         }
         Err(err) => {
             error!(error = ?err, server = %server, "failed to pause game server");
@@ -351,6 +416,7 @@ pub(crate) async fn stop(
                     )),
                 )
                 .await?;
+            record_action(ctx, EventKind::ServerStopped, &server, mapping::FAILED).await;
         }
     }
     Ok(())
@@ -376,6 +442,13 @@ pub(crate) async fn shutdown(
             reply
                 .edit(ctx, cleared(shutdown_result_embed(&outcome, &server)))
                 .await?;
+            record_action(
+                ctx,
+                EventKind::ServerShutdown,
+                &server,
+                mapping::shutdown(&outcome),
+            )
+            .await;
         }
         Err(err) => {
             error!(error = ?err, server = %server, "failed to shut down game server");
@@ -387,6 +460,7 @@ pub(crate) async fn shutdown(
                     )),
                 )
                 .await?;
+            record_action(ctx, EventKind::ServerShutdown, &server, mapping::FAILED).await;
         }
     }
     Ok(())
@@ -420,6 +494,13 @@ pub(crate) async fn restart(
             reply
                 .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
                 .await?;
+            record_action(
+                ctx,
+                EventKind::ServerRestarted,
+                &server,
+                mapping::supervisor(&outcome),
+            )
+            .await;
         }
         Err(err) => {
             error!(error = ?err, server = %server, "failed to restart game server");
@@ -431,6 +512,7 @@ pub(crate) async fn restart(
                     )),
                 )
                 .await?;
+            record_action(ctx, EventKind::ServerRestarted, &server, mapping::FAILED).await;
         }
     }
     Ok(())
@@ -468,6 +550,13 @@ pub(crate) async fn start(
                     reply
                         .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
                         .await?;
+                    record_action(
+                        ctx,
+                        EventKind::ServerStarted,
+                        &server,
+                        mapping::supervisor(&outcome),
+                    )
+                    .await;
                 }
                 Err(err) => {
                     error!(error = ?err, server = %server, "failed to resume game server");
@@ -479,6 +568,7 @@ pub(crate) async fn start(
                             )),
                         )
                         .await?;
+                    record_action(ctx, EventKind::ServerStarted, &server, mapping::FAILED).await;
                 }
             }
         }
@@ -545,22 +635,32 @@ async fn start_cold(
                     )),
                 )
                 .await?;
+            record_action(ctx, EventKind::ServerStarted, server, mapping::FAILED).await;
             return Ok(());
         }
     };
 
     if let StartBegin::Starting { address } = begin {
-        await_ready(ctx, reply, server, address, |address, ready| {
-            start_result_embed(&StartOutcome::Started { address, ready }, server)
-        })
+        // Terminal outcome and timing come from the readiness wait, exactly as
+        // they do for a create — a cold start is the same shape.
+        await_ready(
+            ctx,
+            reply,
+            server,
+            address,
+            EventKind::ServerStarted,
+            |address, ready| start_result_embed(&StartOutcome::Started { address, ready }, server),
+        )
         .await?;
     } else {
+        let outcome = mapping::start_begin(&begin);
         reply
             .edit(
                 ctx,
                 cleared(start_result_embed(&begin_to_outcome(begin), server)),
             )
             .await?;
+        record_action(ctx, EventKind::ServerStarted, server, outcome).await;
     }
     Ok(())
 }
@@ -612,9 +712,17 @@ pub(crate) async fn destroy(
             reply
                 .edit(ctx, cleared(destroy_result_embed(&outcome, &server)))
                 .await?;
+            record_action(
+                ctx,
+                EventKind::ServerDestroyed,
+                &server,
+                mapping::destroy(&outcome),
+            )
+            .await;
         }
         Err(err) => {
             error!(error = ?err, server = %server, "failed to destroy game server");
+            record_action(ctx, EventKind::ServerDestroyed, &server, mapping::FAILED).await;
             reply
                 .edit(
                     ctx,
@@ -1179,7 +1287,7 @@ pub(crate) async fn backup(
         )))
         .await?;
     match service
-        .backup_instance(&backup_ctx(data), &server, &actor_id(ctx))
+        .backup_instance(&backup_ctx(data), &server, &attribution(ctx))
         .await
     {
         Ok(outcome) => {
@@ -1324,7 +1432,7 @@ pub(crate) async fn archive(
         )
         .await?;
     match service
-        .archive_instance(&backup_ctx(data), &server, &actor_id(ctx))
+        .archive_instance(&backup_ctx(data), &server, &attribution(ctx))
         .await
     {
         Ok(outcome) => {
@@ -1508,7 +1616,7 @@ async fn finish_restore(
         )
         .await?;
     match service
-        .restore_backup(&backup_ctx(ctx.data()), server, &key)
+        .restore_backup(&backup_ctx(ctx.data()), server, &key, &attribution(ctx))
         .await
     {
         Ok(outcome) => {
@@ -1661,7 +1769,7 @@ async fn finish_recover(
         )
         .await?;
     match service
-        .recover_archive(&backup_ctx(ctx.data()), &guild, &name)
+        .recover_archive(&backup_ctx(ctx.data()), &guild, &name, &attribution(ctx))
         .await
     {
         Ok(outcome) => {
@@ -1687,9 +1795,41 @@ async fn finish_recover(
     Ok(())
 }
 
-/// The invoking user's id, recorded as `created_by` on a manual backup/archive.
-fn actor_id(ctx: Context<'_>) -> String {
-    ctx.author().id.get().to_string()
+/// Who ran this command, for the product event log. Every slash command is the
+/// `command` surface by construction — that is what makes a friend's own action
+/// separable from one Gary took on their behalf.
+fn attribution(ctx: Context<'_>) -> Attribution {
+    Attribution::new(Actor::Discord(ctx.author().id.get()), Surface::Command)
+}
+
+/// Record a lifecycle action against the server it acted on. Emitted after the
+/// friend already has their answer, so the record is never in their way.
+async fn record_action(ctx: Context<'_>, kind: EventKind, server: &str, outcome: &'static str) {
+    record_boot(ctx, kind, server, outcome, None).await;
+}
+
+/// Record a lifecycle action that carries a boot payload (address, time to
+/// ready) — the create and cold-start paths.
+async fn record_boot(
+    ctx: Context<'_>,
+    kind: EventKind,
+    server: &str,
+    outcome: &'static str,
+    details: Option<serde_json::Value>,
+) {
+    let data = ctx.data();
+    let mut event = ProductEvent::new(kind, &attribution(ctx), outcome)
+        .instance(InstanceName::new(server))
+        .guild(
+            ctx.guild_id()
+                .map(|guild| GuildId::new(guild.get().to_string())),
+        );
+    if let Some(details) = details {
+        event = event.details(details);
+    }
+    data.events
+        .record_lifecycle(&data.kube_client, &data.namespace, event)
+        .await;
 }
 
 /// Danger/Cancel button row for a destructive confirmation.

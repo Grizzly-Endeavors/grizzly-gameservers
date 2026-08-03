@@ -36,6 +36,8 @@ use super::provision::{
     DeleteWait, DeletionState, StartBegin, begin_start, delete_and_confirm, deletion_state,
     gameserver_api,
 };
+use crate::domain::InstanceName;
+use crate::events::{Attribution, EventKind, ProductEvent, mapping};
 
 /// Cluster and catalog handles one reconcile pass needs.
 pub(crate) struct StrandedCtx<'a> {
@@ -43,6 +45,9 @@ pub(crate) struct StrandedCtx<'a> {
     pub(crate) namespace: &'a str,
     pub(crate) domain: &'a str,
     pub(crate) catalog: &'a GameCatalog,
+    /// Records a recycle as a system-driven start. Strand-and-recycle frequency
+    /// is the only crash signal nobody is around to report.
+    pub(crate) events: &'a crate::events::EventLog,
 }
 
 /// What clearing a stranded instance should leave behind.
@@ -174,7 +179,20 @@ async fn recover_instance(ctx: &StrandedCtx<'_>, instance: &str, pod: &str) -> R
 /// node that is actually answering. Its Service and PVC survived, so the world
 /// and the leased port come back with it.
 async fn recycle_instance(ctx: &StrandedCtx<'_>, instance: &str) -> Result<()> {
-    match begin_start(ctx.client, ctx.namespace, ctx.domain, ctx.catalog, instance).await? {
+    let outcome = begin_start(ctx.client, ctx.namespace, ctx.domain, ctx.catalog, instance).await?;
+    ctx.events
+        .record_lifecycle(
+            ctx.client,
+            ctx.namespace,
+            ProductEvent::new(
+                EventKind::ServerStarted,
+                &Attribution::system(),
+                mapping::start_begin(&outcome),
+            )
+            .instance(InstanceName::new(instance)),
+        )
+        .await;
+    match outcome {
         StartBegin::Starting { .. } | StartBegin::AlreadyRunning => {
             info!(instance, "stranded server recycled onto a healthy node");
         }

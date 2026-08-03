@@ -11,6 +11,7 @@ mod config;
 mod defer;
 mod discord;
 mod domain;
+mod events;
 mod http;
 mod ingame;
 mod kv;
@@ -94,6 +95,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
     let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
     let memory = std::sync::Arc::new(GaryMemory::connect(config.db.as_ref()).await);
+    // The product plane. Every layer that executes a lifecycle, backup, or
+    // escalation action writes here, so it is built before the cycles and the
+    // command `Data` that carry it.
+    let events = std::sync::Arc::new(events::EventLog::connect(config.db.as_ref()).await);
     // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
     // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
     // schedule, the same shape as db/s3/ollama.
@@ -116,6 +121,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             control_port,
             catalog: std::sync::Arc::clone(&catalog),
             provision_lock: std::sync::Arc::clone(&provision_lock),
+            events: std::sync::Arc::clone(&events),
         },
         &tasks,
         shutdown.clone(),
@@ -158,6 +164,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         gateway: discord::GatewayHandle::new(),
         environment: config.environment,
         telemetry: std::sync::Arc::clone(&telemetry),
+        events,
     };
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
@@ -287,9 +294,34 @@ async fn on_gateway_event(
             guild = guild.id.get(),
             "registered slash commands for guild"
         );
+        // Only a guild the store has never seen counts as an acquisition; the
+        // reconnect replays land on an existing row and say nothing.
+        if data.events.claim_guild(guild.id.get()).await {
+            info!(guild = guild.id.get(), "joined a new guild");
+            data.events
+                .record(
+                    events::ProductEvent::new(
+                        events::EventKind::GuildJoined,
+                        &events::Attribution::system(),
+                        events::mapping::JOINED,
+                    )
+                    .guild(Some(domain::GuildId::new(guild.id.get().to_string()))),
+                )
+                .await;
+        }
     }
-    if let serenity::FullEvent::Ready { .. } = event {
-        // Publish first: it's a single store, and it's what unblocks the HTTP
+    if let serenity::FullEvent::Ready { data_about_bot, .. } = event {
+        // Reconcile the known-guilds set before anything else can interpret a
+        // GuildCreate as a join: the guilds we're already in are known, not newly
+        // acquired, so the acquisition timeline starts at deployment rather than
+        // backdating every guild the bot was in.
+        let guilds: Vec<u64> = data_about_bot
+            .guilds
+            .iter()
+            .map(|guild| guild.id.get())
+            .collect();
+        data.events.seed_known_guilds(&guilds).await;
+        // Publish next: it's a single store, and it's what unblocks the HTTP
         // routes that can't act until a Context exists. Reconciling can take a
         // while (Valkey round-trips plus a watcher spawn per pending task).
         data.gateway.publish(ctx);
@@ -363,6 +395,7 @@ struct CycleHandles {
     control_port: u16,
     catalog: std::sync::Arc<agones::GameCatalog>,
     provision_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    events: std::sync::Arc<events::EventLog>,
 }
 
 /// Cadences and budgets for the scheduled background cycles.
@@ -392,6 +425,7 @@ struct ReconcileHandles {
     namespace: String,
     domain: String,
     catalog: std::sync::Arc<agones::GameCatalog>,
+    events: std::sync::Arc<events::EventLog>,
     dwell: std::time::Duration,
 }
 
@@ -402,6 +436,7 @@ impl ReconcileHandles {
             namespace: handles.namespace.clone(),
             domain: handles.domain.clone(),
             catalog: std::sync::Arc::clone(&handles.catalog),
+            events: std::sync::Arc::clone(&handles.events),
             dwell,
         }
     }
@@ -464,6 +499,7 @@ fn spawn_stranded_cycle(
                 namespace: &handles.namespace,
                 domain: &handles.domain,
                 catalog: &handles.catalog,
+                events: &handles.events,
             };
             agones::run_stranded_cycle(&ctx, handles.dwell).await;
         }
@@ -489,7 +525,9 @@ async fn setup_backups(
         warn!("GAMESERVERS_S3_ACCESS_KEY/SECRET_KEY not set; backups/archive/restore disabled");
         return None;
     };
-    let service = match backup::BackupService::new(s3_config, db, retention, interval).await {
+    let events = std::sync::Arc::clone(&handles.events);
+    let service = match backup::BackupService::new(s3_config, db, retention, interval, events).await
+    {
         Ok(service) => std::sync::Arc::new(service),
         Err(err) => {
             error!(error = ?err, "failed to initialize backups; archive/restore disabled");
