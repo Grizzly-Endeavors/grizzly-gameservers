@@ -21,6 +21,8 @@ use crate::discord::gary::{
     ConfirmMode, GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
 };
 use crate::discord::{AccessLevel, Data};
+use crate::domain::GuildId;
+use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 
@@ -254,18 +256,26 @@ async fn run_batch(
     }) = &outcome
     {
         warn!(server = %server, "deferred batch hit the round budget; escalating to operators");
-        data.notifier
-            .notify(&Escalation::RoundBudgetExhausted {
-                context: EscalationContext::Deferred {
-                    server: server.to_owned(),
-                    condition: condition.as_str().to_owned(),
-                    guild: guild_id,
-                },
-                request: compose_batch_prompt(server, trigger_note, &tasks),
-                attempts: summarize_attempts(&messages),
-                rounds: messages.len(),
-            })
+        let escalation = Escalation::RoundBudgetExhausted {
+            context: EscalationContext::Deferred {
+                server: server.to_owned(),
+                condition: condition.as_str().to_owned(),
+                guild: guild_id,
+            },
+            request: compose_batch_prompt(server, trigger_note, &tasks),
+            attempts: summarize_attempts(&messages),
+            rounds: messages.len(),
+        };
+        // Attributed to whoever queued the batch, on the `deferred` surface —
+        // nobody was waiting on this turn when it gave up.
+        data.events
+            .record(mapping::escalation_event(
+                &escalation,
+                &Attribution::new(Actor::Discord(author_id), Surface::Deferred),
+                guild_id.map(|id| GuildId::new(id.to_string())),
+            ))
             .await;
+        data.notifier.notify(&escalation).await;
     }
 }
 

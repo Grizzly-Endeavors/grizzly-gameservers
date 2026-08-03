@@ -45,6 +45,11 @@ pub(crate) struct BackupService {
     retention: usize,
     /// How often the scheduled cycle runs (used by the timer in `crate::run`).
     interval: Duration,
+    /// The product event log. Backups are the one subsystem whose orchestration
+    /// layer is already shared by every surface — slash commands, Gary's tools,
+    /// and the scheduled cycle all come through these methods — so this is where
+    /// their events are emitted rather than at each caller.
+    events: std::sync::Arc<crate::events::EventLog>,
 }
 
 /// The cluster/catalog handles a backup flow needs, bundled so the flow signatures

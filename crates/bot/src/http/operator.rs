@@ -36,6 +36,8 @@ use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
 use crate::discord::gary::{GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn};
 use crate::discord::{AccessLevel, Data};
+use crate::domain::GuildId;
+use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
 use crate::http::gated;
 
 /// Synthetic id for a harness-issued tool call. The real dispatcher only echoes
@@ -337,6 +339,21 @@ async fn run_gary(
         escalated,
         generations,
     } = outcome;
+    if escalated {
+        // The harness gains the event and nothing else — its caller already sees
+        // the escalated flag in the response, so there is still no notification.
+        data.events
+            .record(
+                ProductEvent::new(
+                    EventKind::Escalation,
+                    &Attribution::new(Actor::Discord(acting.author_id.get()), Surface::Operator),
+                    mapping::ROUND_BUDGET_EXHAUSTED,
+                )
+                .guild(acting.guild.map(|guild| GuildId::new(guild.to_string())))
+                .details(mapping::escalation_details(None, None)),
+            )
+            .await;
+    }
     let turn_slice = messages.get(mark..).unwrap_or_default();
     let tool_calls = tool_trace(turn_slice);
     let rounds = rounds(turn_slice);

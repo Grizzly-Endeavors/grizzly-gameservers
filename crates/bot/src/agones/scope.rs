@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::Service;
 use kube::{Api, Client};
 
-use super::labels::{GUILD_KEY, label_value};
+use super::labels::{GAME_KEY, GUILD_KEY, label_value};
+use crate::domain::{GameId, GuildId};
 
 /// Which servers an operation may see or touch — the tenant boundary.
 ///
@@ -89,6 +90,48 @@ pub(crate) async fn guild_of(
         return Ok(None);
     };
     Ok(label_value(service.metadata.labels.as_ref(), GUILD_KEY).map(str::to_owned))
+}
+
+/// Which guild owns an instance and which game it runs — the two labels that
+/// identify a server for attribution. Each is independently optional: a
+/// pre-scoping object carries no guild, and neither label is guaranteed on an
+/// object the shim didn't create.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InstanceOwner {
+    pub(crate) guild: Option<GuildId>,
+    pub(crate) game: Option<GameId>,
+}
+
+/// Read an instance's owning guild and game off its Service — the one object of
+/// the trio that survives both `/stop` and `/shutdown`, so the answer holds in
+/// every lifecycle state. `None` when there is no such Service.
+///
+/// This exists for the product event log, whose warm-action emission points know
+/// only an instance name. It is deliberately best-effort at the call site: an
+/// event with a missing game is worth more than a user action that failed
+/// because a label read did.
+///
+/// # Errors
+///
+/// Returns an error if the Service cannot be read from the Kubernetes API.
+pub(crate) async fn owner_of(
+    client: &Client,
+    namespace: &str,
+    instance: &str,
+) -> Result<Option<InstanceOwner>> {
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let Some(service) = services
+        .get_opt(instance)
+        .await
+        .with_context(|| format!("failed to read service {instance} for owner lookup"))?
+    else {
+        return Ok(None);
+    };
+    let labels = service.metadata.labels.as_ref();
+    Ok(Some(InstanceOwner {
+        guild: label_value(labels, GUILD_KEY).map(GuildId::new),
+        game: label_value(labels, GAME_KEY).map(GameId::new),
+    }))
 }
 
 /// Decide the verdict for an instance whose owning guild label is `guild`

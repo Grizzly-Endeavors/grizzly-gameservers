@@ -32,6 +32,8 @@ use crate::agent::{
     TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
+use crate::domain::GuildId;
+use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 
@@ -355,18 +357,27 @@ async fn notify_operators_escalated(
     messages: &[ChatMessage],
 ) {
     let asker = format!("{} (<@{}>)", message.author.name, message.author.id.get());
-    data.notifier
-        .notify(&Escalation::RoundBudgetExhausted {
-            context: EscalationContext::Discord {
-                asker,
-                jump_link: message.link(),
-                guild: message.guild_id.map(serenity::GuildId::get),
-            },
-            request: request.to_owned(),
-            attempts: summarize_attempts(messages),
-            rounds: DEFAULT_MAX_ROUNDS,
-        })
+    let guild = message.guild_id.map(serenity::GuildId::get);
+    let escalation = Escalation::RoundBudgetExhausted {
+        context: EscalationContext::Discord {
+            asker,
+            jump_link: message.link(),
+            guild,
+        },
+        request: request.to_owned(),
+        attempts: summarize_attempts(messages),
+        rounds: DEFAULT_MAX_ROUNDS,
+    };
+    // Recorded beside the DM, not inside it: an escalation happened whether or
+    // not there is an operator configured to hear about it.
+    data.events
+        .record(mapping::escalation_event(
+            &escalation,
+            &Attribution::new(Actor::Discord(message.author.id.get()), Surface::Agent),
+            guild.map(|guild| GuildId::new(guild.to_string())),
+        ))
         .await;
+    data.notifier.notify(&escalation).await;
 }
 
 /// Keep Discord's typing indicator lit for `channel_id` until the returned guard
