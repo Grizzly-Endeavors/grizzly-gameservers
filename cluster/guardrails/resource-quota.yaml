@@ -1,0 +1,26 @@
+# Namespace-wide ceiling behind the bot's per-guild caps (ADR-022): a generous
+# backstop that catches a bug in bot-side enforcement, not the policy itself —
+# the per-guild math lives in the bot, where a refusal can name its figures for
+# a non-technical friend. Sized for ~2 full guild allowances (24c/48Gi each)
+# plus the bot's own pod (it runs in this namespace, 2c/2Gi limits) and an
+# Agones SDK sidecar per game pod (200m/128Mi, declared via the Agones Helm
+# values — a quota on limits.* rejects any new pod whose containers leave them
+# undeclared, which is why those declarations must exist before this object).
+# A LimitRange stays rejected per ADR-021: it would impose values on the
+# sidecar; a quota only requires that declarations exist. Quotas gate only new
+# pod admission, so applying or resizing this never disturbs running servers.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: game-servers-guardrail
+  namespace: game-servers
+spec:
+  hard:
+    limits.cpu: "56"
+    limits.memory: 120Gi
+    requests.cpu: "28"
+    requests.memory: 64Gi
+    # The edge port band (100 ports) is the real instance ceiling; 16 PVCs at
+    # the largest catalog claim (25Gi) is 400Gi, inside the storage figure.
+    persistentvolumeclaims: "16"
+    requests.storage: 500Gi
