@@ -1,0 +1,38 @@
+# ADR-016 — Proactive watchdog: detection rides the sampler, response reuses the deferred-batch turn
+
+**Status:** Accepted (2026-08-03)
+
+## Context
+
+Gary was purely reactive: a server could crash-loop, wedge, or creep toward an OOM kill, and nothing happened until a friend noticed and pinged him. Yet the signals were already being collected and discarded — the occupancy/resource sampler visits every running server on a five-minute tick, reads the supervisor's `/status` (`ProcessPhase`, `restarts`, uptime) and metrics-server memory, writes rows, and reacts to none of it. An unreachable supervisor produced no row at all; Agones `Unhealthy` rendered as a bare string; ADR-010 explicitly notes the bot "only *learns* there is a problem when escalation flips the phase to `Crashed`". Meanwhile ADR-007's deferred batches had already proven the full unattended pipeline: background condition → synthesized prompt → manager-tier `run_gary_turn` → channel post → operator DM on escalation.
+
+Three sub-decisions needed making: where detection runs and how it reaches Discord, what a fired incident is allowed to do, and how the feature earns trust before it acts on live servers.
+
+## Decision
+
+**Detection is a pure state machine riding the existing sampler tick.** `run_occupancy_cycle` and `run_resource_cycle` now return the observations they already compute, and the sampler task feeds them to `watchdog::DetectorState::tick` — poll results in, incidents out, no new cluster reach, no second poll loop. Detection stays poll-based on purpose: the kube crate is compiled without the `runtime` feature and the bot's RBAC has no `watch` verb. Three signals fire in v1: **crash** (positive restart-counter deltas summing ≥ 2 across a 3-tick window, or `ProcessPhase::Crashed` immediately — the supervisor already applied its own 5-in-300s judgment), **wedged** (`/status` unreachable 3 consecutive ticks while the pod stays up and labelled running — previously invisible everywhere), and **memory** (whole-pod actual ≥ 90% of the declared limit for 3 consecutive ticks). Thresholds are code constants like the defer watcher's timings, revised on shadow-mode evidence rather than tuned by env var.
+
+**An mpsc channel bridges detection to a `Data`-holding responder.** The sampler is spawned before `Data` exists and deliberately owns no Discord reach, so the seam is a bounded channel: the sampler `try_send`s incidents (drop-with-warning on a full queue — cooldowns bound the loss), and a single sequential responder task consumes them with the full `Data` in hand. Sequential consumption is itself a guardrail: never two proactive turns in flight. The responder obtains a gateway Context by *waiting* on `GatewayHandle::subscribe()` (bounded at 5 minutes) rather than failing before `Ready`, and falls back to a raw-facts operator DM through the token-only notifier when Discord itself is down.
+
+**A fired incident becomes a manager-tier Gary turn shaped exactly like a deferred batch.** Fresh two-message transcript (`build_system_prompt(Manager, …)` plus a `WatchdogIncident`-framed user turn carrying the signal's numbers), `session: None`, `ConfirmMode::Interactive`, `TurnOrigin::Watchdog`. The turn runs in the guild's home channel — resolved as the guild's **oldest-registered** home channel via the reworked `HomeChannels` cache — or, when the guild has none, inside the first operator DM that opens. The turn's `author_id` is the bot's own snowflake ("Gary did it, unprompted"); threading a system actor through `ToolCtx` was judged not worth the depth, and the `watchdog` surface disambiguates the events regardless.
+
+**Dedup and blast-radius bounds.** Per-(instance, kind) cooldown of one hour, enforced inside the detector; `Crashed` and crash-loop share `IncidentKind::Crash` so one illness can't fire under two names. A storm guard suppresses turns beyond 3 starts per 30 minutes (a node failure fires many instances at once) and DMs operators one line per suppressed incident. A crash incident on a server with an armed deferred `startup` watcher is left to that watcher's own batch (`DeferRuntime::is_watching`), recorded as `deferred_to_batch`.
+
+**Tri-state `GAMESERVERS_WATCHDOG` with shadow as the trust-earning mode.** `on` (code default) runs turns; `shadow` detects and records incident events but acts on nothing — the false-positive tuning instrument; `off` creates no channel at all. The deployment ships pinned to `shadow` in `deploy/values.yaml`; flipping to `on` is a deliberate one-line commit after the recorded incidents look trustworthy. Every fired incident is recorded as an `EventKind::Incident` row whatever its disposition (`responded`, `shadow`, `suppressed_storm`, `deferred_to_batch`, `undeliverable`, `turn_failed`), so the feature is auditable with one query in every mode.
+
+## Consequences
+
+- `watchdog` joins two published vocabularies: `TurnOrigin`/Langfuse (production environment — these are real turns on real servers) and the events `Surface`/`EventKind` columns. Existing repo queries filter only `surface <> 'operator'`, so nothing breaks, but external dashboards enumerating surfaces will see the new value.
+- Detection requires Postgres, because it rides the sampler and the sampler doesn't spawn without the event log. Acceptable: the deployed instance always has it, and a watchdog that can't record its incidents shouldn't be trusted to act on them.
+- Detector state is in-memory; a redeploy re-baselines every instance and resets cooldowns. Worst case is one repeat wake for a still-broken server — the correct side to err on. Detection latency is quantized to the 5-minute tick (wedged ≈ 15 minutes end-to-end).
+- Within-budget crash-looping that never reaches two exits in 15 minutes stays silent by design; the lone crash is still in `occupancy_samples` for the crash-frequency query.
+- The memory signal slightly overreads (actuals include the Agones sidecar; the declared limit is in practice the game container's alone) — conservative in the right direction, and JVM servers with `Xmx` near the pod limit are the likeliest false-positive source shadow mode exists to catch. The threshold consts are the expected first tuning surface.
+- An intentional `/restart` doesn't increment the supervisor's `restarts` counter (unexpected exits only), so Gary's own fix attempts can't re-trigger the crash detector.
+
+## Alternatives rejected
+
+- **A separate detection loop** — would double-poll every supervisor for nothing; the sampler already holds the readings.
+- **Kubernetes watches / reading `Event` objects** — needs the kube `runtime` feature and a `watch` RBAC verb; poll-based detection is a prior decision (ADR-007) and the 5-minute quantization is acceptable for these signals.
+- **Notification-only alerting** — doesn't use the agent this project exists to exercise; the point is that Gary fixes what he can and reports what he can't.
+- **Queueing incidents in Valkey for durability** — unneeded; a real incident re-fires on the next tick after a redeploy, which is cheaper than a durable queue and its reconciliation.
+- **PVC-fullness detection in v1** — disk *usage* isn't collected anywhere; it needs a `StatusResponse` field, a supervisor statvfs read, and a rebuilt game image per game. Deferred to a follow-up issue; the detector's shape (one new `IncidentKind`, one threshold rule) is ready for it.
