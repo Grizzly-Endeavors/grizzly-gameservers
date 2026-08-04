@@ -48,6 +48,9 @@ pub(crate) struct StrandedCtx<'a> {
     /// Records a recycle as a system-driven start. Strand-and-recycle frequency
     /// is the only crash signal nobody is around to report.
     pub(crate) events: &'a crate::events::EventLog,
+    /// Per-instance resource overrides, so a recycled instance comes back the
+    /// size it was rather than the size its catalog entry declares.
+    pub(crate) sizing: &'a crate::sizing::InstanceSizing,
 }
 
 /// What clearing a stranded instance should leave behind.
@@ -179,7 +182,15 @@ async fn recover_instance(ctx: &StrandedCtx<'_>, instance: &str, pod: &str) -> R
 /// node that is actually answering. Its Service and PVC survived, so the world
 /// and the leased port come back with it.
 async fn recycle_instance(ctx: &StrandedCtx<'_>, instance: &str) -> Result<()> {
-    let outcome = begin_start(ctx.client, ctx.namespace, ctx.domain, ctx.catalog, instance).await?;
+    let outcome = begin_start(
+        ctx.client,
+        ctx.namespace,
+        ctx.domain,
+        ctx.catalog,
+        instance,
+        ctx.sizing.get(instance).await,
+    )
+    .await?;
     ctx.events
         .record_lifecycle(
             ctx.client,

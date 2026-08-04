@@ -69,6 +69,10 @@ pub(crate) struct BackupCtx<'a> {
     pub(crate) control_port: u16,
     pub(crate) catalog: &'a GameCatalog,
     pub(crate) provision_lock: &'a Mutex<()>,
+    /// Per-instance resource overrides, so recreating a pod to back it up
+    /// preserves whatever size the instance was resized to rather than handing
+    /// it back the catalog's.
+    pub(crate) sizing: &'a crate::sizing::InstanceSizing,
 }
 
 /// Outcome of a manual or scheduled backup of a live server.

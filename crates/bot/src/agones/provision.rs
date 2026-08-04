@@ -19,6 +19,7 @@ use super::ports::{assign, assignment_from_service, port_plan_from_service, port
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, server_address};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::sizing::Sizing;
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
 /// Services lease their port(s) from here; the range bounds the **total** ports
@@ -195,6 +196,9 @@ async fn provision_under_lock(
             ports: assign(plan.clone(), &leased)?,
             guild: GuildId::new(guild),
             start_paused,
+            // A brand-new instance has no override yet; one arrives only when
+            // somebody resizes it.
+            sizing: None,
         };
         let service = render_service(entry, &identity)?;
         match services.create(&PostParams::default(), &service).await {
@@ -316,6 +320,7 @@ pub(crate) async fn begin_start(
     domain: &str,
     catalog: &GameCatalog,
     instance: &str,
+    sizing: Option<Sizing>,
 ) -> Result<StartBegin> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
     let Some(service) = services
@@ -355,6 +360,10 @@ pub(crate) async fn begin_start(
         guild: GuildId::new(guild),
         // A cold `/start` resumes a normal server; only recover-from-archive pauses.
         start_paused: false,
+        // Re-applied here, not just at create: this path re-renders from the
+        // catalog template, so without it every stop/start would quietly undo a
+        // resize and hand the world back its original size.
+        sizing,
     };
     let gameserver = render_gameserver(entry, &identity)?;
     match gameserver_api(client, namespace)

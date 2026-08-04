@@ -182,13 +182,15 @@ Four tables, created idempotently at startup. There is no migration tool.
 
 `id`, `kind`, `guild_id`, `game`, `instance`, `actor`, `surface`, `outcome`, `details` (JSONB), `created_at`. Note the column is `kind`, not `type`, and that only `guild_id` carries the `_id` suffix.
 
-The 13 kinds: `server_created`, `server_started`, `server_stopped`, `server_restarted`, `server_shutdown` (GameServer deleted, PVC kept), `server_destroyed` (full teardown), `server_archived`, `server_recovered`, `backup_taken`, `server_restored`, `backup_cycle`, `escalation`, `guild_joined`.
+The kinds: `server_created`, `server_started`, `server_stopped`, `server_restarted`, `server_shutdown` (GameServer deleted, PVC kept), `server_destroyed` (full teardown), `server_archived`, `server_recovered`, `archive_deleted`, `backup_taken`, `server_restored`, `backup_cycle`, `escalation`, `guild_joined`, `incident`, `resources_changed`.
 
 The 5 surfaces: `command` (slash handler), `agent` (a tool in a production Gary turn), `deferred` (a tool in a deferred batch), `operator` (anything through the harness), `system` (automatic cycles).
 
 `actor` is never null: a bare Discord snowflake, `player:<name>` for in-game, or the literal `system`. The prefix exists so a player named `12345` isn't mistaken for a snowflake and one named `system` isn't mistaken for the marker.
 
 `details` payloads by kind: `server_created` and cold `server_started` carry `address` and `time_to_ready_ms`; `backup_taken` and `server_archived` carry `size_bytes`; `server_restored` carries `boot` and `safety_backup`; `server_recovered` carries `address` and `boot`; `backup_cycle` carries `servers`/`succeeded`/`failed`; `escalation` carries `server` and `path`. Everything else is `{}`.
+
+A `resources_changed` row's `outcome` says how the resize landed: `applied` (the running container took it, nobody disconnected), `in_progress` (the kubelet accepted it and was still settling), `recorded_for_next_start` (no running pod to change), or `infeasible` (the node declined the live change; the setting still applies at the next start). Paired with `resource_samples`, this is the right-sizing measurement — the samples say what an instance was given per tick, these rows say when somebody decided to change it. See [ADR-021](../decisions/021-in-place-resource-resize.md).
 
 An `escalation` row's `outcome` says which exit the turn took: `agent_requested` (Gary called the escalate tool), `round_budget_exhausted` (the loop ran out of rounds), or `crash_rollback` (an automatic config rollback couldn't recover the server — no turn involved). The first two are the interesting split; see [ADR-019](../decisions/019-agent-invoked-escalation.md).
 

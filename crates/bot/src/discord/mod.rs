@@ -25,6 +25,7 @@ use crate::agones::GameCatalog;
 use crate::backup::MaybeBackups;
 use crate::defer::DeferRuntime;
 use crate::memory::GaryMemory;
+use crate::sizing::InstanceSizing;
 use crate::store::{GuildConfig, HomeChannels};
 
 /// How long an interactive component (button, confirm prompt) waits for a
@@ -104,8 +105,8 @@ pub(crate) struct Data {
     /// Agent ("Gary") model connection, or `None` when no key is configured —
     /// in which case mentions reply that Gary isn't set up.
     pub(crate) ollama: Option<OllamaConfig>,
-    /// Short-lived per-`(channel, user)` conversation transcripts giving Gary
-    /// follow-up continuity across mentions.
+    /// Short-lived per-channel conversation transcripts giving Gary follow-up
+    /// continuity across messages, shared by everyone talking in that channel.
     pub(crate) sessions: Arc<SessionStore>,
     /// Channels where Gary answers without an `@mention` (plus DMs, which are
     /// always no-mention). Backed by Postgres; disabled if persistence is down.
@@ -114,6 +115,11 @@ pub(crate) struct Data {
     /// system prompt. Backed by Postgres; empty and read-only if persistence is
     /// down.
     pub(crate) memory: Arc<GaryMemory>,
+    /// Per-instance CPU/memory overrides, re-applied every time a `GameServer`
+    /// is rendered so a resize survives a stop/start. Backed by Postgres; disabled
+    /// when persistence is down, which makes a resize a refusal rather than a
+    /// change that would evaporate on the next start.
+    pub(crate) sizing: Arc<InstanceSizing>,
     /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
     /// backup commands then report "not configured", same shape as Gary/home).
     pub(crate) backup: MaybeBackups,
@@ -157,6 +163,7 @@ pub(crate) fn backup_ctx(data: &Data) -> crate::backup::BackupCtx<'_> {
         control_port: data.control_port,
         catalog: &data.catalog,
         provision_lock: &data.provision_lock,
+        sizing: &data.sizing,
     }
 }
 

@@ -173,6 +173,47 @@ pub(crate) async fn run_resource_cycle(
     samples
 }
 
+/// One instance's current footprint, for a caller answering "what is this
+/// server allocated, and what is it actually using?" — the same row the sampler
+/// appends, built on demand for one name instead of the whole fleet.
+///
+/// Reads the same three lists and reuses [`build_resource_samples`] rather than
+/// querying by name, so the on-demand answer and the recorded time series can't
+/// disagree about how a figure is derived. The lists are namespace-scoped and
+/// friends-sized, so filtering afterwards is cheaper than a third code path.
+///
+/// `Ok(None)` means no such managed instance. A degraded read (metrics-server
+/// down, pod list failed) degrades the affected columns to null, exactly as it
+/// does on the sampler tick.
+///
+/// # Errors
+///
+/// Returns an error only if the PVC list — the instance's universe — can't be
+/// read at all.
+pub(crate) async fn sample_instance(
+    client: &Client,
+    namespace: &str,
+    instance: &str,
+) -> Result<Option<ResourceSample>> {
+    let pvcs = list_managed_pvcs(client, namespace).await?;
+    let pods = list_game_pods(client, namespace)
+        .await
+        .unwrap_or_else(|err| {
+            error!(error = ?err, instance, "pod read failed; declared figures unavailable");
+            Vec::new()
+        });
+    let usage = list_pod_usage(client, namespace)
+        .await
+        .unwrap_or_else(|err| {
+            error!(error = ?err, instance, "metrics read failed; actual figures unavailable");
+            Vec::new()
+        });
+    let mut reported = ReportedUnlabelledPvcs::default();
+    Ok(build_resource_samples(&pvcs, &pods, &usage, &mut reported)
+        .into_iter()
+        .find(|sample| sample.instance.as_str() == instance))
+}
+
 /// The per-instance PVCs the bot provisioned — the sampling universe, since the
 /// volume exists exactly as long as the instance does.
 async fn list_managed_pvcs(client: &Client, namespace: &str) -> Result<Vec<PersistentVolumeClaim>> {
@@ -401,7 +442,7 @@ fn pvc_capacity_bytes(pvc: &PersistentVolumeClaim) -> Option<i64> {
 
 /// A Kubernetes CPU quantity in millicores: metrics-server reports nanocores
 /// (`3578906n`), pod specs say millicores (`500m`) or bare cores (`2`, `0.5`).
-fn parse_cpu_millicores(value: &str) -> Option<i64> {
+pub(crate) fn parse_cpu_millicores(value: &str) -> Option<i64> {
     let (digits, frac_len, suffix) = split_quantity(value.trim())?;
     let (mult, div) = match suffix {
         "n" => (1, 1_000_000),
@@ -415,7 +456,7 @@ fn parse_cpu_millicores(value: &str) -> Option<i64> {
 
 /// A Kubernetes byte quantity in bytes: binary suffixes (`2Gi`), decimal
 /// suffixes (`5G`), bare integers, and the kubelet's occasional millibytes.
-fn parse_bytes(value: &str) -> Option<i64> {
+pub(crate) fn parse_bytes(value: &str) -> Option<i64> {
     let (digits, frac_len, suffix) = split_quantity(value.trim())?;
     let (mult, div) = match suffix {
         "" => (1, 1),

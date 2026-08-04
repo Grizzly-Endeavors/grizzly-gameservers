@@ -84,6 +84,34 @@ fn manager_prompt_carries_the_mod_workflow() {
 }
 
 #[test]
+fn manager_prompt_carries_the_diagnose_before_growing_rule() {
+    // Resizing is a lever with no natural brake, so the steer to find the cause
+    // first has to be in the prompt the model reads before deciding to resize —
+    // not only in the tool description it reads after.
+    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft", "");
+    assert!(
+        prompt.contains("set_resources") && prompt.contains("server_resources"),
+        "managers are told both halves exist"
+    );
+    assert!(
+        prompt.contains("Find out why before giving a server more"),
+        "growing the allocation must be the last option, not the first"
+    );
+    assert!(
+        prompt.contains("no restart"),
+        "without this the model defers a change that needs no downtime"
+    );
+}
+
+#[test]
+fn read_only_prompt_omits_the_resize_workflow() {
+    // Read-only callers can see the numbers via server_resources but can't change
+    // them, so the guidance about changing them would only describe a refusal.
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft", "");
+    assert!(!prompt.contains("set_resources"));
+}
+
+#[test]
 fn read_only_prompt_omits_the_mod_workflow() {
     let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft", "");
     assert!(
