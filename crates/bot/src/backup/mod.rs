@@ -37,10 +37,12 @@ use store::ArchiveStore;
 pub(crate) struct BackupService {
     s3: S3Store,
     archives: ArchiveStore,
-    /// Long-timeout client for the streaming archive routes and S3 — distinct
-    /// from the bot's short-timeout control client, which is tuned for the quick
-    /// lifecycle calls.
-    stream_http: reqwest::Client,
+    /// Long-timeout, credentialed client for the supervisor's streaming archive
+    /// routes — distinct from the bot's short-timeout control client, which is
+    /// tuned for the quick lifecycle calls. The S3 half of the same transport is
+    /// held inside [`super::s3::S3Store`] uncredentialed: S3 is a third party and
+    /// must never see the control token.
+    archive_http: crate::agones::ControlClient,
     /// Backups kept per server before the scheduled cycle prunes older ones.
     retention: usize,
     /// Days an archive is kept before the retention cycle prunes it, never
@@ -61,7 +63,7 @@ pub(crate) struct BackupService {
 pub(crate) struct BackupCtx<'a> {
     pub(crate) client: &'a Client,
     /// Short-timeout control client for the quick lifecycle calls (stop/start/wait).
-    pub(crate) http: &'a reqwest::Client,
+    pub(crate) http: &'a crate::agones::ControlClient,
     pub(crate) namespace: &'a str,
     pub(crate) domain: &'a str,
     pub(crate) control_port: u16,

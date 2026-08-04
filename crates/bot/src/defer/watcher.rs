@@ -110,7 +110,7 @@ async fn wait_for_condition(data: &Data, server: &str, condition: Condition) -> 
 async fn wait_startup(data: &Data, server: &str) -> String {
     match wait_for_ready_within(
         &data.kube_client,
-        &data.http,
+        &data.control_http,
         &data.namespace,
         server,
         data.control_port,
@@ -146,7 +146,7 @@ async fn wait_occupancy(
     loop {
         match supervisor_occupancy(
             &data.kube_client,
-            &data.http,
+            &data.control_http,
             &data.namespace,
             server,
             data.control_port,

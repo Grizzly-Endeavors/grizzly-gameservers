@@ -32,6 +32,8 @@ use crate::agones::GameCatalog;
 pub(crate) struct IngameDeps {
     pub(crate) client: kube::Client,
     pub(crate) http: reqwest::Client,
+    /// Dials this server's supervisor (the announce back into chat).
+    pub(crate) control_http: crate::agones::ControlClient,
     pub(crate) namespace: String,
     pub(crate) domain: String,
     pub(crate) control_port: u16,
@@ -60,6 +62,7 @@ impl IngameDeps {
         Self {
             client: data.kube_client.clone(),
             http: data.http.clone(),
+            control_http: data.control_http.clone(),
             namespace: data.namespace.clone(),
             domain: data.domain.clone(),
             control_port: data.control_port,

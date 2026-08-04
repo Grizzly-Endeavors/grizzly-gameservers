@@ -70,10 +70,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             })?,
     );
 
-    let http = reqwest::Client::builder()
-        .timeout(SUPERVISOR_HTTP_TIMEOUT)
-        .build()
-        .context("failed to build supervisor control http client")?;
+    let (http, control_http) = build_http_clients(config.supervisor_token.as_deref())?;
 
     // Shutdown plumbing: `shutdown` is cancelled once on SIGINT/SIGTERM; every
     // spawned subsystem watches it, and `tasks` tracks their handles so the drain
@@ -119,9 +116,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
         schedule,
         config.s3.as_ref(),
         config.db.as_ref(),
+        config.supervisor_token.as_deref(),
         CycleHandles {
             client: kube_client.clone(),
-            http: http.clone(),
+            http: control_http.clone(),
             namespace: namespace.clone(),
             domain: domain.clone(),
             control_port,
@@ -149,6 +147,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let data = Data {
         kube_client,
         http,
+        control_http,
         namespace,
         domain,
         control_port,
@@ -408,7 +407,7 @@ fn build_ollama(api_key: Option<String>, base_url: String, model: String) -> Opt
 /// needs. Cloned from the same handles that move into the command `Data`.
 struct CycleHandles {
     client: kube::Client,
-    http: reqwest::Client,
+    http: agones::ControlClient,
     namespace: String,
     domain: String,
     control_port: u16,
@@ -475,6 +474,7 @@ async fn setup_cycles(
     schedule: CycleSchedule,
     s3: Option<&config::S3Config>,
     db: Option<&config::DbConfig>,
+    supervisor_token: Option<&str>,
     handles: CycleHandles,
     watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
     tasks: &TaskTracker,
@@ -494,8 +494,11 @@ async fn setup_cycles(
         shutdown.clone(),
     );
     setup_backups(
-        s3,
-        db,
+        BackupInputs {
+            s3,
+            db,
+            supervisor_token,
+        },
         Retention {
             backups: schedule.backup_retention,
             archive_days: schedule.archive_retention_days,
@@ -506,6 +509,41 @@ async fn setup_cycles(
         shutdown,
     )
     .await
+}
+
+/// What the backups subsystem is built from: where artifacts live, where the
+/// archive index lives, and the credential for reaching game pods.
+struct BackupInputs<'a> {
+    s3: Option<&'a config::S3Config>,
+    db: Option<&'a config::DbConfig>,
+    supervisor_token: Option<&'a str>,
+}
+
+/// The bot's two outbound HTTP clients, sharing one transport.
+///
+/// They differ only in type, and that is the point: the returned
+/// [`agones::ControlClient`] carries the shared control credential, so it can only
+/// ever ride a request aimed at a game pod. The bare client still reaches Ollama,
+/// Modrinth, and Langfuse — third parties that must never see the token — and the
+/// compiler is what keeps the two apart.
+///
+/// # Errors
+///
+/// Returns an error if the underlying client can't be built.
+fn build_http_clients(token: Option<&str>) -> Result<(reqwest::Client, agones::ControlClient)> {
+    let http = reqwest::Client::builder()
+        .timeout(SUPERVISOR_HTTP_TIMEOUT)
+        .build()
+        .context("failed to build supervisor control http client")?;
+    let control_http = agones::ControlClient::new(http.clone(), token);
+    if control_http.is_authenticated() {
+        info!("supervisor control calls are authenticated");
+    } else {
+        warn!(
+            "SUPERVISOR_CONTROL_TOKEN not set; supervisor control calls rely on network policy alone"
+        );
+    }
+    Ok((http, control_http))
 }
 
 /// How much backup and archive history to keep. Bundled so the two knobs travel
@@ -557,7 +595,7 @@ fn spawn_stranded_cycle(
 /// reading, and the store to append it to.
 struct SamplerHandles {
     client: kube::Client,
-    http: reqwest::Client,
+    http: agones::ControlClient,
     namespace: String,
     control_port: u16,
     events: std::sync::Arc<events::EventLog>,
@@ -661,14 +699,18 @@ fn forward_incident(
 /// Build the backup service (or `None` when S3 isn't configured) and, when built,
 /// start its scheduled snapshot cycle.
 async fn setup_backups(
-    s3: Option<&config::S3Config>,
-    db: Option<&config::DbConfig>,
+    inputs: BackupInputs<'_>,
     retention: Retention,
     interval: std::time::Duration,
     handles: CycleHandles,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) -> backup::MaybeBackups {
+    let BackupInputs {
+        s3,
+        db,
+        supervisor_token,
+    } = inputs;
     let Some(s3_config) = s3 else {
         warn!("GAMESERVERS_S3_ACCESS_KEY/SECRET_KEY not set; backups/archive/restore disabled");
         return None;
@@ -679,6 +721,7 @@ async fn setup_backups(
         db,
         retention.backups,
         retention.archive_days,
+        supervisor_token,
         interval,
         events,
     )

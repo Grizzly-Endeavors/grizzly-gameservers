@@ -65,6 +65,7 @@ impl BackupService {
         db_config: Option<&DbConfig>,
         retention: usize,
         archive_retention_days: i32,
+        supervisor_token: Option<&str>,
         interval: Duration,
         events: std::sync::Arc<crate::events::EventLog>,
     ) -> Result<Self> {
@@ -74,11 +75,12 @@ impl BackupService {
             .build()
             .map_err(|err| anyhow::anyhow!("failed to build the backup http client: {err}"))?;
         let s3 = S3Store::new(s3_config, stream_http.clone())?;
+        let archive_http = crate::agones::ControlClient::new(stream_http.clone(), supervisor_token);
         let archives = ArchiveStore::connect(db_config).await;
         Ok(Self {
             s3,
             archives,
-            stream_http,
+            archive_http,
             retention,
             archive_retention_days,
             interval,
@@ -1033,7 +1035,7 @@ impl BackupService {
         };
         let url = format!("http://{pod_ip}:{}{ARCHIVE_PATH}", ctx.control_port);
         match self
-            .stream_http
+            .archive_http
             .get(&url)
             .query(&ArchiveQuery { quiesce })
             .send()
@@ -1070,7 +1072,7 @@ impl BackupService {
         let url = format!("http://{pod_ip}:{}{ARCHIVE_PATH}", ctx.control_port);
         let body = reqwest::Body::wrap_stream(source.bytes_stream());
         match self
-            .stream_http
+            .archive_http
             .post(&url)
             .query(&ExtractQuery { purge })
             .body(body)

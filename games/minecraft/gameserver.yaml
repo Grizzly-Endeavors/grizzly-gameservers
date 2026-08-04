@@ -66,6 +66,16 @@ spec:
           # Superseded once CI pins a gate-signed digest (digests are immutable).
           imagePullPolicy: Always
           env:
+            # Required on every call the bot makes to this pod's control API.
+            # Defence in depth behind the egress leash: optional, so an
+            # unprovisioned token leaves the pod on the NetworkPolicy-only
+            # posture rather than refusing every lifecycle action.
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-control
+                  key: control_token
+                  optional: true
             - name: EULA
               value: "TRUE"
             - name: MEMORY

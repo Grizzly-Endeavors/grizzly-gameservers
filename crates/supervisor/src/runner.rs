@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::auth::ControlAuth;
 use crate::autoupdate::{AutoUpdater, RelaunchReason};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
@@ -82,9 +83,17 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
     let serve_logs = Arc::clone(&logs);
     let serve_rcon = rcon.clone();
+    let control_auth = ControlAuth::new(cfg.control_token.as_deref());
     tokio::spawn(async move {
-        if let Err(err) =
-            control::serve(control_port, control_tx, data_root, serve_logs, serve_rcon).await
+        if let Err(err) = control::serve(
+            control_port,
+            control_tx,
+            data_root,
+            serve_logs,
+            serve_rcon,
+            control_auth,
+        )
+        .await
         {
             error!(error = ?err, "control api terminated");
         }

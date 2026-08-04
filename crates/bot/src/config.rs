@@ -152,6 +152,10 @@ pub struct BotConfig {
     /// `REDIS_PASSWORD` is set — the `run_when` tool then reports it can't schedule,
     /// the same graceful-degrade shape as `db`/`ollama`.
     pub(crate) valkey: Option<ValkeyConfig>,
+    /// Shared secret presented to game-pod supervisors on the control API, or
+    /// `None` when the control API is unauthenticated. Must match the token the
+    /// game pods are given; absent on both sides is the pre-auth behaviour.
+    pub(crate) supervisor_token: Option<String>,
     /// S3 (versitygw) connection for backups/archives. `None` when the access/
     /// secret keys aren't set — backups/archive/restore then report "not
     /// configured", the same graceful-degrade shape as `db`/`ollama`.
@@ -288,6 +292,8 @@ impl BotConfig {
 
         let db = db_config_from_env(lookup)?;
         let valkey = valkey_config_from_env(lookup)?;
+        let supervisor_token =
+            optional(lookup, "SUPERVISOR_CONTROL_TOKEN").filter(|secret| !secret.trim().is_empty());
         let s3 = s3_config_from_env(lookup);
         let backup_interval = Duration::from_secs(
             optional_positive_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
@@ -339,6 +345,7 @@ impl BotConfig {
             ollama_model,
             db,
             valkey,
+            supervisor_token,
             s3,
             backup_interval,
             backup_retention,

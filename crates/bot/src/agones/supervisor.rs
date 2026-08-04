@@ -9,6 +9,7 @@ use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::{debug, warn};
 
+use super::control_client::ControlClient;
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::provision::{DeletionState, deletion_state};
 use super::types::GameServer;
@@ -86,7 +87,7 @@ pub(crate) enum SupervisorOutcome {
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_stop(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -109,7 +110,7 @@ pub(crate) async fn supervisor_stop(
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_start(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -132,7 +133,7 @@ pub(crate) async fn supervisor_start(
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_restart(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -231,7 +232,7 @@ pub(crate) async fn resolve_managed_pod(
 
 async fn supervisor_action(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -365,7 +366,7 @@ pub(crate) enum StatusPoll {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -391,7 +392,7 @@ pub(crate) async fn wait_for_ready(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready_within(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -446,7 +447,7 @@ pub(crate) enum ControlReady {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_control_reachable(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -482,7 +483,7 @@ pub(crate) async fn wait_for_control_reachable(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_status(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,

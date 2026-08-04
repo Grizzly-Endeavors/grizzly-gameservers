@@ -18,6 +18,7 @@ use kube::Client;
 use serde::de::DeserializeOwned;
 use tracing::{debug, warn};
 
+use super::control_client::ControlClient;
 use super::supervisor::{PodTarget, resolve_managed_pod};
 
 /// Per-request timeout for the filesystem/logs calls. These touch only the PVC
@@ -51,7 +52,7 @@ pub(crate) enum FsOutcome<T> {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_list_files(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -81,7 +82,7 @@ pub(crate) async fn supervisor_list_files(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_file(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -110,7 +111,7 @@ pub(crate) async fn supervisor_read_file(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_write_file(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -173,7 +174,7 @@ pub(crate) struct Replacement<'a> {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_edit_file(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -260,7 +261,7 @@ fn apply_unique_edit(content: &str, old: &str, new: &str) -> EditApply {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_restore_file(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -289,7 +290,7 @@ pub(crate) async fn supervisor_restore_file(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_logs(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -319,7 +320,7 @@ pub(crate) async fn supervisor_read_logs(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_send_command(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -352,7 +353,7 @@ pub(crate) async fn supervisor_send_command(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_occupancy(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -374,7 +375,7 @@ pub(crate) async fn supervisor_occupancy(
 /// simply gets no broadcast.
 pub(crate) async fn supervisor_announce(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,

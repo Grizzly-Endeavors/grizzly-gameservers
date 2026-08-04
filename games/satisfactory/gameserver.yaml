@@ -77,6 +77,17 @@ spec:
             - name: control
               containerPort: 9359
               protocol: TCP
+          # Required on every call the bot makes to this pod's control API.
+          # Defence in depth behind the egress leash: optional, so an
+          # unprovisioned token leaves the pod on the NetworkPolicy-only posture
+          # rather than refusing every lifecycle action.
+          env:
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-control
+                  key: control_token
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /config

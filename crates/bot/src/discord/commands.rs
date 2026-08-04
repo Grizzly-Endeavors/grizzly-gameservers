@@ -388,7 +388,7 @@ pub(crate) async fn stop(
         .await?;
     match supervisor_stop(
         &data.kube_client,
-        &data.http,
+        &data.control_http,
         &data.namespace,
         &server,
         data.control_port,
@@ -484,7 +484,7 @@ pub(crate) async fn restart(
         .await?;
     match supervisor_restart(
         &data.kube_client,
-        &data.http,
+        &data.control_http,
         &data.namespace,
         &server,
         data.control_port,
@@ -540,7 +540,7 @@ pub(crate) async fn start(
             // Warm path: the pod is alive, just resume the process in place.
             match supervisor_start(
                 &data.kube_client,
-                &data.http,
+                &data.control_http,
                 &data.namespace,
                 &server,
                 data.control_port,

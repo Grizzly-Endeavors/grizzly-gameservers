@@ -51,7 +51,7 @@ pub(crate) struct OccupancySample {
 /// backup and stranded cycles take.
 pub(crate) struct SamplerCtx<'a> {
     pub(crate) client: &'a Client,
-    pub(crate) http: &'a reqwest::Client,
+    pub(crate) http: &'a crate::agones::ControlClient,
     pub(crate) namespace: &'a str,
     pub(crate) control_port: u16,
     pub(crate) events: &'a EventLog,

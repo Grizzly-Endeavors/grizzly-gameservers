@@ -85,6 +85,11 @@ pub struct SupervisorConfig {
     pub readiness_timeout: Duration,
     /// How long to wait for a graceful child exit before SIGKILL.
     pub graceful_timeout: Duration,
+    /// Shared secret the bot must present on the control API, or `None` to accept
+    /// any caller the network leash already allowed through. Absent by default so
+    /// an image or deployment without the secret keeps working rather than locking
+    /// the bot out of every server at once.
+    pub control_token: Option<String>,
     /// Sliding window for crash-rate escalation.
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
@@ -218,6 +223,7 @@ impl SupervisorConfig {
             optional_parse(lookup, "SUPERVISOR_GRACEFUL_TIMEOUT_SECS")?
                 .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
         );
+        let control_token = optional(lookup, "SUPERVISOR_CONTROL_TOKEN");
         let crash_window = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
                 .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
@@ -271,6 +277,7 @@ impl SupervisorConfig {
             health_interval,
             readiness_timeout,
             graceful_timeout,
+            control_token,
             crash_window,
             crash_threshold,
             rcon_port,

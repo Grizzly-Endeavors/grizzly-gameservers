@@ -6,6 +6,7 @@
 
 mod catalog;
 mod client;
+mod control_client;
 mod instance;
 mod labels;
 mod naming;
@@ -19,6 +20,7 @@ mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{LiveInstance, list_active_servers, list_live_instances};
+pub(crate) use control_client::ControlClient;
 pub(crate) use labels::{
     GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
     label_value,

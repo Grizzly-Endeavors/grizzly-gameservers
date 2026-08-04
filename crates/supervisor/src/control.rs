@@ -22,9 +22,10 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt as _;
 use tokio_util::io::ReaderStream;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::archive;
+use crate::auth::{self, ControlAuth};
 use crate::fs::{self, FsError};
 use crate::logs::{DEFAULT_TAIL_LINES, LogBuffer};
 use crate::rcon::RconRuntime;
@@ -77,7 +78,17 @@ pub async fn serve(
     data_root: Arc<Path>,
     logs: Arc<LogBuffer>,
     rcon: Option<Arc<RconRuntime>>,
+    auth: ControlAuth,
 ) -> Result<()> {
+    if auth.is_enforced() {
+        info!("control api requires a bearer token");
+    } else {
+        // Said once at startup rather than left implicit: the difference between
+        // "network leash only" and "leash plus credential" is invisible from the
+        // outside, and a secret that failed to sync would otherwise look identical
+        // to one that worked.
+        warn!("SUPERVISOR_CONTROL_TOKEN not set; control api is guarded by network policy alone");
+    }
     let app = Router::new()
         .route(FS_LIST_PATH, get(fs_list))
         .route(FS_READ_PATH, get(fs_read))
@@ -94,7 +105,13 @@ pub async fn serve(
             data_root,
             logs,
             rcon,
-        });
+        })
+        // Outermost, so every route above — including the ControlCommand fallback
+        // and anything added later — is behind it by default.
+        .layer(axum::middleware::from_fn_with_state(
+            auth,
+            auth::require_token,
+        ));
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = TcpListener::bind(addr)
         .await

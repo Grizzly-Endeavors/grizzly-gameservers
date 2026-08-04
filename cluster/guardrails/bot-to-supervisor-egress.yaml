@@ -11,9 +11,12 @@
 # reach to the control port — game pods still can't reach each other's, and 9359
 # is never exposed through the NodePort edge.
 #
-# NOTE: this relies on network identity alone for authn. A shared bearer token on
-# the control port is tracked as a follow-up (issue #2) for defense-in-depth
-# against an in-namespace foothold.
+# This is the outer of two controls, not the only one: the supervisor also
+# requires a shared bearer token on the control port (SUPERVISOR_CONTROL_TOKEN,
+# from the grizzly-gameservers-control Secret), so acquiring the bot's network
+# identity is no longer sufficient to drive lifecycle actions on a game pod. That
+# token is optional on both sides — until it is provisioned in OpenBao, this
+# policy really is the only control.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

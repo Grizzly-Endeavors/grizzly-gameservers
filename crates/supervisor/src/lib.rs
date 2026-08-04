@@ -12,6 +12,7 @@
 //! processes or opening sockets.
 
 pub mod archive;
+pub mod auth;
 pub mod autoupdate;
 pub mod chat_watcher;
 pub mod child_env;

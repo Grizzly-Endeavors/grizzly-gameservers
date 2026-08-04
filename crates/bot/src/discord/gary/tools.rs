@@ -621,7 +621,7 @@ const LAST_ACTION_KINDS: &[EventKind] = &[
 async fn process_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     let status = supervisor_status(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -713,7 +713,7 @@ fn format_uptime(seconds: u64) -> String {
 async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     let reason = match supervisor_occupancy(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -900,7 +900,7 @@ async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
 async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
     match supervisor_stop(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -928,7 +928,7 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
 async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
     let outcome = match supervisor_restart(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -986,7 +986,7 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
     loop {
         let outcome = match wait_for_ready(
             &ctx.data.kube_client,
-            &ctx.data.http,
+            &ctx.data.control_http,
             &ctx.data.namespace,
             server,
             ctx.data.control_port,
@@ -1058,7 +1058,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
     let server = change.server.as_str();
     let restore = supervisor_restore_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1084,7 +1084,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
     }
     match supervisor_restart(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1156,7 +1156,7 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(RuntimeState::PodUp) => match supervisor_start(
             &ctx.data.kube_client,
-            &ctx.data.http,
+            &ctx.data.control_http,
             &ctx.data.namespace,
             server,
             ctx.data.control_port,
@@ -1499,7 +1499,7 @@ async fn edit_prompt(
 async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_list_files(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1521,7 +1521,7 @@ async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_read_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1543,7 +1543,7 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
 async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -> String {
     match supervisor_read_logs(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1565,7 +1565,7 @@ async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -
 async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &str) -> String {
     match supervisor_write_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1599,7 +1599,7 @@ async fn exec_edit_file(
 ) -> String {
     match supervisor_edit_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1629,7 +1629,7 @@ async fn exec_edit_file(
 async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_restore_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1654,7 +1654,7 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
     match supervisor_send_command(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1724,7 +1724,7 @@ async fn exec_run_when(
 async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
     match supervisor_occupancy(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -2130,7 +2130,7 @@ async fn confirm_destructive(
 async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
     supervisor_announce(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,

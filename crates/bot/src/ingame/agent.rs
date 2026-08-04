@@ -171,7 +171,7 @@ pub(crate) async fn handle_ingame_question(
 
     supervisor_announce(
         &deps.client,
-        &deps.http,
+        &deps.control_http,
         &deps.namespace,
         server,
         deps.control_port,
