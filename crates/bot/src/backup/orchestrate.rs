@@ -16,8 +16,8 @@ use super::manifest::{
 use super::s3::S3Store;
 use super::store::{ArchiveRecord, ArchiveStore};
 use super::{
-    ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService, BootState,
-    RecoverOutcome, RestoreOutcome, SafetyBackup,
+    ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService,
+    BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 use crate::agones::{
     ControlReady, DestroyOutcome, LiveInstance, PodTarget, ProvisionOutcome, ReadyWait,
@@ -64,6 +64,7 @@ impl BackupService {
         s3_config: &S3Config,
         db_config: Option<&DbConfig>,
         retention: usize,
+        archive_retention_days: i32,
         interval: Duration,
         events: std::sync::Arc<crate::events::EventLog>,
     ) -> Result<Self> {
@@ -79,6 +80,7 @@ impl BackupService {
             archives,
             stream_http,
             retention,
+            archive_retention_days,
             interval,
             events,
         })
@@ -113,6 +115,11 @@ impl BackupService {
         let servers = targets.len();
         if targets.is_empty() {
             self.record_cycle(servers, 0, 0).await;
+            // Archives belong to servers that no longer exist, so an empty fleet
+            // is precisely when there is aged archive storage to reclaim and
+            // nothing else to do — pruning must not ride on there being live
+            // servers to back up.
+            self.prune_archives(ctx).await;
             return;
         }
         info!(servers, "starting scheduled backup cycle");
@@ -136,6 +143,7 @@ impl BackupService {
         }
         info!(backed_up, failed, "scheduled backup cycle complete");
         self.record_cycle(servers, backed_up, failed).await;
+        self.prune_archives(ctx).await;
     }
 
     /// Record one completed pass of the scheduled cycle. Not per-server: each
@@ -258,6 +266,213 @@ impl BackupService {
     /// it, so the command layer checks this before offering them.
     pub(crate) fn archives_enabled(&self) -> bool {
         self.archives.enabled()
+    }
+
+    /// Delete every archive generation of `name` within `scope`, freeing the S3
+    /// objects and dropping the index rows.
+    ///
+    /// This is the only operation that makes a world unrecoverable, so it is
+    /// deliberately not reachable from `destroy_server`: an archive is the escape
+    /// hatch *from* a destroy, and cascading the two would turn one confirmation
+    /// into two irreversible acts.
+    ///
+    /// Objects go before rows. A failure between the two leaves index entries
+    /// pointing at absent objects — visible in `/archives` and fixable by
+    /// re-running the delete — whereas the reverse order would orphan gigabytes in
+    /// S3 that nothing references and no listing would ever show again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only on an unexpected S3/DB fault that isn't classified
+    /// into the outcome.
+    pub(crate) async fn delete_archives(
+        &self,
+        ctx: &BackupCtx<'_>,
+        scope: &ServerScope,
+        name: &str,
+        attribution: &Attribution,
+    ) -> Result<ArchiveDeleteOutcome> {
+        if !self.archives.enabled() {
+            return Ok(ArchiveDeleteOutcome::Unavailable);
+        }
+        let Some(guild) = self.guild_owning_archive(scope, name).await? else {
+            return Ok(ArchiveDeleteOutcome::NotFound);
+        };
+        let records = self.archives.rows_for_name(guild.as_str(), name).await?;
+        if records.is_empty() {
+            return Ok(ArchiveDeleteOutcome::NotFound);
+        }
+
+        let game = records.first().map(|record| record.game.clone());
+        let freed_bytes = records
+            .iter()
+            .map(|record| u64::try_from(record.size_bytes).unwrap_or(0))
+            .sum();
+        let generations = records.len();
+
+        for record in &records {
+            for key in [&record.tarball_key, &record.manifest_key] {
+                if let Err(err) = self.s3.delete_object(key).await {
+                    // Stop rather than press on to the row deletes: dropping the
+                    // index for an object still in S3 is the leak this ordering
+                    // exists to avoid, and a retry is safe.
+                    error!(error = ?err, key, name, "failed to delete an archive object");
+                    self.record(
+                        ctx,
+                        ProductEvent::new(EventKind::ArchiveDeleted, attribution, mapping::FAILED)
+                            .guild(Some(guild.clone()))
+                            .game(game.clone())
+                            .instance(InstanceName::new(name)),
+                    )
+                    .await;
+                    return Ok(ArchiveDeleteOutcome::Failed(format!(
+                        "could not delete archive object {key}: {err}"
+                    )));
+                }
+            }
+        }
+        self.archives.delete_name(guild.as_str(), name).await?;
+
+        self.record(
+            ctx,
+            ProductEvent::new(EventKind::ArchiveDeleted, attribution, mapping::DELETED)
+                .guild(Some(guild.clone()))
+                .game(game)
+                .instance(InstanceName::new(name))
+                .details(serde_json::json!({
+                    "generations": generations,
+                    "freed_bytes": freed_bytes,
+                })),
+        )
+        .await;
+
+        Ok(ArchiveDeleteOutcome::Deleted {
+            name: name.to_owned(),
+            generations,
+            freed_bytes,
+        })
+    }
+
+    /// How many archive generations of `name` exist within `scope`, and their
+    /// combined size — what a delete would actually remove. `None` when there is
+    /// no such archive.
+    ///
+    /// Separate from the delete so the confirmation card can state the real cost
+    /// before anyone approves it: `/archives` shows only the newest copy per name,
+    /// so the visible entry routinely understates what goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the archive catalog can't be read.
+    pub(crate) async fn archive_footprint(
+        &self,
+        scope: &ServerScope,
+        name: &str,
+    ) -> Result<Option<(usize, u64)>> {
+        let Some(guild) = self.guild_owning_archive(scope, name).await? else {
+            return Ok(None);
+        };
+        let records = self.archives.rows_for_name(guild.as_str(), name).await?;
+        if records.is_empty() {
+            return Ok(None);
+        }
+        let total = records
+            .iter()
+            .map(|record| u64::try_from(record.size_bytes).unwrap_or(0))
+            .sum();
+        Ok(Some((records.len(), total)))
+    }
+
+    /// The guild whose archive of `name` this caller may act on. A guild-scoped
+    /// caller can only ever mean their own; a cross-guild operator's `name` is
+    /// resolved through the listing, so an operator can't delete an archive by
+    /// guessing a name they were never shown.
+    async fn guild_owning_archive(
+        &self,
+        scope: &ServerScope,
+        name: &str,
+    ) -> Result<Option<GuildId>> {
+        match scope {
+            ServerScope::Guild(guild) => Ok(self
+                .archives
+                .latest(guild, name)
+                .await?
+                .map(|record| record.guild)),
+            ServerScope::All => Ok(self
+                .archives
+                .list_all_latest_per_name()
+                .await?
+                .into_iter()
+                .find(|record| record.name.as_str() == name)
+                .map(|record| record.guild)),
+        }
+    }
+
+    /// Delete archive generations older than the retention window, always keeping
+    /// the newest of each name.
+    ///
+    /// Runs on the same cycle as the backup prune so archives stop growing without
+    /// bound, but with a far longer window and that keep-newest floor: a backup is
+    /// one of several rolling snapshots of a *live* server, while an archive may be
+    /// the only remaining copy of a world nobody has touched in a year. Age alone
+    /// is never sufficient reason to delete the last one.
+    ///
+    /// Best-effort throughout — a failure is logged and the cycle continues, since
+    /// this runs unattended and must not wedge the backup cycle it rides on.
+    async fn prune_archives(&self, ctx: &BackupCtx<'_>) {
+        if !self.archives.enabled() {
+            return;
+        }
+        let stale = match self
+            .archives
+            .rows_to_prune(self.archive_retention_days)
+            .await
+        {
+            Ok(stale) => stale,
+            Err(err) => {
+                warn!(error = ?err, "could not list archives to prune");
+                return;
+            }
+        };
+        let mut pruned = 0_usize;
+        for record in stale {
+            let mut objects_gone = true;
+            for key in [&record.tarball_key, &record.manifest_key] {
+                if let Err(err) = self.s3.delete_object(key).await {
+                    warn!(error = ?err, key, "failed to prune an aged archive object");
+                    objects_gone = false;
+                }
+            }
+            // Leave the row when an object survived, so the pair is retried next
+            // cycle instead of the object being orphaned beyond reach.
+            if !objects_gone {
+                continue;
+            }
+            if let Err(err) = self.archives.delete_by_key(&record.tarball_key).await {
+                warn!(error = ?err, key = record.tarball_key, "failed to drop a pruned archive row");
+                continue;
+            }
+            pruned += 1;
+            self.record(
+                ctx,
+                ProductEvent::new(
+                    EventKind::ArchiveDeleted,
+                    &Attribution::system(),
+                    mapping::PRUNED,
+                )
+                .guild(Some(record.guild))
+                .game(Some(record.game))
+                .instance(record.name),
+            )
+            .await;
+        }
+        if pruned > 0 {
+            info!(
+                pruned,
+                days = self.archive_retention_days,
+                "pruned archives past the retention window"
+            );
+        }
     }
 
     /// Stop a server, back it up to the archive area, record it, and release the

@@ -43,6 +43,9 @@ pub(crate) struct BackupService {
     stream_http: reqwest::Client,
     /// Backups kept per server before the scheduled cycle prunes older ones.
     retention: usize,
+    /// Days an archive is kept before the retention cycle prunes it, never
+    /// touching the newest archive of a name.
+    archive_retention_days: i32,
     /// How often the scheduled cycle runs (used by the timer in `crate::run`).
     interval: Duration,
     /// The product event log. Backups are the one subsystem whose orchestration
@@ -114,6 +117,33 @@ pub(crate) enum ArchiveOutcome {
     Unavailable,
     /// A step couldn't be completed; carries a developer-facing reason.
     Failed(String),
+}
+
+/// What became of a request to delete a server's archives.
+pub(crate) enum ArchiveDeleteOutcome {
+    Deleted {
+        name: String,
+        /// How many archive generations went, which is usually more than the one
+        /// the listing showed — `/archives` collapses to the newest per name.
+        generations: usize,
+        freed_bytes: u64,
+    },
+    /// No archive of that name exists in this scope.
+    NotFound,
+    /// The archive catalog (Postgres) isn't configured, so nothing can be deleted.
+    Unavailable,
+    /// A step couldn't be completed; carries a developer-facing reason.
+    Failed(String),
+}
+
+impl ArchiveDeleteOutcome {
+    /// The developer-facing failure reason to log, if any.
+    pub(crate) fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Failed(reason) => Some(reason),
+            Self::Deleted { .. } | Self::NotFound | Self::Unavailable => None,
+        }
+    }
 }
 
 impl ArchiveOutcome {

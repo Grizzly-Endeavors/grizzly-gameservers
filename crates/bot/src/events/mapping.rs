@@ -37,6 +37,14 @@ pub(crate) const COMPLETED: &str = "completed";
 /// The outcome for a first-ever guild sighting.
 pub(crate) const JOINED: &str = "joined";
 
+/// An archive was deleted on request.
+pub(crate) const DELETED: &str = "deleted";
+
+/// An archive was deleted by the retention cycle rather than by a person, which
+/// is the difference between "someone decided this world was finished with" and
+/// "it aged out". Separable so an unexpected disappearance can be attributed.
+pub(crate) const PRUNED: &str = "pruned";
+
 /// Gary spent his whole round budget on a request without resolving it.
 pub(crate) const ROUND_BUDGET_EXHAUSTED: &str = "round_budget_exhausted";
 

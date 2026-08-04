@@ -10,7 +10,8 @@ use super::auth::{require_admin, require_manager, visibility_scope};
 use super::render::{
     archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
     backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
-    destroy_confirm_embed, destroy_result_embed, error_embed, guild_required_embed, neutral_embed,
+    delete_archive_confirm_embed, delete_archive_result_embed, destroy_confirm_embed,
+    destroy_result_embed, error_embed, guild_required_embed, human_size, neutral_embed,
     recover_result_embed, restore_confirm_embed, restore_result_embed, server_list_embed,
     shutdown_result_embed, start_result_embed, supervisor_result_embed, working_embed,
 };
@@ -22,7 +23,7 @@ use crate::agones::{
     supervisor_restart, supervisor_start, supervisor_stop, validate_world_name,
     wait_for_instance_ready,
 };
-use crate::backup::{ArtifactSummary, BackupService};
+use crate::backup::{ArchiveDeleteOutcome, ArtifactSummary, BackupService};
 use crate::domain::{GuildId, InstanceName};
 use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
 use crate::memory::{ForgetOutcome, Memory};
@@ -734,6 +735,128 @@ pub(crate) async fn destroy(
         }
     }
     Ok(())
+}
+
+/// Permanently delete a server's archives from cold storage. Cannot be undone.
+///
+/// Admin-only and separate from `/destroy` on purpose: destroying a server leaves
+/// its archive standing as the way back, so this is the only command that makes a
+/// world unrecoverable.
+#[poise::command(slash_command, rename = "delete-archive", check = "require_admin")]
+pub(crate) async fn delete_archive(
+    ctx: Context<'_>,
+    #[description = "Which archive to delete (this permanently deletes that saved world)"]
+    #[autocomplete = "autocomplete_archive"]
+    name: String,
+) -> Result<(), Error> {
+    let data = ctx.data();
+    let Some(service) = data.backup.clone() else {
+        ctx.send(reply_with(backups_disabled_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    if !service.archives_enabled() {
+        ctx.send(reply_with(archives_unavailable_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    }
+    let Some(scope) = command_scope(ctx) else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+
+    // Priced before the confirmation: `/archives` lists only the newest copy per
+    // name, so the entry the admin is looking at routinely understates what a
+    // delete removes.
+    let (generations, freed) = match service.archive_footprint(&scope, &name).await {
+        Ok(Some(footprint)) => footprint,
+        Ok(None) => {
+            ctx.send(
+                reply_with(delete_archive_result_embed(&ArchiveDeleteOutcome::NotFound))
+                    .ephemeral(true),
+            )
+            .await?;
+            return Ok(());
+        }
+        Err(err) => {
+            error!(error = ?err, %name, "failed to read archive footprint");
+            ctx.send(
+                reply_with(error_embed(
+                    "Couldn't look that archive up right now. Try again in a moment.",
+                ))
+                .ephemeral(true),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let Some(reply) = confirm_action(
+        ctx,
+        delete_archive_confirm_embed(&name, generations, &human_size(freed)),
+        "delete_archive_confirm",
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+
+    reply
+        .edit(
+            ctx,
+            cleared(working_embed(
+                &format!("Deleting the {name} archive"),
+                "Clearing it out of cold storage…",
+            )),
+        )
+        .await?;
+
+    match service
+        .delete_archives(&backup_ctx(data), &scope, &name, &attribution(ctx))
+        .await
+    {
+        Ok(outcome) => {
+            if let Some(reason) = outcome.reason() {
+                error!(reason, %name, "archive deletion did not complete");
+            }
+            reply
+                .edit(ctx, cleared(delete_archive_result_embed(&outcome)))
+                .await?;
+        }
+        Err(err) => {
+            error!(error = ?err, %name, "failed to delete archive");
+            reply
+                .edit(
+                    ctx,
+                    cleared(error_embed(
+                        "Couldn't delete that archive right now. Try again in a moment.",
+                    )),
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Complete against archived names rather than live servers — an archived world
+/// has no instance, so the server autocomplete would offer nothing.
+async fn autocomplete_archive(ctx: Context<'_>, partial: &str) -> impl Iterator<Item = String> {
+    let data = ctx.data();
+    let needle = partial.to_owned();
+    let names = match (data.backup.clone(), command_scope(ctx)) {
+        (Some(service), Some(scope)) => match service.list_archives(&scope).await {
+            Ok(list) => list.into_iter().map(|artifact| artifact.name).collect(),
+            Err(err) => {
+                error!(error = ?err, "failed to list archives for autocomplete");
+                Vec::new()
+            }
+        },
+        _ => Vec::new(),
+    };
+    names
+        .into_iter()
+        .filter(move |name: &String| name.starts_with(&needle))
 }
 
 async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<Item = String> {

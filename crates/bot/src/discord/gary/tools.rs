@@ -20,8 +20,9 @@ use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::AccessLevel;
 use super::super::render::{
-    archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
-    error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+    archive_confirm_embed, archive_result_embed, delete_archive_confirm_embed,
+    delete_archive_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed,
+    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
@@ -37,7 +38,8 @@ use crate::agones::{
     wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
+    ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
+    RecoverOutcome, RestoreOutcome,
 };
 use crate::defer::{Condition, DeferredTask};
 use crate::domain::{GuildId, InstanceName};
@@ -50,10 +52,11 @@ use crate::modrinth::{
 use crate::notify::Escalation;
 use crate::prompts::{
     self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
-    DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
-    ListServers, ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs,
-    ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer, RestoreFile,
-    RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
+    DeleteArchive, DeleteArchiveDone, DeleteArchiveFailed, DeleteArchiveNotFound,
+    DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Forget, ForgetParams,
+    ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams, NameParams, PathParams,
+    ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer,
+    RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
     SendCommandParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
 
@@ -251,6 +254,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
         (AccessLevel::Admin, DestroyServer::spec().into()),
+        (AccessLevel::Admin, DeleteArchive::spec().into()),
         (AccessLevel::Admin, ArchiveServer::spec().into()),
         (AccessLevel::Admin, RestoreServer::spec().into()),
         (AccessLevel::Admin, RecoverServer::spec().into()),
@@ -442,6 +446,10 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
+        DeleteArchive::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_delete_archive(ctx, &params.name).await,
+            Err(message) => message,
+        },
         SendCommand::NAME => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
@@ -501,7 +509,9 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 /// Whether a tool acts on an *existing* server named in its arguments — the set
 /// the scope gate applies to. Excluded because they enforce tenancy themselves:
 /// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
-/// (no existing target — stamps the current guild), and `recover_server` (resolves
+/// (no existing target — stamps the current guild), `delete_archive` (targets an
+/// archive, which has no live server, and resolves it within the caller's scope),
+/// and `recover_server` (resolves
 /// the archive within the caller's scope). Also excluded because they reach no
 /// server at all: `remember`/`forget` (memory is cross-guild) and
 /// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
@@ -1256,6 +1266,95 @@ async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
 /// Permanent deletion is gated behind an explicit confirmation: the model can
 /// request it, but a human must approve before any world is destroyed. The
 /// returned text tells the model what was decided.
+/// Delete a server's archives, behind the same confirmation gate as destroy.
+///
+/// Gated harder than it looks: `destroy_server` removes a running server while
+/// deliberately leaving its archives standing, so this is the only path that
+/// makes a world unrecoverable.
+async fn exec_delete_archive(ctx: &ToolCtx<'_>, name: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    if !service.archives_enabled() {
+        return DeleteArchiveUnavailable::render();
+    }
+    // Priced before the confirmation so the card can say how many copies and how
+    // much storage actually go — "delete the smp archive" usually means more
+    // generations than the listing showed, and a confirmation that understates
+    // what it is approving isn't one.
+    let (generations, freed) = match service.archive_footprint(&ctx.scope, name).await {
+        Ok(Some(footprint)) => footprint,
+        Ok(None) => return DeleteArchiveNotFound { name }.render(),
+        Err(err) => {
+            error!(error = ?err, %name, "agent: archive footprint lookup failed");
+            return cluster_error();
+        }
+    };
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
+    match confirm_destructive(
+        ctx,
+        name,
+        "delete the archive of",
+        delete_archive_confirm_embed(name, generations, &human_size(freed)),
+        "gary_delete_archive_confirm",
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server: name,
+            verb: "deleted",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server: name,
+            verb: "deleted",
+        }
+        .render(),
+    )
+    .await
+    {
+        Confirm::Declined(text) => text,
+        Confirm::Confirmed(mut prompt) => {
+            match service
+                .delete_archives(&backup_ctx(ctx.data), &ctx.scope, name, &ctx.attribution())
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.reason() {
+                        error!(reason, %name, "agent: delete_archive did not complete");
+                    }
+                    edit_prompt(ctx, &mut prompt, delete_archive_result_embed(&outcome)).await;
+                    format_delete_archive(name, &outcome)
+                }
+                Err(err) => {
+                    error!(error = ?err, %name, "agent: delete_archive failed");
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
+                }
+            }
+        }
+    }
+}
+
+fn format_delete_archive(name: &str, outcome: &ArchiveDeleteOutcome) -> String {
+    match outcome {
+        ArchiveDeleteOutcome::Deleted {
+            generations,
+            freed_bytes,
+            ..
+        } => DeleteArchiveDone {
+            name,
+            generations: &generations.to_string(),
+            size: &human_size(*freed_bytes),
+        }
+        .render(),
+        ArchiveDeleteOutcome::NotFound => DeleteArchiveNotFound { name }.render(),
+        ArchiveDeleteOutcome::Unavailable => DeleteArchiveUnavailable::render(),
+        ArchiveDeleteOutcome::Failed(_) => DeleteArchiveFailed { name }.render(),
+    }
+}
+
 async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
     match ctx.confirmations {
         ConfirmMode::Interactive => confirm_destroy_by_click(ctx, server).await,

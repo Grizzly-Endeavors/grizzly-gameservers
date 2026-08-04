@@ -12,8 +12,9 @@ fn tool_names(access: AccessLevel) -> Vec<String> {
 
 /// The tools reserved for admins — never offered to a manager or read-only
 /// caller. Kept next to the tier tests so a newly added admin tool is checked.
-const ADMIN_ONLY: [&str; 5] = [
+const ADMIN_ONLY: [&str; 6] = [
     DestroyServer::NAME,
+    DeleteArchive::NAME,
     SendCommand::NAME,
     ArchiveServer::NAME,
     RestoreServer::NAME,
@@ -95,8 +96,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        26,
-        "the four read tools, seventeen manager tools, and five admin-only tools"
+        27,
+        "the four read tools, seventeen manager tools, and six admin-only tools"
     );
 }
 
@@ -168,6 +169,7 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
             && name != CreateServer::NAME
             && name != ListArchives::NAME
             && name != RecoverServer::NAME
+            && name != DeleteArchive::NAME
             && name != SearchMods::NAME
             && name != ModInfo::NAME
             && name != Remember::NAME

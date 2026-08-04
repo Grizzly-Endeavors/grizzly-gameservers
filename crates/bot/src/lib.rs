@@ -370,6 +370,7 @@ fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
         commands::backups(),
         commands::archive(),
         commands::archives(),
+        commands::delete_archive(),
         commands::restore(),
         commands::recover(),
         commands::new_session(),
@@ -420,6 +421,7 @@ struct CycleHandles {
 struct CycleSchedule {
     backup_interval: std::time::Duration,
     backup_retention: usize,
+    archive_retention_days: i32,
     reconcile_interval: std::time::Duration,
     stranded_dwell: std::time::Duration,
     sample_interval: std::time::Duration,
@@ -430,6 +432,7 @@ impl CycleSchedule {
         Self {
             backup_interval: config.backup_interval,
             backup_retention: config.backup_retention,
+            archive_retention_days: config.archive_retention_days,
             reconcile_interval: config.reconcile_interval,
             stranded_dwell: config.stranded_dwell,
             sample_interval: config.sample_interval,
@@ -493,13 +496,25 @@ async fn setup_cycles(
     setup_backups(
         s3,
         db,
-        schedule.backup_retention,
+        Retention {
+            backups: schedule.backup_retention,
+            archive_days: schedule.archive_retention_days,
+        },
         schedule.backup_interval,
         handles,
         tasks,
         shutdown,
     )
     .await
+}
+
+/// How much backup and archive history to keep. Bundled so the two knobs travel
+/// together — they are read from the same config and consumed by the same cycle.
+struct Retention {
+    /// Backups kept per server before older ones are pruned.
+    backups: usize,
+    /// Days an archive is kept, never applied to the newest of a name.
+    archive_days: i32,
 }
 
 /// Sweep for servers stranded on a node that stopped answering and bring them
@@ -648,7 +663,7 @@ fn forward_incident(
 async fn setup_backups(
     s3: Option<&config::S3Config>,
     db: Option<&config::DbConfig>,
-    retention: usize,
+    retention: Retention,
     interval: std::time::Duration,
     handles: CycleHandles,
     tasks: &TaskTracker,
@@ -659,7 +674,15 @@ async fn setup_backups(
         return None;
     };
     let events = std::sync::Arc::clone(&handles.events);
-    let service = match backup::BackupService::new(s3_config, db, retention, interval, events).await
+    let service = match backup::BackupService::new(
+        s3_config,
+        db,
+        retention.backups,
+        retention.archive_days,
+        interval,
+        events,
+    )
+    .await
     {
         Ok(service) => std::sync::Arc::new(service),
         Err(err) => {
