@@ -204,3 +204,12 @@ fn a_resolved_condition_left_behind_as_false_does_not_block_a_resize() {
     assert_eq!(infeasible_message(&pod), None);
     assert!(applied(&pod, "minecraft", sizing()));
 }
+
+#[test]
+fn the_refusal_status_is_the_one_kubernetes_uses_for_a_rejected_resize() {
+    // Pinned because the whole 422 branch hangs on it: a wrong value here would
+    // send a plain refusal down the transport-error path, where it surfaces to a
+    // friend as "I couldn't reach the cluster" — a lie about a cluster that
+    // answered clearly.
+    assert_eq!(REFUSED_STATUS, 422);
+}

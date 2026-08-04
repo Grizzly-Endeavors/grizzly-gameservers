@@ -50,6 +50,11 @@ const INFEASIBLE_REASON: &str = "Infeasible";
 /// removing it.
 const CONDITION_TRUE: &str = "True";
 
+/// HTTP status the API answers with when it validates the patch and says no —
+/// as distinct from a transport failure. Lowering a memory limit in place is the
+/// case that reaches this in practice.
+const REFUSED_STATUS: u16 = 422;
+
 /// What happened to a requested in-place resize.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ResizeOutcome {
@@ -58,9 +63,20 @@ pub(crate) enum ResizeOutcome {
     /// The kubelet accepted it but hadn't finished within the settle window. The
     /// change is still in flight, not lost.
     InProgress,
-    /// The node can't satisfy it as asked — typically shrinking memory below live
-    /// usage, or growing past what the node has left. Carries the kubelet's own
-    /// message, which names the real obstacle.
+    /// The change can't be made on a *running* container. Two distinct causes
+    /// land here because they have one story for the caller — the setting is
+    /// saved and applies at the next start:
+    ///
+    /// - The API refuses it outright (422). Kubernetes forbids *lowering* a
+    ///   memory limit in place unless the container declares
+    ///   `resizePolicy: RestartContainer` for memory, which the catalog
+    ///   deliberately doesn't — restarting the game to shrink it would give away
+    ///   the one property this path exists for.
+    /// - The kubelet accepts it and then reports it `Infeasible`, typically
+    ///   because the node has no room left to grow into.
+    ///
+    /// Carries the cluster's own message either way, which names the real
+    /// obstacle better than anything reconstructed here would.
     Infeasible(String),
     /// No pod is running, so there is nothing to resize in place; the recorded
     /// override applies at the next start.
@@ -130,14 +146,33 @@ pub(crate) async fn resize_instance(
             }],
         }
     });
-    pods.patch_subresource(
-        "resize",
-        &pod_name,
-        &PatchParams::default(),
-        &Patch::Strategic(patch),
-    )
-    .await
-    .with_context(|| format!("failed to patch resources on pod {pod_name}"))?;
+    match pods
+        .patch_subresource(
+            "resize",
+            &pod_name,
+            &PatchParams::default(),
+            &Patch::Strategic(patch),
+        )
+        .await
+    {
+        Ok(_) => {}
+        // A refusal is not a failure to reach the cluster, and reporting it as
+        // one would send the caller looking for a network problem that isn't
+        // there. The API's own message says exactly what it objected to.
+        Err(kube::Error::Api(response)) if response.code == REFUSED_STATUS => {
+            debug!(
+                instance,
+                pod = %pod_name,
+                reason = %response.message,
+                "the api refused an in-place resize"
+            );
+            return Ok(ResizeOutcome::Infeasible(response.message));
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to patch resources on pod {pod_name}"));
+        }
+    }
     debug!(instance, pod = %pod_name, container, "requested an in-place resize");
 
     watch_resize(&pods, &pod_name, &container, sizing).await

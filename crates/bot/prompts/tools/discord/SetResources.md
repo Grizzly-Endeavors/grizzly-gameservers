@@ -66,6 +66,12 @@ annotations:
       tool exists rather than a stop/start pair, and a model that doesn't know
       it will reach for run_when and defer a change that never needed deferring.
     - >-
+      The lowering-memory asymmetry is called out because it is the one case
+      where the headline promise doesn't hold: Kubernetes forbids shrinking a
+      memory limit in place unless the container restarts on resize, and the
+      catalog deliberately doesn't ask for that. Without this the model reports
+      a reduction as done when it is only scheduled.
+    - >-
       The JVM caveat is in the body because it is only wrong on some games and
       only for memory: raising the pod's memory on Minecraft does not raise the
       Java heap, which is set at launch from the overlay.
@@ -74,4 +80,4 @@ Change how much CPU and memory a server is allowed. This takes effect on a runni
 
 Look for the cause before reaching for more. A server pressed against its limits usually has a reason you can find and fix more cheaply: check read_logs for a mod misbehaving or errors repeating, and the game's own settings for a view distance, entity cap, or world-border that was set higher than anyone wanted. Growing the allocation is the right answer when the server is genuinely doing more work than it was sized for — more players, more world, a heavier modpack — and the wrong answer when something is leaking or looping, because that will fill whatever you give it and you'll be back with a bigger number to explain. Say which of the two you concluded and why.
 
-When you do resize: raising the memory limit is the fix for a server being killed for running out of memory, and raising the CPU limit is the fix for one that stutters under load. Move in a sensible step rather than to the ceiling — enough headroom to hold, not everything available. Lowering is fine too, and worth doing for a server sitting far under what it reserves, but a memory limit below what the server is currently using is refused rather than applied. On Java games like Minecraft the pod's memory and the game's own heap are separate: raising this gives the server more room overall and stops it being killed, but the heap itself is set when the game starts and changing that needs a restart.
+When you do resize: raising the memory limit is the fix for a server being killed for running out of memory, and raising the CPU limit is the fix for one that stutters under load. Move in a sensible step rather than to the ceiling — enough headroom to hold, not everything available. Lowering is worth doing for a server sitting far under what it reserves, with one asymmetry: raising anything and lowering CPU both happen live, but **lowering a memory limit never does** — that one is saved and takes effect on the next restart, because applying it live would mean restarting the server, which is the thing this avoids. So say when a reduction will land rather than implying it already has. On Java games like Minecraft the pod's memory and the game's own heap are separate: raising this gives the server more room overall and stops it being killed, but the heap itself is set when the game starts and changing that needs a restart.

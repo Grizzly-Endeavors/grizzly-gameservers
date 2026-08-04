@@ -716,6 +716,9 @@ fn an_event_kind_reads_as_what_happened() {
     assert_eq!(past_tense("server_restored"), "restored");
     // Kinds outside the server_ family pass through rather than being mangled.
     assert_eq!(past_tense("backup_taken"), "backup_taken");
+    // …except where the raw column value wouldn't read as English in the
+    // sentence about_server builds around it.
+    assert_eq!(past_tense("resources_changed"), "had its resources changed");
 }
 
 /// `about_server` earns its place over `list_servers` only if it says things the
