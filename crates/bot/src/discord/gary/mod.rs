@@ -24,13 +24,13 @@ use tracing::{error, trace, warn};
 
 pub(crate) use self::tools::ConfirmMode;
 
-use super::auth::{AccessCheck, AccessLevel, access_level};
+use super::auth::{AccessLevel, Speaker, access_level_for};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
-    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, SessionCallbacks, SessionEvent,
-    SessionId, SessionOutcome, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
-    run_session, send_chat_completion,
+    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, Role, SessionCallbacks,
+    SessionEvent, SessionId, SessionKey, SessionOutcome, ToolDef, TurnActor, TurnIdentity,
+    TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
 use crate::domain::GuildId;
@@ -173,19 +173,32 @@ async fn handle_message(
     };
     let access = caller_access_level(ctx, data, message).await;
     let games = game_catalog_list(data);
-    // Rendered here (async) rather than inside the checkout closure (sync). A fact
-    // Gary saves mid-conversation lands in the prompt on the next fresh session;
-    // within this one it's already in his transcript.
     let memories = data.memory.render_for_prompt().await;
 
-    // Continue this person's conversation in this channel if it's still live,
-    // else start fresh; the appended user turn is what the model answers.
-    let key = (message.channel_id.get(), message.author.id.get());
-    let session = data.sessions.checkout(key, Instant::now(), || {
-        build_system_prompt(access, &games, &memories)
-    });
+    // Held until the transcript is committed. The channel is one shared
+    // conversation, so two friends asking at once is ordinary rather than rare,
+    // and `commit` is last-write-wins.
+    let key = SessionKey::Channel(message.channel_id.get());
+    let _turn_lock = data.sessions.turn_lock(key).await;
+
+    // Continue the channel's conversation if it's still live, else start fresh;
+    // the appended user turn is what the model answers.
+    let system = build_system_prompt(access, &games, &memories);
+    let session = data
+        .sessions
+        .checkout(key, Instant::now(), || system.clone());
     let mut messages = session.messages;
-    messages.push(ChatMessage::user(prompt.clone()));
+    // Rebuild the system prompt for *this* speaker rather than keeping whatever
+    // the person who opened the conversation got. In a shared channel the next
+    // message can come from a different tier, and a read-only friend inheriting
+    // admin guidance makes Gary narrate powers the tool gate then withholds.
+    // Refreshing also pulls in any fact he saved mid-conversation.
+    replace_system_prompt(&mut messages, system);
+    messages.push(ChatMessage::user(framed_turn(
+        &message.author.name,
+        access,
+        &prompt,
+    )));
 
     let turn = GaryTurn {
         ctx,
@@ -437,6 +450,36 @@ pub(crate) async fn send_chunks(
     }
 }
 
+/// Overwrite the transcript's leading system message, leaving the conversation
+/// itself untouched. A checked-out transcript always starts with one — a fresh
+/// one is built from the closure, and a live one was committed with its own —
+/// but an empty transcript is handled rather than assumed, since silently
+/// dropping the prompt would leave Gary with no instructions at all.
+pub(crate) fn replace_system_prompt(messages: &mut Vec<ChatMessage>, system: String) {
+    match messages.first_mut() {
+        Some(first) if first.role == Role::System => first.content = Some(system),
+        Some(_) | None => messages.insert(0, ChatMessage::system(system)),
+    }
+}
+
+/// Wrap a message as an attributed turn, so a shared channel reads as several
+/// named people rather than one voice — which is what lets Gary answer "can you
+/// approve that?" correctly, and tell an admin's go-ahead from a read-only
+/// friend's. The speaker's tier rides along because Gary cannot otherwise tell
+/// who is entitled to authorize what.
+///
+/// The request text is presented as quoted data; the system prompt is what
+/// hardens against treating it as instructions, the same split the in-game
+/// surface uses.
+pub(crate) fn framed_turn(asker: &str, access: AccessLevel, prompt: &str) -> String {
+    prompts::DiscordQuestion {
+        asker,
+        access: access.as_str(),
+        question: prompt,
+    }
+    .render()
+}
+
 /// Strip the bot's mention markup (both `<@id>` and the legacy `<@!id>`) from the
 /// message content, leaving the bare request.
 fn extract_prompt(content: &str, bot_id: serenity::UserId) -> String {
@@ -448,53 +491,27 @@ fn extract_prompt(content: &str, bot_id: serenity::UserId) -> String {
         .to_owned()
 }
 
-/// The message author's access tier — the same policy the slash commands
-/// enforce (see [`access_level`]). A cross-guild operator is admin everywhere; a
-/// non-operator with no guild (a DM) is read-only.
+/// The message author's access tier — the same policy, and now the same code,
+/// the slash commands and the confirmation buttons enforce.
 async fn caller_access_level(
     ctx: &serenity::Context,
     data: &Data,
     message: &serenity::Message,
 ) -> AccessLevel {
-    let user = message.author.id.get();
-    if data.operator_ids.contains(&user) {
-        return AccessLevel::Admin;
-    }
-    let Some(guild_id) = message.guild_id else {
-        return AccessLevel::ReadOnly;
-    };
-    let roles: Vec<u64> = message
-        .member
-        .as_ref()
-        .map(|member| member.roles.iter().map(|role| role.get()).collect())
-        .unwrap_or_default();
-    let guild_owner = guild_owner_id(ctx, guild_id).await;
-    let guild_admins = data.guild_config.admins(guild_id.get()).await;
-    let guild_managers = data.guild_config.managers(guild_id.get()).await;
-    access_level(&AccessCheck {
-        user,
-        roles: &roles,
-        guild_owner,
-        operators: &data.operator_ids,
-        guild_admins: &guild_admins,
-        guild_managers: &guild_managers,
-    })
-}
-
-/// The guild's owner id, cache-first (the guild is cached from its `GuildCreate`),
-/// falling back to an HTTP fetch. `None` on a read failure — auth then fails
-/// closed to operators only for that check.
-async fn guild_owner_id(ctx: &serenity::Context, guild_id: serenity::GuildId) -> Option<u64> {
-    if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
-        return Some(guild.owner_id.get());
-    }
-    match guild_id.to_partial_guild(&ctx.http).await {
-        Ok(guild) => Some(guild.owner_id.get()),
-        Err(err) => {
-            error!(error = ?err, guild = guild_id.get(), "failed to read guild for owner check");
-            None
-        }
-    }
+    access_level_for(
+        ctx,
+        data,
+        &Speaker {
+            user: message.author.id.get(),
+            guild: message.guild_id,
+            roles: message
+                .member
+                .as_ref()
+                .map(|member| member.roles.iter().map(|role| role.get()).collect())
+                .unwrap_or_default(),
+        },
+    )
+    .await
 }
 
 pub(crate) fn game_catalog_list(data: &Data) -> String {
@@ -508,6 +525,7 @@ pub(crate) fn game_catalog_list(data: &Data) -> String {
 /// question can be just as unanswerable, and they have the fewest other options.
 pub(crate) fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
     let mut prompt = prompts::DiscordPersona::render();
+    push_block(&mut prompt, &prompts::DiscordSharedChannel::render());
     push_block(&mut prompt, &prompts::DiscordReporting::render());
     push_block(&mut prompt, &prompts::DiscordEscalation::render());
     let games_value = if games.is_empty() { "(none)" } else { games };

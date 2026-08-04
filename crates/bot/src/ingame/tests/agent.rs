@@ -24,8 +24,8 @@ fn session_key_separates_players_and_guilds() {
         steve, other_guild,
         "same player in another guild is separate"
     );
-    assert_eq!(
-        steve.0, 123,
+    assert!(
+        matches!(steve, SessionKey::IngamePlayer { guild: 123, .. }),
         "a numeric guild id is used directly as the guild key"
     );
     assert_eq!(session_key("123", "Steve"), steve, "the key is stable");

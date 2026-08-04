@@ -16,6 +16,7 @@ use super::render::{
     shutdown_result_embed, start_result_embed, supervisor_result_embed, working_embed,
 };
 use super::{COMPONENT_TIMEOUT, Context, Error, backup_ctx};
+use crate::agent::SessionKey;
 use crate::agones::{
     CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
     begin_start, build_instance_name, destroy_instance, instance_runtime_state,
@@ -926,13 +927,15 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
 /// Start fresh with Gary, forgetting the recent back-and-forth.
 #[poise::command(slash_command, rename = "new-session")]
 pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
+    // The conversation belongs to the channel, so this clears it for everyone in
+    // it — which is what "start fresh" means when the back-and-forth was shared.
     ctx.data()
         .sessions
-        .clear((ctx.channel_id().get(), ctx.author().id.get()));
+        .clear(SessionKey::Channel(ctx.channel_id().get()));
     ctx.send(
         reply_with(neutral_embed(
             "Fresh start",
-            "Okay, starting fresh — I've cleared what we were just talking about.",
+            "Okay, starting fresh — I've cleared what we were just talking about in this channel.",
         ))
         .ephemeral(true),
     )

@@ -19,8 +19,8 @@ use tracing::{debug, error, warn};
 use super::IngameDeps;
 use crate::agent::{
     ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, SessionCallbacks, SessionEvent,
-    SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
-    run_session, send_chat_completion,
+    SessionKey, SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin,
+    TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
@@ -242,13 +242,19 @@ fn framed_question(player: &str, question: &str) -> String {
     }
 }
 
-/// Session key for a `(guild, player)` pair. The guild is a numeric Discord
-/// id (falling back to a hash if it somehow isn't), and the player name is
-/// hashed — so in-game sessions occupy a distinct key space from Discord's
-/// `(channel, user_id)` sessions in the same store.
-fn session_key(guild: &str, player: &str) -> (u64, u64) {
-    let guild_key = guild.parse::<u64>().unwrap_or_else(|_| hash(guild));
-    (guild_key, hash(player))
+/// Session key for a `(guild, player)` pair. The guild is a numeric Discord id
+/// (falling back to a hash if it somehow isn't) and the player name is hashed,
+/// since the store holds raw ids rather than strings. The key *variant* is what
+/// keeps these apart from Discord's channel conversations — see [`SessionKey`].
+///
+/// In-game stays per-player where Discord is per-channel: a player has no access
+/// tier and a fixed read-only tool set, so there is nothing in an in-game
+/// conversation for a second person to join or approve.
+fn session_key(guild: &str, player: &str) -> SessionKey {
+    SessionKey::IngamePlayer {
+        guild: guild.parse::<u64>().unwrap_or_else(|_| hash(guild)),
+        player: hash(player),
+    }
 }
 
 fn hash(value: &str) -> u64 {

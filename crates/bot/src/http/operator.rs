@@ -32,11 +32,15 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::agent::{
-    ChatMessage, EscalationReason, Generation, Role, SessionOutcome, ToolCall, ToolDef, TurnOrigin,
+    ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, ToolCall, ToolDef,
+    TurnOrigin,
 };
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
-use crate::discord::gary::{GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn};
+use crate::discord::gary::{
+    GaryTurn, build_system_prompt, framed_turn, game_catalog_list, replace_system_prompt,
+    run_gary_turn,
+};
 use crate::discord::{AccessLevel, Data};
 use crate::domain::GuildId;
 use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
@@ -45,6 +49,11 @@ use crate::http::gated;
 /// Synthetic id for a harness-issued tool call. The real dispatcher only echoes
 /// it back into a transcript we don't keep, so it needs to be stable, not unique.
 const OPERATOR_CALL_ID: &str = "operator";
+
+/// Who a harness turn is attributed to in the transcript. Named rather than
+/// borrowing the impersonated user's display name, so a turn driven from a dev
+/// box never reads in the history as a friend having typed it.
+const OPERATOR_SPEAKER: &str = "the operator harness";
 
 /// Cloneable state the operator routes share with the rest of the bot. `Data`
 /// already carries the gateway handle, so this is just the command state.
@@ -312,17 +321,31 @@ async fn run_gary(
     let serenity_ctx = live_gateway(data)?;
     let acting = resolve(data, &serenity_ctx, &request.caller).await?;
 
-    let key = (acting.channel_id.get(), acting.author_id.get());
+    // The harness shares the channel's conversation with anyone talking in it,
+    // so `--new-session` clears that whole channel rather than one caller's
+    // history. Point the harness at its own channel and this stays invisible.
+    let key = SessionKey::Channel(acting.channel_id.get());
+    let _turn_lock = data.sessions.turn_lock(key).await;
     if request.new_session {
         data.sessions.clear(key);
     }
     let games = game_catalog_list(data);
     let memories = data.memory.render_for_prompt().await;
-    let session = data.sessions.checkout(key, std::time::Instant::now(), || {
-        build_system_prompt(acting.access, &games, &memories)
-    });
+    let system = build_system_prompt(acting.access, &games, &memories);
+    let session = data
+        .sessions
+        .checkout(key, std::time::Instant::now(), || system.clone());
     let mut messages = session.messages;
-    messages.push(ChatMessage::user(request.prompt.clone()));
+    // Same refresh as the Discord path: the tier acting here may differ from the
+    // one that opened the conversation, which is exactly what `--access` is for.
+    replace_system_prompt(&mut messages, system);
+    // Attributed like any other speaker, so a harness turn sitting in a shared
+    // transcript reads as what it is rather than as an unsigned instruction.
+    messages.push(ChatMessage::user(framed_turn(
+        OPERATOR_SPEAKER,
+        acting.access,
+        &request.prompt,
+    )));
     // Everything already in the transcript is prior history; the trace is only
     // what this turn added.
     let mark = messages.len();

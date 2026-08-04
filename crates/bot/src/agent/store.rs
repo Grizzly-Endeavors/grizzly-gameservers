@@ -1,12 +1,15 @@
-//! In-memory conversation store giving Gary short-lived continuity: each
-//! `(channel, user)` keeps its running transcript across mentions so "now restart
-//! it" resolves, until it goes idle past the TTL or the user resets it. Nothing
-//! is persisted — a restart wipes every session, by design (friends-scale, no
+//! In-memory conversation store giving Gary short-lived continuity: a
+//! conversation keeps its running transcript across messages so "now restart it"
+//! resolves, until it goes idle past the TTL or someone resets it. Nothing is
+//! persisted — a restart wipes every session, by design (friends-scale, no
 //! durable chat history to manage).
+//!
+//! What counts as one conversation is [`SessionKey`]: a whole Discord channel,
+//! or a single in-game player. See its docs for why the two differ.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tracing::warn;
@@ -21,9 +24,26 @@ const SESSION_TTL: Duration = Duration::from_mins(30);
 /// long-running back-and-forth; trimming keeps the most recent turns.
 const MAX_TRANSCRIPT: usize = 30;
 
-/// Identifies a conversation: `(channel_id, user_id)` as raw ids, keeping this
-/// module free of Discord types (and trivially testable).
-pub(crate) type SessionKey = (u64, u64);
+/// What counts as one conversation. Raw ids rather than Discord types, so this
+/// module stays trivially testable.
+///
+/// The two surfaces scope differently on purpose. A Discord channel is one
+/// shared conversation: friends talk to Gary in front of each other, and an
+/// admin has to be able to answer a question or approve an action that someone
+/// else set going. In-game chat stays per-player — a player has no tier, gets a
+/// fixed read-only tool set, and there is nothing there for a second person to
+/// take part in.
+///
+/// Spelled as an enum rather than a pair of ids so the two key spaces can't
+/// collide by construction; the previous tuple relied on channel ids and player
+/// name hashes happening not to overlap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SessionKey {
+    /// Every message in one Discord channel (or DM), whoever sent it.
+    Channel(u64),
+    /// One player's in-game conversation on the servers of one guild.
+    IngamePlayer { guild: u64, player: u64 },
+}
 
 /// How many random bytes back a session id. Two `u64`s of CSPRNG output are
 /// collision-free at any volume this bot will ever see.
@@ -88,6 +108,8 @@ struct Entry {
 /// Keyed store of live conversation transcripts.
 pub(crate) struct SessionStore {
     inner: Mutex<HashMap<SessionKey, Entry>>,
+    /// One turn lock per key; see [`SessionStore::turn_lock`].
+    turn_locks: Mutex<HashMap<SessionKey, Arc<tokio::sync::Mutex<()>>>>,
     ttl: Duration,
 }
 
@@ -99,8 +121,37 @@ impl SessionStore {
     fn with_ttl(ttl: Duration) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            turn_locks: Mutex::new(HashMap::new()),
             ttl,
         }
+    }
+
+    /// Serialize turns on one key. Hold the guard across checkout → run →
+    /// commit.
+    ///
+    /// [`commit`](Self::commit) is last-write-wins, so two turns running against
+    /// the same key interleave into one transcript surviving and the other being
+    /// silently discarded — including whichever answer the model already posted.
+    /// With per-user keys that took two messages from the same person within one
+    /// turn; with a channel key it takes two people talking at once, which is
+    /// ordinary. Queuing is the right trade: the second asker waits a few seconds
+    /// and gets an answer that has the first exchange in view.
+    ///
+    /// The lock map self-prunes: an entry is only kept while a guard is
+    /// outstanding, so idle keys leave nothing behind.
+    pub(crate) async fn turn_lock(&self, key: SessionKey) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let Ok(mut locks) = self.turn_locks.lock() else {
+                // A poisoned map would mean a panic while holding it. Serializing
+                // is a safety property, not a correctness one for a single turn,
+                // so degrade to an unshared lock rather than failing the turn.
+                warn!("session turn-lock map is poisoned; this turn runs unserialized");
+                return Arc::new(tokio::sync::Mutex::new(())).lock_owned().await;
+            };
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+            Arc::clone(locks.entry(key).or_default())
+        };
+        lock.lock_owned().await
     }
 
     /// Hand back a clone of this key's transcript to run the next turn against,
