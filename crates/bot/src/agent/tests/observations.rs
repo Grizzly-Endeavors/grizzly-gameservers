@@ -4,6 +4,7 @@ use super::*;
 use crate::agent::store::SessionId;
 use crate::agent::turn::{Environment, TurnOrigin};
 use crate::discord::AccessLevel;
+use crate::domain::GameId;
 
 fn discord_identity() -> TurnIdentity {
     TurnIdentity {
@@ -14,6 +15,7 @@ fn discord_identity() -> TurnIdentity {
         actor: TurnActor::Discord(1234),
         access: AccessLevel::Manager,
         session: Some(SessionId::from_raw("abc123")),
+        game: None,
     }
 }
 
@@ -87,6 +89,31 @@ fn an_ingame_player_is_namespaced_apart_from_discord_ids() {
         text(&identity(&ingame, "dev"), langfuse::USER_ID),
         "ingame:1234"
     );
+}
+
+/// Without this, cost and escalation rate can only be read for the whole fleet:
+/// a Minecraft turn carrying a large modpack config costs materially more than a
+/// Valheim one, and nothing in the trace says which is which.
+#[test]
+fn a_turn_that_knows_its_game_can_be_sliced_by_it() {
+    let ingame = TurnIdentity {
+        origin: TurnOrigin::Ingame,
+        game: Some(GameId::new("minecraft")),
+        ..discord_identity()
+    };
+    assert_eq!(
+        text(&identity(&ingame, "dev"), "langfuse.trace.metadata.game"),
+        "minecraft"
+    );
+}
+
+/// A Discord turn often names no server, and a placeholder would show up in
+/// Langfuse as a real game with real cost attributed to it. The key is absent so
+/// the breakdown is honest about what it does not cover.
+#[test]
+fn a_turn_with_no_game_omits_the_attribute_rather_than_inventing_one() {
+    let attributes = identity(&discord_identity(), "dev");
+    assert!(find(&attributes, "langfuse.trace.metadata.game").is_none());
 }
 
 /// The whole point of the operator environment: harness traffic must never be

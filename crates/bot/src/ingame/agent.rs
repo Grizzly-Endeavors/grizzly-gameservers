@@ -22,10 +22,10 @@ use crate::agent::{
     TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::{
-    ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
+    ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
 };
 use crate::discord::AccessLevel;
-use crate::domain::GuildId;
+use crate::domain::{GameId, GuildId};
 use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
@@ -39,6 +39,36 @@ const MAX_REPLY_CHARS: usize = 600;
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// The guild an in-game question is answered within, and the game it is about,
+/// both read off the server's own labels — a player has no Discord identity to
+/// derive either from.
+///
+/// `None` declines the question: without a guild there is no bound on what Gary
+/// may see, and answering with an unscoped view would leak other guilds' servers
+/// to whoever typed in chat. Every such case is logged, since the player just
+/// sees silence.
+async fn resolve_scope(deps: &IngameDeps, server: &str) -> Option<(String, Option<GameId>)> {
+    let owner = match owner_of(&deps.client, &deps.namespace, server).await {
+        Ok(Some(owner)) => owner,
+        Ok(None) => {
+            warn!(server, "in-game trigger for an unknown server; ignoring");
+            return None;
+        }
+        Err(err) => {
+            error!(error = ?err, server, "failed to resolve owner for in-game trigger");
+            return None;
+        }
+    };
+    let Some(guild) = owner.guild else {
+        warn!(
+            server,
+            "in-game trigger for a server with no guild scope; ignoring"
+        );
+        return None;
+    };
+    Some((guild.as_str().to_owned(), owner.game))
+}
 
 /// Answer one in-game `@Gary` question and broadcast the reply into the server.
 /// Runs the whole session — resolve the guild scope, run the read-only tool
@@ -56,22 +86,8 @@ pub(crate) async fn handle_ingame_question(
         return;
     };
 
-    // A player has no Discord identity; the scope is the server's own guild,
-    // read off its labels. No guild means we can't bound what Gary may see, so
-    // we decline rather than answer with an unscoped view.
-    let guild = match guild_of(&deps.client, &deps.namespace, server).await {
-        Ok(Some(guild)) => guild,
-        Ok(None) => {
-            warn!(
-                server,
-                "in-game trigger for a server with no guild scope; ignoring"
-            );
-            return;
-        }
-        Err(err) => {
-            error!(error = ?err, server, "failed to resolve guild for in-game trigger");
-            return;
-        }
+    let Some((guild, game)) = resolve_scope(deps, server).await else {
+        return;
     };
     let scope = ServerScope::Guild(guild.clone());
 
@@ -95,6 +111,7 @@ pub(crate) async fn handle_ingame_question(
         actor: TurnActor::Player(player.to_owned()),
         access: AccessLevel::ReadOnly,
         session: Some(session.id.clone()),
+        game,
     };
     let attribution = Attribution::new(Actor::from_turn(&identity.actor), Surface::Agent);
     let recorder = TurnRecorder::new(identity, Arc::clone(&deps.telemetry));

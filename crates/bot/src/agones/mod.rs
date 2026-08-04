@@ -29,9 +29,7 @@ pub(crate) use provision::{
     begin_start, destroy_instance, list_instance_names, provision_instance,
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
-pub(crate) use scope::{
-    InstanceOwner, ScopeVerdict, ServerScope, guild_of, owner_of, verify_scope,
-};
+pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope, owner_of, verify_scope};
 pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, StatusPoll, SupervisorOutcome,

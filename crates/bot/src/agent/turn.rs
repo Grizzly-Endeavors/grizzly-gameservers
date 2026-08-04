@@ -8,6 +8,7 @@
 
 use super::store::SessionId;
 use crate::discord::AccessLevel;
+use crate::domain::GameId;
 
 /// Which entry point started this turn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +102,12 @@ pub(crate) struct TurnIdentity {
     /// The conversation instance this turn continues, when there is one. `None`
     /// for a deferred batch, which is a one-shot conversation with no history.
     pub(crate) session: Option<SessionId>,
+    /// The game this turn is about, when the surface knows one up front: an
+    /// in-game trigger and a deferred batch both arrive for a named server, so
+    /// theirs is resolved from its labels. A Discord turn usually has none — the
+    /// question may name no server at all — and stays `None` rather than guessing,
+    /// which keeps a per-game cost breakdown honest about what it does not cover.
+    pub(crate) game: Option<GameId>,
 }
 
 impl TurnIdentity {

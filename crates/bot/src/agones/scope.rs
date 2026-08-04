@@ -68,30 +68,6 @@ pub(crate) async fn verify_scope(
     Ok(classify(guild, scope))
 }
 
-/// The Discord guild id that owns `instance`, read off its Service's guild
-/// label — or `None` when the server doesn't exist or carries no guild label
-/// (a pre-scoping or platform-managed object). Used by the in-game entrypoint,
-/// which has only a server name and must derive the guild scope from it.
-///
-/// # Errors
-///
-/// Returns an error if the Service cannot be read from the Kubernetes API.
-pub(crate) async fn guild_of(
-    client: &Client,
-    namespace: &str,
-    instance: &str,
-) -> Result<Option<String>> {
-    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
-    let Some(service) = services
-        .get_opt(instance)
-        .await
-        .with_context(|| format!("failed to read service {instance} for guild lookup"))?
-    else {
-        return Ok(None);
-    };
-    Ok(label_value(service.metadata.labels.as_ref(), GUILD_KEY).map(str::to_owned))
-}
-
 /// Which guild owns an instance and which game it runs — the two labels that
 /// identify a server for attribution. Each is independently optional: a
 /// pre-scoping object carries no guild, and neither label is guaranteed on an

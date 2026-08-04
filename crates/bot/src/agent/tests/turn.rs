@@ -9,6 +9,7 @@ fn identity(origin: TurnOrigin, deployment: Environment) -> TurnIdentity {
         actor: TurnActor::Discord(99),
         access: AccessLevel::Manager,
         session: None,
+        game: None,
     }
 }
 
