@@ -8,10 +8,8 @@ tool_schema:
   condition:
     type: enum
     description: >-
-      When to run the task: `startup` (watch a (re)start finish — whether it
-      comes up healthy or fails/stalls), `empty` (the moment no players are
-      connected — for urgent changes as people log off), or `idle` (after it's
-      been empty a few minutes — for no-rush tweaks).
+      Which condition to wait for. This tool's own description explains what each
+      one means and how to choose between them.
     values:
       - startup
       - empty
@@ -41,5 +39,12 @@ annotations:
       generated RunWhenCondition is narrowed to the domain Condition at the
       dispatch boundary, which keeps the Redis key layout the sole owner of the
       wire strings.
+    - >-
+      What the three conditions mean lives in the body above and nowhere else.
+      The param description deliberately points at it rather than restating it:
+      the two sat a few lines apart saying the same thing in different words, and
+      the timing detail in particular ("a few minutes") is the kind that drifts
+      from IDLE_GRACE and from DiscordManagerScheduling without anyone noticing.
+      Keep the semantics in one home.
 ---
 Schedule a task to run later, once a server reaches a condition, instead of blocking the conversation now or making the user wait around. Good for slow jobs (e.g. right after start_server or restart_server) and for changes that need a restart while people are still playing. The `condition` is one of: "startup" — watch a (re)starting server settle so you can confirm it came up healthy, or catch a boot that crashes, loops, or stalls; "empty" — fire the moment no players are connected, for a change wanted ASAP as people log off; "idle" — fire after the server has been empty for a few minutes, for a no-rush tweak. Pick empty when it's urgent, idle when it can wait; ask the user if it's unclear. Returns immediately — you then carry the task out yourself when the condition is met and report back in the channel. There is no notification system and you can't ping anyone, so don't promise to; you do the work and come back with the result. Only works on games that report a live player count for the empty/idle conditions.
