@@ -40,7 +40,7 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 
 **Ops agent** ("Gary") — the center of gravity. An LLM loop (mentioned in Discord) that translates intent and operates running servers: read current config + logs, decide the change, mutate the right file, restart the GameServer, watch health, report back — all via the per-pod supervisor's HTTP control API (see below), never `kubectl exec` (see "Why not exec-as-tools" in [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md)). This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
 - *Apply a known change* (gather rate, difficulty, add a mod) — bounded and reliable. Shipped first.
-- *Diagnose an arbitrary failure and fix it* — open-ended; the agent will sometimes flail here. Scope it with an explicit escalation exit (see below).
+- *Diagnose an arbitrary failure and fix it* — open-ended; the agent will sometimes flail here. Scoped by the explicit escalation exit (see below), which lets it stop and hand off rather than guess.
 
 **Agones** — purpose-built CNCF project for running dedicated game servers on Kubernetes. Provides GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting.
 
@@ -89,7 +89,7 @@ In the no-mention paths, blank lines and slash-command-style text (leading `/`) 
 
 1. **Blast radius.** The agent edits files and restarts pods driven by friends' arbitrary free text (prompt-injection surface). It must be boxed into the game-server namespace — scoped RBAC + NetworkPolicy so a confused or injected agent can't reach the rest of the platform. Given what else runs in this cluster, this is the one that matters most. These guardrails live in `cluster/guardrails/` **in this repo**, so the gate vets them before they deploy.
 2. **Snapshot → apply → verify → auto-rollback.** A bad value or mod conflict turns a restart into a crash loop. The agent must snapshot the config dir first, apply, restart, watch health for a bounded window, and revert itself if the server doesn't recover. Without this, "ping me when it breaks" degrades into "the agent broke it worse" — defeating the entire point.
-3. **Escalation exit.** Build *apply-known-change* first (bounded, reliable). Give the agent an explicit "I'm not confident — paging Bear" path so open-ended break-fixing escalates instead of thrashing.
+3. **Escalation exit.** The `escalate` tool is Gary's explicit "I'm not confident — paging Bear" path, offered at every tier: it takes his message to the asker and his reason for the operator, and calling it ends the turn immediately so he can't page a human and then keep working the same problem. The bounded round budget is the backstop behind it, for a turn that thrashes without ever deciding to stop. Both exits are separable in the event log and in Langfuse, which is how the guardrail's effectiveness is measured. See [ADR-019](../decisions/019-agent-invoked-escalation.md).
 
 ## Edge forwarding
 

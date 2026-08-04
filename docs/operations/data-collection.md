@@ -119,12 +119,15 @@ Authentication is HTTP Basic with the key pair on every one of these. `scripts/l
 
 **Names.** Trace name is `gary.turn.<origin>` — `gary.turn.discord`, `.ingame`, `.deferred`, `.operator`. Within a trace: the root span is `gary.turn` (observation type `AGENT`), each model call is `model.completion` (type `GENERATION`), and each tool call carries the tool's own name (type `TOOL`), so filtering by a real tool name works.
 
-**Scores.** Two, both attached after the turn completes:
+**Scores.** Three, all attached after the turn completes:
 
 | Score | Type | Values |
 |---|---|---|
 | `escalated` | `BOOLEAN` | every turn that completes; `1`/`0` on the wire |
+| `escalation_kind` | `CATEGORICAL` | only on turns that escalated: `agent_requested` (Gary called the escalate tool and stopped) or `round_budget_exhausted` (the loop ran out) |
 | `guardrail` | `CATEGORICAL` | only on turns whose restart carried a pending config change: `healthy`, `rolled_back`, `rollback_failed`, `inconclusive`, `unverified` |
+
+`escalated` stays boolean and stays on every turn because the escalation rate is an average over it — `escalation_kind` splits the numerator, never the denominator. Its values are the same strings the `events` table writes into `outcome` for `kind='escalation'`, so the two planes join on them.
 
 A turn that dies on a hard model-endpoint failure exports its trace but **no scores**. Escalation rate is therefore a rate over turns that finished, and provider outages don't silently count as successes.
 
@@ -187,6 +190,8 @@ The 5 surfaces: `command` (slash handler), `agent` (a tool in a production Gary 
 
 `details` payloads by kind: `server_created` and cold `server_started` carry `address` and `time_to_ready_ms`; `backup_taken` and `server_archived` carry `size_bytes`; `server_restored` carries `boot` and `safety_backup`; `server_recovered` carries `address` and `boot`; `backup_cycle` carries `servers`/`succeeded`/`failed`; `escalation` carries `server` and `path`. Everything else is `{}`.
 
+An `escalation` row's `outcome` says which exit the turn took: `agent_requested` (Gary called the escalate tool), `round_budget_exhausted` (the loop ran out of rounds), or `crash_rollback` (an automatic config rollback couldn't recover the server — no turn involved). The first two are the interesting split; see [ADR-019](../decisions/019-agent-invoked-escalation.md).
+
 **`known_guilds`** — `guild_id`, `first_seen_at`. Backs `guild_joined` so gateway reconnects, which replay guild events, don't re-fire it. Guilds already connected when the event log first shipped were seeded here *without* events, so the acquisition timeline starts honestly at deployment instead of backdating every existing guild as a join.
 
 **`occupancy_samples`** — `id`, `instance`, `game`, `guild_id`, `players`, `restarts`, `sampled_at`. Appended every `GAMESERVERS_SAMPLE_INTERVAL_MINUTES` (default 5) for each *running* server.
@@ -197,7 +202,9 @@ The 5 surfaces: `command` (slash handler), `agent` (a tool in a production Gary 
 
 ### Escalation rate
 
-`just metric escalation-rate` — the average of the `escalated` score over `production`, which is the experiment's headline number: how often Gary gives up rather than fixing the thing. The assessment's stop signal is >30% after tuning; its go-hard signal is <10%.
+`just metric escalation-rate` — the average of the `escalated` score over `production`, which is the experiment's headline number: how often Gary hands a request to a human rather than fixing the thing. The assessment's stop signal is >30% after tuning; its go-hard signal is <10%.
+
+Split it by `escalation_kind` before reading it as a verdict, because the two exits mean opposite things. `agent_requested` is the guardrail working — Gary judged he couldn't finish and stopped instead of guessing. `round_budget_exhausted` is thrashing: sixteen rounds spent without converging *or* deciding to stop. A rate that holds steady while the mix shifts toward `agent_requested` is an improvement, not a regression.
 
 `just metric guardrail` gives the companion picture for config edits — how often a restart came back healthy versus rolled back versus worse.
 
