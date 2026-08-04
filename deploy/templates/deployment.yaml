@@ -67,7 +67,7 @@ spec:
                 secretKeyRef:
                   name: discord-bot
                   key: admin_user_ids
-            # Ops agent (Gary). The key is synced from OpenBao into the ollama-api
+            # Ops agent (Gary). The key is synced from 1Password into the ollama-api
             # Secret; marked optional so a missing key leaves Gary disabled (the
             # binary's documented behaviour) rather than crash-looping the pod.
             - name: OLLAMA_API_KEY

@@ -10,9 +10,9 @@ image:
   # digest is empty.
   tag: "dev"
   pullPolicy: Always # dev: re-pull the mutable :dev tag on each rollout
-# Credentials synced from OpenBao via External Secrets Operator. Renders every
+# Credentials synced from 1Password via External Secrets Operator. Renders every
 # Secret the bot reads into the release namespace — see deploy/README.md for the
-# full list and the OpenBao paths behind it.
+# full list and the 1Password paths behind it.
 externalSecrets:
   enabled: true
   secretStore: onepassword # ClusterSecretStore provisioned in grizzly-platform
@@ -26,7 +26,7 @@ bot:
   replicas: 1
   # The operator allowlist (adminUserIds → cross-guild operators) is NOT set here:
   # the repo is public, and although these ids are not credentials they tie a
-  # personal Discord identity to the project. It is synced from OpenBao
+  # personal Discord identity to the project. It is synced from 1Password
   # (grizzly-platform/gameservers/discord → admin_user_ids) and injected via
   # secretKeyRef in templates/deployment.yaml. The bot is multi-guild — commands
   # register per-guild on join — so no guild id is pinned. Per-guild admins
@@ -34,13 +34,13 @@ bot:
   domain: gameservers.grizzly-endeavors.com # base domain for friend-facing connection addresses
   logLevel: info # RUST_LOG value
   # Ops agent (Gary): the Ollama Cloud model tag. The API key is synced from
-  # OpenBao into the ollama-api Secret and injected via secretKeyRef (optional —
+  # 1Password into the ollama-api Secret and injected via secretKeyRef (optional —
   # an absent key disables Gary). Override the model here without a rebuild.
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
   # Foundation Postgres for the bot's durable state (the no-mention home-channel
   # registry). Host/port/name/user are plain config; the password is synced from
-  # OpenBao into the grizzly-gameservers-db Secret and injected via secretKeyRef
+  # 1Password into the grizzly-gameservers-db Secret and injected via secretKeyRef
   # (optional — an absent password disables home channels, mentions still work).
   # Provisioned by grizzly-platform's setup-grizzly-gameservers-stores.yml.
   db:
@@ -49,7 +49,7 @@ bot:
     name: grizzly_gameservers
     user: grizzly_gameservers
   # Foundation kv-cache (Valkey on the R730xd) for Gary's deferred-task queue
-  # (run_when). Host/port/db are plain config; the password is synced from OpenBao
+  # (run_when). Host/port/db are plain config; the password is synced from 1Password
   # (grizzly-platform/stores/kv-cache) into the grizzly-gameservers-kv-cache Secret
   # and injected via secretKeyRef (optional — an absent password disables the
   # deferred-task feature). Shared instance: DB 2 (0 is the default, 1 is Authentik).
