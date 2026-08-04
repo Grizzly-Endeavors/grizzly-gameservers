@@ -42,8 +42,9 @@ const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 5;
 /// Generous: a first-boot `SteamCMD` download (Satisfactory pulls ~15 GB) plus
 /// world generation can run for many minutes before the port opens.
 const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 600;
-/// Generous relative to a Minecraft world-save before we SIGKILL.
-const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+/// Shared with the bot and the game manifests' `terminationGracePeriodSeconds`,
+/// both of which have to clear this window.
+const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS;
 /// Sliding window over which repeated crashes count toward escalation.
 const DEFAULT_CRASH_WINDOW_SECS: u64 = 300;
 /// Crashes within the window before the supervisor stops the heartbeat and lets

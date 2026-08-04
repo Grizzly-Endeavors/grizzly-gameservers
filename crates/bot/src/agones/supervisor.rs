@@ -15,11 +15,15 @@ use super::types::GameServer;
 
 /// Per-request timeout for the mutating supervisor calls. `/stop` and `/restart`
 /// reply only after the in-pod graceful stop finishes (Minecraft's SIGTERM
-/// world-save), so this must exceed the supervisor's `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`
-/// (90s default) plus respawn margin — otherwise the bot times out and reports a
-/// failure while the restart actually succeeds. The client's short default still
-/// applies to cheap calls; this overrides it only where the work is genuinely slow.
-const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
+/// world-save), so this must exceed the graceful window of the *slowest* game in
+/// the catalog plus respawn margin — otherwise the bot times out and reports a
+/// failure while the restart actually succeeds. Games default to
+/// [`grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS`] and raise it per image
+/// via `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`; the `the_bot_waits_out_every_games_graceful_stop`
+/// guard in `tests/config.rs` reads each game's effective window and fails if this
+/// no longer clears it. The client's short default still applies to cheap calls;
+/// this overrides it only where the work is genuinely slow.
+pub(crate) const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(3);
 
 /// Per-request timeout for the cheap `GET /status` poll. Touches only in-memory
 /// state, so a slower reply means a wedged pod, not real work.

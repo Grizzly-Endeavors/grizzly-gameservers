@@ -15,6 +15,7 @@ pub mod archive;
 pub mod autoupdate;
 pub mod chat_watcher;
 pub mod child_env;
+pub mod cli;
 pub mod config;
 pub mod control;
 pub mod fs;

@@ -39,6 +39,11 @@ pub(crate) use supervisor::{
     supervisor_status, supervisor_stop, wait_for_control_reachable, wait_for_ready,
     wait_for_ready_within,
 };
+// Only the drift guard in `crate::tests::config` reads this — the runtime callers
+// are inside `supervisor` itself — so exporting it unconditionally would be an
+// unused import in a normal build.
+#[cfg(test)]
+pub(crate) use supervisor::CONTROL_MUTATION_TIMEOUT;
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,
     supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,

@@ -46,10 +46,14 @@ spec:
     # with game-image CI signing and the Agones carve-out (ADR-003).
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
-      # SIGKILL grace after SIGTERM. Must stay ≥ the supervisor's
-      # DEFAULT_GRACEFUL_TIMEOUT_SECS (90s) so its world-save finishes; see
-      # games/_template/gameserver.yaml.
-      terminationGracePeriodSeconds: 120
+      # SIGKILL grace after SIGTERM. Must stay ≥ this game's graceful save window
+      # so the world-save finishes; see games/_template/gameserver.yaml. Valheim's
+      # save runs long enough that its image raises that window to 120s
+      # (SUPERVISOR_GRACEFUL_TIMEOUT_SECS in games/valheim/Dockerfile), so this is
+      # 150 rather than the catalog's usual 120 — at 120 the kubelet's SIGKILL would
+      # land on the same tick the supervisor's own timeout fires, leaving the save
+      # no margin at all.
+      terminationGracePeriodSeconds: 150
       containers:
         # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
         - name: valheim
