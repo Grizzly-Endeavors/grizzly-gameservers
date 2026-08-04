@@ -22,5 +22,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-018 — Terraria runs the TShock flavor](018-terraria-tshock-flavor.md)
 - [ADR-019 — The agent escalates by calling a tool, and that ends the turn](019-agent-invoked-escalation.md)
 - [ADR-020 — Gary's conversation belongs to the channel, not to one person](020-channel-bound-conversations.md)
+- [ADR-021 — Resize a running server in place; keep the override in Postgres](021-in-place-resource-resize.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

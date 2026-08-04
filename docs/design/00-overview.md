@@ -87,6 +87,12 @@ In the no-mention paths, blank lines and slash-command-style text (leading `/`) 
 
 A **Discord channel is one conversation**, shared by everyone in it, held in memory for 30 idle minutes and wiped by a restart — friends-scale, with no chat history to manage. Everyone sees the same back-and-forth Gary does, which is what makes an admin able to answer a friend's question, take over a request, or click through the confirmation on a destructive action someone else asked for. Each message is attributed to its speaker and their tier so Gary can tell the participants apart, and the tools he's handed are recomputed **per message** from whoever just spoke — the transcript is shared, the authority never is. In-game chat stays per-player instead: a player holds no tier and gets a fixed read-only pair of tools, so there's nothing there for a second person to join. See [ADR-020](../decisions/020-channel-bound-conversations.md).
 
+### Resource sizing is the third config tier
+
+Each game's catalog entry declares the CPU and memory its servers get. That is the default, not the last word: an instance can be **resized per world**, and the override lives on the foundation Postgres store rather than on the Kubernetes object — a cold start re-renders the `GameServer` from the catalog template, so anything held only in the cluster would silently revert the next time a server stopped and started. It is re-applied at every render, including the backup cycle's ensure-pod and the stranded-instance reconciler, so a server always comes back the size it was.
+
+A resize lands on the **running** container through Kubernetes' `pods/resize` subresource: no restart, no reschedule, nobody disconnected. That property is why it's a tool rather than a stop/start pair, and it makes the watchdog's memory-pressure incident actionable instead of merely reportable. The brakes are a hard clamp (values outside it are refused, never quietly adjusted) and a prompt that makes growing an allocation the last option — a leak will consume whatever it is given. See [ADR-021](../decisions/021-in-place-resource-resize.md).
+
 ## Ops-agent guardrails (non-negotiable)
 
 "Ping me if it breaks, so I'm not fiddling" only holds if these are built in from the start. An unsupervised agent with write access to live game state and restart power can make things worse.
