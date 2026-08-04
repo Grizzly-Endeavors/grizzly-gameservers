@@ -8,6 +8,7 @@ fn instance(game: &str, guild: &str) -> LiveInstance {
         game: GameId::new(game),
         guild: GuildId::new(guild),
         running: true,
+        unhealthy: false,
     }
 }
 
@@ -89,6 +90,43 @@ fn an_unreadable_status_records_nothing() {
             .is_none()
         );
     }
+}
+
+#[test]
+fn poll_shapes_map_one_to_one_for_the_watchdog() {
+    assert_eq!(
+        poll_of(&status(3)),
+        PollObservation::Ok {
+            phase: ProcessPhase::Running,
+            restarts: 3,
+            uptime_seconds: 900,
+        }
+    );
+    assert_eq!(
+        poll_of(&StatusPoll::Unreachable),
+        PollObservation::Unreachable
+    );
+    assert_eq!(
+        poll_of(&StatusPoll::PodNotReady),
+        PollObservation::PodNotReady
+    );
+    assert_eq!(poll_of(&StatusPoll::NotFound), PollObservation::NotFound);
+    assert_eq!(
+        poll_of(&StatusPoll::NotManaged),
+        PollObservation::NotManaged
+    );
+}
+
+#[test]
+fn observations_carry_labels_with_the_same_null_semantics_as_rows() {
+    let observed = observation(&instance("", ""), PollObservation::GameServerUnhealthy);
+    assert_eq!(observed.instance.as_str(), "worldly-otter");
+    assert_eq!(
+        observed.game, None,
+        "an absent label must not read as a blank game"
+    );
+    assert_eq!(observed.guild, None);
+    assert_eq!(observed.poll, PollObservation::GameServerUnhealthy);
 }
 
 #[test]

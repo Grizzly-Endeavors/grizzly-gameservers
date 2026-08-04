@@ -91,6 +91,13 @@ fn incident_prompt_renders_each_remaining_kind() {
     assert!(memory.contains("950"), "used MiB must land in: {memory}");
     assert!(memory.contains("1000"), "limit MiB must land in: {memory}");
     assert!(memory.contains("95"), "percent must land in: {memory}");
+
+    let unhealthy =
+        compose_incident_prompt(&incident(IncidentFacts::Unhealthy, IncidentKind::Crash));
+    assert!(
+        unhealthy.contains("\"mc-a\""),
+        "the frame must still name the server: {unhealthy}"
+    );
 }
 
 #[test]

@@ -382,6 +382,7 @@ fn trigger_note(facts: &IncidentFacts) -> String {
             minutes: &minutes.to_string(),
         }
         .render(),
+        IncidentFacts::Unhealthy => prompts::WatchdogUnhealthy::render(),
         IncidentFacts::MemoryPressure {
             used_bytes,
             limit_bytes,
@@ -414,6 +415,11 @@ fn facts_line(facts: &IncidentFacts) -> String {
         ),
         IncidentFacts::Unreachable { minutes } => {
             format!("its control API has been unreachable for {minutes} minutes")
+        }
+        IncidentFacts::Unhealthy => {
+            "agones marked it unhealthy after crash escalation; its pod is torn down and it \
+             stays down until recovered"
+                .to_owned()
         }
         IncidentFacts::MemoryPressure {
             used_bytes,
