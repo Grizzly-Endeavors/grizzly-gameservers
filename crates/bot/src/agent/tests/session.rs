@@ -312,6 +312,7 @@ fn escalates_after_first_round(
         (handed_off.load(Ordering::SeqCst) > 0).then(|| EscalationRequest {
             reply: "I can't fix this one — Bear is on it.".to_owned(),
             reason: "the world file is corrupt and needs a restore decision".to_owned(),
+            server: Some("mc-summer".to_owned()),
         })
     }
 }
@@ -356,6 +357,7 @@ async fn a_tool_escalation_ends_the_turn_with_the_models_own_reply() {
         outcome.escalation,
         Some(EscalationReason::AgentRequested {
             reason: "the world file is corrupt and needs a restore decision".to_owned(),
+            server: Some("mc-summer".to_owned()),
         }),
         "the operator notice carries the reason, which is a different audience"
     );

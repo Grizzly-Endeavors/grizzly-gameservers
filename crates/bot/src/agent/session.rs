@@ -61,6 +61,10 @@ pub(crate) struct EscalationRequest {
     /// What the operator notice carries: the diagnosis and what's needed from a
     /// human. A different audience from `reply`, so a different field.
     pub(crate) reason: String,
+    /// The instance this is about, when it is about one. Carried through to the
+    /// notice and the event row so an operator can find it without re-reading
+    /// the prose.
+    pub(crate) server: Option<String>,
 }
 
 /// Consulted after each round of tool calls: `Some` means a tool asked for the
@@ -93,8 +97,12 @@ pub(crate) enum EscalationReason {
     /// The loop spent its whole round budget without converging.
     RoundBudget,
     /// The model called the escalation tool — it judged that it could not finish
-    /// and asked for a human, carrying the reason for the operator notice.
-    AgentRequested { reason: String },
+    /// and asked for a human, carrying the reason for the operator notice and
+    /// the instance it named, if any.
+    AgentRequested {
+        reason: String,
+        server: Option<String>,
+    },
 }
 
 impl EscalationReason {
@@ -256,6 +264,7 @@ pub(crate) async fn run_session(
                 reply: request.reply,
                 escalation: Some(EscalationReason::AgentRequested {
                     reason: request.reason,
+                    server: request.server,
                 }),
                 generations,
             };

@@ -42,7 +42,7 @@ use crate::discord::gary::{
     run_gary_turn,
 };
 use crate::discord::{AccessLevel, Data};
-use crate::domain::GuildId;
+use crate::domain::{GuildId, InstanceName};
 use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
 use crate::http::gated;
 
@@ -377,23 +377,27 @@ async fn run_gary(
     } = outcome;
     let escalation_kind = escalation.as_ref().map(EscalationReason::as_str);
     let escalation_reason = match escalation.as_ref() {
-        Some(EscalationReason::AgentRequested { reason }) => Some(reason.clone()),
+        Some(EscalationReason::AgentRequested { reason, .. }) => Some(reason.clone()),
         Some(EscalationReason::RoundBudget) | None => None,
     };
     if let Some(reason) = escalation.as_ref() {
         // The harness gains the event and nothing else — its caller already sees
         // the escalation in the response, so there is still no notification.
-        data.events
-            .record(
-                ProductEvent::new(
-                    EventKind::Escalation,
-                    &Attribution::new(Actor::Discord(acting.author_id.get()), Surface::Operator),
-                    reason.as_str(),
-                )
-                .guild(acting.guild.map(|guild| GuildId::new(guild.to_string())))
-                .details(mapping::escalation_details(None, None)),
-            )
-            .await;
+        let named = match reason {
+            EscalationReason::AgentRequested { server, .. } => server.as_deref(),
+            EscalationReason::RoundBudget => None,
+        };
+        let mut event = ProductEvent::new(
+            EventKind::Escalation,
+            &Attribution::new(Actor::Discord(acting.author_id.get()), Surface::Operator),
+            reason.as_str(),
+        )
+        .guild(acting.guild.map(|guild| GuildId::new(guild.to_string())))
+        .details(mapping::escalation_details(named, None));
+        if let Some(server) = named {
+            event = event.instance(InstanceName::new(server));
+        }
+        data.events.record(event).await;
     }
     let turn_slice = messages.get(mark..).unwrap_or_default();
     let tool_calls = tool_trace(turn_slice);
