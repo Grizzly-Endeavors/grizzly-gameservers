@@ -45,6 +45,10 @@ const RESIZE_IN_PROGRESS_CONDITION: &str = "PodResizeInProgress";
 /// `PodResizePending` reason meaning the node cannot satisfy the request as
 /// asked — distinct from `Deferred`, which means "not now, but maybe later".
 const INFEASIBLE_REASON: &str = "Infeasible";
+/// A pod condition only counts when it is actually asserted. Kubernetes may
+/// leave a resolved condition in place with `status: "False"` rather than
+/// removing it.
+const CONDITION_TRUE: &str = "True";
 
 /// What happened to a requested in-place resize.
 #[derive(Debug, PartialEq, Eq)]
@@ -183,6 +187,12 @@ fn infeasible_message(pod: &Pod) -> Option<String> {
         .as_ref()?
         .iter()
         .find(|condition| condition.type_ == RESIZE_PENDING_CONDITION)?;
+    // Status, not mere presence: the kubelet may clear a resolved condition by
+    // flipping it to False rather than removing it, and treating a leftover
+    // False as live would strand every subsequent resize on this pod.
+    if condition.status != CONDITION_TRUE {
+        return None;
+    }
     if condition.reason.as_deref() != Some(INFEASIBLE_REASON) {
         return None;
     }
@@ -237,9 +247,10 @@ fn in_progress(pod: &Pod) -> bool {
         .as_ref()
         .and_then(|status| status.conditions.as_ref())
         .is_some_and(|conditions| {
-            conditions
-                .iter()
-                .any(|condition| condition.type_ == RESIZE_IN_PROGRESS_CONDITION)
+            conditions.iter().any(|condition| {
+                condition.type_ == RESIZE_IN_PROGRESS_CONDITION
+                    && condition.status == CONDITION_TRUE
+            })
         })
 }
 
