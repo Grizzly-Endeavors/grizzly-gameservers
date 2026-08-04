@@ -45,6 +45,15 @@ const RESIZE_IN_PROGRESS_CONDITION: &str = "PodResizeInProgress";
 /// `PodResizePending` reason meaning the node cannot satisfy the request as
 /// asked — distinct from `Deferred`, which means "not now, but maybe later".
 const INFEASIBLE_REASON: &str = "Infeasible";
+/// A pod condition only counts when it is actually asserted. Kubernetes may
+/// leave a resolved condition in place with `status: "False"` rather than
+/// removing it.
+const CONDITION_TRUE: &str = "True";
+
+/// HTTP status the API answers with when it validates the patch and says no —
+/// as distinct from a transport failure. Lowering a memory limit in place is the
+/// case that reaches this in practice.
+const REFUSED_STATUS: u16 = 422;
 
 /// What happened to a requested in-place resize.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,9 +63,20 @@ pub(crate) enum ResizeOutcome {
     /// The kubelet accepted it but hadn't finished within the settle window. The
     /// change is still in flight, not lost.
     InProgress,
-    /// The node can't satisfy it as asked — typically shrinking memory below live
-    /// usage, or growing past what the node has left. Carries the kubelet's own
-    /// message, which names the real obstacle.
+    /// The change can't be made on a *running* container. Two distinct causes
+    /// land here because they have one story for the caller — the setting is
+    /// saved and applies at the next start:
+    ///
+    /// - The API refuses it outright (422). Kubernetes forbids *lowering* a
+    ///   memory limit in place unless the container declares
+    ///   `resizePolicy: RestartContainer` for memory, which the catalog
+    ///   deliberately doesn't — restarting the game to shrink it would give away
+    ///   the one property this path exists for.
+    /// - The kubelet accepts it and then reports it `Infeasible`, typically
+    ///   because the node has no room left to grow into.
+    ///
+    /// Carries the cluster's own message either way, which names the real
+    /// obstacle better than anything reconstructed here would.
     Infeasible(String),
     /// No pod is running, so there is nothing to resize in place; the recorded
     /// override applies at the next start.
@@ -126,14 +146,33 @@ pub(crate) async fn resize_instance(
             }],
         }
     });
-    pods.patch_subresource(
-        "resize",
-        &pod_name,
-        &PatchParams::default(),
-        &Patch::Strategic(patch),
-    )
-    .await
-    .with_context(|| format!("failed to patch resources on pod {pod_name}"))?;
+    match pods
+        .patch_subresource(
+            "resize",
+            &pod_name,
+            &PatchParams::default(),
+            &Patch::Strategic(patch),
+        )
+        .await
+    {
+        Ok(_) => {}
+        // A refusal is not a failure to reach the cluster, and reporting it as
+        // one would send the caller looking for a network problem that isn't
+        // there. The API's own message says exactly what it objected to.
+        Err(kube::Error::Api(response)) if response.code == REFUSED_STATUS => {
+            debug!(
+                instance,
+                pod = %pod_name,
+                reason = %response.message,
+                "the api refused an in-place resize"
+            );
+            return Ok(ResizeOutcome::Infeasible(response.message));
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed to patch resources on pod {pod_name}"));
+        }
+    }
     debug!(instance, pod = %pod_name, container, "requested an in-place resize");
 
     watch_resize(&pods, &pod_name, &container, sizing).await
@@ -183,6 +222,12 @@ fn infeasible_message(pod: &Pod) -> Option<String> {
         .as_ref()?
         .iter()
         .find(|condition| condition.type_ == RESIZE_PENDING_CONDITION)?;
+    // Status, not mere presence: the kubelet may clear a resolved condition by
+    // flipping it to False rather than removing it, and treating a leftover
+    // False as live would strand every subsequent resize on this pod.
+    if condition.status != CONDITION_TRUE {
+        return None;
+    }
     if condition.reason.as_deref() != Some(INFEASIBLE_REASON) {
         return None;
     }
@@ -237,9 +282,10 @@ fn in_progress(pod: &Pod) -> bool {
         .as_ref()
         .and_then(|status| status.conditions.as_ref())
         .is_some_and(|conditions| {
-            conditions
-                .iter()
-                .any(|condition| condition.type_ == RESIZE_IN_PROGRESS_CONDITION)
+            conditions.iter().any(|condition| {
+                condition.type_ == RESIZE_IN_PROGRESS_CONDITION
+                    && condition.status == CONDITION_TRUE
+            })
         })
 }
 

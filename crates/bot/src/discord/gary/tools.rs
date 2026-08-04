@@ -678,6 +678,11 @@ const LAST_ACTION_KINDS: &[EventKind] = &[
     EventKind::ServerShutdown,
     EventKind::ServerRestored,
     EventKind::ServerRecovered,
+    // A resize leaves no other trace anyone would notice — the pod isn't
+    // recreated and the process never blinks — so this is the only place someone
+    // asking "what happened to this server?" would find out that its headroom
+    // changed under it.
+    EventKind::ResourcesChanged,
 ];
 
 /// Uptime and crash count, read live from the supervisor. Neither is derivable
@@ -746,8 +751,12 @@ async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 /// An event kind as the model should read it back: `server_restarted` is a column
-/// value, "restarted" is what happened.
+/// value, "restarted" is what happened. Kinds outside the `server_` family are
+/// spelled out where the raw column value wouldn't read as English.
 fn past_tense(kind: &str) -> &str {
+    if kind == EventKind::ResourcesChanged.as_str() {
+        return "had its resources changed";
+    }
     kind.strip_prefix("server_").unwrap_or(kind)
 }
 

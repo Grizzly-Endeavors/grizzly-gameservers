@@ -171,3 +171,45 @@ fn a_pod_that_is_not_running_is_not_the_resize_target() {
     pod.status.as_mut().expect("status was just built").phase = Some("Pending".to_owned());
     assert_eq!(running_name(pod), None);
 }
+
+#[test]
+fn a_resolved_condition_left_behind_as_false_does_not_block_a_resize() {
+    // The kubelet may clear a condition by flipping it to False rather than
+    // removing it. Reading mere presence would strand every later resize on this
+    // pod as "still settling" or "infeasible" forever.
+    let mut pod = with_condition(
+        pod_running(("500m", "2147483648"), ("2000m", "4294967296")),
+        RESIZE_IN_PROGRESS_CONDITION,
+        None,
+        None,
+    );
+    pod = with_condition(
+        pod,
+        RESIZE_PENDING_CONDITION,
+        Some(INFEASIBLE_REASON),
+        Some("stale"),
+    );
+    for condition in pod
+        .status
+        .as_mut()
+        .expect("status was just built")
+        .conditions
+        .as_mut()
+        .expect("conditions were just added")
+    {
+        condition.status = "False".to_owned();
+    }
+
+    assert!(!in_progress(&pod));
+    assert_eq!(infeasible_message(&pod), None);
+    assert!(applied(&pod, "minecraft", sizing()));
+}
+
+#[test]
+fn the_refusal_status_is_the_one_kubernetes_uses_for_a_rejected_resize() {
+    // Pinned because the whole 422 branch hangs on it: a wrong value here would
+    // send a plain refusal down the transport-error path, where it surfaces to a
+    // friend as "I couldn't reach the cluster" — a lie about a cluster that
+    // answered clearly.
+    assert_eq!(REFUSED_STATUS, 422);
+}

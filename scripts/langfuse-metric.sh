@@ -33,6 +33,7 @@ Usage: scripts/langfuse-metric.sh <metric> [environment] [days]
 
 Metrics:
   escalation-rate   avg of the `escalated` score — the experiment's headline number
+  escalation-kind   how the escalations split: deliberate handoff vs budget spent
   cost-per-turn     spend per Gary turn, and the token counts behind it
   guardrail         distribution of the `guardrail` verdicts
   volume            turns, model calls and tool calls by environment
@@ -98,13 +99,15 @@ if metric == "escalation-rate":
             {"column": "name", "operator": "=", "value": "escalated", "type": "string"}],
         **window,
     }
-elif metric == "guardrail":
+elif metric in ("guardrail", "escalation-kind"):
+    # Both are categorical scores keyed by name; only the name differs.
+    name = "guardrail" if metric == "guardrail" else "escalation_kind"
     query = {
         "view": "scores-categorical",
         "metrics": [{"measure": "count", "aggregation": "count"}],
         "dimensions": [{"field": "name"}, {"field": "stringValue"}],
         "filters": env_filter() + [
-            {"column": "name", "operator": "=", "value": "guardrail", "type": "string"}],
+            {"column": "name", "operator": "=", "value": name, "type": "string"}],
         **window,
     }
 elif metric in ("cost-per-turn", "volume"):
@@ -165,6 +168,14 @@ elif metric == "cost-per-turn":
         if cost == 0 and tokens:
             print("\ncost is zero with non-zero tokens — the model price is missing, or these")
             print("observations were ingested before it was defined (pricing is not retroactive).")
+elif metric in ("guardrail", "escalation-kind"):
+    # A distribution reads as shares, not counts: "most escalations are
+    # deliberate" is the finding, and raw counts bury it.
+    counts = {row.get("stringValue") or "unknown": row.get("count_count", 0) for row in rows}
+    total = sum(counts.values())
+    for value, count in sorted(counts.items(), key=lambda pair: -pair[1]):
+        print(f"{value:<24} {count:>6}  {count / total:.1%}")
+    print(f"{'total':<24} {total:>6}")
 else:
     print(json.dumps(rows, indent=2))
 PY
