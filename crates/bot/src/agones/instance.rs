@@ -14,6 +14,7 @@ use super::labels::{
 use super::naming::pvc_name;
 use super::ports::{AssignedPort, PortAssignment};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::events::{parse_bytes, parse_cpu_millicores};
 use crate::sizing::Sizing;
 
 /// Everything the renderer needs to stamp a catalog template into a concrete
@@ -166,6 +167,59 @@ fn set_container_resources(data: &mut Value, sizing: Sizing) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The CPU and memory a game's catalog template declares — what every instance
+/// of that game runs with until someone resizes one.
+///
+/// The read mirror of [`set_container_resources`]: an instance carrying an
+/// override otherwise gives a reader no way to tell whether it still differs
+/// from the game's own sizing, and no way to state what putting it back would
+/// mean. There is no reset tool — going back is `set_resources` with these four
+/// figures — so they have to be readable.
+///
+/// `None` when the template names no game container, declares no resources on
+/// it, or states them partially (a catalog may deliberately omit a limit — see
+/// `games/_template/gameserver.yaml`). Three of four figures would describe a
+/// sizing no instance actually gets, so the caller reports it unknown instead.
+pub(crate) fn catalog_sizing(entry: &GameCatalogEntry) -> Option<Sizing> {
+    let template: Value = serde_yaml_ng::from_str(&entry.gameserver_yaml).ok()?;
+    let spec = template.get("spec")?;
+    // Same container the resize path picks: without `spec.container` the game is
+    // indistinguishable from the injected Agones sidecar, whose footprint is not
+    // the answer to "what does this game normally get".
+    let game_container = spec.get("container").and_then(Value::as_str)?;
+    let resources = spec
+        .get("template")?
+        .get("spec")?
+        .get("containers")?
+        .as_array()?
+        .iter()
+        .find(|container| container.get("name").and_then(Value::as_str) == Some(game_container))?
+        .get("resources")?;
+    let quantity = |side: &str, key: &str| {
+        resources
+            .get(side)
+            .and_then(|declared| declared.get(key))
+            .and_then(quantity_text)
+    };
+    Some(Sizing {
+        cpu_request_millicores: parse_cpu_millicores(&quantity("requests", "cpu")?)?,
+        mem_request_bytes: parse_bytes(&quantity("requests", "memory")?)?,
+        cpu_limit_millicores: parse_cpu_millicores(&quantity("limits", "cpu")?)?,
+        mem_limit_bytes: parse_bytes(&quantity("limits", "memory")?)?,
+    })
+}
+
+/// A declared quantity as text. Numbers as well as strings, because YAML reads a
+/// whole-core `cpu: 2` as a number while `cpu: "2"` and `cpu: 500m` are strings,
+/// and which one a catalog author wrote shouldn't decide whether it can be read.
+fn quantity_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 /// Set (or add) an env var on every container in the pod template. The catalog

@@ -31,19 +31,20 @@ use crate::agent::{EscalationRequest, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement,
     ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome,
-    StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name, destroy_instance,
-    instance_runtime_state, list_active_servers, now_entropy, provision_instance, resize_instance,
-    shutdown_instance, supervisor_announce, supervisor_edit_file, supervisor_list_files,
-    supervisor_occupancy, supervisor_read_file, supervisor_read_logs, supervisor_restart,
-    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_status,
-    supervisor_stop, supervisor_write_file, verify_scope, wait_for_instance_ready, wait_for_ready,
+    StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name, catalog_sizing,
+    destroy_instance, instance_runtime_state, list_active_servers, now_entropy, provision_instance,
+    resize_instance, shutdown_instance, supervisor_announce, supervisor_edit_file,
+    supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,
+    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
+    supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
+    wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
 };
 use crate::defer::{Condition, DeferredTask};
-use crate::domain::{GuildId, InstanceName};
+use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::{
     Actor, Attribution, EventKind, ProductEvent, ResourceSample, Surface, mapping, parse_bytes,
     parse_cpu_millicores, sample_instance,
@@ -934,11 +935,32 @@ async fn exec_server_resources(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
     let origin = if ctx.data.sizing.get(server).await.is_some() {
-        "set for this server"
+        prompts::ServerResourcesOverridden {
+            defaults: &catalog_defaults(ctx, sample.game.as_ref()),
+        }
+        .render()
     } else {
-        "the defaults for this game"
+        prompts::ServerResourcesCatalog::render()
     };
-    format_resources(server, &sample, origin)
+    format_resources(server, &sample, &origin)
+}
+
+/// This game's catalog sizing, worded as `set_resources` words a change — the
+/// figures a resized server would go back to, since clearing an override means
+/// setting them again by hand.
+fn catalog_defaults(ctx: &ToolCtx<'_>, game: Option<&GameId>) -> String {
+    catalog_defaults_summary(
+        game.and_then(|game| ctx.data.catalog.get(game.as_str()))
+            .and_then(catalog_sizing),
+    )
+}
+
+/// "unknown" rather than a partial reading when the game has no catalog entry or
+/// its template doesn't state all four figures: the sentence exists to be copied
+/// into a resize, and three right figures beside one invented one is worse than
+/// none at all.
+fn catalog_defaults_summary(sizing: Option<Sizing>) -> String {
+    sizing.map_or_else(|| "unknown".to_owned(), format_sizing_summary)
 }
 
 fn format_resources(server: &str, sample: &ResourceSample, origin: &str) -> String {

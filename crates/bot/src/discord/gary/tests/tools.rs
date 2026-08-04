@@ -795,6 +795,55 @@ fn a_missing_reading_reports_unknown_rather_than_zero() {
 }
 
 #[test]
+fn a_resized_servers_report_names_what_the_game_normally_gets() {
+    // There is no reset tool by design: going back to normal is set_resources
+    // with the game's own four figures. Stating them is what makes an override
+    // that no longer changes anything distinguishable from one that matters.
+    let origin = prompts::ServerResourcesOverridden {
+        defaults: &catalog_defaults_summary(Some(Sizing {
+            cpu_request_millicores: 500,
+            mem_request_bytes: 2 * 1024 * 1024 * 1024,
+            cpu_limit_millicores: 2000,
+            mem_limit_bytes: 4 * 1024 * 1024 * 1024,
+        })),
+    }
+    .render();
+    let report = format_resources("mc", &resource_sample(), &origin);
+    assert!(report.contains("set for this server"));
+    assert!(
+        report.contains("500m cpu / 2.0 GiB memory reserved, up to 2000m cpu / 4.0 GiB memory"),
+        "the defaults have to be copyable into a resize verbatim: {report}"
+    );
+}
+
+#[test]
+fn an_unreadable_default_is_reported_unknown_rather_than_partly() {
+    // A game with no catalog entry, or a template that states three figures of
+    // four. Naming the ones it does have would get them copied into a resize
+    // beside an invented fourth.
+    let origin = prompts::ServerResourcesOverridden {
+        defaults: &catalog_defaults_summary(None),
+    }
+    .render();
+    let report = format_resources("mc", &resource_sample(), &origin);
+    assert!(report.contains("defaults are unknown"), "{report}");
+}
+
+#[test]
+fn a_server_nobody_resized_says_so_without_repeating_the_numbers() {
+    let report = format_resources(
+        "mc",
+        &resource_sample(),
+        &prompts::ServerResourcesCatalog::render(),
+    );
+    assert!(report.contains("the defaults for this game"));
+    assert!(
+        !report.contains("reserved, up to"),
+        "the figures are already above; restating them as the defaults is padding: {report}"
+    );
+}
+
+#[test]
 fn every_resize_outcome_says_whether_the_change_is_live_yet() {
     let sizing = Sizing {
         cpu_request_millicores: 500,
