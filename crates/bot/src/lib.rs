@@ -114,9 +114,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // goes into the command Data.
     let backup = setup_cycles(
         schedule,
-        config.s3.as_ref(),
-        config.db.as_ref(),
-        config.supervisor_token.as_deref(),
+        BackupInputs {
+            s3: config.s3.as_ref(),
+            db: config.db.as_ref(),
+            supervisor_token: config.supervisor_token.as_deref(),
+        },
         CycleHandles {
             client: kube_client.clone(),
             http: control_http.clone(),
@@ -472,9 +474,7 @@ impl ReconcileHandles {
 /// the one nobody is around to notice.
 async fn setup_cycles(
     schedule: CycleSchedule,
-    s3: Option<&config::S3Config>,
-    db: Option<&config::DbConfig>,
-    supervisor_token: Option<&str>,
+    backups: BackupInputs<'_>,
     handles: CycleHandles,
     watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
     tasks: &TaskTracker,
@@ -494,11 +494,7 @@ async fn setup_cycles(
         shutdown.clone(),
     );
     setup_backups(
-        BackupInputs {
-            s3,
-            db,
-            supervisor_token,
-        },
+        backups,
         Retention {
             backups: schedule.backup_retention,
             archive_days: schedule.archive_retention_days,
