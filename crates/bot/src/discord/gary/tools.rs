@@ -26,7 +26,7 @@ use super::super::render::{
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
-use crate::agent::{ToolCall, ToolDef, TurnOrigin};
+use crate::agent::{EscalationRequest, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
     ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, StatusPoll,
@@ -53,11 +53,12 @@ use crate::notify::Escalation;
 use crate::prompts::{
     self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DeleteArchive, DeleteArchiveDone, DeleteArchiveFailed, DeleteArchiveNotFound,
-    DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Forget, ForgetParams,
-    ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams, NameParams, PathParams,
-    ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer,
-    RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
-    SendCommandParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
+    DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Escalate, EscalateParams,
+    Forget, ForgetParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
+    NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
+    RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods,
+    SearchModsParams, SendCommand, SendCommandParams, ShutdownServer, StartServer, StopServer,
+    WriteFile, WriteFileParams,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -115,6 +116,12 @@ pub(crate) struct ToolCtx<'a> {
     /// wins: a turn with several edit-and-restart cycles is scored on the final
     /// verdict, and the per-cycle history is already in its tool observations.
     pub(crate) guardrail: std::sync::Mutex<Option<GuardrailVerdict>>,
+    /// Set when the model calls `escalate`. The loop polls it after each round
+    /// of tool calls and stops there, which is what makes the escalation exit an
+    /// exit rather than a notification the model can talk past. First write wins:
+    /// if a round somehow escalates twice, the reply the user sees is the one
+    /// that decided to hand off, not a second thought about it.
+    pub(crate) escalation: std::sync::Mutex<Option<EscalationRequest>>,
 }
 
 impl ToolCtx<'_> {
@@ -178,6 +185,29 @@ impl ToolCtx<'_> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Record the model's decision to hand this turn to a human, keeping any
+    /// earlier request in place. Poison-tolerant for the same reason as the
+    /// pending-change lock.
+    fn note_escalation(&self, request: EscalationRequest) {
+        let mut guard = self
+            .escalation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(request);
+        }
+    }
+
+    /// The handoff this turn asked for, if the model asked for one. Cloned rather
+    /// than taken, because both the loop (to stop) and the shell (to notify) read
+    /// it.
+    pub(crate) fn escalation_request(&self) -> Option<EscalationRequest> {
+        self.escalation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Who this tool is acting for, for the product event log. The surface comes
     /// from the turn's origin, so a `run_when` batch and an operator-harness turn
     /// are separable from a friend's live conversation without any extra
@@ -223,19 +253,21 @@ struct TargetName {
 /// home the offer list, the dispatch gate, and the below-tier refusal all read,
 /// so a tool's tier is stated exactly once.
 ///
-/// The tiers, in the order they appear: read-only lookups anyone may run;
-/// manager lifecycle, file-tuning, mod-discovery, and memory tools — the day-to-day
-/// operations, none of which permanently destroy a world; and the admin-only
-/// destructive set (permanent deletion, world overwrites, archival, live console
-/// commands). The "do not confirm" steer on `destroy_server` and the
-/// confirmation phrasing on `archive_server`/`restore_server` live in those
-/// tools' prompt files.
+/// The tiers, in the order they appear: read-only lookups anyone may run —
+/// plus `escalate`, which every caller needs precisely because the ones with the
+/// fewest tools have the fewest other ways forward; manager lifecycle,
+/// file-tuning, mod-discovery, and memory tools — the day-to-day operations,
+/// none of which permanently destroy a world; and the admin-only destructive set
+/// (permanent deletion, world overwrites, archival, live console commands). The
+/// "do not confirm" steer on `destroy_server` and the confirmation phrasing on
+/// `archive_server`/`restore_server` live in those tools' prompt files.
 fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     vec![
         (AccessLevel::ReadOnly, ListServers::spec().into()),
         (AccessLevel::ReadOnly, AboutServer::spec().into()),
         (AccessLevel::ReadOnly, ListBackups::spec().into()),
         (AccessLevel::ReadOnly, ListArchives::spec().into()),
+        (AccessLevel::ReadOnly, Escalate::spec().into()),
         (AccessLevel::Manager, CreateServer::spec().into()),
         (AccessLevel::Manager, StopServer::spec().into()),
         (AccessLevel::Manager, StartServer::spec().into()),
@@ -301,9 +333,9 @@ pub(crate) fn known_tool(name: &str) -> bool {
 /// guild reads as "no such server", so Gary can neither see nor touch another
 /// group's servers. The tools not gated here each enforce tenancy on their own:
 /// `list_servers` and `list_archives` scope-filter their own listing,
-/// `create_server` stamps the new server with the current guild, and
+/// `create_server` stamps the new server with the current guild,
 /// `recover_server` resolves the archive within the caller's scope-filtered
-/// listing (see `exec_recover`).
+/// listing (see `exec_recover`), and `escalate` reaches no server at all.
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
     match tier_of(call.function.name.as_str()) {
@@ -349,6 +381,14 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
         // Memory tools carry no server name (memory is shared across guilds), so
         // they skip the scope gate above and dispatch on their own.
         Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
+        // Escalation names a server only as a hint for the operator notice, and
+        // is deliberately outside the scope gate: a handoff about a server this
+        // caller can't see still has to reach a human rather than being refused
+        // as "no such server".
+        Escalate::NAME => match parse::<EscalateParams>(args) {
+            Ok(params) => exec_escalate(ctx, &params),
+            Err(message) => message,
+        },
         _ => dispatch_mutating(ctx, name, args).await,
     }
 }
@@ -847,6 +887,35 @@ fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
             )
             .await;
     });
+}
+
+/// Record the model's decision to hand this turn to a human. Nothing is
+/// delivered here: the loop stops on its next check and the shell — which is the
+/// only layer that knows the surface's locators (a jump link, a player name, an
+/// incident signal) — builds and sends the operator notice. Doing it that way
+/// keeps one escalation path for both the model-invoked and budget-exhausted
+/// exits instead of two that can drift.
+fn exec_escalate(ctx: &ToolCtx<'_>, params: &EscalateParams) -> String {
+    let message = params.message.trim();
+    let reason = params.reason.trim();
+    // Both are load-bearing — one is the only reply the user gets, the other the
+    // only thing the operator is told — so an empty value is refused rather than
+    // silently ending the turn on a blank message.
+    if message.is_empty() || reason.is_empty() {
+        return prompts::EscalateNeedBoth::render();
+    }
+    warn!(
+        server = params.server.as_deref().unwrap_or("-"),
+        origin = ?ctx.origin,
+        user = %ctx.author_id,
+        reason,
+        "agent escalated: handed off to a human on its own"
+    );
+    ctx.note_escalation(EscalationRequest {
+        reply: message.to_owned(),
+        reason: reason.to_owned(),
+    });
+    prompts::EscalateHandedOff::render()
 }
 
 async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {

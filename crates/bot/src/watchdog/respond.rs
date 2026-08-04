@@ -288,7 +288,8 @@ async fn run_incident_turn(
     };
     match run_gary_turn(&turn, &mut messages).await {
         Ok(SessionOutcome {
-            escalated: true, ..
+            escalation: Some(reason),
+            ..
         }) => {
             data.events
                 .record(mapping::incident_event(
@@ -299,18 +300,19 @@ async fn run_incident_turn(
                 .await;
             warn!(
                 instance = %incident.instance,
-                "watchdog turn hit the round budget; escalating to operators"
+                kind = reason.as_str(),
+                "watchdog turn escalated to operators"
             );
-            let escalation = Escalation::RoundBudgetExhausted {
-                context: EscalationContext::Watchdog {
+            let escalation = Escalation::from_turn(
+                &reason,
+                EscalationContext::Watchdog {
                     server: incident.instance.as_str().to_owned(),
                     signal: incident.kind.as_str().to_owned(),
                     guild: guild_id,
                 },
                 request,
-                attempts: summarize_attempts(&messages),
-                rounds: messages.len(),
-            };
+                summarize_attempts(&messages),
+            );
             data.events
                 .record(mapping::escalation_event(
                     &escalation,
@@ -324,7 +326,7 @@ async fn run_incident_turn(
             data.notifier.notify(&escalation).await;
         }
         Ok(SessionOutcome {
-            escalated: false, ..
+            escalation: None, ..
         }) => {
             data.events
                 .record(mapping::incident_event(

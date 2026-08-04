@@ -52,7 +52,8 @@ fn read_only_callers_get_only_the_read_only_tools() {
             ListServers::NAME,
             AboutServer::NAME,
             ListBackups::NAME,
-            ListArchives::NAME
+            ListArchives::NAME,
+            Escalate::NAME,
         ]
     );
     for reserved in MANAGER_ADDED.iter().chain(ADMIN_ONLY.iter()) {
@@ -80,8 +81,9 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        21,
-        "four read tools plus the seventeen manager lifecycle/file/discovery/memory tools"
+        22,
+        "five read tools (four lookups plus escalate) and seventeen manager \
+         lifecycle/file/discovery/memory tools"
     );
 }
 
@@ -96,8 +98,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        27,
-        "the four read tools, seventeen manager tools, and six admin-only tools"
+        28,
+        "the five read tools, seventeen manager tools, and six admin-only tools"
     );
 }
 
@@ -162,9 +164,10 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // Derived from the live tool set so a newly added tool can't slip past the
     // gate without this failing.
     for name in tool_names(AccessLevel::Admin) {
-        // remember/forget carry no server name (memory is cross-guild), and the
-        // Modrinth lookups read a public registry rather than the cluster, so
-        // they're spared the gate alongside the listing/create tools.
+        // remember/forget carry no server name (memory is cross-guild), the
+        // Modrinth lookups read a public registry rather than the cluster, and
+        // escalate must reach an operator even about a server this caller can't
+        // see — so all of them are spared the gate alongside listing/create.
         let should_gate = name != ListServers::NAME
             && name != CreateServer::NAME
             && name != ListArchives::NAME
@@ -173,7 +176,8 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
             && name != SearchMods::NAME
             && name != ModInfo::NAME
             && name != Remember::NAME
-            && name != Forget::NAME;
+            && name != Forget::NAME
+            && name != Escalate::NAME;
         assert_eq!(
             targets_existing_server(&name),
             should_gate,

@@ -19,13 +19,18 @@ use tracing::trace;
 
 use super::llm::{ChatMessage, Completion};
 use super::observations;
-use super::session::SessionOutcome;
+use super::session::{EscalationReason, SessionOutcome};
 use super::store::SessionId;
 use super::turn::TurnIdentity;
 use crate::telemetry::{Observation, ScorePost, ScoreValue, Telemetry, ids};
 
 /// Name of the boolean score carried by every turn.
 const ESCALATED_SCORE: &str = "escalated";
+/// Name of the categorical score carried only by turns that escalated, saying
+/// which kind it was. Kept separate from [`ESCALATED_SCORE`] rather than
+/// replacing it, because the escalation-rate metric is defined on the boolean
+/// and every turn must contribute to that denominator.
+const ESCALATION_KIND_SCORE: &str = "escalation_kind";
 /// Name of the categorical score carried by turns that restarted into a config
 /// change.
 const GUARDRAIL_SCORE: &str = "guardrail";
@@ -168,7 +173,8 @@ impl TurnRecorder {
         trace!(
             trace_id = %self.trace_id,
             session = session_field(self.identity.session.as_ref()),
-            escalated = outcome.escalated,
+            escalated = outcome.escalated(),
+            escalation_kind = outcome.escalation.as_ref().map(EscalationReason::as_str),
             generations = outcome.generations.len(),
             reply_chars = outcome.reply.chars().count(),
             "turn: finished"
@@ -180,9 +186,17 @@ impl TurnRecorder {
         self.telemetry.score(ScorePost {
             trace_id: self.trace_id,
             name: ESCALATED_SCORE,
-            value: ScoreValue::Boolean(outcome.escalated),
+            value: ScoreValue::Boolean(outcome.escalated()),
             environment: self.identity.environment().as_str(),
         });
+        if let Some(reason) = outcome.escalation.as_ref() {
+            self.telemetry.score(ScorePost {
+                trace_id: self.trace_id,
+                name: ESCALATION_KIND_SCORE,
+                value: ScoreValue::Categorical(reason.as_str()),
+                environment: self.identity.environment().as_str(),
+            });
+        }
     }
 
     /// The turn died on the model endpoint. Recorded separately from a finished

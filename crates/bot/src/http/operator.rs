@@ -31,7 +31,9 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use crate::agent::{ChatMessage, Generation, Role, SessionOutcome, ToolCall, ToolDef, TurnOrigin};
+use crate::agent::{
+    ChatMessage, EscalationReason, Generation, Role, SessionOutcome, ToolCall, ToolDef, TurnOrigin,
+};
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
 use crate::discord::gary::{GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn};
@@ -138,8 +140,15 @@ struct ToolResponse {
 #[derive(Serialize)]
 struct GaryResponse {
     reply: String,
-    /// Whether Gary gave up and escalated rather than finishing the request.
+    /// Whether Gary escalated rather than finishing the request himself.
     escalated: bool,
+    /// Which exit he took — `agent_requested` when he called the escalation tool,
+    /// `round_budget` when the loop ran out. `None` when he answered. Reported
+    /// separately from `escalated` because the two say opposite things about how
+    /// the agent is behaving, and a harness run is usually checking exactly that.
+    escalation_kind: Option<&'static str>,
+    /// What he told the operator, when he escalated on purpose.
+    escalation_reason: Option<String>,
     /// Model turns this request took.
     rounds: usize,
     /// What each model call cost, in the order they ran.
@@ -264,6 +273,7 @@ async fn run_tool(
         confirmations: acting.confirmations,
         pending_change: std::sync::Mutex::new(None),
         guardrail: std::sync::Mutex::new(None),
+        escalation: std::sync::Mutex::new(None),
     };
     info!(
         tool = %request.tool,
@@ -271,6 +281,9 @@ async fn run_tool(
         "operator harness: running a tool directly"
     );
     let result = dispatch(&tool_ctx, &call).await;
+    // A direct `escalate` call has no loop to stop and no surface locators to
+    // build a notice from, so it records the handoff and returns its prose —
+    // enough to check the tool works, without a spurious operator DM.
     Ok(axum::Json(ToolResponse {
         tool: request.tool,
         result,
@@ -336,18 +349,23 @@ async fn run_gary(
 
     let SessionOutcome {
         reply,
-        escalated,
+        escalation,
         generations,
     } = outcome;
-    if escalated {
+    let escalation_kind = escalation.as_ref().map(EscalationReason::as_str);
+    let escalation_reason = match escalation.as_ref() {
+        Some(EscalationReason::AgentRequested { reason }) => Some(reason.clone()),
+        Some(EscalationReason::RoundBudget) | None => None,
+    };
+    if let Some(reason) = escalation.as_ref() {
         // The harness gains the event and nothing else — its caller already sees
-        // the escalated flag in the response, so there is still no notification.
+        // the escalation in the response, so there is still no notification.
         data.events
             .record(
                 ProductEvent::new(
                     EventKind::Escalation,
                     &Attribution::new(Actor::Discord(acting.author_id.get()), Surface::Operator),
-                    mapping::ROUND_BUDGET_EXHAUSTED,
+                    reason.as_str(),
                 )
                 .guild(acting.guild.map(|guild| GuildId::new(guild.to_string())))
                 .details(mapping::escalation_details(None, None)),
@@ -363,7 +381,9 @@ async fn run_gary(
 
     Ok(axum::Json(GaryResponse {
         reply,
-        escalated,
+        escalated: escalation.is_some(),
+        escalation_kind,
+        escalation_reason,
         rounds,
         usage: usage_totals(&generations),
         latency_ms: generations.iter().map(|g| millis(g.latency)).sum(),

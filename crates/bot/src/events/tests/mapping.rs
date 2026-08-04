@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::agent::EscalationReason;
 use crate::notify::EscalationContext;
 
 #[test]
@@ -155,11 +156,43 @@ fn escalation_kind_is_the_outcome() {
     };
     assert_eq!(escalation(&budget), "round_budget_exhausted");
     assert_eq!(
+        escalation(&Escalation::AgentRequested {
+            context: EscalationContext::Deferred {
+                server: "mc".to_owned(),
+                condition: "empty".to_owned(),
+                guild: Some(1),
+            },
+            request: "fix it".to_owned(),
+            reason: "needs a human".to_owned(),
+            attempts: vec![],
+        }),
+        "agent_requested"
+    );
+    assert_eq!(
         escalation(&Escalation::CrashRollback {
             server: "mc".to_owned(),
             path: "server.properties".to_owned()
         }),
         "crash_rollback"
+    );
+}
+
+/// The loop names its exits and the event log names its outcomes; they have to
+/// be the same names or the Langfuse `escalation_kind` score can't be joined to
+/// an `events` row. `agent::session` can't reach these constants (it's the pure
+/// core), so the agreement is asserted here instead.
+#[test]
+fn the_loops_escalation_names_match_the_event_outcomes() {
+    assert_eq!(
+        EscalationReason::RoundBudget.as_str(),
+        ROUND_BUDGET_EXHAUSTED
+    );
+    assert_eq!(
+        EscalationReason::AgentRequested {
+            reason: String::new()
+        }
+        .as_str(),
+        AGENT_REQUESTED
     );
 }
 

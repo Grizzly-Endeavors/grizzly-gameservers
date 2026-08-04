@@ -67,7 +67,7 @@ fn simple_turn(recorder: &TurnRecorder) {
     recorder.record_generation(&sent, &completion());
     recorder.turn_finished(&SessionOutcome {
         reply: "done".to_owned(),
-        escalated: false,
+        escalation: None,
         generations: Vec::new(),
     });
 }

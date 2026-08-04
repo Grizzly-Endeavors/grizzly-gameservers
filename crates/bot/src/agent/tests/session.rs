@@ -90,11 +90,19 @@ fn recorder() -> TurnRecorder {
     )
 }
 
-type ProgressFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+// Lifetime-parameterised to match `ProgressFn`, so a sink built here doesn't pin
+// the whole callback bundle to `'static` and force the borrowing closures with it.
+type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// A progress sink that discards every event.
-fn ignore_progress() -> impl Fn(SessionEvent) -> ProgressFuture + Sync {
+fn ignore_progress<'f>() -> impl Fn(SessionEvent) -> ProgressFuture<'f> + Sync {
     |_| Box::pin(async {})
+}
+
+/// An escalation check for a surface whose tools never hand off, so the only
+/// exits under test are a text reply and the round budget.
+fn never_escalates() -> impl Fn() -> Option<EscalationRequest> + Sync {
+    || None
 }
 
 #[tokio::test]
@@ -118,15 +126,21 @@ async fn returns_text_reply_without_calling_tools() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
 
     assert_eq!(outcome.reply, "3 servers are running");
-    assert!(!outcome.escalated);
+    assert!(!outcome.escalated());
     assert_eq!(
         dispatched.load(Ordering::SeqCst),
         0,
@@ -168,15 +182,21 @@ async fn runs_one_tool_round_then_replies() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
 
     assert_eq!(outcome.reply, "here they are");
-    assert!(!outcome.escalated);
+    assert!(!outcome.escalated());
     assert_eq!(seen.lock().unwrap().as_slice(), ["list_servers"]);
     // The transcript is left populated for the caller to persist: the seed plus
     // the assistant tool turn, its tool result, and the final assistant text.
@@ -214,9 +234,15 @@ async fn every_model_call_is_reported_in_order() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
@@ -251,18 +277,133 @@ async fn an_escalating_turn_still_reports_what_it_spent() {
         Vec::new(),
         3,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
 
-    assert!(outcome.escalated);
+    assert!(outcome.escalated());
+    assert_eq!(
+        outcome.escalation,
+        Some(EscalationReason::RoundBudget),
+        "running out of rounds is the budget exit, not an agent-requested one"
+    );
     assert_eq!(
         outcome.generations.len(),
         3,
         "a turn that gave up still burned its whole budget, and that cost is real"
+    );
+}
+
+/// An escalation check that fires once a tool has run, standing in for the tool
+/// context slot the escalation tool writes to.
+fn escalates_after_first_round(
+    handed_off: &AtomicUsize,
+) -> impl Fn() -> Option<EscalationRequest> + Sync {
+    move || {
+        (handed_off.load(Ordering::SeqCst) > 0).then(|| EscalationRequest {
+            reply: "I can't fix this one — Bear is on it.".to_owned(),
+            reason: "the world file is corrupt and needs a restore decision".to_owned(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_tool_escalation_ends_the_turn_with_the_models_own_reply() {
+    // The model would happily keep calling tools forever; the escalation is the
+    // only thing that can stop it before the budget does.
+    let complete: &CompleteFn =
+        &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "escalate", "{}", None))) });
+    let dispatched = AtomicUsize::new(0);
+    let dispatch: &DispatchFn = &|_| {
+        dispatched.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { "handed off".to_owned() })
+    };
+    let progress = ignore_progress();
+
+    let mut messages = seed("the world is broken");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &escalates_after_first_round(&dispatched),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        outcome.reply, "I can't fix this one — Bear is on it.",
+        "the user reads the model's own words, not the canned budget line"
+    );
+    assert_eq!(
+        outcome.escalation,
+        Some(EscalationReason::AgentRequested {
+            reason: "the world file is corrupt and needs a restore decision".to_owned(),
+        }),
+        "the operator notice carries the reason, which is a different audience"
+    );
+    assert_eq!(
+        outcome.generations.len(),
+        1,
+        "the turn stops on the escalating round rather than spending its budget"
+    );
+}
+
+#[tokio::test]
+async fn an_escalating_round_still_records_the_tools_it_ran_alongside() {
+    let complete: &CompleteFn =
+        &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "read_logs", "{}", None))) });
+    let dispatched = AtomicUsize::new(0);
+    let dispatch: &DispatchFn = &|_| {
+        dispatched.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { "nothing useful in the logs".to_owned() })
+    };
+    let progress = ignore_progress();
+
+    let mut messages = seed("why is it down");
+    run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &escalates_after_first_round(&dispatched),
+        },
+    )
+    .await
+    .unwrap();
+
+    // Checked after the round, not mid-round: the operator notice is built from
+    // the transcript, so a tool that ran beside the escalation has to be in it.
+    let last = messages.last().unwrap();
+    assert_eq!(last.role, Role::Tool);
+    assert_eq!(
+        last.content.as_deref(),
+        Some("nothing useful in the logs"),
+        "the round's tool results land in the transcript before the loop stops"
     );
 }
 
@@ -292,9 +433,15 @@ async fn emits_interim_text_only_when_the_model_narrates() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
@@ -337,9 +484,15 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
@@ -365,14 +518,20 @@ async fn escalates_when_round_budget_is_exhausted() {
         Vec::new(),
         3,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
 
-    assert!(outcome.escalated, "an unbounded tool loop must escalate");
+    assert!(outcome.escalated(), "an unbounded tool loop must escalate");
     assert_eq!(outcome.reply, ESCALATION_REPLY);
 }
 
@@ -392,14 +551,20 @@ async fn empty_text_reply_falls_back_to_a_prompt() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap();
 
-    assert!(!outcome.escalated);
+    assert!(!outcome.escalated());
     assert!(
         !outcome.reply.trim().is_empty(),
         "a blank model reply must not surface as an empty Discord message"
@@ -419,9 +584,15 @@ async fn propagates_completion_errors() {
         Vec::new(),
         DEFAULT_MAX_ROUNDS,
         &recorder(),
-        complete,
-        dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete,
+
+            dispatch,
+
+            progress: &progress,
+
+            escalation_requested: &never_escalates(),
+        },
     )
     .await
     .unwrap_err();
