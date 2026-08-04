@@ -24,7 +24,7 @@ use crate::sizing::Sizing;
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
 /// Services lease their port(s) from here; the range bounds the **total** ports
 /// in use, so a multi-port (advertising) game consumes more than one of the slots.
-const PORT_RANGE: RangeInclusive<i32> = 7000..=7010;
+const PORT_RANGE: RangeInclusive<i32> = 7000..=7099;
 
 /// How long `/create` and `/start` wait for a server to report Ready before
 /// telling the friend it is "still starting". Generous because first-boot world
