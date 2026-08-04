@@ -105,7 +105,7 @@ pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValu
             langfuse::STATUS_MESSAGE,
             "the round budget was exhausted without reaching an answer",
         )),
-        Some(EscalationReason::AgentRequested { reason }) => {
+        Some(EscalationReason::AgentRequested { reason, .. }) => {
             attributes.push(KeyValue::new(
                 langfuse::STATUS_MESSAGE,
                 format!("the agent handed off to a human: {reason}"),

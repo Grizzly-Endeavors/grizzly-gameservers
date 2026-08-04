@@ -113,10 +113,15 @@ fn render_agent_requested_escalation_leads_with_garys_own_reason() {
         },
         request: "minecraft won't start".to_owned(),
         reason: "the world folder is missing and I can't tell which backup is right".to_owned(),
+        server: Some("mc-summer".to_owned()),
         attempts: vec!["read_logs".to_owned(), "browse_files".to_owned()],
     });
     assert!(notice.contains("the world folder is missing"));
     assert!(notice.contains("Alice (<@42>)"));
+    assert!(
+        notice.contains("mc-summer"),
+        "the server Gary named must be findable without reading the prose"
+    );
     assert!(notice.contains("read_logs → browse_files"));
     // The whole point of this variant: it must not claim a budget was spent,
     // because Gary stopped while he still had rounds left.
@@ -124,6 +129,24 @@ fn render_agent_requested_escalation_leads_with_garys_own_reason() {
         !notice.contains("rounds"),
         "a deliberate handoff didn't exhaust anything: {notice}"
     );
+}
+
+#[test]
+fn an_escalation_about_no_particular_server_omits_the_server_line() {
+    // Plenty of asks aren't about one server ("why is everything slow?"). A blank
+    // Server line would read as a lookup that came back empty.
+    let notice = render_escalation(&Escalation::AgentRequested {
+        context: EscalationContext::Discord {
+            asker: "Alice".to_owned(),
+            jump_link: "https://discord.com/channels/1/2/3".to_owned(),
+            guild: Some(1),
+        },
+        request: "why is everything slow".to_owned(),
+        reason: "nothing in the cluster looks wrong from here".to_owned(),
+        server: None,
+        attempts: Vec::new(),
+    });
+    assert!(!notice.contains("Server:"));
 }
 
 #[test]
@@ -136,6 +159,7 @@ fn the_two_turn_escalations_are_built_from_the_loops_own_reason() {
     let requested = Escalation::from_turn(
         &EscalationReason::AgentRequested {
             reason: "needs a human".to_owned(),
+            server: None,
         },
         context(),
         "tune the difficulty".to_owned(),

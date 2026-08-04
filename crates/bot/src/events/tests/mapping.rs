@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::agent::EscalationReason;
+use crate::events::{Actor, Surface};
 use crate::notify::EscalationContext;
 
 #[test]
@@ -164,6 +165,7 @@ fn escalation_kind_is_the_outcome() {
             },
             request: "fix it".to_owned(),
             reason: "needs a human".to_owned(),
+            server: None,
             attempts: vec![],
         }),
         "agent_requested"
@@ -174,6 +176,37 @@ fn escalation_kind_is_the_outcome() {
             path: "server.properties".to_owned()
         }),
         "crash_rollback"
+    );
+}
+
+/// A Discord handoff carries no server in its context, so the one the model
+/// named in the tool call is the only locator the row can have — without this,
+/// the `instance` column is null for every agent-requested escalation.
+#[test]
+fn an_agent_requested_escalation_records_the_server_the_model_named() {
+    let event = escalation_event(
+        &Escalation::AgentRequested {
+            context: EscalationContext::Discord {
+                asker: "Alice".to_owned(),
+                jump_link: "https://discord.com/channels/1/2/3".to_owned(),
+                guild: Some(1),
+            },
+            request: "fix minecraft".to_owned(),
+            reason: "needs a human".to_owned(),
+            server: Some("mc-summer".to_owned()),
+            attempts: vec![],
+        },
+        &Attribution::new(Actor::Discord(42), Surface::Agent),
+        None,
+    );
+    assert_eq!(
+        event.instance.as_ref().map(InstanceName::as_str),
+        Some("mc-summer")
+    );
+    assert_eq!(
+        event.details,
+        escalation_details(Some("mc-summer"), None),
+        "the details payload names it too, matching every other escalation shape"
     );
 }
 
@@ -189,7 +222,8 @@ fn the_loops_escalation_names_match_the_event_outcomes() {
     );
     assert_eq!(
         EscalationReason::AgentRequested {
-            reason: String::new()
+            reason: String::new(),
+            server: None,
         }
         .as_str(),
         AGENT_REQUESTED

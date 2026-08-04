@@ -91,13 +91,20 @@ pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
 
 /// The row for an escalation, with whichever locators its kind carries — a
 /// Discord give-up has neither a server nor a file, an in-game or deferred one
-/// names its server, and a crash rollback names both.
+/// names its server, an agent-requested one names whichever server the model
+/// said it was about, and a crash rollback names both.
 pub(crate) fn escalation_event(
     escalation: &Escalation,
     attribution: &Attribution,
     guild: Option<GuildId>,
 ) -> ProductEvent {
     let (server, path) = match escalation {
+        // The model names the server itself, which is the only locator a Discord
+        // handoff has — so it wins over the context, which carries none.
+        Escalation::AgentRequested {
+            server: Some(server),
+            ..
+        } => (Some(server.as_str()), None),
         Escalation::AgentRequested { context, .. }
         | Escalation::RoundBudgetExhausted { context, .. } => match context {
             EscalationContext::Discord { .. } => (None, None),

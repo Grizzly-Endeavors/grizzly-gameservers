@@ -915,6 +915,12 @@ fn exec_escalate(ctx: &ToolCtx<'_>, params: &EscalateParams) -> String {
     ctx.note_escalation(EscalationRequest {
         reply: message.to_owned(),
         reason: reason.to_owned(),
+        server: params
+            .server
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned),
     });
     prompts::EscalateHandedOff::render()
 }

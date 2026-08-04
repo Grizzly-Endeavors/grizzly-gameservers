@@ -52,6 +52,8 @@ annotations:
       server is optional and the tool is deliberately outside the
       targets_existing_server scope gate: an escalation about a server the
       caller can't see must still reach an operator rather than being refused
-      as "no such server".
+      as "no such server". It is the only locator a Discord handoff has — the
+      surface context carries none — so it lands on both the operator notice
+      and the event row's instance column.
 ---
 Hand the problem to a human and stop working on it. Use this when you have run out of things to try, when the fix needs access or a judgement call you don't have, or when acting on your best guess could make things worse. Stopping here is the right answer in those cases — it is better than guessing on a live server, and much better than repeating things that have already failed. Prefer it early: if two attempts at the same thing have not worked, a third usually won't either. Your turn ends the moment you call this, so say everything you want to say in `message` — you will not get another chance to reply, and any other tool you were planning to call will not run. Don't promise to follow up or check back; you can't, and the person will be told a human is looking.

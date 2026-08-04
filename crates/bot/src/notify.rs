@@ -69,6 +69,9 @@ pub(crate) enum Escalation {
         request: String,
         /// Gary's own account of what's wrong and what he needs from a human.
         reason: String,
+        /// The instance he named, when the handoff is about one. Absent on a
+        /// question that isn't tied to a server.
+        server: Option<String>,
         /// The tools Gary called this turn, in call order — his attempted approach.
         attempts: Vec<String>,
     },
@@ -100,10 +103,11 @@ impl Escalation {
         attempts: Vec<String>,
     ) -> Self {
         match reason {
-            EscalationReason::AgentRequested { reason } => Self::AgentRequested {
+            EscalationReason::AgentRequested { reason, server } => Self::AgentRequested {
                 context,
                 request,
                 reason: reason.clone(),
+                server: server.clone(),
                 attempts,
             },
             EscalationReason::RoundBudget => Self::RoundBudgetExhausted {
@@ -125,8 +129,9 @@ pub(crate) fn render_escalation(escalation: &Escalation) -> String {
             context,
             request,
             reason,
+            server,
             attempts,
-        } => render_agent_requested(context, request, reason, attempts),
+        } => render_agent_requested(context, request, reason, server.as_deref(), attempts),
         Escalation::RoundBudgetExhausted {
             context,
             request,
@@ -148,11 +153,16 @@ fn render_agent_requested(
     context: &EscalationContext,
     request: &str,
     reason: &str,
+    server: Option<&str>,
     attempts: &[String],
 ) -> String {
+    // Only rendered when he named one: a blank "Server:" line on a question that
+    // wasn't about a server reads as a lookup that failed.
+    let server_line = server.map_or_else(String::new, |name| format!("**Server:** `{name}`\n"));
     format!(
         "**Gary asked for a hand — he stopped rather than guessing.**\n\n\
          **Why:** {reason}\n\
+         {server_line}\
          **Where:** {}\n\
          **Who asked:** {}\n\
          **They asked:** \"{request}\"\n\
