@@ -28,7 +28,7 @@ just operator gary "<prompt>"                            # a full model turn
 | `--access <tier>` | Act as `read-only`, `manager`, or `admin` (default). |
 | `--scope all` | The cross-guild operator view instead of one guild. |
 | `--confirm` | Pre-approve a destructive confirmation. Admin-only. See below. |
-| `--new-session` | Start Gary fresh instead of continuing the conversation. |
+| `--new-session` | Start Gary fresh instead of continuing the conversation. Conversations are per-**channel**, so this clears it for anyone else talking in that channel too. |
 | `--raw` | Emit the raw JSON — use this when you want to parse the result. |
 | `--channel/--user/--guild` | Override the `.env` defaults. |
 
@@ -36,7 +36,7 @@ just operator gary "<prompt>"                            # a full model turn
 
 ## Reading the output
 
-`gary` returns the reply *and* a trace of every tool the model called with its arguments and result. The trace is usually the more informative half — it shows what Gary actually did, not just what he said he did. `rounds` counts model turns; `ESCALATED` means he burned the round budget and gave up.
+`gary` returns the reply *and* a trace of every tool the model called with its arguments and result. The trace is usually the more informative half — it shows what Gary actually did, not just what he said he did. `rounds` counts model turns. `ESCALATED` means the turn ended without Gary answering it himself; `escalation_kind` says which way — `agent_requested` (he called the `escalate` tool and stopped, with `escalation_reason` carrying what he'd tell an operator) or `round_budget_exhausted` (he burned all 16 rounds without converging). The first is the guardrail working; the second is thrashing.
 
 The reply is also posted to the Discord testing channel, exactly as a real turn would post it, so the render path is genuinely exercised. Watch the pod with `just bot-logs-deployed` when you need the bot's own logs.
 

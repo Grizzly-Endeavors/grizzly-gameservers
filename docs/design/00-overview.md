@@ -83,6 +83,10 @@ By default Gary answers when `@mentioned`. That's a deliberate floor, not just a
 
 In the no-mention paths, blank lines and slash-command-style text (leading `/`) are ignored, so Gary doesn't chime in on every stray message. The home-channel registry is one of the bot's several pieces of **durable state** on the foundation Postgres store (a role-owned DB, provisioned out of `grizzly-platform`) — alongside the per-guild access config, the archive index, and Gary's memory; it's cached in memory so the per-message check is free. Persistence **degrades gracefully** — if Postgres is unreachable, mentions and slash commands keep working and only no-mention home channels go dark until reconnect.
 
+### The conversation is the channel's
+
+A **Discord channel is one conversation**, shared by everyone in it, held in memory for 30 idle minutes and wiped by a restart — friends-scale, with no chat history to manage. Everyone sees the same back-and-forth Gary does, which is what makes an admin able to answer a friend's question, take over a request, or click through the confirmation on a destructive action someone else asked for. Each message is attributed to its speaker and their tier so Gary can tell the participants apart, and the tools he's handed are recomputed **per message** from whoever just spoke — the transcript is shared, the authority never is. In-game chat stays per-player instead: a player holds no tier and gets a fixed read-only pair of tools, so there's nothing there for a second person to join. See [ADR-020](../decisions/020-channel-bound-conversations.md).
+
 ## Ops-agent guardrails (non-negotiable)
 
 "Ping me if it breaks, so I'm not fiddling" only holds if these are built in from the start. An unsupervised agent with write access to live game state and restart power can make things worse.
