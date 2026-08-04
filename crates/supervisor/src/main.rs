@@ -10,6 +10,13 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> ExitCode {
     // Answered before anything reads the environment or opens a socket, so the
     // image smoke check can run it against a fully-configured game image.
+    //
+    // The rule guards against trusting argv for a security decision. This grants
+    // nothing: argv[0] is skipped outright, and the only thing recognised is
+    // --version, which prints a build identity and exits. args_os rather than
+    // args because the latter panics on non-UTF-8 input, which is a worse
+    // failure than ignoring an argument we don't recognise anyway.
+    // nosemgrep: rust.lang.security.args-os
     if cli::classify_args(std::env::args_os().skip(1)) == Invocation::ReportVersion {
         println!("{}", cli::VERSION);
         return ExitCode::SUCCESS;

@@ -189,7 +189,13 @@ impl SatisfactoryApi {
     /// Returns an error if the HTTPS client can't be constructed.
     pub fn new(endpoint: String) -> Result<Self> {
         let http = reqwest::Client::builder()
-            // See the type's doc comment: loopback, self-signed, no CA to pin.
+            // The endpoint is 127.0.0.1 inside this pod, and the certificate is one
+            // the game generated for itself — there is no CA to pin it against and
+            // no position from which to intercept a connection that never leaves
+            // the container's network namespace. Verification would therefore
+            // reject every valid certificate while excluding no attacker. Same
+            // reasoning as the Agones SDK client speaking plain HTTP to 127.0.0.1.
+            // nosemgrep: rust.lang.security.reqwest-accept-invalid
             .danger_accept_invalid_certs(true)
             .build()
             .context("failed to build the satisfactory api client")?;
