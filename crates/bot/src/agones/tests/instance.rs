@@ -500,3 +500,64 @@ fn an_override_sizes_a_template_that_declared_nothing() {
         }))
     );
 }
+
+#[test]
+fn a_games_declared_sizing_reads_back_out_of_its_catalog_template() {
+    // The figures a resized server would go back to. Read as parsed quantities,
+    // not text, so "2" and "2000m" are the same answer.
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.to_owned(),
+        ..entry()
+    };
+    assert_eq!(
+        catalog_sizing(&entry),
+        Some(Sizing {
+            cpu_request_millicores: 500,
+            mem_request_bytes: 2 * 1024 * 1024 * 1024,
+            cpu_limit_millicores: 2000,
+            mem_limit_bytes: 4 * 1024 * 1024 * 1024,
+        })
+    );
+}
+
+#[test]
+fn a_whole_core_written_as_a_bare_number_still_reads() {
+    // YAML makes `cpu: 2` a number and `cpu: "2"` a string. Which one a catalog
+    // author quoted must not decide whether the defaults can be reported.
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("cpu: \"2\"", "cpu: 2"),
+        ..entry()
+    };
+    assert_eq!(
+        catalog_sizing(&entry).map(|sizing| sizing.cpu_limit_millicores),
+        Some(2000)
+    );
+}
+
+#[test]
+fn a_game_that_declares_no_sizing_reports_none() {
+    // The skeleton template omits `resources`, and `games/_template` says a
+    // catalog may omit a limit on purpose. Either way there is nothing to name.
+    assert_eq!(catalog_sizing(&entry()), None);
+}
+
+#[test]
+fn a_partly_declared_sizing_reports_none_rather_than_half_of_it() {
+    // Three real figures beside one invented one would be copied into a resize.
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("              memory: 4Gi\n", ""),
+        ..entry()
+    };
+    assert_eq!(catalog_sizing(&entry), None);
+}
+
+#[test]
+fn the_sidecars_footprint_is_never_read_as_the_games() {
+    // Without `spec.container` the game is indistinguishable from whatever else
+    // shares the pod, so the answer is unknown rather than the first container's.
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("  container: minecraft\n", ""),
+        ..entry()
+    };
+    assert_eq!(catalog_sizing(&entry), None);
+}
