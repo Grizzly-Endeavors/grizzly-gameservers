@@ -94,6 +94,12 @@ pub struct SupervisorConfig {
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
     pub crash_threshold: u32,
+    /// Satisfactory's dedicated-server HTTPS API, e.g.
+    /// `https://127.0.0.1:7777/api/v1`, or `None` for games that report occupancy
+    /// over RCON. Its presence is what selects the alternate occupancy source —
+    /// Satisfactory has no RCON, so without it the game can never report a player
+    /// count and never joins update-on-empty.
+    pub occupancy_api_url: Option<String>,
     /// Localhost port the game's RCON listens on, or `None` when the per-game
     /// template doesn't enable RCON. Its presence turns on the `/command` route.
     pub rcon_port: Option<u16>,
@@ -139,9 +145,11 @@ pub struct SupervisorConfig {
     /// entry doesn't opt in (no `SUPERVISOR_CHILD_ENV_FILE`).
     pub child_env: Option<ChildEnvOverlay>,
     /// Whether the update-on-empty auto-updater runs. On by default; it only has
-    /// any effect when the game enables RCON (the loop needs a player count), so a
-    /// no-RCON game is reactive-only regardless. Set `SUPERVISOR_AUTO_UPDATE` to a
-    /// falsy value to pin a server to its current build.
+    /// any effect when the game has an occupancy source (RCON, or the Satisfactory
+    /// API via `occupancy_api_url`), since the loop needs a player count to prove a
+    /// server is empty before bouncing it — a game with neither is reactive-only
+    /// regardless. Set `SUPERVISOR_AUTO_UPDATE` to a falsy value to pin a server to
+    /// its current build.
     pub auto_update_enabled: bool,
     /// How often the auto-updater polls occupancy.
     pub auto_update_poll_interval: Duration,
@@ -224,6 +232,7 @@ impl SupervisorConfig {
                 .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
         );
         let control_token = optional(lookup, "SUPERVISOR_CONTROL_TOKEN");
+        let occupancy_api_url = optional(lookup, "SUPERVISOR_OCCUPANCY_API_URL");
         let crash_window = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
                 .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
@@ -280,6 +289,7 @@ impl SupervisorConfig {
             control_token,
             crash_window,
             crash_threshold,
+            occupancy_api_url,
             rcon_port,
             rcon_dialect,
             rcon_password_env,

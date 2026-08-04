@@ -28,6 +28,7 @@ use crate::archive;
 use crate::auth::{self, ControlAuth};
 use crate::fs::{self, FsError};
 use crate::logs::{DEFAULT_TAIL_LINES, LogBuffer};
+use crate::occupancy::OccupancySource;
 use crate::rcon::RconRuntime;
 
 /// A control request handed from the HTTP layer to the runner, with a one-shot
@@ -56,6 +57,10 @@ struct ControlState {
     logs: Arc<LogBuffer>,
     /// RCON client for `POST /command`, or `None` when the game doesn't enable it.
     rcon: Option<Arc<RconRuntime>>,
+    /// Where `GET /occupancy` reads the player count. Separate from `rcon`
+    /// because they don't coincide: Satisfactory answers occupancy over its own
+    /// HTTPS API while having no console for `/command` at all.
+    occupancy: Option<Arc<OccupancySource>>,
 }
 
 /// Serve the control API on `0.0.0.0:port` until the listener errors. The port is
@@ -78,6 +83,7 @@ pub async fn serve(
     data_root: Arc<Path>,
     logs: Arc<LogBuffer>,
     rcon: Option<Arc<RconRuntime>>,
+    occupancy_source: Option<Arc<OccupancySource>>,
     auth: ControlAuth,
 ) -> Result<()> {
     if auth.is_enforced() {
@@ -105,6 +111,7 @@ pub async fn serve(
             data_root,
             logs,
             rcon,
+            occupancy: occupancy_source,
         })
         // Outermost, so every route above — including the ControlCommand fallback
         // and anything added later — is behind it by default.
@@ -371,13 +378,13 @@ async fn logs_tail(State(state): State<ControlState>, Query(query): Query<LogsQu
     (StatusCode::OK, Json(LogsResponse { lines })).into_response()
 }
 
-/// Report the current connected-player count over RCON. Always 200: `players` is
-/// `null` when the game has no RCON or the console can't be reached, which the bot
-/// reads as "unknown" (never as an empty server). Powers Gary's check-before-restart
-/// and mirrors the signal the in-pod auto-updater acts on.
+/// Report the current connected-player count. Always 200: `players` is `null`
+/// when the game has no occupancy source or the one it has couldn't be read, which
+/// the bot reads as "unknown" (never as an empty server). Powers Gary's
+/// check-before-restart and mirrors the signal the in-pod auto-updater acts on.
 async fn occupancy(State(state): State<ControlState>) -> Response {
-    let players = match state.rcon.as_ref() {
-        Some(rcon) => rcon.player_count().await,
+    let players = match state.occupancy.as_ref() {
+        Some(source) => source.player_count().await,
         None => None,
     };
     (StatusCode::OK, Json(OccupancyResponse { players })).into_response()

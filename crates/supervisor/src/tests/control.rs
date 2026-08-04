@@ -38,6 +38,7 @@ fn state_without_rcon() -> ControlState {
         data_root: Arc::from(PathBuf::from("/data")),
         logs: Arc::new(LogBuffer::new()),
         rcon: None,
+        occupancy: None,
     }
 }
 

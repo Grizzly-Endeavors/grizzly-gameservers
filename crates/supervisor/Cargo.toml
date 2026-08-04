@@ -16,9 +16,14 @@ dotenvy = "0.15.7"
 # axum drives the in-pod control API; hyper/tower are already in the workspace
 # tree (via the bot's serenity), so this unifies rather than adds a new stack.
 axum = "0.8.7"
-# Plaintext HTTP only — the SDK is on loopback (127.0.0.1:9358), so no TLS
-# backend is pulled in.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# rustls, not native-tls: the supervisor is linked statically against musl (see
+# games/minecraft/Dockerfile), which openssl-sys can't satisfy. Needed for
+# Satisfactory's dedicated-server API, which is HTTPS-only; the Agones SDK on
+# loopback stays plaintext.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.52.3", features = [

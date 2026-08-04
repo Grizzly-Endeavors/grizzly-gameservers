@@ -22,6 +22,7 @@ pub mod control;
 pub mod fs;
 pub mod heartbeat;
 pub mod logs;
+pub mod occupancy;
 pub mod palworld;
 pub mod process;
 pub mod rcon;

@@ -77,6 +77,16 @@ ENV SUPERVISOR_DATA_DIR=/config
 # raise the probe's give-up well past the 10-minute default.
 ENV SUPERVISOR_GAME_PORT=7777
 ENV SUPERVISOR_READINESS_TIMEOUT_SECS=1800
+# Occupancy over that same HTTPS API rather than RCON, which Satisfactory doesn't
+# have. Without a player count this game can never join update-on-empty — the
+# auto-updater only bounces a build it can prove nobody is on — and Gary's
+# check-before-restart reports "unknown" instead of a number. The supervisor logs
+# in passwordlessly at Client level (possible because the shim never sets a
+# client-protection password) and reads numConnectedPlayers from QueryServerState.
+# Loopback, so the API's self-signed certificate is accepted unverified: nothing
+# can sit between two processes in the same network namespace, the same reasoning
+# that lets the Agones SDK client speak plain HTTP to 127.0.0.1.
+ENV SUPERVISOR_OCCUPANCY_API_URL=https://127.0.0.1:7777/api/v1
 # A little more headroom than the default 4 players.
 ENV MAXPLAYERS=8
 # No USER: the entrypoint needs root to fetch the server and chown before dropping
