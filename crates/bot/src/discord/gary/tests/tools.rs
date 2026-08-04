@@ -23,7 +23,7 @@ const ADMIN_ONLY: [&str; 6] = [
 
 /// The lifecycle, file, discovery, and memory tools a manager gets on top of the
 /// read-only set.
-const MANAGER_ADDED: [&str; 17] = [
+const MANAGER_ADDED: [&str; 18] = [
     CreateServer::NAME,
     StopServer::NAME,
     StartServer::NAME,
@@ -41,6 +41,7 @@ const MANAGER_ADDED: [&str; 17] = [
     ModInfo::NAME,
     Remember::NAME,
     Forget::NAME,
+    SetResources::NAME,
 ];
 
 #[test]
@@ -53,6 +54,7 @@ fn read_only_callers_get_only_the_read_only_tools() {
             AboutServer::NAME,
             ListBackups::NAME,
             ListArchives::NAME,
+            ServerResources::NAME,
             Escalate::NAME,
         ]
     );
@@ -81,9 +83,9 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        22,
-        "five read tools (four lookups plus escalate) and seventeen manager \
-         lifecycle/file/discovery/memory tools"
+        24,
+        "six read tools (five lookups plus escalate) and eighteen manager \
+         lifecycle/file/discovery/memory/resize tools"
     );
 }
 
@@ -98,8 +100,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        28,
-        "the five read tools, seventeen manager tools, and six admin-only tools"
+        30,
+        "the six read tools, eighteen manager tools, and six admin-only tools"
     );
 }
 
@@ -738,4 +740,136 @@ fn about_server_reports_more_than_the_listing_does() {
             "the roster line already carries {detail:?}, so about_server adds nothing by repeating it"
         );
     }
+}
+
+/// A sample with every figure present, to blank one at a time.
+fn resource_sample() -> ResourceSample {
+    ResourceSample {
+        instance: crate::domain::InstanceName::new("mc"),
+        game: None,
+        guild: None,
+        cpu_millicores: Some(320),
+        mem_bytes: Some(3 * 1024 * 1024 * 1024),
+        cpu_request_millicores: Some(500),
+        mem_request_bytes: Some(2 * 1024 * 1024 * 1024),
+        cpu_limit_millicores: Some(2000),
+        mem_limit_bytes: Some(4 * 1024 * 1024 * 1024),
+        pvc_bytes: Some(5 * 1024 * 1024 * 1024),
+    }
+}
+
+#[test]
+fn the_resource_report_carries_reserved_maximum_and_actual() {
+    // The useful judgement is the relationship between the three; a report
+    // showing only one of them can't answer "is it short on memory?".
+    let report = format_resources("mc", &resource_sample(), "the defaults for this game");
+    assert!(report.contains("500m reserved"));
+    assert!(report.contains("2000m maximum"));
+    assert!(report.contains("320m in use now"));
+    assert!(report.contains("2.0 GiB reserved"));
+    assert!(report.contains("4.0 GiB maximum"));
+    assert!(report.contains("3.0 GiB in use now"));
+    assert!(report.contains("5.0 GiB"), "world storage is reported too");
+    assert!(report.contains("the defaults for this game"));
+}
+
+#[test]
+fn a_missing_reading_reports_unknown_rather_than_zero() {
+    // metrics-server being down is not a server using no CPU, and reporting zero
+    // would invite exactly the wrong resize.
+    let sample = ResourceSample {
+        cpu_millicores: None,
+        mem_bytes: None,
+        pvc_bytes: None,
+        ..resource_sample()
+    };
+    let report = format_resources("mc", &sample, "set for this server");
+    assert!(report.contains("unknown in use now"));
+    assert!(
+        !report.contains("0m in use now") && !report.contains("0 B in use now"),
+        "an unavailable reading must never render as an idle server: {report}"
+    );
+}
+
+#[test]
+fn every_resize_outcome_says_whether_the_change_is_live_yet() {
+    let sizing = Sizing {
+        cpu_request_millicores: 500,
+        mem_request_bytes: 2 * 1024 * 1024 * 1024,
+        cpu_limit_millicores: 2000,
+        mem_limit_bytes: 4 * 1024 * 1024 * 1024,
+    };
+    // Applied: running on it now, nobody kicked.
+    let applied = format_resize("mc", sizing, &ResizeOutcome::Applied);
+    assert!(applied.contains("did not restart"));
+
+    // Recorded: saved, not live — must not claim it took effect.
+    let recorded = format_resize("mc", sizing, &ResizeOutcome::NoPod);
+    assert!(recorded.contains("next time it starts"));
+
+    // In progress: accepted, still settling — not a failure.
+    let settling = format_resize("mc", sizing, &ResizeOutcome::InProgress);
+    assert!(settling.contains("still settling"));
+
+    // Infeasible: the saved setting still applies later, so this isn't a dead end.
+    let refused = format_resize(
+        "mc",
+        sizing,
+        &ResizeOutcome::Infeasible("memory limit below current usage".to_owned()),
+    );
+    assert!(refused.contains("memory limit below current usage"));
+    assert!(
+        refused.contains("saved"),
+        "an infeasible live resize still lands on the next start: {refused}"
+    );
+}
+
+#[test]
+fn a_rejected_sizing_names_the_figure_and_its_bound() {
+    // "invalid resources" gives the model nothing to propose instead.
+    let below = describe_rejection(SizingRejection::MemoryBelowFloor);
+    assert!(below.contains("memory") && below.contains("least"));
+
+    let above = describe_rejection(SizingRejection::CpuAboveCeiling);
+    assert!(above.contains("CPU") && above.contains("most"));
+
+    let inverted = describe_rejection(SizingRejection::CpuRequestExceedsLimit);
+    assert!(inverted.contains("CPU") && inverted.contains("maximum"));
+}
+
+#[test]
+fn quantity_strings_parse_the_way_a_friend_would_write_them() {
+    let params = SetResourcesParams {
+        name: "mc".to_owned(),
+        cpu_request: "500m".to_owned(),
+        cpu_limit: "2".to_owned(),
+        memory_request: "2Gi".to_owned(),
+        memory_limit: "4Gi".to_owned(),
+    };
+    assert_eq!(
+        parse_sizing(&params),
+        Ok(Sizing {
+            cpu_request_millicores: 500,
+            mem_request_bytes: 2 * 1024 * 1024 * 1024,
+            cpu_limit_millicores: 2000,
+            mem_limit_bytes: 4 * 1024 * 1024 * 1024,
+        }),
+        "bare cores and binary suffixes are both ordinary ways to say it"
+    );
+}
+
+#[test]
+fn an_unparseable_quantity_names_which_field_was_wrong() {
+    let params = SetResourcesParams {
+        name: "mc".to_owned(),
+        cpu_request: "500m".to_owned(),
+        cpu_limit: "2".to_owned(),
+        memory_request: "lots".to_owned(),
+        memory_limit: "4Gi".to_owned(),
+    };
+    let message = parse_sizing(&params).expect_err("\"lots\" is not a quantity");
+    assert!(
+        message.contains("memory_request"),
+        "the model has to know which of four figures to fix: {message}"
+    );
 }

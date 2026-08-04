@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::agones::{
-    DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, SupervisorOutcome,
+    DestroyOutcome, ProvisionOutcome, ResizeOutcome, ShutdownOutcome, StartBegin, SupervisorOutcome,
 };
 use crate::backup::{
     ArchiveOutcome, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
@@ -57,6 +57,22 @@ pub(crate) const AGENT_REQUESTED: &str = "agent_requested";
 /// An automatic crash rollback didn't bring the server back, or couldn't be
 /// issued at all.
 pub(crate) const CRASH_ROLLBACK: &str = "crash_rollback";
+
+/// How an in-place resize landed. Separable because "the setting is saved" and
+/// "the server is running on it" are different states, and only the first is
+/// guaranteed — the kubelet can decline a live change it can't action.
+pub(crate) fn resize(outcome: &ResizeOutcome) -> &'static str {
+    match *outcome {
+        ResizeOutcome::Applied => "applied",
+        ResizeOutcome::InProgress => "in_progress",
+        // A stopped instance and an absent pod are the same story for the record:
+        // saved, waiting for a start.
+        ResizeOutcome::NoPod | ResizeOutcome::NotFound | ResizeOutcome::NotManaged => {
+            "recorded_for_next_start"
+        }
+        ResizeOutcome::Infeasible(_) => "infeasible",
+    }
+}
 
 /// A watchdog incident was detected in shadow mode: recorded, nothing acted.
 pub(crate) const SHADOW: &str = "shadow";

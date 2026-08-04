@@ -14,6 +14,7 @@ use super::labels::{
 use super::naming::pvc_name;
 use super::ports::{AssignedPort, PortAssignment};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::sizing::Sizing;
 
 /// Everything the renderer needs to stamp a catalog template into a concrete
 /// per-world instance. `ports` carries the leased edge-band port(s): a single
@@ -33,6 +34,11 @@ pub(crate) struct InstanceIdentity {
     /// bot can seed `/data` from an archive before the first launch. Only set by
     /// recover-from-archive; a normal create/start leaves it `false`.
     pub(crate) start_paused: bool,
+    /// CPU/memory to stamp over the catalog's, when this instance has been
+    /// resized. `None` leaves the catalog sizing exactly as authored. Read from
+    /// Postgres at every provision *and* cold start, because a cold start
+    /// re-renders from the template and would otherwise silently undo a resize.
+    pub(crate) sizing: Option<Sizing>,
 }
 
 /// Env var the supervisor reads to boot paused; injected into the game container
@@ -41,13 +47,14 @@ pub(crate) struct InstanceIdentity {
 const START_PAUSED_ENV: &str = "SUPERVISOR_START_PAUSED";
 
 /// Render the `GameServer` for an instance: parse the catalog template, then
-/// override identity (name, namespace, labels) and rebind its data volume to the
-/// per-instance PVC. The rest of the pod spec is left exactly as authored.
+/// override identity (name, namespace, labels), rebind its data volume to the
+/// per-instance PVC, and stamp on this instance's resource override if it has
+/// one. The rest of the pod spec is left exactly as authored.
 ///
 /// # Errors
 ///
-/// Returns an error if the template is not valid YAML or has no
-/// `persistentVolumeClaim` volume to rebind.
+/// Returns an error if the template is not valid YAML, has no
+/// `persistentVolumeClaim` volume to rebind, or has no containers to size.
 pub(crate) fn render_gameserver(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
@@ -60,6 +67,9 @@ pub(crate) fn render_gameserver(
     rebind_claim(&mut obj.data, &pvc_name(identity.name.as_str()))?;
     if identity.start_paused {
         upsert_container_env(&mut obj.data, START_PAUSED_ENV, "true")?;
+    }
+    if let Some(sizing) = identity.sizing {
+        set_container_resources(&mut obj.data, sizing)?;
     }
     if let PortAssignment::Advertised(ports) = &identity.ports {
         apply_advertised_ports(&mut obj.data, ports)?;
@@ -118,6 +128,44 @@ fn set_named_container_port(ports: &mut [Value], name: &str, number: i32) {
             object.insert("containerPort".to_owned(), Value::Number(number.into()));
         }
     }
+}
+
+/// Replace the declared CPU/memory on every container in the pod template.
+/// Like [`upsert_container_env`], this reaches exactly the game container: the
+/// catalog template declares only that one, and Agones injects its SDK sidecar
+/// at admission with its own (untouched) footprint.
+///
+/// Both sides are written whole rather than merged, so an override always states
+/// all four figures — a partial stamp would leave a request from the catalog
+/// paired with a limit from the override and could invert the two.
+fn set_container_resources(data: &mut Value, sizing: Sizing) -> Result<()> {
+    let quantities = sizing.as_quantities();
+    let containers = data
+        .get_mut("spec")
+        .and_then(|spec| spec.get_mut("template"))
+        .and_then(|template| template.get_mut("spec"))
+        .and_then(|pod_spec| pod_spec.get_mut("containers"))
+        .and_then(Value::as_array_mut)
+        .context("gameserver template has no spec.template.spec.containers")?;
+    for container in containers.iter_mut() {
+        let Some(object) = container.as_object_mut() else {
+            continue;
+        };
+        object.insert(
+            "resources".to_owned(),
+            serde_json::json!({
+                "requests": {
+                    "cpu": quantities.cpu_request,
+                    "memory": quantities.mem_request,
+                },
+                "limits": {
+                    "cpu": quantities.cpu_limit,
+                    "memory": quantities.mem_limit,
+                },
+            }),
+        );
+    }
+    Ok(())
 }
 
 /// Set (or add) an env var on every container in the pod template. The catalog

@@ -19,6 +19,7 @@ mod memory;
 mod modrinth;
 mod notify;
 mod prompts;
+mod sizing;
 mod store;
 mod telemetry;
 mod watchdog;
@@ -59,16 +60,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         .await
         .context("failed to initialize kubernetes client")?;
 
-    let catalog = std::sync::Arc::new(
-        agones::load_catalog(&config.catalog_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to load game catalog from {}",
-                    config.catalog_dir.display()
-                )
-            })?,
-    );
+    let catalog = load_game_catalog(&config.catalog_dir).await?;
 
     let (http, control_http) = build_http_clients(config.supervisor_token.as_deref())?;
 
@@ -90,13 +82,13 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let operator_ids: std::sync::Arc<[u64]> = config.operator_ids.into();
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
-    let home_channels = std::sync::Arc::new(HomeChannels::connect(config.db.as_ref()).await);
-    let guild_config = std::sync::Arc::new(GuildConfig::connect(config.db.as_ref()).await);
-    let memory = std::sync::Arc::new(GaryMemory::connect(config.db.as_ref()).await);
-    // The product plane. Every layer that executes a lifecycle, backup, or
-    // escalation action writes here, so it is built before the cycles and the
-    // command `Data` that carry it.
-    let events = std::sync::Arc::new(events::EventLog::connect(config.db.as_ref()).await);
+    let DurableState {
+        home_channels,
+        guild_config,
+        memory,
+        sizing,
+        events,
+    } = DurableState::connect(config.db.as_ref()).await;
     // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
     // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
     // schedule, the same shape as db/s3/ollama.
@@ -128,6 +120,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             catalog: std::sync::Arc::clone(&catalog),
             provision_lock: std::sync::Arc::clone(&provision_lock),
             events: std::sync::Arc::clone(&events),
+            sizing: std::sync::Arc::clone(&sizing),
         },
         watchdog_tx,
         &tasks,
@@ -161,6 +154,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sessions,
         home_channels,
         memory,
+        sizing,
         backup,
         tasks: tasks.clone(),
         notifier,
@@ -416,6 +410,7 @@ struct CycleHandles {
     catalog: std::sync::Arc<agones::GameCatalog>,
     provision_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     events: std::sync::Arc<events::EventLog>,
+    sizing: std::sync::Arc<sizing::InstanceSizing>,
 }
 
 /// Cadences and budgets for the scheduled background cycles.
@@ -441,6 +436,42 @@ impl CycleSchedule {
     }
 }
 
+/// Load the per-game catalog, naming the directory in the failure — a missing or
+/// malformed catalog is the one startup error most likely to be a deploy mistake
+/// rather than a bug, so the path has to be in the message.
+async fn load_game_catalog(dir: &std::path::Path) -> Result<std::sync::Arc<agones::GameCatalog>> {
+    let catalog = agones::load_catalog(dir)
+        .await
+        .with_context(|| format!("failed to load game catalog from {}", dir.display()))?;
+    Ok(std::sync::Arc::new(catalog))
+}
+
+/// Everything the bot keeps on foundation Postgres. Bundled because they share
+/// one credential and one failure mode — each connects independently and each
+/// degrades to a disabled façade rather than failing the boot, so the absence of
+/// a database costs features, never the process.
+struct DurableState {
+    home_channels: std::sync::Arc<HomeChannels>,
+    guild_config: std::sync::Arc<GuildConfig>,
+    memory: std::sync::Arc<GaryMemory>,
+    sizing: std::sync::Arc<sizing::InstanceSizing>,
+    /// The product plane. Every layer that executes a lifecycle, backup, or
+    /// escalation action writes here.
+    events: std::sync::Arc<events::EventLog>,
+}
+
+impl DurableState {
+    async fn connect(db: Option<&config::DbConfig>) -> Self {
+        Self {
+            home_channels: std::sync::Arc::new(HomeChannels::connect(db).await),
+            guild_config: std::sync::Arc::new(GuildConfig::connect(db).await),
+            memory: std::sync::Arc::new(GaryMemory::connect(db).await),
+            sizing: std::sync::Arc::new(sizing::InstanceSizing::connect(db).await),
+            events: std::sync::Arc::new(events::EventLog::connect(db).await),
+        }
+    }
+}
+
 /// Owned cluster/catalog handles the stranded-instance reconciler needs. It
 /// reaches only the Kubernetes API, so it carries none of the backup cycle's
 /// HTTP/supervisor handles.
@@ -450,6 +481,7 @@ struct ReconcileHandles {
     domain: String,
     catalog: std::sync::Arc<agones::GameCatalog>,
     events: std::sync::Arc<events::EventLog>,
+    sizing: std::sync::Arc<sizing::InstanceSizing>,
     dwell: std::time::Duration,
 }
 
@@ -461,6 +493,7 @@ impl ReconcileHandles {
             domain: handles.domain.clone(),
             catalog: std::sync::Arc::clone(&handles.catalog),
             events: std::sync::Arc::clone(&handles.events),
+            sizing: std::sync::Arc::clone(&handles.sizing),
             dwell,
         }
     }
@@ -577,6 +610,7 @@ fn spawn_stranded_cycle(
                 domain: &handles.domain,
                 catalog: &handles.catalog,
                 events: &handles.events,
+                sizing: &handles.sizing,
             };
             agones::run_stranded_cycle(&ctx, handles.dwell).await;
         }
@@ -765,6 +799,7 @@ fn spawn_backup_cycle(
                 control_port: handles.control_port,
                 catalog: &handles.catalog,
                 provision_lock: &handles.provision_lock,
+                sizing: &handles.sizing,
             };
             service.run_backup_cycle(&ctx).await;
         }

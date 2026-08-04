@@ -42,6 +42,11 @@ pub(crate) enum EventKind {
     /// per fired incident whatever its disposition (shadow, responded,
     /// suppressed), so detection is auditable even when nothing acted.
     Incident,
+    /// A server's CPU/memory allocation was changed. The other half of the cost
+    /// plane's right-sizing question: `resource_samples` says what a server was
+    /// given at each tick, this says when somebody decided to change it and how
+    /// that landed.
+    ResourcesChanged,
 }
 
 impl EventKind {
@@ -62,6 +67,7 @@ impl EventKind {
             Self::Escalation => "escalation",
             Self::GuildJoined => "guild_joined",
             Self::Incident => "incident",
+            Self::ResourcesChanged => "resources_changed",
         }
     }
 }

@@ -118,14 +118,21 @@ spec:
             # and every installed artifact must come from a moderated registry by
             # slug so provenance survives an agent being talked into a bad link.
             #
-            # These two live here rather than in the Dockerfile ENV (where the
-            # rest of this game's SUPERVISOR_* tuning sits) because the allowlist
-            # is per-game *policy*: changing it should be a reviewable catalog
-            # edit that lands on the next /create, not an image rebuild.
+            # MEMORY is the JVM heap, and it is on the allowlist because the
+            # pod's memory limit and the heap are separate numbers: an in-place
+            # resize (set_resources) raises the pod's ceiling live, but the heap
+            # is fixed at launch, so without this the flagship game's memory
+            # lever only ever half works. Overlaid per instance and applied by a
+            # restart, like every other value here.
+            #
+            # These live here rather than in the Dockerfile ENV (where the rest
+            # of this game's SUPERVISOR_* tuning sits) because the allowlist is
+            # per-game *policy*: changing it should be a reviewable catalog edit
+            # that lands on the next /create, not an image rebuild.
             - name: SUPERVISOR_CHILD_ENV_FILE
               value: ".grizzly/env"
             - name: SUPERVISOR_CHILD_ENV_ALLOWLIST
-              value: "TYPE,VERSION,MODRINTH_PROJECTS,MODRINTH_DOWNLOAD_DEPENDENCIES,MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE"
+              value: "TYPE,VERSION,MEMORY,MODRINTH_PROJECTS,MODRINTH_DOWNLOAD_DEPENDENCIES,MODRINTH_PROJECTS_DEFAULT_VERSION_TYPE"
           ports:
             - name: minecraft
               containerPort: 25565

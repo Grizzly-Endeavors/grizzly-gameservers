@@ -623,6 +623,7 @@ async fn start_cold(
         &data.domain,
         &data.catalog,
         server,
+        data.sizing.get(server).await,
     )
     .await
     {
@@ -711,6 +712,11 @@ pub(crate) async fn destroy(
 
     match destroy_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
+            // Same reason as Gary's destroy tool: names get reused, and a stale
+            // override would size an unrelated future world.
+            if let Err(err) = data.sizing.forget(&server).await {
+                error!(error = ?err, server = %server, "failed to clear the destroyed server's resource override");
+            }
             reply
                 .edit(ctx, cleared(destroy_result_embed(&outcome, &server)))
                 .await?;

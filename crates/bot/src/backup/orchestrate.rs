@@ -1156,7 +1156,16 @@ impl BackupService {
             }
             RuntimeState::Down => {}
         }
-        match begin_start(ctx.client, ctx.namespace, ctx.domain, ctx.catalog, instance).await? {
+        match begin_start(
+            ctx.client,
+            ctx.namespace,
+            ctx.domain,
+            ctx.catalog,
+            instance,
+            ctx.sizing.get(instance).await,
+        )
+        .await?
+        {
             StartBegin::Starting { .. } | StartBegin::AlreadyRunning => {}
             StartBegin::NotFound => return Ok(EnsurePod::NotFound),
             StartBegin::NotManaged => return Ok(EnsurePod::NotManaged),

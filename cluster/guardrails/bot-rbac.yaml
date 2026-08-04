@@ -3,10 +3,16 @@
 # workload. The bot provisions per-world instances on command
 # (create/shutdown/start/restart/destroy), so it can create and delete GameServers,
 # their NodePort Services and their PVCs, and read pod IPs to reach the in-pod
-# supervisor control API for /stop, warm /start and /restart. It never patches
-# or execs — Gary operates a running server entirely through that supervisor
-# HTTP API, not through K8s exec/patch — and is namespace-scoped, never
-# cluster-wide.
+# supervisor control API for /stop, warm /start and /restart. It never execs —
+# Gary operates a running server entirely through that supervisor HTTP API, not
+# through K8s exec — and is namespace-scoped, never cluster-wide.
+#
+# It holds exactly one mutating verb beyond create/delete: patch on the pods
+# `resize` subresource, which is what lets Gary change a running server's CPU and
+# memory without disconnecting anyone (ADR-021). That subresource can only alter
+# spec.containers[*].resources — not the image, env, volumes, security context,
+# or anything else about the pod — so it is a far narrower grant than patch on
+# pods. Whole objects are still replaced rather than mutated everywhere else.
 #
 # It can delete pods, but only to force out one already terminating past its
 # grace period: that is the single action that frees an instance stranded on a
@@ -46,10 +52,20 @@ rules:
   # API for /stop, /start (warm) and /restart. Delete is the reconciler's one
   # lever for a pod stuck terminating on an unresponsive node — Agones won't
   # release the GameServer's finalizer until that pod is gone, so without it a
-  # dead node pins a world in place indefinitely. Still no patch, still no exec.
+  # dead node pins a world in place indefinitely. No patch on the pod itself,
+  # and still no exec.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]
+  # In-place vertical scaling: patch a running game container's CPU/memory with
+  # no restart and nobody disconnected (ADR-021). Deliberately the `resize`
+  # subresource rather than `pods`, because resize can only touch
+  # spec.containers[*].resources — an injected or confused agent cannot reach the
+  # image, env, volumes or security context through it. Bot-side clamps bound the
+  # values; this bounds the shape.
+  - apiGroups: [""]
+    resources: ["pods/resize"]
+    verbs: ["patch"]
   # Read actual per-pod CPU/memory from metrics-server for the resource
   # sampler (the cost time series). Read-only and namespace-scoped like
   # everything else here.

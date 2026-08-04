@@ -29,14 +29,14 @@ use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{EscalationRequest, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
-    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
-    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, StatusPoll,
-    SupervisorOutcome, begin_start, build_instance_name, destroy_instance, instance_runtime_state,
-    list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
-    supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
-    supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
-    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
-    wait_for_instance_ready, wait_for_ready,
+    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement,
+    ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome,
+    StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name, destroy_instance,
+    instance_runtime_state, list_active_servers, now_entropy, provision_instance, resize_instance,
+    shutdown_instance, supervisor_announce, supervisor_edit_file, supervisor_list_files,
+    supervisor_occupancy, supervisor_read_file, supervisor_read_logs, supervisor_restart,
+    supervisor_restore_file, supervisor_send_command, supervisor_start, supervisor_status,
+    supervisor_stop, supervisor_write_file, verify_scope, wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
@@ -44,7 +44,10 @@ use crate::backup::{
 };
 use crate::defer::{Condition, DeferredTask};
 use crate::domain::{GuildId, InstanceName};
-use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
+use crate::events::{
+    Actor, Attribution, EventKind, ProductEvent, ResourceSample, Surface, mapping, parse_bytes,
+    parse_cpu_millicores, sample_instance,
+};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
     Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
@@ -58,8 +61,11 @@ use crate::prompts::{
     Forget, ForgetParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
     NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
     RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods,
-    SearchModsParams, SendCommand, SendCommandParams, ShutdownServer, StartServer, StopServer,
-    WriteFile, WriteFileParams,
+    SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
+    SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
+};
+use crate::sizing::{
+    MAX_CPU_MILLICORES, MAX_MEM_BYTES, MIN_CPU_MILLICORES, MIN_MEM_BYTES, Sizing, SizingRejection,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -257,17 +263,24 @@ struct TargetName {
 /// The tiers, in the order they appear: read-only lookups anyone may run —
 /// plus `escalate`, which every caller needs precisely because the ones with the
 /// fewest tools have the fewest other ways forward; manager lifecycle,
-/// file-tuning, mod-discovery, and memory tools — the day-to-day operations,
-/// none of which permanently destroy a world; and the admin-only destructive set
-/// (permanent deletion, world overwrites, archival, live console commands). The
-/// "do not confirm" steer on `destroy_server` and the confirmation phrasing on
-/// `archive_server`/`restore_server` live in those tools' prompt files.
+/// file-tuning, mod-discovery, memory, and resizing tools — the day-to-day
+/// operations, none of which permanently destroy a world; and the admin-only
+/// destructive set (permanent deletion, world overwrites, archival, live console
+/// commands). The "do not confirm" steer on `destroy_server` and the
+/// confirmation phrasing on `archive_server`/`restore_server` live in those
+/// tools' prompt files.
+///
+/// `set_resources` is manager tier so the proactive watchdog — which runs its
+/// unattended turns at that tier — can act on the memory-pressure incident it
+/// exists to detect, rather than only reporting it. What stops that becoming
+/// runaway allocation is the clamp in `crate::sizing`, not the tier.
 fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     vec![
         (AccessLevel::ReadOnly, ListServers::spec().into()),
         (AccessLevel::ReadOnly, AboutServer::spec().into()),
         (AccessLevel::ReadOnly, ListBackups::spec().into()),
         (AccessLevel::ReadOnly, ListArchives::spec().into()),
+        (AccessLevel::ReadOnly, ServerResources::spec().into()),
         (AccessLevel::ReadOnly, Escalate::spec().into()),
         (AccessLevel::Manager, CreateServer::spec().into()),
         (AccessLevel::Manager, StopServer::spec().into()),
@@ -286,6 +299,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, ModInfo::spec().into()),
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
+        (AccessLevel::Manager, SetResources::spec().into()),
         (AccessLevel::Admin, DestroyServer::spec().into()),
         (AccessLevel::Admin, DeleteArchive::spec().into()),
         (AccessLevel::Admin, ArchiveServer::spec().into()),
@@ -369,6 +383,10 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
+        ServerResources::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_server_resources(ctx, &params.name).await,
+            Err(message) => message,
+        },
         // Registry lookups target no server at all — they read Modrinth, not the
         // cluster — so they take neither the scope gate nor a server argument.
         SearchMods::NAME => match parse::<SearchModsParams>(args) {
@@ -491,6 +509,10 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             Ok(params) => exec_delete_archive(ctx, &params.name).await,
             Err(message) => message,
         },
+        SetResources::NAME => match parse::<SetResourcesParams>(args) {
+            Ok(params) => exec_set_resources(ctx, &params).await,
+            Err(message) => message,
+        },
         SendCommand::NAME => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
@@ -578,6 +600,8 @@ fn targets_existing_server(tool: &str) -> bool {
             | BackupServer::NAME
             | ArchiveServer::NAME
             | RestoreServer::NAME
+            | ServerResources::NAME
+            | SetResources::NAME
     )
 }
 
@@ -888,6 +912,207 @@ fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
             )
             .await;
     });
+}
+
+/// Report what one server is allowed to use and what it is actually using.
+async fn exec_server_resources(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let sample = match sample_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
+        Ok(Some(sample)) => sample,
+        Ok(None) => return prompts::ServerResourcesNotFound { server }.render(),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: resource read failed");
+            return cluster_error();
+        }
+    };
+    let origin = if ctx.data.sizing.get(server).await.is_some() {
+        "set for this server"
+    } else {
+        "the defaults for this game"
+    };
+    format_resources(server, &sample, origin)
+}
+
+fn format_resources(server: &str, sample: &ResourceSample, origin: &str) -> String {
+    prompts::ServerResourcesReport {
+        server,
+        cpu: &format_cpu_line(sample),
+        memory: &format_memory_line(sample),
+        disk: &sample.pvc_bytes.map_or_else(
+            || "unknown".to_owned(),
+            |bytes| human_size(bytes.unsigned_abs()),
+        ),
+        origin,
+    }
+    .render()
+}
+
+/// A null figure renders as "unknown", never as zero: metrics-server being down
+/// is not the same as a server using no CPU, and the difference decides whether
+/// a resize is warranted.
+fn format_cpu_line(sample: &ResourceSample) -> String {
+    format!(
+        "{} reserved, {} maximum, {} in use now",
+        millicores(sample.cpu_request_millicores),
+        millicores(sample.cpu_limit_millicores),
+        millicores(sample.cpu_millicores),
+    )
+}
+
+fn format_memory_line(sample: &ResourceSample) -> String {
+    format!(
+        "{} reserved, {} maximum, {} in use now",
+        bytes_or_unknown(sample.mem_request_bytes),
+        bytes_or_unknown(sample.mem_limit_bytes),
+        bytes_or_unknown(sample.mem_bytes),
+    )
+}
+
+fn millicores(value: Option<i64>) -> String {
+    value.map_or_else(|| "unknown".to_owned(), |value| format!("{value}m"))
+}
+
+fn bytes_or_unknown(value: Option<i64>) -> String {
+    value.map_or_else(
+        || "unknown".to_owned(),
+        |bytes| human_size(bytes.unsigned_abs()),
+    )
+}
+
+/// Change what a server is allowed to use: record the override, then apply it to
+/// the running container in place.
+///
+/// Recorded before it is applied, and refused outright when it can't be
+/// recorded: a resize that lands on the pod but not in the database would be
+/// undone by the next start, which is a worse outcome than not resizing.
+async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> String {
+    let sizing = match parse_sizing(params) {
+        Ok(sizing) => sizing,
+        Err(detail) => return prompts::SetResourcesOutOfRange { detail: &detail }.render(),
+    };
+    if let Err(rejection) = sizing.validate() {
+        return prompts::SetResourcesOutOfRange {
+            detail: &describe_rejection(rejection),
+        }
+        .render();
+    }
+    if !ctx.data.sizing.is_available() {
+        return prompts::SetResourcesUnavailable::render();
+    }
+    let instance = InstanceName::new(&params.name);
+    let actor = ctx.author_id.get().to_string();
+    if let Err(err) = ctx.data.sizing.set(&instance, sizing, &actor).await {
+        error!(error = ?err, server = %params.name, "agent: failed to record a resize");
+        return prompts::SetResourcesUnavailable::render();
+    }
+
+    let outcome = match resize_instance(
+        &ctx.data.kube_client,
+        &ctx.data.namespace,
+        &params.name,
+        sizing,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            error!(error = ?err, server = %params.name, "agent: in-place resize failed");
+            return cluster_error();
+        }
+    };
+    ctx.record_action(
+        EventKind::ResourcesChanged,
+        &params.name,
+        mapping::resize(&outcome),
+    )
+    .await;
+    format_resize(&params.name, sizing, &outcome)
+}
+
+fn format_resize(server: &str, sizing: Sizing, outcome: &ResizeOutcome) -> String {
+    let summary = format_sizing_summary(sizing);
+    match outcome {
+        ResizeOutcome::Applied => prompts::SetResourcesApplied {
+            server,
+            summary: &summary,
+        }
+        .render(),
+        ResizeOutcome::InProgress => prompts::SetResourcesInProgress {
+            server,
+            summary: &summary,
+        }
+        .render(),
+        // A destroyed or never-created instance reads the same as a stopped one
+        // here: the override is saved either way, and a name that doesn't exist
+        // is caught by the scope gate long before this.
+        ResizeOutcome::NoPod | ResizeOutcome::NotFound | ResizeOutcome::NotManaged => {
+            prompts::SetResourcesRecorded {
+                server,
+                summary: &summary,
+            }
+            .render()
+        }
+        ResizeOutcome::Infeasible(detail) => {
+            prompts::SetResourcesRefused { server, detail }.render()
+        }
+    }
+}
+
+fn format_sizing_summary(sizing: Sizing) -> String {
+    format!(
+        "{} cpu / {} memory reserved, up to {} cpu / {} memory",
+        millicores(Some(sizing.cpu_request_millicores)),
+        human_size(sizing.mem_request_bytes.unsigned_abs()),
+        millicores(Some(sizing.cpu_limit_millicores)),
+        human_size(sizing.mem_limit_bytes.unsigned_abs()),
+    )
+}
+
+/// Parse the model's four Kubernetes quantity strings, naming whichever one
+/// didn't parse rather than reporting a generic failure.
+fn parse_sizing(params: &SetResourcesParams) -> Result<Sizing, String> {
+    let cpu = |field: &str, raw: &str| {
+        parse_cpu_millicores(raw).ok_or_else(|| {
+            format!("{field} isn't a CPU amount I understand: \"{raw}\". Use something like \"500m\" or \"2\".")
+        })
+    };
+    let memory = |field: &str, raw: &str| {
+        parse_bytes(raw).ok_or_else(|| {
+            format!("{field} isn't a memory amount I understand: \"{raw}\". Use something like \"2Gi\" or \"512Mi\".")
+        })
+    };
+    Ok(Sizing {
+        cpu_request_millicores: cpu("cpu_request", &params.cpu_request)?,
+        mem_request_bytes: memory("memory_request", &params.memory_request)?,
+        cpu_limit_millicores: cpu("cpu_limit", &params.cpu_limit)?,
+        mem_limit_bytes: memory("memory_limit", &params.memory_limit)?,
+    })
+}
+
+/// Turn a validation failure into a sentence naming the figure and its bound, so
+/// the model can propose a value that would work instead of retrying blindly.
+fn describe_rejection(rejection: SizingRejection) -> String {
+    match rejection {
+        SizingRejection::CpuBelowFloor => format!(
+            "the CPU reservation is too small — {MIN_CPU_MILLICORES}m is the least a server can have"
+        ),
+        SizingRejection::MemoryBelowFloor => format!(
+            "the memory reservation is too small — {} is the least a server can have",
+            human_size(MIN_MEM_BYTES.unsigned_abs())
+        ),
+        SizingRejection::CpuAboveCeiling => format!(
+            "that's more CPU than any machine here has — {MAX_CPU_MILLICORES}m is the most a server can be given"
+        ),
+        SizingRejection::MemoryAboveCeiling => format!(
+            "that's more memory than any machine here has — {} is the most a server can be given",
+            human_size(MAX_MEM_BYTES.unsigned_abs())
+        ),
+        SizingRejection::CpuRequestExceedsLimit => {
+            "the CPU reservation is above its own maximum; the maximum has to be at least the reservation".to_owned()
+        }
+        SizingRejection::MemoryRequestExceedsLimit => {
+            "the memory reservation is above its own maximum; the maximum has to be at least the reservation".to_owned()
+        }
+    }
 }
 
 /// Record the model's decision to hand this turn to a human. Nothing is
@@ -1272,6 +1497,7 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
         &ctx.data.domain,
         &ctx.data.catalog,
         server,
+        ctx.data.sizing.get(server).await,
     )
     .await
     {
@@ -1604,6 +1830,12 @@ async fn finish_destroy(
 async fn apply_destroy(ctx: &ToolCtx<'_>, server: &str, prompt: &mut serenity::Message) -> String {
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(outcome) => {
+            // Names are reused, so a resize left behind here would silently size
+            // an unrelated future world. Logged rather than surfaced: the world
+            // is already gone and a stale row is not the friend's problem.
+            if let Err(err) = ctx.data.sizing.forget(server).await {
+                error!(error = ?err, %server, "failed to clear the destroyed server's resource override");
+            }
             ctx.record_action(
                 EventKind::ServerDestroyed,
                 server,

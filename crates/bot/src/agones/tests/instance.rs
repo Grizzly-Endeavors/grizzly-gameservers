@@ -18,6 +18,33 @@ spec:
             claimName: minecraft-data
 ";
 
+/// The same template with the catalog's own sizing, to prove an override
+/// replaces it rather than merging into it.
+const SIZED_GAMESERVER_TEMPLATE: &str = "
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: minecraft
+  namespace: game-servers
+spec:
+  container: minecraft
+  template:
+    spec:
+      containers:
+        - name: minecraft
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: \"2\"
+              memory: 4Gi
+      volumes:
+        - name: world
+          persistentVolumeClaim:
+            claimName: minecraft-data
+";
+
 const SERVICE_TEMPLATE: &str = "
 apiVersion: v1
 kind: Service
@@ -64,6 +91,7 @@ fn identity() -> InstanceIdentity {
         ports: PortAssignment::Remap(7003),
         guild: GuildId::new("555"),
         start_paused: false,
+        sizing: None,
     }
 }
 
@@ -165,6 +193,7 @@ fn advertised_identity() -> InstanceIdentity {
         ]),
         guild: GuildId::new("555"),
         start_paused: false,
+        sizing: None,
     }
 }
 
@@ -390,5 +419,84 @@ spec:
     assert!(
         err.to_string().contains("no ports"),
         "should explain the missing ports, got: {err}"
+    );
+}
+
+/// The container's `resources` block after rendering, or `None` if it has none.
+fn rendered_resources(obj: &kube::core::DynamicObject) -> Option<serde_json::Value> {
+    obj.data
+        .get("spec")?
+        .get("template")?
+        .get("spec")?
+        .get("containers")?
+        .get(0)?
+        .get("resources")
+        .cloned()
+}
+
+#[test]
+fn an_instance_without_an_override_keeps_the_catalogs_sizing() {
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.to_owned(),
+        ..entry()
+    };
+    let rendered = render_gameserver(&entry, &identity()).expect("renders");
+    assert_eq!(
+        rendered_resources(&rendered),
+        Some(serde_json::json!({
+            "requests": { "cpu": "500m", "memory": "2Gi" },
+            "limits": { "cpu": "2", "memory": "4Gi" },
+        })),
+        "the game's own sizing must survive untouched when nobody has resized it"
+    );
+}
+
+#[test]
+fn an_override_replaces_the_catalogs_sizing_wholesale() {
+    // Replaced, not merged: a partial stamp could pair a new request with an old
+    // limit and invert the two, which Kubernetes rejects as unschedulable.
+    let entry = GameCatalogEntry {
+        gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.to_owned(),
+        ..entry()
+    };
+    let identity = InstanceIdentity {
+        sizing: Some(Sizing {
+            cpu_request_millicores: 1000,
+            mem_request_bytes: 3 * 1024 * 1024 * 1024,
+            cpu_limit_millicores: 4000,
+            mem_limit_bytes: 8 * 1024 * 1024 * 1024,
+        }),
+        ..identity()
+    };
+    let rendered = render_gameserver(&entry, &identity).expect("renders");
+    assert_eq!(
+        rendered_resources(&rendered),
+        Some(serde_json::json!({
+            "requests": { "cpu": "1000m", "memory": "3221225472" },
+            "limits": { "cpu": "4000m", "memory": "8589934592" },
+        }))
+    );
+}
+
+#[test]
+fn an_override_sizes_a_template_that_declared_nothing() {
+    // The skeleton template omits `resources` entirely; a resize has to add the
+    // block rather than assume one is there to overwrite.
+    let identity = InstanceIdentity {
+        sizing: Some(Sizing {
+            cpu_request_millicores: 250,
+            mem_request_bytes: 1024 * 1024 * 1024,
+            cpu_limit_millicores: 1000,
+            mem_limit_bytes: 2 * 1024 * 1024 * 1024,
+        }),
+        ..identity()
+    };
+    let rendered = render_gameserver(&entry(), &identity).expect("renders");
+    assert_eq!(
+        rendered_resources(&rendered),
+        Some(serde_json::json!({
+            "requests": { "cpu": "250m", "memory": "1073741824" },
+            "limits": { "cpu": "1000m", "memory": "2147483648" },
+        }))
     );
 }
