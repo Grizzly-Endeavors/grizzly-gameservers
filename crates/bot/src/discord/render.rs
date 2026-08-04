@@ -5,8 +5,8 @@ use crate::agones::{
     CreateOutcome, DestroyOutcome, ServerSummary, ShutdownOutcome, StartOutcome, SupervisorOutcome,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
-    SafetyBackup,
+    ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
+    RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
@@ -702,6 +702,69 @@ pub(crate) fn guild_required_embed() -> CreateEmbed {
         "Run this in a server",
         "These commands only work inside a Discord server — run this in one of its channels, not a direct message.",
     )
+}
+
+/// Red warning shown before deleting a server's archives. Deliberately blunter
+/// than the `/destroy` warning: destroying a server leaves its archive standing
+/// as the way back, so this is the point at which a world stops being
+/// recoverable at all.
+pub(crate) fn delete_archive_confirm_embed(
+    name: &str,
+    generations: usize,
+    size: &str,
+) -> CreateEmbed {
+    let copies = if generations == 1 {
+        "1 saved copy".to_owned()
+    } else {
+        format!("all {generations} saved copies")
+    };
+    EmbedSpec {
+        title: format!("Delete the {name} archive?"),
+        colour: COLOUR_ERROR,
+        body: format!(
+            "This permanently deletes {copies} of **{name}** ({size}) from cold storage. \
+             `/recover` will no longer be able to bring this world back — if it isn't running \
+             anywhere, deleting this is the end of it. This can't be undone. Continue?"
+        ),
+    }
+    .into_embed()
+}
+
+/// Result card for an archive deletion.
+pub(crate) fn delete_archive_result_embed(outcome: &ArchiveDeleteOutcome) -> CreateEmbed {
+    delete_archive_spec(outcome).into_embed()
+}
+
+fn delete_archive_spec(outcome: &ArchiveDeleteOutcome) -> EmbedSpec {
+    match outcome {
+        ArchiveDeleteOutcome::Deleted {
+            name,
+            generations,
+            freed_bytes,
+        } => EmbedSpec {
+            title: format!("Deleted the {name} archive"),
+            colour: COLOUR_UP,
+            body: format!(
+                "Removed {generations} saved copy(ies) of **{name}** and freed {}.",
+                human_size(*freed_bytes)
+            ),
+        },
+        ArchiveDeleteOutcome::NotFound => EmbedSpec {
+            title: "No such archive".to_owned(),
+            colour: COLOUR_NEUTRAL,
+            body: "Nothing is archived under that name here. `/archives` lists what there is."
+                .to_owned(),
+        },
+        ArchiveDeleteOutcome::Unavailable => backups_db_disabled_spec(),
+        ArchiveDeleteOutcome::Failed(_) => EmbedSpec {
+            title: "Couldn't delete the archive".to_owned(),
+            colour: COLOUR_ERROR,
+            body: "Something went wrong clearing that archive out of storage, so it's been \
+                   left alone. Nothing was partly deleted that would break `/recover`. \
+                   Try again in a moment."
+                .to_owned(),
+        },
+    }
 }
 
 /// Red warning shown before a destructive `/destroy`, gating the deletion behind

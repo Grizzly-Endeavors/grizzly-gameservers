@@ -44,6 +44,22 @@ pub const PROCESS_LABEL_STOPPED: &str = "stopped";
 /// const — that half stays tracked under issue #42).
 pub const CONTROL_PORT: u16 = 9359;
 
+/// Default seconds the supervisor gives the game process to save its world after
+/// SIGTERM before escalating to SIGKILL. A cross-component contract, which is why
+/// it lives here rather than staying private to the supervisor: the game pod's
+/// `terminationGracePeriodSeconds` must be at least this (or the kubelet SIGKILLs
+/// the pod mid world-save), and the bot's supervisor HTTP client timeout must
+/// exceed it (or the bot gives up on a `/stop` that is still legitimately running).
+/// Generous relative to a Minecraft world-save. A game whose save runs longer
+/// raises it per-image via `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`.
+///
+/// Each `games/*/gameserver.yaml` hardcodes a `terminationGracePeriodSeconds` that
+/// clears this value and can't import the const — a YAML file has no way to — so
+/// that half is matched by hand, the same caveat [`CONTROL_PORT`] carries. The
+/// drift guard in the bot's `tests/config.rs` reads the manifests off disk and
+/// fails CI if one stops clearing the window.
+pub const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+
 /// A control action the bot can ask the supervisor to perform, identified by the
 /// HTTP method + path it arrives on. Not a wire *body* — it is the routing key,
 /// shared so the client builds the same paths the server matches.

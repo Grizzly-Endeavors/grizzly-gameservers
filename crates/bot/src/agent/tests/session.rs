@@ -84,6 +84,7 @@ fn recorder() -> TurnRecorder {
             actor: TurnActor::Discord(3),
             access: AccessLevel::Manager,
             session: None,
+            game: None,
         },
         std::sync::Arc::new(telemetry),
     )

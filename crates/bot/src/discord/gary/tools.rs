@@ -20,24 +20,26 @@ use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::AccessLevel;
 use super::super::render::{
-    archive_confirm_embed, archive_result_embed, destroy_confirm_embed, destroy_result_embed,
-    error_embed, human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+    archive_confirm_embed, archive_result_embed, delete_archive_confirm_embed,
+    delete_archive_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed,
+    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
-    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
-    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
+    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, StatusPoll,
+    SupervisorOutcome, begin_start, build_instance_name, destroy_instance, instance_runtime_state,
     list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
     supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
     supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
-    supervisor_start, supervisor_stop, supervisor_write_file, verify_scope,
+    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
     wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
-    ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome,
+    ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
+    RecoverOutcome, RestoreOutcome,
 };
 use crate::defer::{Condition, DeferredTask};
 use crate::domain::{GuildId, InstanceName};
@@ -49,13 +51,13 @@ use crate::modrinth::{
 };
 use crate::notify::Escalation;
 use crate::prompts::{
-    self, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
-    DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
-    ListServers, ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs,
-    ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer, RestoreFile,
-    RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
-    SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer, WriteFile,
-    WriteFileParams,
+    self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
+    DeleteArchive, DeleteArchiveDone, DeleteArchiveFailed, DeleteArchiveNotFound,
+    DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Forget, ForgetParams,
+    ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams, NameParams, PathParams,
+    ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer,
+    RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
+    SendCommandParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -231,7 +233,7 @@ struct TargetName {
 fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     vec![
         (AccessLevel::ReadOnly, ListServers::spec().into()),
-        (AccessLevel::ReadOnly, ServerStatus::spec().into()),
+        (AccessLevel::ReadOnly, AboutServer::spec().into()),
         (AccessLevel::ReadOnly, ListBackups::spec().into()),
         (AccessLevel::ReadOnly, ListArchives::spec().into()),
         (AccessLevel::Manager, CreateServer::spec().into()),
@@ -252,6 +254,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
         (AccessLevel::Admin, DestroyServer::spec().into()),
+        (AccessLevel::Admin, DeleteArchive::spec().into()),
         (AccessLevel::Admin, ArchiveServer::spec().into()),
         (AccessLevel::Admin, RestoreServer::spec().into()),
         (AccessLevel::Admin, RecoverServer::spec().into()),
@@ -324,8 +327,8 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let name = call.function.name.as_str();
     match name {
         ListServers::NAME => exec_list_servers(ctx).await,
-        ServerStatus::NAME => match parse::<NameParams>(args) {
-            Ok(params) => exec_server_status(ctx, &params.name).await,
+        AboutServer::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_about_server(ctx, &params.name).await,
             Err(message) => message,
         },
         ListBackups::NAME => match parse::<NameParams>(args) {
@@ -443,6 +446,10 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             Ok(params) => exec_destroy(ctx, &params.name).await,
             Err(message) => message,
         },
+        DeleteArchive::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_delete_archive(ctx, &params.name).await,
+            Err(message) => message,
+        },
         SendCommand::NAME => match parse::<SendCommandParams>(args) {
             Ok(params) => exec_send_command(ctx, &params.name, &params.command).await,
             Err(message) => message,
@@ -502,7 +509,9 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 /// Whether a tool acts on an *existing* server named in its arguments — the set
 /// the scope gate applies to. Excluded because they enforce tenancy themselves:
 /// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
-/// (no existing target — stamps the current guild), and `recover_server` (resolves
+/// (no existing target — stamps the current guild), `delete_archive` (targets an
+/// archive, which has no live server, and resolves it within the caller's scope),
+/// and `recover_server` (resolves
 /// the archive within the caller's scope). Also excluded because they reach no
 /// server at all: `remember`/`forget` (memory is cross-guild) and
 /// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
@@ -510,7 +519,7 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
-        ServerStatus::NAME
+        AboutServer::NAME
             | StopServer::NAME
             | StartServer::NAME
             | RestartServer::NAME
@@ -569,7 +578,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
+async fn exec_about_server(ctx: &ToolCtx<'_>, server: &str) -> String {
     let summaries = match list_active_servers(
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
@@ -580,7 +589,7 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     {
         Ok(summaries) => summaries,
         Err(err) => {
-            error!(error = ?err, "agent: server_status failed");
+            error!(error = ?err, "agent: about_server failed");
             return cluster_error();
         }
     };
@@ -589,17 +598,122 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     };
     let mut out = format_summary(summary);
     out.push_str(&occupancy_line(ctx, server).await);
+    out.push_str(&process_line(ctx, server).await);
+    out.push_str(&history_lines(ctx, server).await);
     out
 }
 
-/// A "Players online" line appended to `server_status` so Gary always sees
+/// Lifecycle kinds that count as "something was done to this server". Excludes
+/// `ServerCreated` — creation is not a *change*, and reporting it as the last one
+/// on a server nobody has touched since would read as recent activity.
+const LAST_ACTION_KINDS: &[EventKind] = &[
+    EventKind::ServerStarted,
+    EventKind::ServerStopped,
+    EventKind::ServerRestarted,
+    EventKind::ServerShutdown,
+    EventKind::ServerRestored,
+    EventKind::ServerRecovered,
+];
+
+/// Uptime and crash count, read live from the supervisor. Neither is derivable
+/// from the Agones state the listing shows: a server crash-looping every few
+/// minutes is `Ready` in every listing between relaunches.
+async fn process_line(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let status = supervisor_status(
+        &ctx.data.kube_client,
+        &ctx.data.control_http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await;
+    let rendered = match status {
+        Ok(StatusPoll::Ok(status)) => prompts::AboutServerProcess {
+            uptime: &format_uptime(status.uptime_seconds),
+            restarts: &status.restarts.to_string(),
+        }
+        .render(),
+        Ok(_) => prompts::AboutServerProcessUnknown::render(),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: about_server status lookup failed");
+            prompts::AboutServerProcessUnknown::render()
+        }
+    };
+    format!("\n{rendered}")
+}
+
+/// When this server was last backed up and last acted on, from the product event
+/// log. Both degrade to an explicit "no record" line rather than being dropped —
+/// the log is optional, and a missing line would let the model infer the more
+/// alarming of the two readings ("never backed up") from what may just be an
+/// absent database.
+async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let mut kinds = vec![EventKind::BackupTaken];
+    kinds.extend_from_slice(LAST_ACTION_KINDS);
+    let events = ctx.data.events.latest_per_kind(server, &kinds).await;
+
+    let backup = events
+        .iter()
+        .find(|event| event.kind == EventKind::BackupTaken.as_str())
+        .map_or_else(prompts::AboutServerNoBackup::render, |event| {
+            prompts::AboutServerLastBackup {
+                when: &event.created_at,
+            }
+            .render()
+        });
+
+    // `latest_per_kind` returns one row per kind, so the most recent *action* is
+    // the newest among them — the query can't order across kinds for us.
+    let action = events
+        .iter()
+        .filter(|event| event.kind != EventKind::BackupTaken.as_str())
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .map_or_else(prompts::AboutServerNoAction::render, |event| {
+            prompts::AboutServerLastAction {
+                action: past_tense(&event.kind),
+                actor: &event.actor,
+                when: &event.created_at,
+            }
+            .render()
+        });
+
+    format!("\n{backup}\n{action}")
+}
+
+/// An event kind as the model should read it back: `server_restarted` is a column
+/// value, "restarted" is what happened.
+fn past_tense(kind: &str) -> &str {
+    kind.strip_prefix("server_").unwrap_or(kind)
+}
+
+/// Seconds as a coarse human duration. Deliberately lossy — the reader wants
+/// "about a week" or "ten minutes", and a precise second count invites the model
+/// to quote it back as though it were meaningful.
+fn format_uptime(seconds: u64) -> String {
+    let (days, hours, minutes) = (
+        seconds / 86_400,
+        (seconds % 86_400) / 3600,
+        (seconds % 3600) / 60,
+    );
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        "just started".to_owned()
+    }
+}
+
+/// A "Players online" line appended to `about_server` so Gary always sees
 /// occupancy before deciding whether a restart would kick anyone. The count is a
 /// live RCON read; games with no RCON (or a console that isn't up yet) report
 /// `unknown`, which means "can't confirm it's empty" — never treat it as empty.
 async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     let reason = match supervisor_occupancy(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -786,7 +900,7 @@ async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
 async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
     match supervisor_stop(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -814,7 +928,7 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
 async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
     let outcome = match supervisor_restart(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -872,7 +986,7 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
     loop {
         let outcome = match wait_for_ready(
             &ctx.data.kube_client,
-            &ctx.data.http,
+            &ctx.data.control_http,
             &ctx.data.namespace,
             server,
             ctx.data.control_port,
@@ -944,7 +1058,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
     let server = change.server.as_str();
     let restore = supervisor_restore_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -970,7 +1084,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
     }
     match supervisor_restart(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1042,7 +1156,7 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(RuntimeState::PodUp) => match supervisor_start(
             &ctx.data.kube_client,
-            &ctx.data.http,
+            &ctx.data.control_http,
             &ctx.data.namespace,
             server,
             ctx.data.control_port,
@@ -1152,6 +1266,95 @@ async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
 /// Permanent deletion is gated behind an explicit confirmation: the model can
 /// request it, but a human must approve before any world is destroyed. The
 /// returned text tells the model what was decided.
+/// Delete a server's archives, behind the same confirmation gate as destroy.
+///
+/// Gated harder than it looks: `destroy_server` removes a running server while
+/// deliberately leaving its archives standing, so this is the only path that
+/// makes a world unrecoverable.
+async fn exec_delete_archive(ctx: &ToolCtx<'_>, name: &str) -> String {
+    let Some(service) = ctx.data.backup.clone() else {
+        return backups_not_configured();
+    };
+    if !service.archives_enabled() {
+        return DeleteArchiveUnavailable::render();
+    }
+    // Priced before the confirmation so the card can say how many copies and how
+    // much storage actually go — "delete the smp archive" usually means more
+    // generations than the listing showed, and a confirmation that understates
+    // what it is approving isn't one.
+    let (generations, freed) = match service.archive_footprint(&ctx.scope, name).await {
+        Ok(Some(footprint)) => footprint,
+        Ok(None) => return DeleteArchiveNotFound { name }.render(),
+        Err(err) => {
+            error!(error = ?err, %name, "agent: archive footprint lookup failed");
+            return cluster_error();
+        }
+    };
+    let cancelled = prompts::AbortCancelled::render();
+    let timed_out = prompts::AbortTimedOut::render();
+    match confirm_destructive(
+        ctx,
+        name,
+        "delete the archive of",
+        delete_archive_confirm_embed(name, generations, &human_size(freed)),
+        "gary_delete_archive_confirm",
+        prompts::ConfirmAborted {
+            reason: &cancelled,
+            server: name,
+            verb: "deleted",
+        }
+        .render(),
+        prompts::ConfirmAborted {
+            reason: &timed_out,
+            server: name,
+            verb: "deleted",
+        }
+        .render(),
+    )
+    .await
+    {
+        Confirm::Declined(text) => text,
+        Confirm::Confirmed(mut prompt) => {
+            match service
+                .delete_archives(&backup_ctx(ctx.data), &ctx.scope, name, &ctx.attribution())
+                .await
+            {
+                Ok(outcome) => {
+                    if let Some(reason) = outcome.reason() {
+                        error!(reason, %name, "agent: delete_archive did not complete");
+                    }
+                    edit_prompt(ctx, &mut prompt, delete_archive_result_embed(&outcome)).await;
+                    format_delete_archive(name, &outcome)
+                }
+                Err(err) => {
+                    error!(error = ?err, %name, "agent: delete_archive failed");
+                    let message = cluster_error();
+                    edit_prompt(ctx, &mut prompt, error_embed(&message)).await;
+                    message
+                }
+            }
+        }
+    }
+}
+
+fn format_delete_archive(name: &str, outcome: &ArchiveDeleteOutcome) -> String {
+    match outcome {
+        ArchiveDeleteOutcome::Deleted {
+            generations,
+            freed_bytes,
+            ..
+        } => DeleteArchiveDone {
+            name,
+            generations: &generations.to_string(),
+            size: &human_size(*freed_bytes),
+        }
+        .render(),
+        ArchiveDeleteOutcome::NotFound => DeleteArchiveNotFound { name }.render(),
+        ArchiveDeleteOutcome::Unavailable => DeleteArchiveUnavailable::render(),
+        ArchiveDeleteOutcome::Failed(_) => DeleteArchiveFailed { name }.render(),
+    }
+}
+
 async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
     match ctx.confirmations {
         ConfirmMode::Interactive => confirm_destroy_by_click(ctx, server).await,
@@ -1296,7 +1499,7 @@ async fn edit_prompt(
 async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_list_files(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1318,7 +1521,7 @@ async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_read_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1340,7 +1543,7 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
 async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -> String {
     match supervisor_read_logs(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1362,7 +1565,7 @@ async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -
 async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &str) -> String {
     match supervisor_write_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1396,7 +1599,7 @@ async fn exec_edit_file(
 ) -> String {
     match supervisor_edit_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1426,7 +1629,7 @@ async fn exec_edit_file(
 async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     match supervisor_restore_file(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1451,7 +1654,7 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
     match supervisor_send_command(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1521,7 +1724,7 @@ async fn exec_run_when(
 async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
     match supervisor_occupancy(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,
@@ -1927,7 +2130,7 @@ async fn confirm_destructive(
 async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
     supervisor_announce(
         &ctx.data.kube_client,
-        &ctx.data.http,
+        &ctx.data.control_http,
         &ctx.data.namespace,
         server,
         ctx.data.control_port,

@@ -6,6 +6,7 @@
 
 mod catalog;
 mod client;
+mod control_client;
 mod instance;
 mod labels;
 mod naming;
@@ -19,6 +20,7 @@ mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{LiveInstance, list_active_servers, list_live_instances};
+pub(crate) use control_client::ControlClient;
 pub(crate) use labels::{
     GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
     label_value,
@@ -29,9 +31,7 @@ pub(crate) use provision::{
     begin_start, destroy_instance, list_instance_names, provision_instance,
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
-pub(crate) use scope::{
-    InstanceOwner, ScopeVerdict, ServerScope, guild_of, owner_of, verify_scope,
-};
+pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope, owner_of, verify_scope};
 pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, StatusPoll, SupervisorOutcome,
@@ -39,6 +39,11 @@ pub(crate) use supervisor::{
     supervisor_status, supervisor_stop, wait_for_control_reachable, wait_for_ready,
     wait_for_ready_within,
 };
+// Only the drift guard in `crate::tests::config` reads this — the runtime callers
+// are inside `supervisor` itself — so exporting it unconditionally would be an
+// unused import in a normal build.
+#[cfg(test)]
+pub(crate) use supervisor::CONTROL_MUTATION_TIMEOUT;
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,
     supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,

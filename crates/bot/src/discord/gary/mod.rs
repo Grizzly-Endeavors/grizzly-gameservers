@@ -246,6 +246,8 @@ impl GaryTurn<'_> {
             actor: TurnActor::Discord(self.author_id.get()),
             access: self.access,
             session: self.session.clone(),
+            // A Discord turn may name no server at all; see TurnIdentity::game.
+            game: None,
         }
     }
 }

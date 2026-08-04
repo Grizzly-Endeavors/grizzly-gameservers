@@ -19,10 +19,18 @@
 # Builder base pinned by digest (rust:1-slim-trixie, amd64+arm64); bump deliberately.
 FROM rust:1-slim-trixie@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS chef
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config \
+    && apt-get install -y --no-install-recommends build-essential pkg-config musl-tools \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN cargo install cargo-chef --locked
 WORKDIR /app
+# Materialise the toolchain the workspace pins — its channel, and the musl target
+# rust-toolchain.toml declares for the statically-linked supervisor — before any
+# cargo invocation, so both stages below run the same rustc. Without it `cargo chef
+# cook` compiles the dependency layer against the image's default toolchain, the
+# pinned one materialises only once the full source lands, and every dependency is
+# rebuilt regardless — defeating the cache these stages exist to provide.
+COPY rust-toolchain.toml .
+RUN rustup toolchain install
+RUN cargo install cargo-chef --locked
 
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS planner
@@ -32,14 +40,28 @@ RUN cargo chef prepare --recipe-path recipe.json
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-supervisor
+RUN cargo chef cook --release --locked --target x86_64-unknown-linux-musl \
+    --recipe-path recipe.json -p grizzly-supervisor
 COPY . .
-RUN cargo build --release --locked -p grizzly-supervisor
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly-supervisor
 
-# Upstream vanilla Terraria server pinned by digest (tag: latest). The only
-# unsigned layer; rides the Agones-sidecar Kyverno carve-out (ADR-003). Runs as
-# root (the base sets no non-root user); the supervisor runs as PID 1 and forks
-# the server, so no USER is set and rootless hardening stays deferred (as minecraft).
+# Upstream TShock Terraria server, pinned by digest (tag: tshock-1.4.5.6-6.1.0).
+#
+# TShock rather than vanilla for two things vanilla can't do. Its builds ship as
+# GitHub releases, so a restart re-pulls a predictable latest instead of running
+# whatever binary was baked at image-build time; and its REST API reports a live
+# player count, which is the only way Terraria gets one at all — the game has no
+# RCON — so it can join update-on-empty and Gary can check who's on before a
+# restart. The cost is that TShock is a modded server: plugins, permission groups,
+# and a config surface vanilla doesn't have (ADR-018).
+#
+# The digest is also what `latest` points at, which is how this pin arrived here
+# labelled "vanilla". Name the tshock- tag on the next bump so the flavor stays a
+# decision rather than whatever upstream aims `latest` at.
+#
+# The only unsigned layer; rides the Agones-sidecar Kyverno carve-out (ADR-003).
+# Runs as root (the base sets no non-root user); the supervisor runs as PID 1 and
+# forks the server, so no USER is set and rootless hardening stays deferred.
 FROM ryshe/terraria@sha256:b1c89f7f359abfe1171db454101853c3812b581eecd0f4eeabb9e9f77da240ef
 # zstd backs the supervisor's whole-/data archive routes (`tar --zstd`) for the S3
 # backup/archive/restore flows.
@@ -47,7 +69,8 @@ FROM ryshe/terraria@sha256:b1c89f7f359abfe1171db454101853c3812b581eecd0f4eeabb9e
 RUN apt-get update \
     && apt-get install -y --no-install-recommends zstd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-supervisor \
+     /usr/local/bin/grizzly-supervisor
 COPY games/terraria/terraria-start.sh /usr/local/bin/terraria-start
 RUN chmod +x /usr/local/bin/terraria-start
 # The supervisor launches our wrapper, which seeds a non-interactive autocreate
@@ -62,6 +85,14 @@ ENV LOGPATH=/data/logs
 # Readiness: Terraria's game port is TCP, so the supervisor's default TCP connect
 # probe on it is a clean "ready" signal.
 ENV SUPERVISOR_GAME_PORT=7777
+# Occupancy over TShock's REST API, which terraria-start enables on every boot.
+# /v2/server/status needs no token, so reading the player count mints and stores
+# no credential. The port is pod-internal — never added to the NodePort Service,
+# and the game-servers NetworkPolicy blocks pod-to-pod traffic — so the only
+# reachable caller is the supervisor beside it in this pod.
+ENV SUPERVISOR_TSHOCK_REST_PORT=7878
+ENV SUPERVISOR_OCCUPANCY_API=tshock
+ENV SUPERVISOR_OCCUPANCY_API_URL=http://127.0.0.1:7878
 # No USER: matches the other game images (root at startup, rootless hardening
 # deferred, ADR-003). Terraria doesn't itself require root.
 # nosemgrep: dockerfile.security.missing-user-entrypoint

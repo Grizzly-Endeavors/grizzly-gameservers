@@ -72,6 +72,28 @@ const LIST_ALL_QUERY: &str = "SELECT DISTINCT ON (guild_id, name) guild_id, name
     tarball_key, manifest_key, size_bytes, created_by, created_at::text FROM archives \
     ORDER BY guild_id, name, created_at DESC";
 
+/// Every archive row of one name in a guild, newest first. Deletion works on the
+/// whole name rather than a single row: a friend asks to "delete the smp
+/// archive", and leaving older generations behind would mean the listing still
+/// shows an entry after they were told it was gone.
+const ROWS_FOR_NAME: &str = "SELECT guild_id, name, game, tarball_key, manifest_key, \
+    size_bytes, created_by, created_at::text FROM archives \
+    WHERE guild_id = $1 AND name = $2 ORDER BY created_at DESC";
+
+const DELETE_NAME: &str = "DELETE FROM archives WHERE guild_id = $1 AND name = $2";
+
+/// Archives past their retention window, excluding the newest of each
+/// `(guild, name)`. The `NOT IN` subquery is what keeps the newest generation
+/// regardless of age: an old archive is still the only copy of that world, and
+/// pruning it on age alone would be silent data loss, not housekeeping.
+const ROWS_TO_PRUNE: &str = "SELECT guild_id, name, game, tarball_key, manifest_key, \
+    size_bytes, created_by, created_at::text FROM archives \
+    WHERE created_at < now() - make_interval(days => $1) \
+    AND id NOT IN (SELECT DISTINCT ON (guild_id, name) id FROM archives \
+    ORDER BY guild_id, name, created_at DESC)";
+
+const DELETE_BY_KEY: &str = "DELETE FROM archives WHERE tarball_key = $1";
+
 type ArchiveRow = (String, String, String, String, String, i64, String, String);
 
 fn row(columns: ArchiveRow) -> ArchiveRecord {
@@ -215,6 +237,78 @@ impl ArchiveStore {
             .await
             .context("failed to list all archives")?;
         Ok(rows.into_iter().map(row).collect())
+    }
+
+    /// Every archive generation recorded under `name` in `guild`, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store is disabled or the query fails.
+    pub(crate) async fn rows_for_name(
+        &self,
+        guild: &str,
+        name: &str,
+    ) -> Result<Vec<ArchiveRecord>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query_as::<_, ArchiveRow>(ROWS_FOR_NAME)
+            .bind(guild)
+            .bind(name)
+            .fetch_all(pool)
+            .await
+            .with_context(|| format!("failed to list archive generations for {name}"))?;
+        Ok(rows.into_iter().map(row).collect())
+    }
+
+    /// Forget every archive generation of `name` in `guild`, returning how many
+    /// rows went. The caller deletes the S3 objects; this only drops the index
+    /// entries, and is called *after* the objects so a failure part-way leaves
+    /// rows pointing at absent objects rather than objects nothing points at —
+    /// the former is visible in the listing and fixable, the latter is a silent
+    /// storage leak.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store is disabled or the delete fails.
+    pub(crate) async fn delete_name(&self, guild: &str, name: &str) -> Result<u64> {
+        let pool = self.pool()?;
+        let done = sqlx::query(DELETE_NAME)
+            .bind(guild)
+            .bind(name)
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to delete archives for {name}"))?;
+        Ok(done.rows_affected())
+    }
+
+    /// Archives older than `max_age_days`, never including the newest generation
+    /// of any `(guild, name)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store is disabled or the query fails.
+    pub(crate) async fn rows_to_prune(&self, max_age_days: i32) -> Result<Vec<ArchiveRecord>> {
+        let pool = self.pool()?;
+        let rows = sqlx::query_as::<_, ArchiveRow>(ROWS_TO_PRUNE)
+            .bind(max_age_days)
+            .fetch_all(pool)
+            .await
+            .context("failed to list archives to prune")?;
+        Ok(rows.into_iter().map(row).collect())
+    }
+
+    /// Forget one archive generation, identified by its tarball key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store is disabled or the delete fails.
+    pub(crate) async fn delete_by_key(&self, tarball_key: &str) -> Result<()> {
+        let pool = self.pool()?;
+        sqlx::query(DELETE_BY_KEY)
+            .bind(tarball_key)
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to delete archive row for {tarball_key}"))?;
+        Ok(())
     }
 
     fn pool(&self) -> Result<&PgPool> {

@@ -57,6 +57,17 @@ pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
             channel.to_string(),
         ));
     }
+    // Omitted rather than defaulted when the surface knows no game, for the same
+    // reason as `session` above: a placeholder would show up in Langfuse as a real
+    // game with real cost attributed to it. An absent key reads as "not broken
+    // down", which is the truth.
+    if let Some(game) = id.game.as_ref() {
+        attributes.push(metadata(
+            langfuse::TRACE_METADATA,
+            "game",
+            game.as_str().to_owned(),
+        ));
+    }
     attributes
 }
 

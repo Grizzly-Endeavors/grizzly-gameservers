@@ -22,14 +22,14 @@ use crate::agent::{
     TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::{
-    ServerScope, ServerSummary, guild_of, list_active_servers, supervisor_announce,
+    ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
 };
 use crate::discord::AccessLevel;
-use crate::domain::GuildId;
+use crate::domain::{GameId, GuildId};
 use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
-use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
+use crate::prompts::{IngameAboutServer, IngameListServers, NameParams};
 
 /// Ceiling on the answer broadcast into chat. Game chat wraps long lines poorly,
 /// and the prompt already asks for brevity — this is a defensive cap so a runaway
@@ -39,6 +39,36 @@ const MAX_REPLY_CHARS: usize = 600;
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// The guild an in-game question is answered within, and the game it is about,
+/// both read off the server's own labels — a player has no Discord identity to
+/// derive either from.
+///
+/// `None` declines the question: without a guild there is no bound on what Gary
+/// may see, and answering with an unscoped view would leak other guilds' servers
+/// to whoever typed in chat. Every such case is logged, since the player just
+/// sees silence.
+async fn resolve_scope(deps: &IngameDeps, server: &str) -> Option<(String, Option<GameId>)> {
+    let owner = match owner_of(&deps.client, &deps.namespace, server).await {
+        Ok(Some(owner)) => owner,
+        Ok(None) => {
+            warn!(server, "in-game trigger for an unknown server; ignoring");
+            return None;
+        }
+        Err(err) => {
+            error!(error = ?err, server, "failed to resolve owner for in-game trigger");
+            return None;
+        }
+    };
+    let Some(guild) = owner.guild else {
+        warn!(
+            server,
+            "in-game trigger for a server with no guild scope; ignoring"
+        );
+        return None;
+    };
+    Some((guild.as_str().to_owned(), owner.game))
+}
 
 /// Answer one in-game `@Gary` question and broadcast the reply into the server.
 /// Runs the whole session — resolve the guild scope, run the read-only tool
@@ -56,22 +86,8 @@ pub(crate) async fn handle_ingame_question(
         return;
     };
 
-    // A player has no Discord identity; the scope is the server's own guild,
-    // read off its labels. No guild means we can't bound what Gary may see, so
-    // we decline rather than answer with an unscoped view.
-    let guild = match guild_of(&deps.client, &deps.namespace, server).await {
-        Ok(Some(guild)) => guild,
-        Ok(None) => {
-            warn!(
-                server,
-                "in-game trigger for a server with no guild scope; ignoring"
-            );
-            return;
-        }
-        Err(err) => {
-            error!(error = ?err, server, "failed to resolve guild for in-game trigger");
-            return;
-        }
+    let Some((guild, game)) = resolve_scope(deps, server).await else {
+        return;
     };
     let scope = ServerScope::Guild(guild.clone());
 
@@ -95,6 +111,7 @@ pub(crate) async fn handle_ingame_question(
         actor: TurnActor::Player(player.to_owned()),
         access: AccessLevel::ReadOnly,
         session: Some(session.id.clone()),
+        game,
     };
     let attribution = Attribution::new(Actor::from_turn(&identity.actor), Surface::Agent);
     let recorder = TurnRecorder::new(identity, Arc::clone(&deps.telemetry));
@@ -154,7 +171,7 @@ pub(crate) async fn handle_ingame_question(
 
     supervisor_announce(
         &deps.client,
-        &deps.http,
+        &deps.control_http,
         &deps.namespace,
         server,
         deps.control_port,
@@ -241,7 +258,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
 fn ingame_tools() -> Vec<ToolDef> {
     vec![
         IngameListServers::spec().into(),
-        IngameServerStatus::spec().into(),
+        IngameAboutServer::spec().into(),
     ]
 }
 
@@ -251,11 +268,11 @@ fn ingame_tools() -> Vec<ToolDef> {
 async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall) -> String {
     match call.function.name.as_str() {
         IngameListServers::NAME => exec_list_servers(deps, scope).await,
-        IngameServerStatus::NAME => {
+        IngameAboutServer::NAME => {
             match serde_json::from_str::<NameParams>(call.function.arguments.as_str()) {
-                Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
+                Ok(arg) => exec_about_server(deps, scope, &arg.name).await,
                 Err(err) => {
-                    debug!(error = ?err, "ingame: server_status args failed to parse");
+                    debug!(error = ?err, "ingame: about_server args failed to parse");
                     prompts::IngameServerUnclear::render()
                 }
             }
@@ -274,14 +291,14 @@ async fn exec_list_servers(deps: &IngameDeps, scope: &ServerScope) -> String {
     }
 }
 
-async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) -> String {
+async fn exec_about_server(deps: &IngameDeps, scope: &ServerScope, name: &str) -> String {
     match list_active_servers(deps.client.clone(), &deps.namespace, &deps.domain, scope).await {
         Ok(summaries) => summaries
             .iter()
             .find(|summary| summary.name == name)
             .map_or_else(|| no_such(name), format_summary),
         Err(err) => {
-            error!(error = ?err, "ingame: server_status failed");
+            error!(error = ?err, "ingame: about_server failed");
             cluster_error()
         }
     }

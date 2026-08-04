@@ -3,7 +3,7 @@ id: OccupancyKnown
 type: prompt
 annotations:
   sent_when: >-
-    appended to a server_status result when the live player count could be read
+    appended to a about_server result when the live player count could be read
     from the server console
   used_by:
     - file: discord/gary/tools.rs

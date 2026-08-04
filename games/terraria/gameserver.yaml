@@ -2,8 +2,12 @@
 # per `/create` into a uniquely-named instance (this name/labels are placeholders
 # the renderer overrides); nothing here runs until a friend asks for it.
 #
-# Vanilla Terraria has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates
-# it via file edits + restart, not live console commands.
+# Terraria has no RCON on any flavor, so no SUPERVISOR_RCON_PORT is set: Gary
+# operates it via file edits + restart, not live console commands. It runs the
+# TShock flavor (ADR-018), whose REST API does report a live player count — that
+# is what lets it join update-on-empty and lets Gary see who's on before a
+# restart. That port is pod-internal and deliberately absent from the ports below
+# and from service.yaml, even though the image exposes it.
 #
 # The image bakes in the grizzly supervisor as its entrypoint (games/terraria/
 # Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle
@@ -40,9 +44,8 @@ spec:
     # with game-image CI signing and the Agones carve-out (ADR-003).
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
-      # SIGKILL grace after SIGTERM. Must stay ≥ the supervisor's
-      # DEFAULT_GRACEFUL_TIMEOUT_SECS (90s) so its world-save finishes; see
-      # games/_template/gameserver.yaml.
+      # SIGKILL grace after SIGTERM. Must stay ≥ this game's graceful save window
+      # so the world-save finishes; see games/_template/gameserver.yaml.
       terminationGracePeriodSeconds: 120
       containers:
         # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
@@ -62,6 +65,17 @@ spec:
             - name: control
               containerPort: 9359
               protocol: TCP
+          # Required on every call the bot makes to this pod's control API.
+          # Defence in depth behind the egress leash: optional, so an
+          # unprovisioned token leaves the pod on the NetworkPolicy-only posture
+          # rather than refusing every lifecycle action.
+          env:
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-control
+                  key: control_token
+                  optional: true
           volumeMounts:
             - name: data
               mountPath: /data

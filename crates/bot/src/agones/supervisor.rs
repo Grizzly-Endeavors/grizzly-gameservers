@@ -9,17 +9,22 @@ use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::{debug, warn};
 
+use super::control_client::ControlClient;
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::provision::{DeletionState, deletion_state};
 use super::types::GameServer;
 
 /// Per-request timeout for the mutating supervisor calls. `/stop` and `/restart`
 /// reply only after the in-pod graceful stop finishes (Minecraft's SIGTERM
-/// world-save), so this must exceed the supervisor's `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`
-/// (90s default) plus respawn margin — otherwise the bot times out and reports a
-/// failure while the restart actually succeeds. The client's short default still
-/// applies to cheap calls; this overrides it only where the work is genuinely slow.
-const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(2);
+/// world-save), so this must exceed the graceful window of the *slowest* game in
+/// the catalog plus respawn margin — otherwise the bot times out and reports a
+/// failure while the restart actually succeeds. Games default to
+/// [`grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS`] and raise it per image
+/// via `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`; the `the_bot_waits_out_every_games_graceful_stop`
+/// guard in `tests/config.rs` reads each game's effective window and fails if this
+/// no longer clears it. The client's short default still applies to cheap calls;
+/// this overrides it only where the work is genuinely slow.
+pub(crate) const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(3);
 
 /// Per-request timeout for the cheap `GET /status` poll. Touches only in-memory
 /// state, so a slower reply means a wedged pod, not real work.
@@ -82,7 +87,7 @@ pub(crate) enum SupervisorOutcome {
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_stop(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -105,7 +110,7 @@ pub(crate) async fn supervisor_stop(
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_start(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -128,7 +133,7 @@ pub(crate) async fn supervisor_start(
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_restart(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -227,7 +232,7 @@ pub(crate) async fn resolve_managed_pod(
 
 async fn supervisor_action(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -361,7 +366,7 @@ pub(crate) enum StatusPoll {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -387,7 +392,7 @@ pub(crate) async fn wait_for_ready(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready_within(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -442,7 +447,7 @@ pub(crate) enum ControlReady {
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_control_reachable(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,
@@ -478,7 +483,7 @@ pub(crate) async fn wait_for_control_reachable(
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_status(
     client: &Client,
-    http: &reqwest::Client,
+    http: &ControlClient,
     namespace: &str,
     instance: &str,
     control_port: u16,

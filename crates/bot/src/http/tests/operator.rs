@@ -156,7 +156,7 @@ fn a_turn_with_no_tools_traces_empty() {
 fn a_single_call_traces_with_its_result() {
     let slice = [
         ChatMessage::user("status of mc?"),
-        assistant_calling(&[("c1", "server_status", r#"{"name":"mc"}"#)]),
+        assistant_calling(&[("c1", "about_server", r#"{"name":"mc"}"#)]),
         ChatMessage::tool_result("c1", "mc — minecraft, Ready"),
         ChatMessage {
             role: Role::Assistant,
@@ -168,7 +168,7 @@ fn a_single_call_traces_with_its_result() {
     assert_eq!(
         tool_trace(&slice),
         vec![trace(
-            "server_status",
+            "about_server",
             r#"{"name":"mc"}"#,
             "mc — minecraft, Ready"
         )]
@@ -180,8 +180,8 @@ fn a_single_call_traces_with_its_result() {
 fn several_calls_in_one_round_each_pair_with_their_own_result() {
     let slice = [
         assistant_calling(&[
-            ("a", "server_status", r#"{"name":"mc"}"#),
-            ("b", "server_status", r#"{"name":"valheim"}"#),
+            ("a", "about_server", r#"{"name":"mc"}"#),
+            ("b", "about_server", r#"{"name":"valheim"}"#),
         ]),
         // Deliberately out of call order: pairing is by id, not position.
         ChatMessage::tool_result("b", "valheim — Ready"),
@@ -190,8 +190,8 @@ fn several_calls_in_one_round_each_pair_with_their_own_result() {
     assert_eq!(
         tool_trace(&slice),
         vec![
-            trace("server_status", r#"{"name":"mc"}"#, "mc — Paused"),
-            trace("server_status", r#"{"name":"valheim"}"#, "valheim — Ready"),
+            trace("about_server", r#"{"name":"mc"}"#, "mc — Paused"),
+            trace("about_server", r#"{"name":"valheim"}"#, "valheim — Ready"),
         ],
         "the trace keeps the model's call order, not the results' arrival order"
     );

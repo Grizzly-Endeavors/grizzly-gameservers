@@ -31,6 +31,26 @@ fi
 echo "==> building $image"
 docker build -f "$dockerfile" -t "$image" "$repo_root"
 
+# Prove the supervisor actually executes inside this game's vendor base before the
+# image reaches the registry. One builder produces the binary for every game but
+# each game lands it in a different vendor's runtime base, so anything the binary
+# needs from that base — a loader, a shared library — is only ever validated here.
+# Without this check the failure lands at allocation time as an Agones Unhealthy
+# GameServer with nothing in the bot's logs, which reads like a cluster fault
+# rather than a bad image. --version is answered before the supervisor reads its
+# environment or opens a socket, so it exits cleanly without starting the game.
+echo "==> checking the supervisor runs in the built image"
+if ! version="$(docker run --rm "$image" --version 2>&1)"; then
+    echo "$version" >&2
+    echo "" >&2
+    echo "the supervisor binary does not run inside $game's base image — not pushing." >&2
+    echo "a 'GLIBC_x.yz not found' loader error above means the binary is dynamically" >&2
+    echo "linked against a newer libc than the vendor base ships; games/$game/Dockerfile" >&2
+    echo "should be building it for x86_64-unknown-linux-musl." >&2
+    exit 1
+fi
+echo "    $version"
+
 push_through_registry_forward "$image"
 
 echo "==> done: registry.registry.svc.cluster.local:5000/grizzly-gameservers-${game}:${tag}"

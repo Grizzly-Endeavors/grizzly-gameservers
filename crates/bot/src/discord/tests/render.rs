@@ -414,3 +414,39 @@ fn archived_but_storage_not_freed_is_amber_and_recoverable() {
         spec.body
     );
 }
+
+/// The confirmation must state that recovery ends here. Destroying a server
+/// leaves the archive as the way back, so an admin who reads this card as "same
+/// as destroy, but for storage" is about to lose a world they thought was safe.
+#[test]
+fn the_archive_delete_warning_says_recovery_ends() {
+    let embed = delete_archive_spec(&ArchiveDeleteOutcome::Deleted {
+        name: "smp".to_owned(),
+        generations: 3,
+        freed_bytes: 3 * 1024 * 1024 * 1024,
+    });
+    assert!(embed.body.contains("smp"));
+    assert!(
+        embed.body.contains("3.0 GiB"),
+        "the result should say how much was freed, got: {}",
+        embed.body
+    );
+    assert!(
+        embed.body.contains('3'),
+        "the result should say how many copies went, got: {}",
+        embed.body
+    );
+}
+
+/// A failed delete leaves the archive whole on purpose — objects go before rows
+/// and the run stops at the first refusal. Telling the admin it half-worked would
+/// send them looking for a repair that isn't needed.
+#[test]
+fn a_failed_archive_delete_says_nothing_was_half_removed() {
+    let embed = delete_archive_spec(&ArchiveDeleteOutcome::Failed("s3 said no".to_owned()));
+    assert!(
+        !embed.body.contains("s3 said no"),
+        "raw fault detail belongs in the log, not the friend-facing card"
+    );
+    assert!(embed.body.contains("left alone"));
+}

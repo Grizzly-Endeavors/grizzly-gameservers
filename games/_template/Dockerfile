@@ -26,10 +26,18 @@
 # may be copied long after it was last checked.
 FROM rust:1-slim-trixie@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS chef
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config \
+    && apt-get install -y --no-install-recommends build-essential pkg-config musl-tools \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN cargo install cargo-chef --locked
 WORKDIR /app
+# Materialise the toolchain the workspace pins — its channel, and the musl target
+# rust-toolchain.toml declares for the statically-linked supervisor — before any
+# cargo invocation, so both stages below run the same rustc. Without it `cargo chef
+# cook` compiles the dependency layer against the image's default toolchain, the
+# pinned one materialises only once the full source lands, and every dependency is
+# rebuilt regardless — defeating the cache these stages exist to provide.
+COPY rust-toolchain.toml .
+RUN rustup toolchain install
+RUN cargo install cargo-chef --locked
 
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS planner
@@ -39,15 +47,17 @@ RUN cargo chef prepare --recipe-path recipe.json
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-supervisor
+RUN cargo chef cook --release --locked --target x86_64-unknown-linux-musl \
+    --recipe-path recipe.json -p grizzly-supervisor
 COPY . .
-RUN cargo build --release --locked -p grizzly-supervisor
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly-supervisor
 
 # REPLACE: the game's own upstream base image, pinned by digest — never a
 # floating tag. If it's unsigned (true of most upstream game images), it rides
 # the Kyverno carve-out the same way itzg/minecraft-server does (ADR-003).
 FROM REPLACE_BASE_IMAGE@sha256:REPLACE_DIGEST
-COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-supervisor \
+     /usr/local/bin/grizzly-supervisor
 # REPLACE: the command the supervisor launches as its child — the game's own
 # start command or script. The supervisor forwards SIGTERM for a graceful
 # shutdown/save and relaunches this in place on /restart.

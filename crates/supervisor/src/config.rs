@@ -7,6 +7,7 @@ use tracing::warn;
 
 use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
+use crate::occupancy::OccupancyApi;
 use crate::rcon::RconDialect;
 
 /// Default trigger a player types in chat to address the ops agent. Overridable
@@ -42,8 +43,9 @@ const DEFAULT_HEALTH_INTERVAL_SECS: u64 = 5;
 /// Generous: a first-boot `SteamCMD` download (Satisfactory pulls ~15 GB) plus
 /// world generation can run for many minutes before the port opens.
 const DEFAULT_READINESS_TIMEOUT_SECS: u64 = 600;
-/// Generous relative to a Minecraft world-save before we SIGKILL.
-const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+/// Shared with the bot and the game manifests' `terminationGracePeriodSeconds`,
+/// both of which have to clear this window.
+const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS;
 /// Sliding window over which repeated crashes count toward escalation.
 const DEFAULT_CRASH_WINDOW_SECS: u64 = 300;
 /// Crashes within the window before the supervisor stops the heartbeat and lets
@@ -84,10 +86,22 @@ pub struct SupervisorConfig {
     pub readiness_timeout: Duration,
     /// How long to wait for a graceful child exit before SIGKILL.
     pub graceful_timeout: Duration,
+    /// Shared secret the bot must present on the control API, or `None` to accept
+    /// any caller the network leash already allowed through. Absent by default so
+    /// an image or deployment without the secret keeps working rather than locking
+    /// the bot out of every server at once.
+    pub control_token: Option<String>,
     /// Sliding window for crash-rate escalation.
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
     pub crash_threshold: u32,
+    /// Base URL of the game's own occupancy API, or `None` for games that report
+    /// it over RCON. Its presence selects the alternate source, which is the only
+    /// way Satisfactory and Terraria get a player count at all — neither has a
+    /// console, and without a count neither can join update-on-empty.
+    pub occupancy_api_url: Option<String>,
+    /// Which API the URL above speaks. Ignored when there is no URL.
+    pub occupancy_api: OccupancyApi,
     /// Localhost port the game's RCON listens on, or `None` when the per-game
     /// template doesn't enable RCON. Its presence turns on the `/command` route.
     pub rcon_port: Option<u16>,
@@ -133,9 +147,11 @@ pub struct SupervisorConfig {
     /// entry doesn't opt in (no `SUPERVISOR_CHILD_ENV_FILE`).
     pub child_env: Option<ChildEnvOverlay>,
     /// Whether the update-on-empty auto-updater runs. On by default; it only has
-    /// any effect when the game enables RCON (the loop needs a player count), so a
-    /// no-RCON game is reactive-only regardless. Set `SUPERVISOR_AUTO_UPDATE` to a
-    /// falsy value to pin a server to its current build.
+    /// any effect when the game has an occupancy source (RCON, or the Satisfactory
+    /// API via `occupancy_api_url`), since the loop needs a player count to prove a
+    /// server is empty before bouncing it — a game with neither is reactive-only
+    /// regardless. Set `SUPERVISOR_AUTO_UPDATE` to a falsy value to pin a server to
+    /// its current build.
     pub auto_update_enabled: bool,
     /// How often the auto-updater polls occupancy.
     pub auto_update_poll_interval: Duration,
@@ -217,6 +233,9 @@ impl SupervisorConfig {
             optional_parse(lookup, "SUPERVISOR_GRACEFUL_TIMEOUT_SECS")?
                 .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
         );
+        let control_token = optional(lookup, "SUPERVISOR_CONTROL_TOKEN");
+        let occupancy_api_url = optional(lookup, "SUPERVISOR_OCCUPANCY_API_URL");
+        let occupancy_api = parse_occupancy_api(lookup)?;
         let crash_window = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
                 .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
@@ -270,8 +289,11 @@ impl SupervisorConfig {
             health_interval,
             readiness_timeout,
             graceful_timeout,
+            control_token,
             crash_window,
             crash_threshold,
+            occupancy_api_url,
+            occupancy_api,
             rcon_port,
             rcon_dialect,
             rcon_password_env,
@@ -293,6 +315,21 @@ impl SupervisorConfig {
 /// (`SUPERVISOR_AGENT_URL`) or the server identity (`SUPERVISOR_GAMESERVER_NAME`)
 /// is a hard error rather than a silent disable — a half-configured watcher would
 /// swallow every `@Gary` with no signal.
+/// Which occupancy API this image's `SUPERVISOR_OCCUPANCY_API_URL` speaks.
+///
+/// An unrecognised value is a hard error rather than a silent fallback: the two
+/// dialects are different protocols, so a typo that quietly picked the wrong one
+/// would leave the game reporting unknown occupancy forever with nothing pointing
+/// at the cause.
+fn parse_occupancy_api(lookup: EnvLookup) -> Result<OccupancyApi> {
+    match optional(lookup, "SUPERVISOR_OCCUPANCY_API") {
+        None => Ok(OccupancyApi::default()),
+        Some(raw) => OccupancyApi::parse(&raw).ok_or_else(|| {
+            anyhow!("SUPERVISOR_OCCUPANCY_API must be 'satisfactory' or 'tshock', got {raw:?}")
+        }),
+    }
+}
+
 fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
     let Some(format_raw) = optional(lookup, "SUPERVISOR_CHAT_FORMAT") else {
         return Ok(None);

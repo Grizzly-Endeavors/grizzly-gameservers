@@ -15,7 +15,8 @@ use super::condition::{Condition, compose_batch_prompt, next_empty_since, wait_k
 use super::task::DeferredTask;
 use crate::agent::{ChatMessage, SessionOutcome, TurnOrigin};
 use crate::agones::{
-    FsOutcome, ReadyWait, ServerScope, guild_of, supervisor_occupancy, wait_for_ready_within,
+    FsOutcome, InstanceOwner, ReadyWait, ServerScope, owner_of, supervisor_occupancy,
+    wait_for_ready_within,
 };
 use crate::discord::gary::{
     ConfirmMode, GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
@@ -109,7 +110,7 @@ async fn wait_for_condition(data: &Data, server: &str, condition: Condition) -> 
 async fn wait_startup(data: &Data, server: &str) -> String {
     match wait_for_ready_within(
         &data.kube_client,
-        &data.http,
+        &data.control_http,
         &data.namespace,
         server,
         data.control_port,
@@ -145,7 +146,7 @@ async fn wait_occupancy(
     loop {
         match supervisor_occupancy(
             &data.kube_client,
-            &data.http,
+            &data.control_http,
             &data.namespace,
             server,
             data.control_port,
@@ -218,13 +219,15 @@ async fn run_batch(
 
     // Scope the batch to the server's own guild (the enqueue was already gated on
     // the caller's scope), running at the manager tier per the shared-queue design.
-    let guild = match guild_of(&data.kube_client, &data.namespace, server).await {
-        Ok(guild) => guild,
+    // The same read carries the game, which the turn stamps on its telemetry.
+    let owner = match owner_of(&data.kube_client, &data.namespace, server).await {
+        Ok(owner) => owner.unwrap_or_default(),
         Err(err) => {
             error!(error = ?err, server = %server, "deferred batch: failed to resolve guild scope");
-            None
+            InstanceOwner::default()
         }
     };
+    let guild = owner.guild.map(|id| id.as_str().to_owned());
     let scope = guild.clone().map_or(ServerScope::All, ServerScope::Guild);
     let guild_id = guild.as_deref().and_then(|id| id.parse::<u64>().ok());
 

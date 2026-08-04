@@ -128,7 +128,9 @@ Authentication is HTTP Basic with the key pair on every one of these. `scripts/l
 
 A turn that dies on a hard model-endpoint failure exports its trace but **no scores**. Escalation rate is therefore a rate over turns that finished, and provider outages don't silently count as successes.
 
-**Identity.** Every span carries the same set, because Langfuse does not inherit trace attributes: environment, user id (Discord snowflake, or `ingame:<player>`), session id, release, and tags/metadata for origin, access tier, guild and channel. Session id is omitted for deferred batches — each batch is a one-shot conversation with no transcript to belong to.
+**Identity.** Every span carries the same set, because Langfuse does not inherit trace attributes: environment, user id (Discord snowflake, or `ingame:<player>`), session id, release, and tags/metadata for origin, access tier, guild, channel and game. Session id is omitted for deferred batches — each batch is a one-shot conversation with no transcript to belong to.
+
+**`metadata.game` is present only where the surface knows a server up front**, so a per-game cost or escalation-rate breakdown covers part of the traffic, not all of it. An in-game trigger and a deferred batch both arrive for a named server and resolve the game off its labels; a Discord turn usually names no server and omits the key entirely rather than guessing. Treat "no game" as *unattributed*, never as a game named `""` — and when you need the full split, join to the `events` table on guild + time rather than assuming the traces carry it.
 
 **Release** is the gate-signed image digest the chart pins (`GAMESERVERS_RELEASE`, `sha256:…`), falling back to `dev` off-cluster. Because prompt-lib compiles all model-visible text into the binary, the digest also identifies the exact prompt set — trace-to-prompt correlation is by release, which is why Langfuse's own prompt management is deliberately unused.
 

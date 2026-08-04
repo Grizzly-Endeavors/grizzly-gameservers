@@ -596,19 +596,98 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
 //
 //   * `spec.template.spec.terminationGracePeriodSeconds` — the window the kubelet
 //     grants the pod after SIGTERM before it SIGKILLs. The in-pod supervisor is
-//     PID 1 and catches SIGTERM to save the world within DEFAULT_GRACEFUL_TIMEOUT_SECS;
+//     PID 1 and catches SIGTERM to save the world within its graceful window;
 //     a shorter grace period truncates the save mid-write. Guarded as `>=` that window.
 //   * the `control` containerPort — the port the bot dials the supervisor on. Both
 //     sides default it to `grizzly_control_api::CONTROL_PORT`; the manifests
 //     hardcode the same number and can't import the const.
+//
+// Both bounds are checked against the window each game *actually* uses, not the
+// shared default: an image that raises `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` for a
+// slower world-save moves both bounds with it, and that is precisely the case a
+// guard written against the bare default cannot see.
 
-/// The supervisor's SIGTERM world-save window, in seconds — the lower bound every
-/// game pod's `terminationGracePeriodSeconds` must clear. Tracks
-/// `DEFAULT_GRACEFUL_TIMEOUT_SECS` in `crates/supervisor/src/config.rs`, which is
-/// private to that crate and not re-exported, so it can't be referenced here; this
-/// literal mirrors it by hand. If the supervisor's graceful timeout ever rises
-/// above 90, raise this and every manifest's `terminationGracePeriodSeconds` too.
-const SUPERVISOR_GRACEFUL_TIMEOUT_SECS: u64 = 90;
+use std::time::Duration;
+
+/// The `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` a Dockerfile declares, if it declares
+/// one. The last `ENV` wins, matching how Docker itself resolves a repeated key.
+/// Split from the file read so the parse is exercised without a Dockerfile on disk.
+fn graceful_timeout_override(dockerfile: &str) -> Option<u64> {
+    dockerfile
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=")
+        })
+        .filter_map(|value| value.trim().trim_matches('"').parse().ok())
+        .next_back()
+}
+
+/// The graceful-stop window a game's supervisor actually runs with, in seconds.
+///
+/// [`grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS`] unless the game's image
+/// overrides it, which is read straight out of the Dockerfile — the override lives
+/// in the image, so nothing else in the build knows a given game stops more slowly
+/// than the default.
+fn effective_graceful_timeout_secs(game: &str) -> u64 {
+    let dockerfile = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+        .join(game)
+        .join("Dockerfile");
+    std::fs::read_to_string(&dockerfile)
+        .ok()
+        .and_then(|contents| graceful_timeout_override(&contents))
+        .unwrap_or(grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS)
+}
+
+#[test]
+fn a_dockerfile_without_an_override_uses_the_shared_default() {
+    assert_eq!(
+        graceful_timeout_override("ENV SUPERVISOR_RCON_PORT=25575"),
+        None
+    );
+}
+
+#[test]
+fn a_dockerfile_override_is_read() {
+    assert_eq!(
+        graceful_timeout_override("ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=120"),
+        Some(120)
+    );
+    assert_eq!(
+        graceful_timeout_override("ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=\"150\""),
+        Some(150)
+    );
+}
+
+#[test]
+fn the_last_override_wins_as_docker_resolves_it() {
+    let dockerfile = "ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=120\n\
+                      ENV SUPERVISOR_RCON_PORT=27015\n\
+                      ENV SUPERVISOR_GRACEFUL_TIMEOUT_SECS=200\n";
+    assert_eq!(graceful_timeout_override(dockerfile), Some(200));
+}
+
+#[test]
+fn at_least_one_game_exercises_the_override_path() {
+    // Not a rule that a game must override — a guard that the parser is actually
+    // wired to the real Dockerfiles. If every game drops its override this fails,
+    // which is the moment to check the parser still matches Docker's syntax rather
+    // than silently degrading to "every game uses the default".
+    let overridden: Vec<String> = load_game_manifests()
+        .into_iter()
+        .map(|(game, _)| game)
+        .filter(|game| {
+            effective_graceful_timeout_secs(game)
+                != grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS
+        })
+        .collect();
+    assert!(
+        !overridden.is_empty(),
+        "no games/*/Dockerfile declares SUPERVISOR_GRACEFUL_TIMEOUT_SECS, so the two \
+         window guards below are only ever checking the default — confirm the parser \
+         still matches the ENV syntax the Dockerfiles use"
+    );
+}
 
 /// Partial view of a game `GameServer` manifest — only the pod-spec fields these
 /// drift guards pin, so an unrelated manifest edit can't perturb the check.
@@ -700,6 +779,7 @@ fn load_game_manifests() -> Vec<(String, GameServerManifest)> {
 #[test]
 fn game_manifests_grant_the_supervisor_its_full_shutdown_window() {
     for (game, manifest) in load_game_manifests() {
+        let window = effective_graceful_timeout_secs(&game);
         let Some(grace) = manifest.spec.template.spec.termination_grace_period_seconds else {
             panic!(
                 "games/{game}/gameserver.yaml has no \
@@ -708,10 +788,24 @@ fn game_manifests_grant_the_supervisor_its_full_shutdown_window() {
             );
         };
         assert!(
-            grace >= SUPERVISOR_GRACEFUL_TIMEOUT_SECS,
+            grace >= window,
             "games/{game}/gameserver.yaml sets terminationGracePeriodSeconds={grace}, \
-             below the supervisor's {SUPERVISOR_GRACEFUL_TIMEOUT_SECS}s save window \
-             (DEFAULT_GRACEFUL_TIMEOUT_SECS); the world-save would be SIGKILLed mid-write"
+             below the {window}s save window that game's supervisor runs with; \
+             the world-save would be SIGKILLed mid-write"
+        );
+    }
+}
+
+#[test]
+fn the_bot_waits_out_every_games_graceful_stop() {
+    for (game, _) in load_game_manifests() {
+        let window = Duration::from_secs(effective_graceful_timeout_secs(&game));
+        assert!(
+            crate::agones::CONTROL_MUTATION_TIMEOUT > window,
+            "games/{game} stops over up to {window:?}, but the bot gives a /stop or /restart \
+             only {:?} before it gives up — it would report a failure for a shutdown that is \
+             still running normally, and the user would be told their server broke when it did not",
+            crate::agones::CONTROL_MUTATION_TIMEOUT
         );
     }
 }

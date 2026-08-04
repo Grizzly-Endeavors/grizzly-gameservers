@@ -82,6 +82,10 @@ pub(crate) struct Data {
     pub(crate) kube_client: Client,
     /// Client for the in-pod supervisor control API (`/stop`, `/start`, `/restart`).
     pub(crate) http: reqwest::Client,
+    /// Dials game-pod supervisors, presenting the shared control credential. A
+    /// separate client from `http` because that one also reaches Ollama and
+    /// Langfuse, and the credential must never leave the cluster.
+    pub(crate) control_http: crate::agones::ControlClient,
     pub(crate) namespace: String,
     pub(crate) domain: String,
     /// Port the supervisor's control API listens on inside each game pod.
@@ -147,7 +151,7 @@ pub(crate) struct Data {
 pub(crate) fn backup_ctx(data: &Data) -> crate::backup::BackupCtx<'_> {
     crate::backup::BackupCtx {
         client: &data.kube_client,
-        http: &data.http,
+        http: &data.control_http,
         namespace: &data.namespace,
         domain: &data.domain,
         control_port: data.control_port,

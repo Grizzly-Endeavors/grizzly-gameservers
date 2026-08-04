@@ -28,10 +28,18 @@
 # Builder base pinned by digest (rust:1-slim-trixie, amd64+arm64); bump deliberately.
 FROM rust:1-slim-trixie@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS chef
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config \
+    && apt-get install -y --no-install-recommends build-essential pkg-config musl-tools \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-RUN cargo install cargo-chef --locked
 WORKDIR /app
+# Materialise the toolchain the workspace pins — its channel, and the musl target
+# rust-toolchain.toml declares for the statically-linked supervisor — before any
+# cargo invocation, so both stages below run the same rustc. Without it `cargo chef
+# cook` compiles the dependency layer against the image's default toolchain, the
+# pinned one materialises only once the full source lands, and every dependency is
+# rebuilt regardless — defeating the cache these stages exist to provide.
+COPY rust-toolchain.toml .
+RUN rustup toolchain install
+RUN cargo install cargo-chef --locked
 
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS planner
@@ -41,9 +49,10 @@ RUN cargo chef prepare --recipe-path recipe.json
 # nosemgrep: dockerfile.best-practice.missing-image-version -- internal build stage.
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-supervisor
+RUN cargo chef cook --release --locked --target x86_64-unknown-linux-musl \
+    --recipe-path recipe.json -p grizzly-supervisor
 COPY . .
-RUN cargo build --release --locked -p grizzly-supervisor
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly-supervisor
 
 # Upstream wolveix satisfactory-server pinned by digest (tag: latest). Its
 # entrypoint runs as root to fetch the server via SteamCMD, then drops to the
@@ -56,7 +65,8 @@ FROM wolveix/satisfactory-server@sha256:e103700ae6ae4c50f19dac80eadb2a805c5b885e
 RUN apt-get update \
     && apt-get install -y --no-install-recommends zstd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/grizzly-supervisor /usr/local/bin/grizzly-supervisor
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-supervisor \
+     /usr/local/bin/grizzly-supervisor
 # The supervisor launches the wolveix image's own entrypoint as its child.
 ENV SUPERVISOR_CHILD_CMD=/init.sh
 # Satisfactory's gamefiles + saves live under /config; scope Gary's file tools there.
@@ -67,6 +77,16 @@ ENV SUPERVISOR_DATA_DIR=/config
 # raise the probe's give-up well past the 10-minute default.
 ENV SUPERVISOR_GAME_PORT=7777
 ENV SUPERVISOR_READINESS_TIMEOUT_SECS=1800
+# Occupancy over that same HTTPS API rather than RCON, which Satisfactory doesn't
+# have. Without a player count this game can never join update-on-empty — the
+# auto-updater only bounces a build it can prove nobody is on — and Gary's
+# check-before-restart reports "unknown" instead of a number. The supervisor logs
+# in passwordlessly at Client level (possible because the shim never sets a
+# client-protection password) and reads numConnectedPlayers from QueryServerState.
+# Loopback, so the API's self-signed certificate is accepted unverified: nothing
+# can sit between two processes in the same network namespace, the same reasoning
+# that lets the Agones SDK client speak plain HTTP to 127.0.0.1.
+ENV SUPERVISOR_OCCUPANCY_API_URL=https://127.0.0.1:7777/api/v1
 # A little more headroom than the default 4 players.
 ENV MAXPLAYERS=8
 # No USER: the entrypoint needs root to fetch the server and chown before dropping

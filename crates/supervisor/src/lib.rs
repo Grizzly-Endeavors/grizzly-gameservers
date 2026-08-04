@@ -12,14 +12,17 @@
 //! processes or opening sockets.
 
 pub mod archive;
+pub mod auth;
 pub mod autoupdate;
 pub mod chat_watcher;
 pub mod child_env;
+pub mod cli;
 pub mod config;
 pub mod control;
 pub mod fs;
 pub mod heartbeat;
 pub mod logs;
+pub mod occupancy;
 pub mod palworld;
 pub mod process;
 pub mod rcon;

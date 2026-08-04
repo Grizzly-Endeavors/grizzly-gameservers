@@ -1,12 +1,20 @@
 use std::process::ExitCode;
 
 use anyhow::Result;
+use grizzly_supervisor::cli::{self, Invocation};
 use grizzly_supervisor::config::SupervisorConfig;
 use grizzly_supervisor::runner;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Answered before anything reads the environment or opens a socket, so the
+    // image smoke check can run it against a fully-configured game image.
+    if cli::classify_args(std::env::args_os().skip(1)) == Invocation::ReportVersion {
+        println!("{}", cli::VERSION);
+        return ExitCode::SUCCESS;
+    }
+
     load_dotenv();
     init_tracing();
 

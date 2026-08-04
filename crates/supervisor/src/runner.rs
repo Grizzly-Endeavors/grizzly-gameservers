@@ -12,11 +12,13 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
+use crate::auth::ControlAuth;
 use crate::autoupdate::{AutoUpdater, RelaunchReason};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::heartbeat::Heartbeat;
 use crate::logs::LogBuffer;
+use crate::occupancy::{OccupancyApi, OccupancySource, SatisfactoryApi, TshockApi};
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
@@ -65,6 +67,23 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         None => None,
     };
 
+    // Where the player count comes from. RCON for most games; Satisfactory has
+    // none and answers over its own HTTPS API instead. Absent both, occupancy is
+    // permanently unknown and the game can't join update-on-empty.
+    let occupancy = match (cfg.occupancy_api_url.as_ref(), rcon.as_ref()) {
+        (Some(url), _) => Some(Arc::new(match cfg.occupancy_api {
+            OccupancyApi::Satisfactory => OccupancySource::SatisfactoryApi(Arc::new(
+                SatisfactoryApi::new(url.clone())
+                    .context("failed to initialize the satisfactory occupancy client")?,
+            )),
+            OccupancyApi::Tshock => OccupancySource::TshockApi(Arc::new(
+                TshockApi::new(url).context("failed to initialize the tshock occupancy client")?,
+            )),
+        })),
+        (None, Some(rcon)) => Some(Arc::new(OccupancySource::Rcon(Arc::clone(rcon)))),
+        (None, None) => None,
+    };
+
     let chat_tx = spawn_chat_watcher(&cfg)?;
 
     // Seed the env overlay up front as well as per-launch: a server that boots
@@ -82,9 +101,19 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
     let serve_logs = Arc::clone(&logs);
     let serve_rcon = rcon.clone();
+    let serve_occupancy = occupancy.clone();
+    let control_auth = ControlAuth::new(cfg.control_token.as_deref());
     tokio::spawn(async move {
-        if let Err(err) =
-            control::serve(control_port, control_tx, data_root, serve_logs, serve_rcon).await
+        if let Err(err) = control::serve(
+            control_port,
+            control_tx,
+            data_root,
+            serve_logs,
+            serve_rcon,
+            serve_occupancy,
+            control_auth,
+        )
+        .await
         {
             error!(error = ?err, "control api terminated");
         }
@@ -97,7 +126,19 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         heartbeat.clone(),
     ));
 
-    supervise(cfg, sdk, control_rx, heartbeat, logs, rcon, chat_tx).await
+    supervise(
+        cfg,
+        sdk,
+        control_rx,
+        heartbeat,
+        logs,
+        GameChannels {
+            rcon,
+            occupancy,
+            chat_tx,
+        },
+    )
+    .await
 }
 
 /// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
@@ -152,18 +193,28 @@ struct RunDeps<'a> {
     chat_tx: Option<&'a mpsc::Sender<String>>,
 }
 
+/// The optional per-game side channels, which a game either has or doesn't: a
+/// console to drive, a way to count players, a chat tee. Bundled because they are
+/// configured together per image and travel together from setup into the loop.
+struct GameChannels {
+    rcon: Option<Arc<RconRuntime>>,
+    occupancy: Option<Arc<OccupancySource>>,
+    chat_tx: Option<mpsc::Sender<String>>,
+}
+
 async fn supervise(
     cfg: SupervisorConfig,
     sdk: SdkClient,
     mut control_rx: mpsc::Receiver<ControlRequest>,
     heartbeat: Heartbeat,
     logs: Arc<LogBuffer>,
-    rcon: Option<Arc<RconRuntime>>,
-    chat_tx: Option<mpsc::Sender<String>>,
+    channels: GameChannels,
 ) -> Result<()> {
-    // A cloneable handle for the occupancy poll's spawned queries; the borrowed
-    // `rcon` below still drives the control paths.
-    let rcon_poll = rcon.clone();
+    let GameChannels {
+        rcon,
+        occupancy,
+        chat_tx,
+    } = channels;
     let rcon = rcon.as_deref();
     let mut state = SupervisorState::new();
     let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
@@ -204,7 +255,9 @@ async fn supervise(
     // Update-on-empty: poll occupancy on a cadence and, when the game has been
     // idle long enough on an old-enough build, bounce it to re-pull the latest.
     // Only meaningful when the game speaks RCON (needed for the player count).
-    let auto_update_active = cfg.auto_update_enabled && rcon_poll.is_some();
+    // Without an occupancy source there is no count to prove a server is empty,
+    // so update-on-empty has nothing to act on.
+    let auto_update_active = cfg.auto_update_enabled && occupancy.is_some();
     let mut auto_updater = AutoUpdater::new(cfg.auto_update_policy);
     let (occupancy_tx, mut occupancy_rx) = mpsc::channel::<Option<u32>>(1);
     let mut occupancy_ticker = tokio::time::interval(cfg.auto_update_poll_interval);
@@ -222,7 +275,7 @@ async fn supervise(
                 settle_ready(&sdk, &mut state, &heartbeat).await;
             }
             _ = occupancy_ticker.tick(), if auto_update_active => {
-                spawn_occupancy_poll(&state, rcon_poll.as_ref(), &occupancy_tx);
+                spawn_occupancy_poll(&state, occupancy.as_ref(), &occupancy_tx);
             }
             Some(players) = occupancy_rx.recv() => {
                 maybe_auto_update(&deps, &mut state, &mut child, &mut auto_updater, players).await;
@@ -511,18 +564,18 @@ async fn handle_unexpected_exit(
 /// `occupancy_tx` for the loop's `maybe_auto_update` arm.
 fn spawn_occupancy_poll(
     state: &SupervisorState,
-    rcon: Option<&Arc<RconRuntime>>,
+    occupancy: Option<&Arc<OccupancySource>>,
     occupancy_tx: &mpsc::Sender<Option<u32>>,
 ) {
     if state.status(Instant::now()).process != ProcessPhase::Running {
         return;
     }
-    let Some(rcon) = rcon.cloned() else {
+    let Some(occupancy) = occupancy.cloned() else {
         return;
     };
     let tx = occupancy_tx.clone();
     tokio::spawn(async move {
-        let players = rcon.player_count().await;
+        let players = occupancy.player_count().await;
         if tx.send(players).await.is_err() {
             debug!("occupancy reading dropped; runner is gone");
         }

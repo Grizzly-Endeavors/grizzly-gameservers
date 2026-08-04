@@ -15,6 +15,7 @@ fn identity() -> TurnIdentity {
         actor: TurnActor::Discord(3),
         access: AccessLevel::Manager,
         session: None,
+        game: None,
     }
 }
 

@@ -173,6 +173,17 @@ spec:
                   name: grizzly-gameservers-ingame
                   key: ingame_token
                   optional: true
+            # Presented on every call the bot makes to a game pod's supervisor
+            # control API. The same grizzly-gameservers-control Secret the game
+            # pods require on the way in; optional so an unprovisioned token
+            # leaves both sides on the NetworkPolicy-only posture rather than
+            # failing every lifecycle action.
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-control
+                  key: control_token
+                  optional: true
             # Operator harness (/operator/*): the authenticated surface a coding
             # agent drives this bot through from a dev box, over a port-forward
             # to the ClusterIP Service. A *different* token from the in-game one

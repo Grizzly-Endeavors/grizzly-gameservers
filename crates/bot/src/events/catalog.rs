@@ -24,6 +24,11 @@ pub(crate) enum EventKind {
     ServerDestroyed,
     ServerArchived,
     ServerRecovered,
+    /// An archive was deleted — the tarball, its manifest, and the index rows.
+    /// Distinct from `ServerDestroyed`: destroying a server deliberately leaves
+    /// its archives standing, so this is the only kind that records a world
+    /// becoming unrecoverable.
+    ArchiveDeleted,
     BackupTaken,
     ServerRestored,
     /// The scheduled snapshot cycle finished a pass.
@@ -50,6 +55,7 @@ impl EventKind {
             Self::ServerDestroyed => "server_destroyed",
             Self::ServerArchived => "server_archived",
             Self::ServerRecovered => "server_recovered",
+            Self::ArchiveDeleted => "archive_deleted",
             Self::BackupTaken => "backup_taken",
             Self::ServerRestored => "server_restored",
             Self::BackupCycle => "backup_cycle",
