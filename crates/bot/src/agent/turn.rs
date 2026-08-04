@@ -20,6 +20,8 @@ pub(crate) enum TurnOrigin {
     Deferred,
     /// The operator harness driving the deployed bot over HTTP.
     Operator,
+    /// The proactive watchdog responding to a detected incident — nobody asked.
+    Watchdog,
 }
 
 impl TurnOrigin {
@@ -29,6 +31,7 @@ impl TurnOrigin {
             Self::Ingame => "ingame",
             Self::Deferred => "deferred",
             Self::Operator => "operator",
+            Self::Watchdog => "watchdog",
         }
     }
 }
@@ -54,7 +57,12 @@ impl Environment {
     fn for_origin(deployment: Self, origin: TurnOrigin) -> Self {
         match origin {
             TurnOrigin::Operator => Self::Operator,
-            TurnOrigin::Discord | TurnOrigin::Ingame | TurnOrigin::Deferred => deployment,
+            // Watchdog turns are real production traffic: they act on real
+            // servers with no harness in the loop.
+            TurnOrigin::Discord
+            | TurnOrigin::Ingame
+            | TurnOrigin::Deferred
+            | TurnOrigin::Watchdog => deployment,
         }
     }
 

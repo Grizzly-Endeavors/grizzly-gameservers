@@ -47,6 +47,24 @@ pub(crate) const CRASH_ROLLBACK: &str = "crash_rollback";
 /// A watchdog incident was detected in shadow mode: recorded, nothing acted.
 pub(crate) const SHADOW: &str = "shadow";
 
+/// A watchdog incident ran a proactive Gary turn.
+pub(crate) const RESPONDED: &str = "responded";
+
+/// A watchdog incident was suppressed by the storm guard — too many proactive
+/// turns in the window, so operators got a one-line DM instead.
+pub(crate) const SUPPRESSED_STORM: &str = "suppressed_storm";
+
+/// A watchdog crash incident was left to an armed deferred `startup` watcher,
+/// which runs its own investigation batch for the same event.
+pub(crate) const DEFERRED_TO_BATCH: &str = "deferred_to_batch";
+
+/// A watchdog incident had nowhere to go — no gateway, or no home channel and
+/// no operator DM could be opened.
+pub(crate) const UNDELIVERABLE: &str = "undeliverable";
+
+/// A watchdog incident's proactive turn errored before producing a reply.
+pub(crate) const TURN_FAILED: &str = "turn_failed";
+
 /// Which way Gary gave up. The escalation kind *is* the outcome, so the two
 /// escalation shapes are separable without reaching into the details payload.
 pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
@@ -68,7 +86,8 @@ pub(crate) fn escalation_event(
         Escalation::RoundBudgetExhausted { context, .. } => match context {
             EscalationContext::Discord { .. } => (None, None),
             EscalationContext::InGame { server, .. }
-            | EscalationContext::Deferred { server, .. } => (Some(server.as_str()), None),
+            | EscalationContext::Deferred { server, .. }
+            | EscalationContext::Watchdog { server, .. } => (Some(server.as_str()), None),
         },
         Escalation::CrashRollback { server, path } => (Some(server.as_str()), Some(path.as_str())),
     };

@@ -156,6 +156,17 @@ impl DeferRuntime {
         });
     }
 
+    /// Whether a live watcher is armed for `(server, condition)`. Best-effort,
+    /// like the registry itself: the watchdog uses this to leave a crash to an
+    /// armed `startup` watcher's own batch, and a rare race merely yields two
+    /// turns, which the incident cooldown then caps.
+    pub(crate) fn is_watching(&self, server: &str, condition: Condition) -> bool {
+        self.watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(server.to_owned(), condition))
+    }
+
     /// Re-insert a watcher key without spawning — used by a running watcher that
     /// found a late arrival and is continuing its own loop rather than exiting.
     fn register_silent(&self, server: &str, condition: Condition) {

@@ -78,6 +78,11 @@ pub(crate) enum Surface {
     /// same reason the `operator` environment is separable in Langfuse: harness
     /// traffic must never count as product signal.
     Operator,
+    /// A tool inside a proactive watchdog turn — the model acting on its own
+    /// detection, with no asker on any surface. Not [`Surface::System`] (that
+    /// vocabulary means "no model behind it") and not [`Surface::Deferred`]
+    /// (a friend queued those; nobody queued this).
+    Watchdog,
     /// An automatic cycle — scheduled backups, stranded-instance recovery.
     System,
 }
@@ -89,6 +94,7 @@ impl Surface {
             TurnOrigin::Discord | TurnOrigin::Ingame => Self::Agent,
             TurnOrigin::Deferred => Self::Deferred,
             TurnOrigin::Operator => Self::Operator,
+            TurnOrigin::Watchdog => Self::Watchdog,
         }
     }
 
@@ -98,6 +104,7 @@ impl Surface {
             Self::Agent => "agent",
             Self::Deferred => "deferred",
             Self::Operator => "operator",
+            Self::Watchdog => "watchdog",
             Self::System => "system",
         }
     }

@@ -43,6 +43,14 @@ pub(crate) enum EscalationContext {
         condition: String,
         guild: Option<u64>,
     },
+    /// A proactive watchdog turn gave up. Nobody asked at all — Gary's own
+    /// monitoring started it — so it carries the server and the signal that
+    /// fired (`crash` | `wedged` | `memory`).
+    Watchdog {
+        server: String,
+        signal: String,
+        guild: Option<u64>,
+    },
 }
 
 /// A fully-assembled escalation, ready to render into the operator DM. Two shapes
@@ -113,11 +121,22 @@ fn render_round_budget_exhausted(
             let scope = guild.map_or_else(|| "no guild".to_owned(), |id| format!("guild `{id}`"));
             format!("a deferred task — server `{server}`, condition `{condition}` ({scope})")
         }
+        EscalationContext::Watchdog {
+            server,
+            signal,
+            guild,
+        } => {
+            let scope = guild.map_or_else(|| "no guild".to_owned(), |id| format!("guild `{id}`"));
+            format!("a proactive incident — server `{server}`, signal `{signal}` ({scope})")
+        }
     };
     let who = match context {
         EscalationContext::Discord { asker, .. } => asker.clone(),
         EscalationContext::InGame { player, .. } => format!("player {player}"),
         EscalationContext::Deferred { .. } => "a deferred batch (no live asker)".to_owned(),
+        EscalationContext::Watchdog { .. } => {
+            "nobody — Gary's own monitoring flagged it".to_owned()
+        }
     };
     let tried = if attempts.is_empty() {
         "nothing — he gave up before calling any tools".to_owned()
@@ -180,13 +199,30 @@ impl OperatorNotifier {
             );
             return;
         }
-        let body = render_escalation(escalation);
+        self.fan_out(&render_escalation(escalation)).await;
+    }
+
+    /// DM every operator a pre-rendered notice that isn't an escalation — the
+    /// watchdog's storm-guard and no-gateway fallbacks. Same best-effort
+    /// fan-out; with no operators configured the notice is logged and dropped.
+    pub(crate) async fn notify_plain(&self, body: &str) {
+        if self.operator_ids.is_empty() {
+            warn!(
+                body,
+                "an operator notice had no one to go to (GAMESERVERS_ADMIN_USER_IDS is empty)"
+            );
+            return;
+        }
+        self.fan_out(body).await;
+    }
+
+    async fn fan_out(&self, body: &str) {
         for &operator in self.operator_ids.iter() {
             if let Err(err) = UserId::new(operator)
-                .direct_message(&self.http, CreateMessage::new().content(body.as_str()))
+                .direct_message(&self.http, CreateMessage::new().content(body))
                 .await
             {
-                error!(error = ?err, operator, "failed to DM an operator about a Gary escalation");
+                error!(error = ?err, operator, "failed to DM an operator a notice");
             }
         }
     }
