@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use tracing::warn;
 
 use crate::agent::Environment;
+use crate::events::{parse_bytes, parse_cpu_millicores};
 
 /// Closure that resolves an environment variable to its raw value, mirroring
 /// `std::env::var_os`. Injected so config parsing is testable without the
@@ -95,6 +96,15 @@ const DEFAULT_RELEASE: &str = "dev";
 /// world-save is never cut short — this is only meant to catch a kubelet that
 /// has stopped answering entirely.
 const DEFAULT_STRANDED_DWELL_MINUTES: u64 = 15;
+/// Default per-guild caps (ADR-022). Generous by design — the beta exists to
+/// gather real usage, not to meter it — but bounded so no one guild can crowd
+/// the others off the hardware. Five servers is comfortable headroom under the
+/// shared edge port band; 24 cores / 48Gi of aggregate declared limits admits
+/// three of the heaviest catalog game (Satisfactory, 8c/16Gi) at once while
+/// staying under half the cluster's workers.
+const DEFAULT_GUILD_MAX_SERVERS: u32 = 5;
+const DEFAULT_GUILD_MAX_CPU_MILLICORES: i64 = 24_000;
+const DEFAULT_GUILD_MAX_MEM_BYTES: i64 = 48 * 1024 * 1024 * 1024;
 
 /// How the proactive watchdog behaves. Detection thresholds are code constants
 /// (`crate::watchdog::detect`); this knob only selects what a fired incident is
@@ -205,6 +215,20 @@ pub struct BotConfig {
     /// What the proactive watchdog may do with a fired incident. Sourced from
     /// `GAMESERVERS_WATCHDOG`; defaults to [`WatchdogMode::On`].
     pub(crate) watchdog: WatchdogMode,
+    /// Global per-guild cap defaults (ADR-022). Per-guild overrides live in
+    /// Postgres (`crate::limits::GuildLimits`); these are the baseline every
+    /// guild starts from, and the enforcement floor when persistence is down.
+    pub(crate) guild_limits: GuildLimitDefaults,
+}
+
+/// The global per-guild cap defaults: how many servers a guild may hold and what
+/// its live pods' declared CPU/memory limits may sum to. Sourced from
+/// `GAMESERVERS_GUILD_MAX_SERVERS` / `_MAX_CPU` / `_MAX_MEMORY`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GuildLimitDefaults {
+    pub(crate) servers: u32,
+    pub(crate) cpu_limit_millicores: i64,
+    pub(crate) mem_limit_bytes: i64,
 }
 
 /// Connection settings for turn telemetry. Only the key pair is secret (synced
@@ -332,6 +356,7 @@ impl BotConfig {
         let release =
             optional(lookup, "GAMESERVERS_RELEASE").unwrap_or_else(|| DEFAULT_RELEASE.to_owned());
         let watchdog = watchdog_mode_from_env(lookup)?;
+        let guild_limits = guild_limit_defaults_from_env(lookup)?;
 
         Ok(Self {
             token,
@@ -360,8 +385,60 @@ impl BotConfig {
             langfuse,
             release,
             watchdog,
+            guild_limits,
         })
     }
+}
+
+/// Parse the per-guild cap defaults. CPU and memory accept Kubernetes quantity
+/// forms (`24`, `24000m`, `48Gi`) — the grammar every other resource surface
+/// speaks. An invalid value fails startup loudly, never silently defaults: a
+/// typo'd cap must not quietly admit unbounded load.
+fn guild_limit_defaults_from_env(lookup: EnvLookup) -> Result<GuildLimitDefaults> {
+    let servers = optional_positive_u64(lookup, "GAMESERVERS_GUILD_MAX_SERVERS")?.map_or(
+        Ok(DEFAULT_GUILD_MAX_SERVERS),
+        |value| {
+            u32::try_from(value).with_context(|| {
+                format!("GAMESERVERS_GUILD_MAX_SERVERS must fit a u32, got {value}")
+            })
+        },
+    )?;
+    let cpu_limit_millicores = optional_quantity(
+        lookup,
+        "GAMESERVERS_GUILD_MAX_CPU",
+        parse_cpu_millicores,
+        "a CPU quantity like \"24\" or \"24000m\"",
+    )?
+    .unwrap_or(DEFAULT_GUILD_MAX_CPU_MILLICORES);
+    let mem_limit_bytes = optional_quantity(
+        lookup,
+        "GAMESERVERS_GUILD_MAX_MEMORY",
+        parse_bytes,
+        "a memory quantity like \"48Gi\"",
+    )?
+    .unwrap_or(DEFAULT_GUILD_MAX_MEM_BYTES);
+    Ok(GuildLimitDefaults {
+        servers,
+        cpu_limit_millicores,
+        mem_limit_bytes,
+    })
+}
+
+/// Parse an optional env var through a Kubernetes-quantity parser, rejecting
+/// unparseable and non-positive values.
+fn optional_quantity(
+    lookup: EnvLookup,
+    key: &str,
+    parse: fn(&str) -> Option<i64>,
+    expected: &str,
+) -> Result<Option<i64>> {
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    let value = parse(raw.trim())
+        .filter(|&value| value > 0)
+        .with_context(|| format!("{key} must be {expected}, got {raw:?}"))?;
+    Ok(Some(value))
 }
 
 /// Parse `GAMESERVERS_WATCHDOG` into a [`WatchdogMode`], defaulting to `on`.

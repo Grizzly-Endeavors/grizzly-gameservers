@@ -20,10 +20,11 @@ use super::{
     BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 use crate::agones::{
-    ControlReady, DestroyOutcome, LiveInstance, PodTarget, ProvisionOutcome, ReadyWait,
-    RuntimeState, ServerScope, StartBegin, SupervisorOutcome, begin_start, destroy_instance,
-    instance_runtime_state, list_live_instances, provision_paused_instance, resolve_managed_pod,
-    supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
+    ControlReady, DestroyOutcome, LiveInstance, PodTarget, ProvisionOutcome, ProvisionSpec,
+    ReadyWait, RuntimeState, ServerScope, StartBegin, SupervisorOutcome, begin_start,
+    destroy_instance, instance_runtime_state, list_live_instances, provision_paused_instance,
+    resolve_managed_pod, supervisor_start, supervisor_stop, wait_for_control_reachable,
+    wait_for_ready,
 };
 use crate::agones::{InstanceOwner, owner_of};
 use crate::config::{DbConfig, S3Config};
@@ -802,6 +803,7 @@ impl BackupService {
                 | RecoverOutcome::Unavailable
                 | RecoverOutcome::UnknownGame(_)
                 | RecoverOutcome::PortsExhausted
+                | RecoverOutcome::GuildLimitReached(_)
                 | RecoverOutcome::Failed(_),
             )
             | Err(_) => event,
@@ -838,21 +840,29 @@ impl BackupService {
 
         // Stamp the recovered server with the archive's *own* owning guild, not
         // whatever guild the caller happens to be in — so a cross-guild operator
-        // recovering an archive returns it to its original tenant.
+        // recovering an archive returns it to its original tenant. The caps
+        // checked are that owning guild's for the same reason.
+        let caps = ctx.guild_limits.caps_for(record.guild.as_str()).await;
         let address = match provision_paused_instance(
             ctx.client,
             ctx.namespace,
             ctx.domain,
             ctx.provision_lock,
-            entry,
-            name,
-            record.guild.as_str(),
+            ProvisionSpec {
+                entry,
+                instance: name,
+                guild: record.guild.as_str(),
+                caps: Some(&caps),
+            },
         )
         .await?
         {
             ProvisionOutcome::Provisioned { address } => address,
             ProvisionOutcome::AlreadyExists => return Ok(RecoverOutcome::NameInUse),
             ProvisionOutcome::PortsExhausted => return Ok(RecoverOutcome::PortsExhausted),
+            ProvisionOutcome::GuildLimitReached(refusal) => {
+                return Ok(RecoverOutcome::GuildLimitReached(refusal));
+            }
         };
 
         let outcome = self

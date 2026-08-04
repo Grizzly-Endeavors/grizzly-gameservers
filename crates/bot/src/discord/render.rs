@@ -8,6 +8,7 @@ use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
+use crate::limits::{LimitRefusal, format_cores};
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
@@ -126,6 +127,54 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
             body: "All server slots are in use right now. Destroy one first, then try again."
                 .to_owned(),
         },
+        CreateOutcome::GuildLimitReached(refusal) => limit_refusal_spec(*refusal),
+    }
+}
+
+/// A guild-cap refusal (ADR-022) as a standalone embed, for the surfaces whose
+/// outcome enums don't carry the refusal (the `/start` cold branch).
+pub(crate) fn limit_refusal_embed(refusal: LimitRefusal) -> CreateEmbed {
+    limit_refusal_spec(refusal).into_embed()
+}
+
+/// A guild-cap refusal (ADR-022) as an embed, naming the figures and the way
+/// out. Shared by create, recover, and cold start, whose remedies are the same:
+/// free room or ask the operator for more.
+fn limit_refusal_spec(refusal: LimitRefusal) -> EmbedSpec {
+    let body = match refusal {
+        LimitRefusal::ServerCount { current, cap } => format!(
+            "This community is at its server limit ({current} of {cap} in use). Destroy or \
+             archive one first, or ask the bot operator to raise the limit."
+        ),
+        LimitRefusal::AggregateCpu {
+            current_millicores,
+            adding_millicores,
+            cap_millicores,
+        } => format!(
+            "This would put the community over its CPU allowance — it needs {} on top of the {} \
+             already in use, but the allowance is {}. Stop or shrink another server first, or \
+             ask the bot operator for more.",
+            format_cores(adding_millicores),
+            format_cores(current_millicores),
+            format_cores(cap_millicores),
+        ),
+        LimitRefusal::AggregateMemory {
+            current_bytes,
+            adding_bytes,
+            cap_bytes,
+        } => format!(
+            "This would put the community over its memory allowance — it needs {} on top of the \
+             {} already in use, but the allowance is {}. Stop or shrink another server first, or \
+             ask the bot operator for more.",
+            human_size(adding_bytes.unsigned_abs()),
+            human_size(current_bytes.unsigned_abs()),
+            human_size(cap_bytes.unsigned_abs()),
+        ),
+    };
+    EmbedSpec {
+        title: "Community limit reached".to_owned(),
+        colour: COLOUR_ERROR,
+        body,
     }
 }
 
@@ -469,6 +518,7 @@ fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
             colour: COLOUR_ERROR,
             body: "All server slots are in use right now. Destroy or archive one first.".to_owned(),
         },
+        RecoverOutcome::GuildLimitReached(refusal) => limit_refusal_spec(*refusal),
         RecoverOutcome::Failed(_) => EmbedSpec {
             title: "Recover failed".to_owned(),
             colour: COLOUR_ERROR,

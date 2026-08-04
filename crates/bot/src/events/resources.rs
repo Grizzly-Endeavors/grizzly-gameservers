@@ -330,16 +330,18 @@ fn build_resource_samples(
 }
 
 /// Whole-pod declared requests and limits, summed over the containers that
-/// declare each figure.
+/// declare each figure. Also the arithmetic behind guild-cap enforcement
+/// (`crate::agones::guild_usage`), so the enforcement plane and the
+/// `resource_samples` measurement plane can never disagree on what a pod holds.
 #[derive(Default)]
-struct DeclaredResources {
-    cpu_request_millicores: Option<i64>,
-    mem_request_bytes: Option<i64>,
-    cpu_limit_millicores: Option<i64>,
-    mem_limit_bytes: Option<i64>,
+pub(crate) struct DeclaredResources {
+    pub(crate) cpu_request_millicores: Option<i64>,
+    pub(crate) mem_request_bytes: Option<i64>,
+    pub(crate) cpu_limit_millicores: Option<i64>,
+    pub(crate) mem_limit_bytes: Option<i64>,
 }
 
-fn declared_resources(pod: &Pod) -> DeclaredResources {
+pub(crate) fn declared_resources(pod: &Pod) -> DeclaredResources {
     let containers: &[Container] = pod
         .spec
         .as_ref()

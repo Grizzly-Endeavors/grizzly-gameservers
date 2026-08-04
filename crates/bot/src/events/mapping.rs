@@ -21,6 +21,7 @@ use crate::backup::{
     ArchiveOutcome, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
 use crate::domain::{GuildId, InstanceName};
+use crate::limits::LimitRefusal;
 use crate::notify::{Escalation, EscalationContext};
 use crate::watchdog::{Incident, IncidentFacts};
 
@@ -208,6 +209,18 @@ pub(crate) fn provision(outcome: &ProvisionOutcome) -> &'static str {
         ProvisionOutcome::Provisioned { .. } => "provisioned",
         ProvisionOutcome::AlreadyExists => "name_taken",
         ProvisionOutcome::PortsExhausted => "ports_exhausted",
+        ProvisionOutcome::GuildLimitReached(refusal) => limit_refusal(*refusal),
+    }
+}
+
+/// The outcome name for a guild-cap refusal (ADR-022) — split by which cap, so
+/// "too many servers" and "too much CPU/memory" stay separately countable.
+pub(crate) fn limit_refusal(refusal: LimitRefusal) -> &'static str {
+    match refusal {
+        LimitRefusal::ServerCount { .. } => "guild_limit_servers",
+        LimitRefusal::AggregateCpu { .. } | LimitRefusal::AggregateMemory { .. } => {
+            "guild_limit_resources"
+        }
     }
 }
 
@@ -303,6 +316,7 @@ pub(crate) fn recover(outcome: &RecoverOutcome) -> &'static str {
         RecoverOutcome::Unavailable => "unavailable",
         RecoverOutcome::UnknownGame(_) => "unknown_game",
         RecoverOutcome::PortsExhausted => "ports_exhausted",
+        RecoverOutcome::GuildLimitReached(refusal) => limit_refusal(*refusal),
         RecoverOutcome::Failed(_) => FAILED,
     }
 }

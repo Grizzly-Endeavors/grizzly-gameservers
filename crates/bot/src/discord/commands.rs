@@ -6,27 +6,29 @@ use serenity::{
 };
 use tracing::{error, warn};
 
-use super::auth::{require_admin, require_manager, visibility_scope};
+use super::auth::{require_admin, require_manager, require_operator, visibility_scope};
 use super::render::{
     archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
     backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
     delete_archive_confirm_embed, delete_archive_result_embed, destroy_confirm_embed,
-    destroy_result_embed, error_embed, guild_required_embed, human_size, neutral_embed,
-    recover_result_embed, restore_confirm_embed, restore_result_embed, server_list_embed,
-    shutdown_result_embed, start_result_embed, supervisor_result_embed, working_embed,
+    destroy_result_embed, error_embed, guild_required_embed, human_size, limit_refusal_embed,
+    neutral_embed, recover_result_embed, restore_confirm_embed, restore_result_embed,
+    server_list_embed, shutdown_result_embed, start_result_embed, supervisor_result_embed,
+    working_embed,
 };
 use super::{COMPONENT_TIMEOUT, Context, Error, backup_ctx};
 use crate::agent::SessionKey;
 use crate::agones::{
-    CreateOutcome, ProvisionOutcome, RuntimeState, ServerScope, StartBegin, StartOutcome,
-    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
-    list_active_servers, list_instance_names, now_entropy, provision_instance, shutdown_instance,
-    supervisor_restart, supervisor_start, supervisor_stop, validate_world_name,
-    wait_for_instance_ready,
+    CreateOutcome, ProvisionOutcome, ProvisionSpec, RuntimeState, ServerScope, StartBegin,
+    StartOutcome, begin_start, build_instance_name, destroy_instance, guild_usage,
+    instance_runtime_state, list_active_servers, list_instance_names, now_entropy,
+    provision_instance, shutdown_instance, supervisor_restart, supervisor_start, supervisor_stop,
+    validate_world_name, wait_for_instance_ready,
 };
 use crate::backup::{ArchiveDeleteOutcome, ArtifactSummary, BackupService};
 use crate::domain::{GuildId, InstanceName};
 use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
+use crate::limits::{LimitChange, format_cores};
 use crate::memory::{ForgetOutcome, Memory};
 use crate::store::{ConfigChange, HomeToggle};
 
@@ -224,14 +226,23 @@ async fn finish_create(
         )
         .await?;
 
+    let guild_key = guild_id_string(ctx);
+    let caps = if guild_key.is_empty() {
+        None
+    } else {
+        Some(data.guild_limits.caps_for(&guild_key).await)
+    };
     let provisioned = provision_instance(
         &data.kube_client,
         &data.namespace,
         &data.domain,
         &data.provision_lock,
-        entry,
-        &server,
-        &guild_id_string(ctx),
+        ProvisionSpec {
+            entry,
+            instance: &server,
+            guild: &guild_key,
+            caps: caps.as_ref(),
+        },
     )
     .await;
 
@@ -251,19 +262,15 @@ async fn finish_create(
             )
             .await?;
         }
-        Ok(ProvisionOutcome::AlreadyExists) => {
+        Ok(
+            refused @ (ProvisionOutcome::AlreadyExists
+            | ProvisionOutcome::PortsExhausted
+            | ProvisionOutcome::GuildLimitReached(_)),
+        ) => {
             reply
                 .edit(
                     ctx,
-                    cleared(create_result_embed(&CreateOutcome::AlreadyExists, &server)),
-                )
-                .await?;
-        }
-        Ok(ProvisionOutcome::PortsExhausted) => {
-            reply
-                .edit(
-                    ctx,
-                    cleared(create_result_embed(&CreateOutcome::PortsExhausted, &server)),
+                    cleared(create_result_embed(&provision_to_create(refused), &server)),
                 )
                 .await?;
         }
@@ -282,6 +289,21 @@ async fn finish_create(
     Ok(())
 }
 
+/// Map a provision outcome onto its [`CreateOutcome`] for rendering. `Provisioned`
+/// is finalized via [`await_ready`] instead, so its arm here only exists to keep
+/// the match exhaustive.
+fn provision_to_create(outcome: ProvisionOutcome) -> CreateOutcome {
+    match outcome {
+        ProvisionOutcome::Provisioned { address } => CreateOutcome::Created {
+            address,
+            ready: false,
+        },
+        ProvisionOutcome::AlreadyExists => CreateOutcome::AlreadyExists,
+        ProvisionOutcome::PortsExhausted => CreateOutcome::PortsExhausted,
+        ProvisionOutcome::GuildLimitReached(refusal) => CreateOutcome::GuildLimitReached(refusal),
+    }
+}
+
 /// Record a create that never got as far as booting. A successful provision is
 /// deliberately silent here: its terminal outcome is the readiness resolution,
 /// which [`await_ready`] records once it knows how long the boot took.
@@ -292,7 +314,11 @@ async fn record_provision(
 ) {
     match provisioned {
         Ok(ProvisionOutcome::Provisioned { .. }) => {}
-        Ok(rejected @ (ProvisionOutcome::AlreadyExists | ProvisionOutcome::PortsExhausted)) => {
+        Ok(
+            rejected @ (ProvisionOutcome::AlreadyExists
+            | ProvisionOutcome::PortsExhausted
+            | ProvisionOutcome::GuildLimitReached(_)),
+        ) => {
             record_action(
                 ctx,
                 EventKind::ServerCreated,
@@ -617,29 +643,64 @@ async fn start_cold(
     server: &str,
 ) -> Result<(), Error> {
     let data = ctx.data();
-    let begin = match begin_start(
-        &data.kube_client,
-        &data.namespace,
-        &data.domain,
-        &data.catalog,
-        server,
-        data.sizing.get(server).await,
-    )
-    .await
-    {
-        Ok(begin) => begin,
-        Err(err) => {
-            error!(error = ?err, server = %server, "failed to start game server");
-            reply
-                .edit(
+    // One hold of the provision lock covers the cap gate and the GameServer
+    // create, so a concurrent create can't add load in between (ADR-022). The
+    // returns inside the block release it before any long wait.
+    let begin = {
+        let _guard = data.provision_lock.lock().await;
+        match super::cold_start_refusal(data, server).await {
+            Ok(None) => {}
+            Ok(Some(refusal)) => {
+                record_action(
                     ctx,
-                    cleared(error_embed(
-                        "Couldn't start the server right now. Try again in a moment.",
-                    )),
+                    EventKind::ServerStarted,
+                    server,
+                    mapping::limit_refusal(refusal),
                 )
-                .await?;
-            record_action(ctx, EventKind::ServerStarted, server, mapping::FAILED).await;
-            return Ok(());
+                .await;
+                reply
+                    .edit(ctx, cleared(limit_refusal_embed(refusal)))
+                    .await?;
+                return Ok(());
+            }
+            Err(err) => {
+                error!(error = ?err, server = %server, "failed to check guild caps for cold start");
+                reply
+                    .edit(
+                        ctx,
+                        cleared(error_embed(
+                            "Couldn't start the server right now. Try again in a moment.",
+                        )),
+                    )
+                    .await?;
+                record_action(ctx, EventKind::ServerStarted, server, mapping::FAILED).await;
+                return Ok(());
+            }
+        }
+        match begin_start(
+            &data.kube_client,
+            &data.namespace,
+            &data.domain,
+            &data.catalog,
+            server,
+            data.sizing.get(server).await,
+        )
+        .await
+        {
+            Ok(begin) => begin,
+            Err(err) => {
+                error!(error = ?err, server = %server, "failed to start game server");
+                reply
+                    .edit(
+                        ctx,
+                        cleared(error_embed(
+                            "Couldn't start the server right now. Try again in a moment.",
+                        )),
+                    )
+                    .await?;
+                record_action(ctx, EventKind::ServerStarted, server, mapping::FAILED).await;
+                return Ok(());
+            }
         }
     };
 
@@ -1043,7 +1104,8 @@ fn format_memory_list(memories: &[Memory]) -> String {
         "config_admin_role",
         "config_admin_user",
         "config_manager_role",
-        "config_manager_user"
+        "config_manager_user",
+        "config_limits"
     )
 )]
 pub(crate) async fn config(ctx: Context<'_>) -> Result<(), Error> {
@@ -1058,7 +1120,7 @@ async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
         reply_with(neutral_embed(
             "Pick an option",
             "Use `/config view`, `/config admin-role`, `/config admin-user`, \
-             `/config manager-role`, or `/config manager-user`.",
+             `/config manager-role`, `/config manager-user`, or `/config limits`.",
         ))
         .ephemeral(true),
     )
@@ -1328,6 +1390,186 @@ async fn config_manager_user_remove(
         &format!("**{}**", user.name),
     )
     .await
+}
+
+/// This Discord server's resource caps: view for admins, adjust for the bot
+/// operator.
+#[poise::command(
+    slash_command,
+    rename = "limits",
+    subcommands(
+        "config_limits_view",
+        "config_limits_max_servers",
+        "config_limits_max_cpu",
+        "config_limits_max_memory"
+    )
+)]
+async fn config_limits(ctx: Context<'_>) -> Result<(), Error> {
+    config_group_hint(ctx).await
+}
+
+/// Show this Discord server's resource caps and what's in use against them.
+#[poise::command(slash_command, rename = "view", check = "require_admin")]
+async fn config_limits_view(ctx: Context<'_>) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let data = ctx.data();
+    let guild_key = guild.get().to_string();
+    let caps = data.guild_limits.caps_for(&guild_key).await;
+    let usage = guild_usage(&data.kube_client, &data.namespace, &guild_key, None).await;
+    let mut body = match usage {
+        Ok(usage) => format!(
+            "**Servers:** {} of {}\n**CPU:** {} of {} in use by live servers\n\
+             **Memory:** {} of {} in use by live servers",
+            usage.server_count,
+            caps.servers,
+            format_cores(usage.live_cpu_limit_millicores),
+            format_cores(caps.cpu_limit_millicores),
+            human_size(usage.live_mem_limit_bytes.unsigned_abs()),
+            human_size(caps.mem_limit_bytes.unsigned_abs()),
+        ),
+        Err(err) => {
+            error!(error = ?err, guild = %guild_key, "failed to measure guild usage for /config limits");
+            format!(
+                "**Servers:** up to {}\n**CPU:** up to {}\n**Memory:** up to {}\n\n\
+                 ⚠️ I couldn't measure current usage just now, so only the caps are shown.",
+                caps.servers,
+                format_cores(caps.cpu_limit_millicores),
+                human_size(caps.mem_limit_bytes.unsigned_abs()),
+            )
+        }
+    };
+    body.push_str(
+        "\n\nCPU and memory count each live server's configured maximum, so stopped \
+         servers use none. Ask the bot operator if this community needs more room.",
+    );
+    if data.guild_limits.overrides_for(&guild_key).await.is_some() {
+        body.push_str("\n\nSome of these caps are set specifically for this community.");
+    }
+    ctx.send(reply_with(neutral_embed("Server limits", &body)).ephemeral(true))
+        .await?;
+    Ok(())
+}
+
+/// Set how many servers this Discord server may have, or `default` to clear.
+#[poise::command(slash_command, rename = "max-servers", check = "require_operator")]
+async fn config_limits_max_servers(
+    ctx: Context<'_>,
+    #[description = "A count like 8, or \"default\""] value: String,
+) -> Result<(), Error> {
+    let change = match parse_limit_value(&value, |raw| {
+        raw.parse::<u32>().ok().filter(|&count| count > 0)
+    }) {
+        Ok(change) => LimitChange::Servers(change),
+        Err(()) => return limit_value_rejected(ctx, &value, "a positive count like `8`").await,
+    };
+    apply_limit_change(ctx, change).await
+}
+
+/// Set this Discord server's total CPU allowance, or `default` to clear.
+#[poise::command(slash_command, rename = "max-cpu", check = "require_operator")]
+async fn config_limits_max_cpu(
+    ctx: Context<'_>,
+    #[description = "A CPU amount like 32 or 32000m, or \"default\""] value: String,
+) -> Result<(), Error> {
+    let change = match parse_limit_value(&value, |raw| {
+        crate::events::parse_cpu_millicores(raw).filter(|&millicores| millicores > 0)
+    }) {
+        Ok(change) => LimitChange::CpuLimitMillicores(change),
+        Err(()) => {
+            return limit_value_rejected(ctx, &value, "a CPU amount like `32` or `32000m`").await;
+        }
+    };
+    apply_limit_change(ctx, change).await
+}
+
+/// Set this Discord server's total memory allowance, or `default` to clear.
+#[poise::command(slash_command, rename = "max-memory", check = "require_operator")]
+async fn config_limits_max_memory(
+    ctx: Context<'_>,
+    #[description = "A memory amount like 64Gi, or \"default\""] value: String,
+) -> Result<(), Error> {
+    let change = match parse_limit_value(&value, |raw| {
+        crate::events::parse_bytes(raw).filter(|&bytes| bytes > 0)
+    }) {
+        Ok(change) => LimitChange::MemLimitBytes(change),
+        Err(()) => return limit_value_rejected(ctx, &value, "a memory amount like `64Gi`").await,
+    };
+    apply_limit_change(ctx, change).await
+}
+
+/// Parse a limit argument: the literal `default` clears the override, anything
+/// else must survive `parse`.
+fn parse_limit_value<T>(raw: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Option<T>, ()> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("default") {
+        return Ok(None);
+    }
+    parse(trimmed).map(Some).ok_or(())
+}
+
+async fn limit_value_rejected(ctx: Context<'_>, raw: &str, expected: &str) -> Result<(), Error> {
+    ctx.send(
+        reply_with(error_embed(&format!(
+            "`{raw}` isn't something I can use — give me {expected}, or `default`."
+        )))
+        .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Persist one cap adjustment and confirm with the guild's new effective caps.
+async fn apply_limit_change(ctx: Context<'_>, change: LimitChange) -> Result<(), Error> {
+    let Some(guild) = ctx.guild_id() else {
+        ctx.send(reply_with(guild_required_embed()).ephemeral(true))
+            .await?;
+        return Ok(());
+    };
+    let data = ctx.data();
+    let guild_key = guild.get().to_string();
+    if !data.guild_limits.is_available() {
+        ctx.send(
+            reply_with(error_embed(
+                "I can't record limit changes right now — my settings storage is offline. \
+                 The current caps still apply; try again later.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+    let actor = ctx.author().id.get().to_string();
+    if let Err(err) = data.guild_limits.apply(&guild_key, change, &actor).await {
+        error!(error = ?err, guild = %guild_key, "failed to record a guild limit change");
+        ctx.send(
+            reply_with(error_embed(
+                "Something went wrong recording the change, so nothing was altered. \
+                 Try again later.",
+            ))
+            .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    }
+    let caps = data.guild_limits.caps_for(&guild_key).await;
+    ctx.send(
+        reply_with(neutral_embed(
+            "Limits updated",
+            &format!(
+                "This community's caps are now **{} servers**, **{}**, and **{}**.",
+                caps.servers,
+                format_cores(caps.cpu_limit_millicores),
+                human_size(caps.mem_limit_bytes.unsigned_abs()),
+            ),
+        ))
+        .ephemeral(true),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Join a set of ids into a Discord mention list, or an em dash when empty.

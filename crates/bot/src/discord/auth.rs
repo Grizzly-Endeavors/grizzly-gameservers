@@ -110,6 +110,22 @@ pub(crate) async fn require_admin(ctx: Context<'_>) -> Result<bool, Error> {
     .await
 }
 
+/// poise check for the operator-only commands (`/config limits` mutations).
+/// Deliberately above `require_admin`: guild admins are the party the caps
+/// bind, so the tier that grants everything *inside* a guild still doesn't
+/// reach the knobs that bound the guild itself.
+///
+/// # Errors
+///
+/// Returns an error only if sending the denial reply to Discord fails.
+pub(crate) async fn require_operator(ctx: Context<'_>) -> Result<bool, Error> {
+    if ctx.data().operator_ids.contains(&ctx.author().id.get()) {
+        return Ok(true);
+    }
+    deny(ctx, "Only the bot operator can change these limits.").await?;
+    Ok(false)
+}
+
 /// poise check for the manager-tier commands — the day-to-day lifecycle
 /// (`/create`, `/start`, `/stop`, `/backup`, …). Admins pass too (they outrank
 /// managers).
