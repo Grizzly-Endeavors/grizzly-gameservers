@@ -13,7 +13,7 @@
 //!   port with `nodePort == port == targetPort` (no remap), and the leased number
 //!   is injected into the game's env so it binds/advertises the external port.
 //!   Required by games like Satisfactory whose client dials the advertised port
-//!   and where the edge only forwards the 7000-7010 band.
+//!   and where the edge only forwards the 7000-7099 band.
 
 use std::collections::BTreeMap;
 

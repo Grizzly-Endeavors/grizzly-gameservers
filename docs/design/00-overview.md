@@ -46,7 +46,7 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 
 **Per-pod supervisor** — a thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the bot/ops agent drive to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. `/stop` pauses the process (pod stays up); `/shutdown` is the heavier teardown that deletes the GameServer. This is also the substrate the ops agent's file tools (browse/read/write/restore) and RCON console bridge (`send_command`) dock into — all shipped. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md).
 
-**Edge** — a static UDP+TCP port range (**7000–7010**) forwarded once from the VPS over the existing `wg0` tunnel to the cluster. Lives in `grizzly-platform`, not here. See "Edge forwarding" below.
+**Edge** — a static UDP+TCP port range (**7000–7099**) forwarded once from the VPS over the existing `wg0` tunnel to the cluster. Lives in `grizzly-platform`, not here. See "Edge forwarding" below.
 
 ## Config: two tiers
 
@@ -105,7 +105,7 @@ A resize lands on the **running** container through Kubernetes' `pods/resize` su
 
 Topology (from `grizzly-platform`): VPS `10.200.0.1` ↔ R730xd `10.200.0.2` over `wg0`; R730xd iptables-DNATs ingress ports over the tunnel to a K8s node (`dell_inspiron`, `10.0.0.226`). HTTP/HTTPS (30487/30356) today.
 
-Game forwarding mirrors this: the VPS DNATs the **7000–7010** UDP+TCP range over `wg0` to R730xd, which re-DNATs the range to the K8s node — 1:1, no port remap, so an Agones-allocated port is consistent end-to-end. The range is opened **once**; per-server port assignment happens inside Agones, so the edge never changes per spin-up.
+Game forwarding mirrors this: the VPS DNATs the **7000–7099** UDP+TCP range over `wg0` to R730xd, which re-DNATs the range to the K8s node — 1:1, no port remap, so an Agones-allocated port is consistent end-to-end. The range is opened **once**; per-server port assignment happens inside Agones, so the edge never changes per spin-up.
 
 **Node-pin constraint:** R730xd forwards the range to a single node IP, but Agones schedules a GameServer pod onto whichever node it picks, exposing a `hostPort` there. So either game-server pods are pinned to the forwarding-target node (`nodeSelector`), or game servers use a NodePort Service (reachable on any node, kube-proxy routes) and the edge targets any one node. **Resolved: NodePort, no node-pinning** ([ADR-002](../decisions/002-nodeport-no-node-pin.md)).
 

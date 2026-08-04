@@ -35,7 +35,7 @@ spec:
         - game-servers
       # Agones' own dynamic hostPort allocator. We expose servers via NodePort
       # Services (cluster/../games), not hostPort, so nothing should request a
-      # Dynamic port — but pin the range clear of the 7000-7010 NodePort band
+      # Dynamic port — but pin the range clear of the 7000-7099 NodePort band
       # so an accidental Dynamic GameServer can never collide with an edge port.
       minPort: 8000
       maxPort: 8100

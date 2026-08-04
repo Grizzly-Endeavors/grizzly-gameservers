@@ -37,7 +37,7 @@ pub const PROCESS_LABEL_STOPPED: &str = "stopped";
 /// Default TCP port the supervisor serves its control API on and the bot's control
 /// client dials. Pod-internal — never added to the `NodePort` Service — so only the
 /// bot (allowed by a scoped Cilium egress rule) can reach it. Deliberately outside
-/// the 7000–7010 `NodePort` band and clear of 9358 (the Agones SDK). Shared so both
+/// the 7000–7099 `NodePort` band and clear of 9358 (the Agones SDK). Shared so both
 /// sides default to the same port; a mismatch is a silent Cilium drop, not an error.
 /// The `cluster/guardrails/bot-to-supervisor-egress.yaml` guardrail hardcodes this
 /// value too and must still be matched by hand (a YAML file can't import a Rust

@@ -1,6 +1,6 @@
 # On-demand NodePort template. The bot renders this per `/create`: it overrides
 # metadata.name, points the selector at the instance's GameServer, and replaces
-# the nodePort below with a port leased from the 7000-7010 edge-forwarded band
+# the nodePort below with a port leased from the 7000-7099 edge-forwarded band
 # (the literal value here is only a placeholder). externalTrafficPolicy: Cluster
 # is required so a node without the pod still forwards. Palworld's game protocol
 # is UDP.
