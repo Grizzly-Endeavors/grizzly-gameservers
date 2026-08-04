@@ -19,6 +19,30 @@ use tracing::{debug, warn};
 
 use crate::rcon::RconRuntime;
 
+/// Which occupancy API a game's URL speaks. Selected per image rather than
+/// sniffed: the two are different protocols at different paths, and guessing
+/// wrong would report every server as unknown-occupancy with no obvious cause.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OccupancyApi {
+    /// Satisfactory's dedicated-server HTTPS API.
+    #[default]
+    Satisfactory,
+    /// `TShock`'s REST API, for Terraria.
+    Tshock,
+}
+
+impl OccupancyApi {
+    /// Parse the `SUPERVISOR_OCCUPANCY_API` value a game image sets.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "satisfactory" => Some(Self::Satisfactory),
+            "tshock" => Some(Self::Tshock),
+            _ => None,
+        }
+    }
+}
+
 /// Privilege level requested from the Satisfactory API. `Client` is the lowest
 /// level that can read server state, and passwordless login only succeeds at it
 /// while no client-protection password is set — which is the case for a server
@@ -31,6 +55,9 @@ pub enum OccupancySource {
     Rcon(Arc<RconRuntime>),
     /// Satisfactory's dedicated-server HTTPS API reports it.
     SatisfactoryApi(Arc<SatisfactoryApi>),
+    /// `TShock`'s REST API reports it, for Terraria — which has no console of its
+    /// own on any flavor.
+    TshockApi(Arc<TshockApi>),
 }
 
 impl OccupancySource {
@@ -40,7 +67,71 @@ impl OccupancySource {
         match self {
             Self::Rcon(rcon) => rcon.player_count().await,
             Self::SatisfactoryApi(api) => api.player_count().await,
+            Self::TshockApi(api) => api.player_count().await,
         }
+    }
+}
+
+/// Client for `TShock`'s REST API, scoped to the one question the supervisor asks.
+///
+/// Unauthenticated on purpose: `/v2/server/status` is one of the few `TShock`
+/// endpoints that takes no token, so reading occupancy needs no credential to
+/// mint, store, or rotate. Everything that *does* mutate the server still
+/// requires one, and the port is pod-internal regardless.
+pub struct TshockApi {
+    http: reqwest::Client,
+    status_url: String,
+}
+
+#[derive(Deserialize)]
+struct TshockStatus {
+    /// `TShock` renders this as a JSON number; `status` alongside it is a
+    /// *string* ("200"), which is why only this field is modelled.
+    playercount: u32,
+}
+
+impl TshockApi {
+    /// Build a client for the REST API at `base_url` (e.g. `http://127.0.0.1:7878`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP client can't be constructed.
+    pub fn new(base_url: &str) -> Result<Self> {
+        let http = reqwest::Client::builder()
+            .build()
+            .context("failed to build the tshock api client")?;
+        Ok(Self {
+            http,
+            status_url: format!("{}/v2/server/status", base_url.trim_end_matches('/')),
+        })
+    }
+
+    /// Players currently connected, or `None` when the API couldn't be read.
+    pub async fn player_count(&self) -> Option<u32> {
+        match self.query_status().await {
+            Ok(count) => Some(count),
+            Err(err) => {
+                // Warn, not error: an unreachable API is expected while the world
+                // is still generating, and the caller degrades to "unknown".
+                warn!(error = ?err, "could not read tshock player count");
+                None
+            }
+        }
+    }
+
+    async fn query_status(&self) -> Result<u32> {
+        let status: TshockStatus = self
+            .http
+            .get(&self.status_url)
+            .send()
+            .await
+            .context("tshock status request failed")?
+            .error_for_status()
+            .context("tshock status returned an error status")?
+            .json()
+            .await
+            .context("could not parse the tshock status response")?;
+        Ok(status.playercount)
     }
 }
 

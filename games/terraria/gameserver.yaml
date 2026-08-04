@@ -2,8 +2,12 @@
 # per `/create` into a uniquely-named instance (this name/labels are placeholders
 # the renderer overrides); nothing here runs until a friend asks for it.
 #
-# Vanilla Terraria has no RCON, so no SUPERVISOR_RCON_PORT is set: Gary operates
-# it via file edits + restart, not live console commands.
+# Terraria has no RCON on any flavor, so no SUPERVISOR_RCON_PORT is set: Gary
+# operates it via file edits + restart, not live console commands. It runs the
+# TShock flavor (ADR-018), whose REST API does report a live player count — that
+# is what lets it join update-on-empty and lets Gary see who's on before a
+# restart. That port is pod-internal and deliberately absent from the ports below
+# and from service.yaml, even though the image exposes it.
 #
 # The image bakes in the grizzly supervisor as its entrypoint (games/terraria/
 # Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle

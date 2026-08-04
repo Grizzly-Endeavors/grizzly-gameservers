@@ -7,6 +7,7 @@ use tracing::warn;
 
 use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
+use crate::occupancy::OccupancyApi;
 use crate::rcon::RconDialect;
 
 /// Default trigger a player types in chat to address the ops agent. Overridable
@@ -94,12 +95,13 @@ pub struct SupervisorConfig {
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
     pub crash_threshold: u32,
-    /// Satisfactory's dedicated-server HTTPS API, e.g.
-    /// `https://127.0.0.1:7777/api/v1`, or `None` for games that report occupancy
-    /// over RCON. Its presence is what selects the alternate occupancy source —
-    /// Satisfactory has no RCON, so without it the game can never report a player
-    /// count and never joins update-on-empty.
+    /// Base URL of the game's own occupancy API, or `None` for games that report
+    /// it over RCON. Its presence selects the alternate source, which is the only
+    /// way Satisfactory and Terraria get a player count at all — neither has a
+    /// console, and without a count neither can join update-on-empty.
     pub occupancy_api_url: Option<String>,
+    /// Which API the URL above speaks. Ignored when there is no URL.
+    pub occupancy_api: OccupancyApi,
     /// Localhost port the game's RCON listens on, or `None` when the per-game
     /// template doesn't enable RCON. Its presence turns on the `/command` route.
     pub rcon_port: Option<u16>,
@@ -233,6 +235,7 @@ impl SupervisorConfig {
         );
         let control_token = optional(lookup, "SUPERVISOR_CONTROL_TOKEN");
         let occupancy_api_url = optional(lookup, "SUPERVISOR_OCCUPANCY_API_URL");
+        let occupancy_api = parse_occupancy_api(lookup)?;
         let crash_window = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
                 .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
@@ -290,6 +293,7 @@ impl SupervisorConfig {
             crash_window,
             crash_threshold,
             occupancy_api_url,
+            occupancy_api,
             rcon_port,
             rcon_dialect,
             rcon_password_env,
@@ -311,6 +315,21 @@ impl SupervisorConfig {
 /// (`SUPERVISOR_AGENT_URL`) or the server identity (`SUPERVISOR_GAMESERVER_NAME`)
 /// is a hard error rather than a silent disable — a half-configured watcher would
 /// swallow every `@Gary` with no signal.
+/// Which occupancy API this image's `SUPERVISOR_OCCUPANCY_API_URL` speaks.
+///
+/// An unrecognised value is a hard error rather than a silent fallback: the two
+/// dialects are different protocols, so a typo that quietly picked the wrong one
+/// would leave the game reporting unknown occupancy forever with nothing pointing
+/// at the cause.
+fn parse_occupancy_api(lookup: EnvLookup) -> Result<OccupancyApi> {
+    match optional(lookup, "SUPERVISOR_OCCUPANCY_API") {
+        None => Ok(OccupancyApi::default()),
+        Some(raw) => OccupancyApi::parse(&raw).ok_or_else(|| {
+            anyhow!("SUPERVISOR_OCCUPANCY_API must be 'satisfactory' or 'tshock', got {raw:?}")
+        }),
+    }
+}
+
 fn parse_chat_watch(lookup: EnvLookup) -> Result<Option<ChatWatchConfig>> {
     let Some(format_raw) = optional(lookup, "SUPERVISOR_CHAT_FORMAT") else {
         return Ok(None);

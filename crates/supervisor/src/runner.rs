@@ -18,7 +18,7 @@ use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::heartbeat::Heartbeat;
 use crate::logs::LogBuffer;
-use crate::occupancy::{OccupancySource, SatisfactoryApi};
+use crate::occupancy::{OccupancyApi, OccupancySource, SatisfactoryApi, TshockApi};
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
@@ -71,10 +71,15 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     // none and answers over its own HTTPS API instead. Absent both, occupancy is
     // permanently unknown and the game can't join update-on-empty.
     let occupancy = match (cfg.occupancy_api_url.as_ref(), rcon.as_ref()) {
-        (Some(url), _) => Some(Arc::new(OccupancySource::SatisfactoryApi(Arc::new(
-            SatisfactoryApi::new(url.clone())
-                .context("failed to initialize the satisfactory occupancy client")?,
-        )))),
+        (Some(url), _) => Some(Arc::new(match cfg.occupancy_api {
+            OccupancyApi::Satisfactory => OccupancySource::SatisfactoryApi(Arc::new(
+                SatisfactoryApi::new(url.clone())
+                    .context("failed to initialize the satisfactory occupancy client")?,
+            )),
+            OccupancyApi::Tshock => OccupancySource::TshockApi(Arc::new(
+                TshockApi::new(url).context("failed to initialize the tshock occupancy client")?,
+            )),
+        })),
         (None, Some(rcon)) => Some(Arc::new(OccupancySource::Rcon(Arc::clone(rcon)))),
         (None, None) => None,
     };
