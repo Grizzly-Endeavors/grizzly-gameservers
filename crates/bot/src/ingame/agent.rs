@@ -18,8 +18,9 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, SessionEvent, SessionOutcome, ToolCall, ToolDef,
-    TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
+    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, SessionCallbacks, SessionEvent,
+    SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
+    run_session, send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
@@ -129,27 +130,39 @@ pub(crate) async fn handle_ingame_question(
     // commentary of each tool call broadcast to the whole world.
     let progress = move |_event: SessionEvent| Box::pin(async {}) as ProgressFuture<'_>;
 
+    // The in-game tool set is a fixed read-only pair with no escalation tool, so
+    // the only way out here is still the round budget.
+    let never_escalates = || None;
     let outcome = run_session(
         &mut messages,
         tool_defs,
         DEFAULT_MAX_ROUNDS,
         &recorder,
-        &complete,
-        &dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete: &complete,
+            dispatch: &dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates,
+        },
     )
     .await;
 
     let reply = match outcome {
         Ok(SessionOutcome {
-            reply, escalated, ..
+            reply, escalation, ..
         }) => {
-            if escalated {
-                warn!(server, player, "in-game session hit the round budget");
+            if let Some(reason) = escalation {
+                warn!(
+                    server,
+                    player,
+                    kind = reason.as_str(),
+                    "in-game session escalated"
+                );
                 escalate(
                     deps,
                     &attribution,
                     &messages,
+                    &reason,
                     Asked {
                         server,
                         player,
@@ -195,18 +208,19 @@ async fn escalate(
     deps: &IngameDeps,
     attribution: &Attribution,
     messages: &[ChatMessage],
+    reason: &EscalationReason,
     asked: Asked<'_>,
 ) {
-    let escalation = Escalation::RoundBudgetExhausted {
-        context: EscalationContext::InGame {
+    let escalation = Escalation::from_turn(
+        reason,
+        EscalationContext::InGame {
             player: asked.player.to_owned(),
             server: asked.server.to_owned(),
             guild: asked.guild.to_owned(),
         },
-        request: asked.question.to_owned(),
-        attempts: summarize_attempts(messages),
-        rounds: DEFAULT_MAX_ROUNDS,
-    };
+        asked.question.to_owned(),
+        summarize_attempts(messages),
+    );
     deps.events
         .record(mapping::escalation_event(
             &escalation,

@@ -18,5 +18,8 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-014 — Record product events at the executing caller, in one wide table](014-product-event-log.md)
 - [ADR-015 — A market-proxy cost plane: quantities in Postgres, money only at query time](015-market-proxy-cost-plane.md)
 - [ADR-016 — Proactive watchdog: detection rides the sampler, response reuses the deferred-batch turn](016-proactive-watchdog.md)
+- [ADR-017 — Bearer-token auth on the supervisor control API](017-supervisor-control-auth.md)
+- [ADR-018 — Terraria runs the TShock flavor](018-terraria-tshock-flavor.md)
+- [ADR-019 — The agent escalates by calling a tool, and that ends the turn](019-agent-invoked-escalation.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

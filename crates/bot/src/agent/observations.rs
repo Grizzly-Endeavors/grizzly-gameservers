@@ -8,7 +8,7 @@
 use opentelemetry::{Array, KeyValue, Value};
 
 use super::llm::{ChatMessage, Completion, Role, TokenUsage};
-use super::session::SessionOutcome;
+use super::session::{EscalationReason, SessionOutcome};
 use super::turn::{TurnActor, TurnIdentity};
 use crate::telemetry::{Level, ObservationType, langfuse};
 
@@ -73,7 +73,7 @@ pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
 
 /// The root observation: the turn as a whole.
 pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValue> {
-    let level = if outcome.escalated {
+    let level = if outcome.escalated() {
         Level::Warning
     } else {
         Level::Default
@@ -90,17 +90,27 @@ pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValu
         metadata(
             langfuse::OBSERVATION_METADATA,
             "escalated",
-            outcome.escalated.to_string(),
+            outcome.escalated().to_string(),
         ),
     ];
     if let Some(input) = input {
         attributes.push(KeyValue::new(langfuse::INPUT, input.to_owned()));
     }
-    if outcome.escalated {
-        attributes.push(KeyValue::new(
+    // The two escalations read very differently to whoever opens the trace, so
+    // the status line says which one rather than describing the budget path for
+    // both.
+    match outcome.escalation.as_ref() {
+        None => {}
+        Some(EscalationReason::RoundBudget) => attributes.push(KeyValue::new(
             langfuse::STATUS_MESSAGE,
             "the round budget was exhausted without reaching an answer",
-        ));
+        )),
+        Some(EscalationReason::AgentRequested { reason }) => {
+            attributes.push(KeyValue::new(
+                langfuse::STATUS_MESSAGE,
+                format!("the agent handed off to a human: {reason}"),
+            ));
+        }
     }
     attributes
 }

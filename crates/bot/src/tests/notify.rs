@@ -100,7 +100,65 @@ fn render_discord_dm_escalation_names_the_dm_not_a_guild() {
     assert!(notice.contains("a direct message"));
     assert!(!notice.contains("guild `"));
     // No tools were called before the give-up — say so rather than an empty list.
-    assert!(notice.contains("gave up before calling any tools"));
+    assert!(notice.contains("he called no tools"));
+}
+
+#[test]
+fn render_agent_requested_escalation_leads_with_garys_own_reason() {
+    let notice = render_escalation(&Escalation::AgentRequested {
+        context: EscalationContext::Discord {
+            asker: "Alice (<@42>)".to_owned(),
+            jump_link: "https://discord.com/channels/1/2/3".to_owned(),
+            guild: Some(1),
+        },
+        request: "minecraft won't start".to_owned(),
+        reason: "the world folder is missing and I can't tell which backup is right".to_owned(),
+        attempts: vec!["read_logs".to_owned(), "browse_files".to_owned()],
+    });
+    assert!(notice.contains("the world folder is missing"));
+    assert!(notice.contains("Alice (<@42>)"));
+    assert!(notice.contains("read_logs → browse_files"));
+    // The whole point of this variant: it must not claim a budget was spent,
+    // because Gary stopped while he still had rounds left.
+    assert!(
+        !notice.contains("rounds"),
+        "a deliberate handoff didn't exhaust anything: {notice}"
+    );
+}
+
+#[test]
+fn the_two_turn_escalations_are_built_from_the_loops_own_reason() {
+    let context = || EscalationContext::Deferred {
+        server: "mc-summer".to_owned(),
+        condition: "empty".to_owned(),
+        guild: Some(7),
+    };
+    let requested = Escalation::from_turn(
+        &EscalationReason::AgentRequested {
+            reason: "needs a human".to_owned(),
+        },
+        context(),
+        "tune the difficulty".to_owned(),
+        Vec::new(),
+    );
+    assert!(matches!(requested, Escalation::AgentRequested { .. }));
+
+    let exhausted = Escalation::from_turn(
+        &EscalationReason::RoundBudget,
+        context(),
+        "tune the difficulty".to_owned(),
+        Vec::new(),
+    );
+    // The budget shape is the only one that may state a round count, and it must
+    // be the real ceiling rather than something the caller happened to have.
+    match exhausted {
+        Escalation::RoundBudgetExhausted { rounds, .. } => {
+            assert_eq!(rounds, crate::agent::DEFAULT_MAX_ROUNDS);
+        }
+        Escalation::AgentRequested { .. } | Escalation::CrashRollback { .. } => {
+            panic!("the round-budget reason must build the round-budget notice")
+        }
+    }
 }
 
 #[test]

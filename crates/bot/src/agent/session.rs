@@ -2,7 +2,8 @@
 //! testable with mock closures. The shell supplies two async callbacks —
 //! `complete` (one model turn) and `dispatch` (run one tool) — and this drives
 //! them: ask the model, run any tools it requests, feed results back, repeat
-//! until it answers in plain text or the round budget is spent.
+//! until it answers in plain text, a tool hands the turn to a human, or the
+//! round budget is spent.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,18 +14,20 @@ use anyhow::Result;
 use super::llm::{ChatMessage, Completion, TokenUsage, ToolCall, ToolDef};
 use super::recorder::TurnRecorder;
 
-/// Default ceiling on model turns per request. A bounded loop is the lightweight
-/// version of the design's escalation exit: a model that keeps calling tools
-/// without converging stops and hands back [`ESCALATION_REPLY`] rather than
-/// thrashing. The shell records the give-up at `warn` and DMs the configured
-/// operators (see `crate::notify`), so the "flagged for Bear" reply is a promise
-/// the system keeps — the escalation sites in the Discord/in-game shells do the
-/// notifying. Sized for a full troubleshooting cycle — browse, read, edit,
-/// restart, check logs, and recover if needed — which spends several tool rounds
-/// before a final reply.
+/// Default ceiling on model turns per request. The backstop behind the agent's
+/// own escalation exit: a model that keeps calling tools without converging —
+/// and without deciding to hand off — stops and hands back [`ESCALATION_REPLY`]
+/// rather than thrashing. The shell records the give-up at `warn` and DMs the
+/// configured operators (see `crate::notify`), so the "flagged for Bear" reply
+/// is a promise the system keeps — the escalation sites in the Discord/in-game
+/// shells do the notifying. Sized for a full troubleshooting cycle — browse,
+/// read, edit, restart, check logs, and recover if needed — which spends several
+/// tool rounds before a final reply.
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = 16;
 
-/// What the user is told the agent could not resolve on its own.
+/// What the user is told when the budget ran out before the agent reached an
+/// answer *or* chose to hand off. An agent-requested escalation replaces this
+/// with the model's own words, which is the point of having the tool.
 pub(crate) const ESCALATION_REPLY: &str =
     "I wasn't able to sort that out on my own — I've flagged it for Bear to take a look.";
 
@@ -46,6 +49,66 @@ pub(crate) type CompleteFn<'a> = dyn Fn(
 /// Run one tool call and return the text result to feed back to the model.
 pub(crate) type DispatchFn<'a> =
     dyn Fn(ToolCall) -> Pin<Box<dyn Future<Output = String> + Send + 'a>> + Sync + 'a;
+
+/// A tool's request to end the turn and put a human on it. The escalation tool
+/// records one; the loop notices it on the next check and stops there, so the
+/// model can't page an operator and then keep working on the same problem.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EscalationRequest {
+    /// What the person who asked reads — the model's own closing words, in place
+    /// of [`ESCALATION_REPLY`].
+    pub(crate) reply: String,
+    /// What the operator notice carries: the diagnosis and what's needed from a
+    /// human. A different audience from `reply`, so a different field.
+    pub(crate) reason: String,
+}
+
+/// Consulted after each round of tool calls: `Some` means a tool asked for the
+/// turn to end here. Synchronous because the answer is already recorded by the
+/// time the tool returned — the loop is only reading a slot the shell owns.
+pub(crate) type EscalationCheckFn<'a> = dyn Fn() -> Option<EscalationRequest> + Sync + 'a;
+
+/// Everything the shell plugs into the loop. Bundled so [`run_session`]'s own
+/// signature stays about the conversation — transcript, tools, budget — instead
+/// of growing a parameter every time the loop learns to ask the shell something.
+///
+/// Two lifetimes, not one: `'a` is how long the bundle borrows the callbacks and
+/// `'f` is how long each callback's own captures live. Collapsing them would
+/// force a shell's closures to outlive the borrow, which none of them do — they
+/// capture locals of the function that runs the turn.
+pub(crate) struct SessionCallbacks<'a, 'f> {
+    /// One model turn.
+    pub(crate) complete: &'a CompleteFn<'f>,
+    /// Run one tool call and render its result for the model.
+    pub(crate) dispatch: &'a DispatchFn<'f>,
+    /// Where the model's interim narration goes as it arrives.
+    pub(crate) progress: &'a ProgressFn<'f>,
+    /// Whether a tool has asked to end the turn; see [`EscalationCheckFn`].
+    pub(crate) escalation_requested: &'a EscalationCheckFn<'f>,
+}
+
+/// Why a turn ended without the agent answering the request itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EscalationReason {
+    /// The loop spent its whole round budget without converging.
+    RoundBudget,
+    /// The model called the escalation tool — it judged that it could not finish
+    /// and asked for a human, carrying the reason for the operator notice.
+    AgentRequested { reason: String },
+}
+
+impl EscalationReason {
+    /// Stable wire name, shared by the Langfuse categorical score and the
+    /// product event log's outcome column so the two planes can be joined on it.
+    /// The event-log constants (`events::mapping`) must match these exactly; a
+    /// test there asserts it, since this module can't depend on that one.
+    pub(crate) fn as_str(&self) -> &'static str {
+        match *self {
+            Self::RoundBudget => "round_budget_exhausted",
+            Self::AgentRequested { .. } => "agent_requested",
+        }
+    }
+}
 
 /// Something worth surfacing to the user mid-session, before the final reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,15 +147,24 @@ impl From<&Completion> for Generation {
     }
 }
 
-/// The end state of a session: the text to send back, whether it ended by
-/// escalating (round budget exhausted) so the caller can log/flag accordingly,
-/// and what each of its model calls cost.
+/// The end state of a session: the text to send back, why it escalated if it
+/// did (so the caller can log, notify, and score accordingly), and what each of
+/// its model calls cost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionOutcome {
     pub(crate) reply: String,
-    pub(crate) escalated: bool,
+    /// `None` when the agent answered the request itself.
+    pub(crate) escalation: Option<EscalationReason>,
     /// One entry per model call, in the order they ran.
     pub(crate) generations: Vec<Generation>,
+}
+
+impl SessionOutcome {
+    /// Whether the turn ended by handing off rather than answering — the shape
+    /// the telemetry score and the `escalation-rate` metric are defined on.
+    pub(crate) fn escalated(&self) -> bool {
+        self.escalation.is_some()
+    }
 }
 
 /// Drive the tool-calling loop to a final reply.
@@ -102,7 +174,9 @@ pub(crate) struct SessionOutcome {
 /// the full updated transcript to persist for the next turn. `progress` receives
 /// the model's interim narration as it arrives. `recorder` observes every model
 /// call and every tool call, so instrumentation coverage is a property of the
-/// loop rather than of each shell remembering to wrap something.
+/// loop rather than of each shell remembering to wrap something. The shell's
+/// callbacks arrive as one [`SessionCallbacks`]; a surface with no escalation
+/// tool supplies a check that always answers `None`.
 ///
 /// # Errors
 ///
@@ -114,10 +188,12 @@ pub(crate) async fn run_session(
     tools: Vec<ToolDef>,
     max_rounds: usize,
     recorder: &TurnRecorder,
-    complete: &CompleteFn<'_>,
-    dispatch: &DispatchFn<'_>,
-    progress: &ProgressFn<'_>,
+    callbacks: &SessionCallbacks<'_, '_>,
 ) -> Result<SessionOutcome> {
+    let complete = callbacks.complete;
+    let dispatch = callbacks.dispatch;
+    let progress = callbacks.progress;
+    let escalation_requested = callbacks.escalation_requested;
     recorder.turn_started();
     let mut generations = Vec::new();
 
@@ -149,7 +225,7 @@ pub(crate) async fn run_session(
             messages.push(assistant);
             let outcome = SessionOutcome {
                 reply,
-                escalated: false,
+                escalation: None,
                 generations,
             };
             recorder.turn_finished(&outcome);
@@ -170,11 +246,27 @@ pub(crate) async fn run_session(
 
         messages.push(assistant);
         run_tool_round(messages, calls, recorder, dispatch).await;
+
+        // Checked after the round rather than after each call: a model that
+        // escalates alongside other tool calls still gets those calls' results
+        // into the transcript, so the operator notice reflects everything it
+        // actually tried.
+        if let Some(request) = escalation_requested() {
+            let outcome = SessionOutcome {
+                reply: request.reply,
+                escalation: Some(EscalationReason::AgentRequested {
+                    reason: request.reason,
+                }),
+                generations,
+            };
+            recorder.turn_finished(&outcome);
+            return Ok(outcome);
+        }
     }
 
     let outcome = SessionOutcome {
         reply: ESCALATION_REPLY.to_owned(),
-        escalated: true,
+        escalation: Some(EscalationReason::RoundBudget),
         generations,
     };
     recorder.turn_finished(&outcome);

@@ -210,7 +210,7 @@ fn a_tool_observation_keeps_arguments_and_result_verbatim() {
 fn an_escalated_turn_is_flagged_at_warning() {
     let outcome = SessionOutcome {
         reply: "flagged for Bear".to_owned(),
-        escalated: true,
+        escalation: Some(EscalationReason::RoundBudget),
         generations: Vec::new(),
     };
     let attributes = root(Some("fix it"), &outcome);
@@ -225,7 +225,7 @@ fn an_escalated_turn_is_flagged_at_warning() {
 fn a_plain_turn_records_its_reply_and_round_count() {
     let outcome = SessionOutcome {
         reply: "minecraft is up".to_owned(),
-        escalated: false,
+        escalation: None,
         generations: vec![(&completion(None)).into(), (&completion(None)).into()],
     };
     let attributes = root(Some("is it up?"), &outcome);

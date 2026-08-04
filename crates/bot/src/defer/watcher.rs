@@ -255,20 +255,25 @@ async fn run_batch(
     let outcome = run_gary_turn(&turn, &mut messages).await;
     deliver_extras(ctx, primary_channel, &tasks, &outcome).await;
     if let Ok(SessionOutcome {
-        escalated: true, ..
+        escalation: Some(reason),
+        ..
     }) = &outcome
     {
-        warn!(server = %server, "deferred batch hit the round budget; escalating to operators");
-        let escalation = Escalation::RoundBudgetExhausted {
-            context: EscalationContext::Deferred {
+        warn!(
+            server = %server,
+            kind = reason.as_str(),
+            "deferred batch escalated to operators"
+        );
+        let escalation = Escalation::from_turn(
+            reason,
+            EscalationContext::Deferred {
                 server: server.to_owned(),
                 condition: condition.as_str().to_owned(),
                 guild: guild_id,
             },
-            request: compose_batch_prompt(server, trigger_note, &tasks),
-            attempts: summarize_attempts(&messages),
-            rounds: messages.len(),
-        };
+            compose_batch_prompt(server, trigger_note, &tasks),
+            summarize_attempts(&messages),
+        );
         // Attributed to whoever queued the batch, on the `deferred` surface —
         // nobody was waiting on this turn when it gave up.
         data.events

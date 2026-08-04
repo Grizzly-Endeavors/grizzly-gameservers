@@ -48,6 +48,12 @@ pub(crate) const PRUNED: &str = "pruned";
 /// Gary spent his whole round budget on a request without resolving it.
 pub(crate) const ROUND_BUDGET_EXHAUSTED: &str = "round_budget_exhausted";
 
+/// Gary called the escalation tool: he stopped and asked for a human while he
+/// still had budget left. Separable from [`ROUND_BUDGET_EXHAUSTED`] because the
+/// two say opposite things about how the agent is behaving — deliberate handoff
+/// is the guardrail working, budget exhaustion is thrashing.
+pub(crate) const AGENT_REQUESTED: &str = "agent_requested";
+
 /// An automatic crash rollback didn't bring the server back, or couldn't be
 /// issued at all.
 pub(crate) const CRASH_ROLLBACK: &str = "crash_rollback";
@@ -77,6 +83,7 @@ pub(crate) const TURN_FAILED: &str = "turn_failed";
 /// escalation shapes are separable without reaching into the details payload.
 pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
     match escalation {
+        Escalation::AgentRequested { .. } => AGENT_REQUESTED,
         Escalation::RoundBudgetExhausted { .. } => ROUND_BUDGET_EXHAUSTED,
         Escalation::CrashRollback { .. } => CRASH_ROLLBACK,
     }
@@ -91,7 +98,8 @@ pub(crate) fn escalation_event(
     guild: Option<GuildId>,
 ) -> ProductEvent {
     let (server, path) = match escalation {
-        Escalation::RoundBudgetExhausted { context, .. } => match context {
+        Escalation::AgentRequested { context, .. }
+        | Escalation::RoundBudgetExhausted { context, .. } => match context {
             EscalationContext::Discord { .. } => (None, None),
             EscalationContext::InGame { server, .. }
             | EscalationContext::Deferred { server, .. }

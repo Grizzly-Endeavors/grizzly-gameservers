@@ -17,7 +17,7 @@ use poise::serenity_prelude as serenity;
 use serenity::{CreateMessage, Http, UserId};
 use tracing::{error, warn};
 
-use crate::agent::{ChatMessage, Role};
+use crate::agent::{ChatMessage, DEFAULT_MAX_ROUNDS, EscalationReason, Role};
 
 /// Which surface a give-up came from, carrying the surface-specific locators the
 /// operator notice needs — a Discord jump link versus a game server name.
@@ -53,12 +53,25 @@ pub(crate) enum EscalationContext {
     },
 }
 
-/// A fully-assembled escalation, ready to render into the operator DM. Two shapes
-/// share one DM channel: a user ask Gary gave up on (round budget exhausted, with
-/// a conversational trail to show), and a code-enforced crash/rollback recovery
-/// that gave up on its own (no asker, jump link, or attempt history — the loop
-/// caller only has a server and a file path).
+/// A fully-assembled escalation, ready to render into the operator DM. Three
+/// shapes share one DM channel: a request Gary decided he couldn't finish and
+/// handed off deliberately, a request he ran out of budget on, and a
+/// code-enforced crash/rollback recovery that gave up on its own (no asker, jump
+/// link, or attempt history — the loop caller only has a server and a file path).
 pub(crate) enum Escalation {
+    /// Gary called the escalation tool: he judged that he couldn't finish and
+    /// asked for a human, in his own words. The most informative of the three,
+    /// because the diagnosis comes from the agent rather than being inferred
+    /// from where the loop stopped.
+    AgentRequested {
+        context: EscalationContext,
+        /// What the user actually asked, verbatim.
+        request: String,
+        /// Gary's own account of what's wrong and what he needs from a human.
+        reason: String,
+        /// The tools Gary called this turn, in call order — his attempted approach.
+        attempts: Vec<String>,
+    },
     /// Gary spent his whole round budget on a user's request without resolving it.
     RoundBudgetExhausted {
         context: EscalationContext,
@@ -75,11 +88,45 @@ pub(crate) enum Escalation {
     CrashRollback { server: String, path: String },
 }
 
+impl Escalation {
+    /// Build the notice for a turn that ended by escalating, pairing the loop's
+    /// reason with the locators only the surface knows. Every shell that runs a
+    /// turn goes through here, so the two exits can't drift into being reported
+    /// differently on one surface and not another.
+    pub(crate) fn from_turn(
+        reason: &EscalationReason,
+        context: EscalationContext,
+        request: String,
+        attempts: Vec<String>,
+    ) -> Self {
+        match reason {
+            EscalationReason::AgentRequested { reason } => Self::AgentRequested {
+                context,
+                request,
+                reason: reason.clone(),
+                attempts,
+            },
+            EscalationReason::RoundBudget => Self::RoundBudgetExhausted {
+                context,
+                request,
+                attempts,
+                rounds: DEFAULT_MAX_ROUNDS,
+            },
+        }
+    }
+}
+
 /// Render an escalation into the plain-text DM an operator receives. Uses Discord
 /// markdown (bold labels, a jump link) because the reader is a human operator in
 /// Discord, not the model.
 pub(crate) fn render_escalation(escalation: &Escalation) -> String {
     match escalation {
+        Escalation::AgentRequested {
+            context,
+            request,
+            reason,
+            attempts,
+        } => render_agent_requested(context, request, reason, attempts),
         Escalation::RoundBudgetExhausted {
             context,
             request,
@@ -94,13 +141,32 @@ pub(crate) fn render_escalation(escalation: &Escalation) -> String {
     }
 }
 
-fn render_round_budget_exhausted(
+/// Gary asked for a human on purpose. His own reason leads, because it is the
+/// one thing this shape has that the budget-exhaustion shape doesn't — and it is
+/// what decides whether an operator needs to drop what they're doing.
+fn render_agent_requested(
     context: &EscalationContext,
     request: &str,
+    reason: &str,
     attempts: &[String],
-    rounds: usize,
 ) -> String {
-    let where_line = match context {
+    format!(
+        "**Gary asked for a hand — he stopped rather than guessing.**\n\n\
+         **Why:** {reason}\n\
+         **Where:** {}\n\
+         **Who asked:** {}\n\
+         **They asked:** \"{request}\"\n\
+         **Gary tried:** {}\n\n\
+         He told them you'd take a look.",
+        where_line(context),
+        who_asked(context),
+        tried_line(attempts)
+    )
+}
+
+/// Where the give-up happened, with the locator that surface can offer.
+fn where_line(context: &EscalationContext) -> String {
+    match context {
         EscalationContext::Discord {
             jump_link, guild, ..
         } => {
@@ -129,20 +195,40 @@ fn render_round_budget_exhausted(
             let scope = guild.map_or_else(|| "no guild".to_owned(), |id| format!("guild `{id}`"));
             format!("a proactive incident — server `{server}`, signal `{signal}` ({scope})")
         }
-    };
-    let who = match context {
+    }
+}
+
+/// Who set the turn going — a person on two surfaces, and nobody on the other two.
+fn who_asked(context: &EscalationContext) -> String {
+    match context {
         EscalationContext::Discord { asker, .. } => asker.clone(),
         EscalationContext::InGame { player, .. } => format!("player {player}"),
         EscalationContext::Deferred { .. } => "a deferred batch (no live asker)".to_owned(),
         EscalationContext::Watchdog { .. } => {
             "nobody — Gary's own monitoring flagged it".to_owned()
         }
-    };
-    let tried = if attempts.is_empty() {
-        "nothing — he gave up before calling any tools".to_owned()
+    }
+}
+
+/// The approach Gary took, in call order. An empty list is stated rather than
+/// left blank, because "he called nothing" is itself the diagnosis.
+fn tried_line(attempts: &[String]) -> String {
+    if attempts.is_empty() {
+        "nothing — he called no tools".to_owned()
     } else {
         attempts.join(" → ")
-    };
+    }
+}
+
+fn render_round_budget_exhausted(
+    context: &EscalationContext,
+    request: &str,
+    attempts: &[String],
+    rounds: usize,
+) -> String {
+    let where_line = where_line(context);
+    let who = who_asked(context);
+    let tried = tried_line(attempts);
     format!(
         "**Gary escalated a request he couldn't resolve on his own.**\n\n\
          **Where:** {where_line}\n\

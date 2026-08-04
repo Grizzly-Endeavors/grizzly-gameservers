@@ -28,8 +28,9 @@ use super::auth::{AccessCheck, AccessLevel, access_level};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
-    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, SessionEvent, SessionId, SessionOutcome, ToolDef,
-    TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session, send_chat_completion,
+    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, SessionCallbacks, SessionEvent,
+    SessionId, SessionOutcome, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
+    run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
 use crate::domain::GuildId;
@@ -201,10 +202,14 @@ async fn handle_message(
     // On a hard error, run_gary_turn already logged and posted a friendly message;
     // the prior session is left untouched so a retry doesn't inherit a half-finished
     // transcript. Only a clean turn is committed for continuity.
-    if let Ok(SessionOutcome { escalated, .. }) = run_gary_turn(&turn, &mut messages).await {
-        if escalated {
-            warn!(user = %message.author.id, "agent escalated: round budget exhausted");
-            notify_operators_escalated(data, message, &prompt, &messages).await;
+    if let Ok(SessionOutcome { escalation, .. }) = run_gary_turn(&turn, &mut messages).await {
+        if let Some(reason) = escalation {
+            warn!(
+                user = %message.author.id,
+                kind = reason.as_str(),
+                "agent escalated"
+            );
+            notify_operators_escalated(data, message, &prompt, &messages, &reason).await;
         }
         data.sessions
             .commit(key, session.id, messages, Instant::now());
@@ -271,7 +276,7 @@ pub(crate) async fn run_gary_turn(
         send_chunks(turn.ctx, turn.channel_id, GARY_NOT_CONFIGURED_REPLY).await;
         return Ok(SessionOutcome {
             reply: String::new(),
-            escalated: false,
+            escalation: None,
             generations: Vec::new(),
         });
     };
@@ -289,6 +294,7 @@ pub(crate) async fn run_gary_turn(
         confirmations: turn.confirmations,
         pending_change: std::sync::Mutex::new(None),
         guardrail: std::sync::Mutex::new(None),
+        escalation: std::sync::Mutex::new(None),
     };
     // Capture only Copy references (`&`), so each closure stays `Fn` — the session
     // may call them across several rounds.
@@ -313,6 +319,11 @@ pub(crate) async fn run_gary_turn(
         }) as ProgressFuture<'_>
     };
 
+    // The escalation tool records into the tool context; the loop reads it here
+    // and stops, which is what stops Gary paging an operator and then carrying
+    // on with the same problem.
+    let escalation_requested = move || tool_ctx.escalation_request();
+
     let recorder = TurnRecorder::new(turn.identity(), Arc::clone(&turn.data.telemetry));
     let typing = start_typing(turn.ctx, turn.channel_id);
     let outcome = run_session(
@@ -320,9 +331,12 @@ pub(crate) async fn run_gary_turn(
         tool_defs,
         DEFAULT_MAX_ROUNDS,
         &recorder,
-        &complete,
-        &dispatch,
-        &progress,
+        &SessionCallbacks {
+            complete: &complete,
+            dispatch: &dispatch,
+            progress: &progress,
+            escalation_requested: &escalation_requested,
+        },
     )
     .await;
     drop(typing);
@@ -349,7 +363,7 @@ pub(crate) async fn run_gary_turn(
     outcome
 }
 
-/// DM the operators that Gary gave up on this request, with the jump link, the
+/// DM the operators that Gary handed this request off, with the jump link, the
 /// asker, what they asked, and the tools he tried. Split out of [`handle_message`]
 /// so its body stays under the line cap.
 async fn notify_operators_escalated(
@@ -357,19 +371,20 @@ async fn notify_operators_escalated(
     message: &serenity::Message,
     request: &str,
     messages: &[ChatMessage],
+    reason: &EscalationReason,
 ) {
     let asker = format!("{} (<@{}>)", message.author.name, message.author.id.get());
     let guild = message.guild_id.map(serenity::GuildId::get);
-    let escalation = Escalation::RoundBudgetExhausted {
-        context: EscalationContext::Discord {
+    let escalation = Escalation::from_turn(
+        reason,
+        EscalationContext::Discord {
             asker,
             jump_link: message.link(),
             guild,
         },
-        request: request.to_owned(),
-        attempts: summarize_attempts(messages),
-        rounds: DEFAULT_MAX_ROUNDS,
-    };
+        request.to_owned(),
+        summarize_attempts(messages),
+    );
     // Recorded beside the DM, not inside it: an escalation happened whether or
     // not there is an operator configured to hear about it.
     data.events
@@ -489,10 +504,12 @@ pub(crate) fn game_catalog_list(data: &Data) -> String {
 /// Gary's instructions, tailored to the caller's tier. Managers and admins both
 /// get the lifecycle and file-tuning tools; admins additionally get the
 /// destructive tools and console commands; read-only callers are scoped to
-/// lookups.
+/// lookups. The escalation guidance is tier-independent: a read-only asker's
+/// question can be just as unanswerable, and they have the fewest other options.
 pub(crate) fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
     let mut prompt = prompts::DiscordPersona::render();
     push_block(&mut prompt, &prompts::DiscordReporting::render());
+    push_block(&mut prompt, &prompts::DiscordEscalation::render());
     let games_value = if games.is_empty() { "(none)" } else { games };
     push_block(
         &mut prompt,
