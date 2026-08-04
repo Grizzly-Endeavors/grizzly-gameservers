@@ -56,6 +56,11 @@ pub(crate) enum PollObservation {
     },
     /// The pod is up but the control API didn't answer — the wedged signal.
     Unreachable,
+    /// Agones declared the `GameServer` unhealthy: crash escalation's terminal
+    /// wreckage, observed from the object state because the pod (and its
+    /// supervisor) are torn down and the process label reads `stopped` — the
+    /// same label as an intentional pause.
+    GameServerUnhealthy,
     /// The pod exists but isn't ready; mid-transition, not evidence of anything.
     PodNotReady,
     /// The instance vanished between the listing and the poll.
@@ -88,6 +93,10 @@ struct InstanceWatch {
     deltas: VecDeque<u32>,
     unreachable_streak: u32,
     mem_pressure_streak: u32,
+    /// Whether the last tick already saw this instance unhealthy. The wreckage
+    /// is static, so it fires on the transition in — not every tick, and not
+    /// hourly on cooldown expiry like the live signals.
+    unhealthy_latched: bool,
     /// When each incident kind last fired for this instance, for the cooldown.
     last_fired: HashMap<IncidentKind, Instant>,
 }
@@ -161,7 +170,23 @@ fn status_transition(
     interval: Duration,
     now: Instant,
 ) -> Option<Incident> {
+    if observation.poll != PollObservation::GameServerUnhealthy {
+        watch.unhealthy_latched = false;
+    }
     match observation.poll {
+        PollObservation::GameServerUnhealthy => {
+            if watch.unhealthy_latched {
+                return None;
+            }
+            watch.unhealthy_latched = true;
+            fire(
+                watch,
+                &observation.instance,
+                IncidentKind::Crash,
+                IncidentFacts::Unhealthy,
+                now,
+            )
+        }
         PollObservation::Ok {
             phase,
             restarts,

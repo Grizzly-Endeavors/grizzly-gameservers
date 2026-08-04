@@ -14,9 +14,15 @@
 //!   occupancy probe, or a console that wasn't reachable this tick, records null.
 //!   Reading null as "empty" would manufacture idle time that never happened —
 //!   the same trap `crate::defer::condition` already guards against.
-//! - **A paused instance is not sampled at all.** Its process is down, so it has
-//!   no players by definition and cannot crash; rows for it would be pure null
-//!   noise. Skipping is also what makes stopping a server stop its samples.
+//! - **A paused instance gets no sample row.** Its process is down, so it has
+//!   no players by definition; rows for it would be pure null noise. Skipping
+//!   is also what makes stopping a server stop its samples.
+//!
+//! The watchdog *observations* deliberately cover more than the rows: every
+//! listed instance yields one, running or not, because crash escalation labels
+//! the process `stopped` (the same label as an intentional pause) and tears the
+//! pod down shortly after — an escalated crash that was only observed through
+//! the running filter would hide itself. See ADR-016.
 //!
 //! Nothing here reaches the cluster in a new way: the enumeration and both
 //! supervisor calls are the ones the backup cycle and the deferred-task watcher
@@ -57,11 +63,11 @@ pub(crate) struct SamplerCtx<'a> {
     pub(crate) events: &'a EventLog,
 }
 
-/// Sample every running instance once and append the tick, returning what each
-/// status poll yielded so the watchdog detector can fold the tick in. Never
-/// fails: a listing error is logged and the tick skipped, an unreachable
-/// supervisor yields no row (or a null count) but still an observation, and the
-/// insert swallows its own errors.
+/// Sample every running instance once and append the tick, returning a
+/// watchdog observation for every *listed* instance (running, paused, or
+/// condemned). Never fails: a listing error is logged and the tick skipped, an
+/// unreachable supervisor yields no row (or a null count) but still an
+/// observation, and the insert swallows its own errors.
 pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObservation> {
     let instances = match list_live_instances(ctx.client, ctx.namespace).await {
         Ok(instances) => instances,
@@ -73,8 +79,14 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObser
 
     let mut samples = Vec::new();
     let mut observations = Vec::new();
-    for instance in instances.iter().filter(|instance| instance.running) {
+    for instance in &instances {
         let name = instance.instance.as_str();
+        // Agones already condemned it; its pod is gone or going, so there is
+        // no supervisor left worth asking.
+        if instance.unhealthy {
+            observations.push(observation(instance, PollObservation::GameServerUnhealthy));
+            continue;
+        }
         let status =
             match supervisor_status(ctx.client, ctx.http, ctx.namespace, name, ctx.control_port)
                 .await
@@ -82,11 +94,14 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObser
                 Ok(status) => status,
                 Err(err) => {
                     error!(error = ?err, instance = name, "occupancy sampler: status read failed");
-                    observations.push(status_observation(instance, None));
+                    observations.push(observation(instance, PollObservation::ReadFailed));
                     continue;
                 }
             };
-        observations.push(status_observation(instance, Some(&status)));
+        observations.push(observation(instance, poll_of(&status)));
+        if !instance.running {
+            continue;
+        }
         let occupancy = match supervisor_occupancy(
             ctx.client,
             ctx.http,
@@ -116,22 +131,25 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObser
     observations
 }
 
-/// One instance's status poll as a watchdog observation — including the polls
-/// that yielded no sample row, which are exactly the ones the wedged-supervisor
-/// rule feeds on. `None` means the cluster query itself failed.
-fn status_observation(instance: &LiveInstance, status: Option<&StatusPoll>) -> StatusObservation {
-    let poll = match status {
-        Some(StatusPoll::Ok(status)) => PollObservation::Ok {
+/// A status poll's watchdog-facing shape — including the polls that yield no
+/// sample row, which are exactly the ones the wedged-supervisor rule feeds on.
+fn poll_of(status: &StatusPoll) -> PollObservation {
+    match status {
+        StatusPoll::Ok(status) => PollObservation::Ok {
             phase: status.process,
             restarts: status.restarts,
             uptime_seconds: status.uptime_seconds,
         },
-        Some(StatusPoll::Unreachable) => PollObservation::Unreachable,
-        Some(StatusPoll::PodNotReady) => PollObservation::PodNotReady,
-        Some(StatusPoll::NotFound) => PollObservation::NotFound,
-        Some(StatusPoll::NotManaged) => PollObservation::NotManaged,
-        None => PollObservation::ReadFailed,
-    };
+        StatusPoll::Unreachable => PollObservation::Unreachable,
+        StatusPoll::PodNotReady => PollObservation::PodNotReady,
+        StatusPoll::NotFound => PollObservation::NotFound,
+        StatusPoll::NotManaged => PollObservation::NotManaged,
+    }
+}
+
+/// One instance's observation this tick, with the identity labels the eventual
+/// incident needs to carry.
+fn observation(instance: &LiveInstance, poll: PollObservation) -> StatusObservation {
     StatusObservation {
         instance: instance.instance.clone(),
         game: labelled(instance.game.as_str()).map(GameId::new),

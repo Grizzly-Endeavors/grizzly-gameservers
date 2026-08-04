@@ -148,6 +148,8 @@ fn incident_details(incident: &Incident, delivery: Option<&str>) -> Value {
         IncidentFacts::Unreachable { minutes } => json!({
             "unreachable_minutes": minutes,
         }),
+        // The supervisor that held the numbers died with the pod.
+        IncidentFacts::Unhealthy => json!({}),
         IncidentFacts::MemoryPressure {
             used_bytes,
             limit_bytes,

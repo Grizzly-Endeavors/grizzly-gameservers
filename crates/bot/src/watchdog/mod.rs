@@ -75,6 +75,10 @@ pub(crate) enum IncidentFacts {
     /// Consecutive ticks the control API has been unreachable while the pod
     /// stayed up and labelled running.
     Unreachable { minutes: u64 },
+    /// Agones declared the `GameServer` unhealthy — the supervisor's crash
+    /// escalation stopped the heartbeat and the cluster tore the pod down. No
+    /// numbers: the supervisor that held them is gone.
+    Unhealthy,
     /// Actual whole-pod memory against the declared limit.
     MemoryPressure {
         used_bytes: i64,

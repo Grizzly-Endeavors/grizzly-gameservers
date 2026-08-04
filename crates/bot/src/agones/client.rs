@@ -95,19 +95,30 @@ pub(crate) async fn list_active_servers(
     Ok(summaries)
 }
 
-/// A managed server with a live pod, and therefore a reachable supervisor: who
-/// owns it, what it runs, and whether its game process is up.
+/// The Agones state string that marks a `GameServer` whose health heartbeat
+/// stopped — for this bot's supervisors, crash escalation (ADR-010). The pod is
+/// torn down shortly after, but the `GameServer` object persists in this state.
+const UNHEALTHY_STATE: &str = "Unhealthy";
+
+/// A managed server whose `GameServer` object is live: who owns it, what it
+/// runs, whether its game process is up, and whether Agones has declared it
+/// unhealthy. The pod usually exists too, but an unhealthy instance may have
+/// already lost it.
 ///
 /// The `running` flag carries different weight per consumer. The backup cycle
 /// uses it to decide whether to quiesce (flush) before snapshotting — a paused
 /// server's `/data` is already saved and its RCON is down, so quiescing would
-/// only log a spurious failure. The occupancy sampler uses it to skip paused
-/// instances outright.
+/// only log a spurious failure. The occupancy sampler uses it to gate the
+/// occupancy read and the sample row. Note that crash escalation also labels
+/// the process `stopped` (the supervisor's runner does this on giving up), so
+/// `running: false` alone cannot distinguish "paused on purpose" from
+/// "escalated crash" — that's what `unhealthy` is for.
 pub(crate) struct LiveInstance {
     pub(crate) instance: InstanceName,
     pub(crate) game: GameId,
     pub(crate) guild: GuildId,
     pub(crate) running: bool,
+    pub(crate) unhealthy: bool,
 }
 
 /// The managed `GameServer`s with a live pod, for the consumers that need to
@@ -140,11 +151,17 @@ pub(crate) async fn list_live_instances(
             continue;
         };
         let running = label_value(labels, PROCESS_LABEL_KEY) != Some(PROCESS_LABEL_STOPPED);
+        let unhealthy = gameserver
+            .status
+            .as_ref()
+            .and_then(|status| status.state.as_deref())
+            == Some(UNHEALTHY_STATE);
         targets.push(LiveInstance {
             instance: InstanceName::new(instance),
             game: GameId::new(label_value(labels, GAME_KEY).unwrap_or_default()),
             guild: GuildId::new(label_value(labels, GUILD_KEY).unwrap_or_default()),
             running,
+            unhealthy,
         });
     }
     Ok(targets)

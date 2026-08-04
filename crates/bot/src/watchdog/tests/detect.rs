@@ -84,6 +84,7 @@ fn delta_of_two_in_one_tick_fires_crash_loop() {
         }
         other @ (IncidentFacts::Crashed { .. }
         | IncidentFacts::Unreachable { .. }
+        | IncidentFacts::Unhealthy
         | IncidentFacts::MemoryPressure { .. }) => {
             panic!("expected CrashLoop facts, got {other:?}")
         }
@@ -317,6 +318,78 @@ fn resource_only_presence_keeps_state_alive() {
     let fired = detector.tick(at(t0, 3), &[obs("mc-a", PollObservation::Unreachable)], &[]);
     assert_eq!(fired.len(), 1);
     assert_eq!(fired.first().unwrap().kind, IncidentKind::Wedged);
+}
+
+#[test]
+fn unhealthy_fires_once_on_the_transition_and_stays_quiet_while_wrecked() {
+    let mut detector = detector();
+    let t0 = Instant::now();
+    let fired = detector.tick(
+        t0,
+        &[obs("mc-a", PollObservation::GameServerUnhealthy)],
+        &[],
+    );
+    assert_eq!(
+        fired.len(),
+        1,
+        "first sighting of the wreckage announces it"
+    );
+    assert_eq!(fired.first().unwrap().kind, IncidentKind::Crash);
+    assert_eq!(fired.first().unwrap().facts, IncidentFacts::Unhealthy);
+
+    // The wreck is static: no re-announcement on later ticks, even hours later
+    // when the cooldown alone would have permitted a refire.
+    for tick in [1_u32, 2, 30] {
+        let refires = detector.tick(
+            at(t0, tick),
+            &[obs("mc-a", PollObservation::GameServerUnhealthy)],
+            &[],
+        );
+        assert!(refires.is_empty(), "wreckage must not nag on tick {tick}");
+    }
+}
+
+#[test]
+fn unhealthy_rearms_after_a_recovery() {
+    let mut detector = detector();
+    let t0 = Instant::now();
+    assert_eq!(
+        detector
+            .tick(
+                t0,
+                &[obs("mc-a", PollObservation::GameServerUnhealthy)],
+                &[]
+            )
+            .len(),
+        1
+    );
+    // Recovered (fresh pod, healthy poll), then condemned again after the
+    // cooldown: a new wreck is a new announcement.
+    detector.tick(at(t0, 1), &[obs("mc-a", ok(0))], &[]);
+    let fired = detector.tick(
+        t0 + Duration::from_mins(70),
+        &[obs("mc-a", PollObservation::GameServerUnhealthy)],
+        &[],
+    );
+    assert_eq!(fired.len(), 1);
+}
+
+#[test]
+fn crashed_phase_then_unhealthy_is_one_announcement() {
+    let mut detector = detector();
+    let t0 = Instant::now();
+    // The usual escalation sequence: the phase is observed crashed while the
+    // pod still stands, then Agones condemns it a tick later.
+    assert_eq!(detector.tick(t0, &[obs("mc-a", crashed(5))], &[]).len(), 1);
+    let fired = detector.tick(
+        at(t0, 1),
+        &[obs("mc-a", PollObservation::GameServerUnhealthy)],
+        &[],
+    );
+    assert!(
+        fired.is_empty(),
+        "the shared crash cooldown must fold the wreckage into the first announcement"
+    );
 }
 
 #[test]
