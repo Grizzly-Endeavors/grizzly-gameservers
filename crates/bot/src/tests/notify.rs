@@ -112,14 +112,14 @@ fn render_ingame_escalation_names_the_server_and_player() {
             guild: "1234".to_owned(),
         },
         request: "why does it keep crashing".to_owned(),
-        attempts: vec!["server_status".to_owned()],
+        attempts: vec!["about_server".to_owned()],
         rounds: 16,
     });
     assert!(notice.contains("in-game chat"));
     assert!(notice.contains("server `mc-summer`"));
     assert!(notice.contains("guild `1234`"));
     assert!(notice.contains("player Steve"));
-    assert!(notice.contains("server_status"));
+    assert!(notice.contains("about_server"));
 }
 
 #[test]

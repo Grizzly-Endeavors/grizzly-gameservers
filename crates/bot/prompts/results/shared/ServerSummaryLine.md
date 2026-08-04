@@ -4,7 +4,7 @@ type: prompt
 annotations:
   sent_when: >-
     tool result rendering one server as a single labeled line — sent inside
-    server_status and inside each entry of a server listing, on both the Discord
+    about_server and inside each entry of a server listing, on both the Discord
     and in-game surfaces
   used_by:
     - file: discord/gary/tools.rs

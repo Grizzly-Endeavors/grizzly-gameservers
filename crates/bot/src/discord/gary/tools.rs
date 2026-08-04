@@ -28,12 +28,12 @@ use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement, RuntimeState,
-    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, SupervisorOutcome,
-    begin_start, build_instance_name, destroy_instance, instance_runtime_state,
+    ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome, StartBegin, StatusPoll,
+    SupervisorOutcome, begin_start, build_instance_name, destroy_instance, instance_runtime_state,
     list_active_servers, now_entropy, provision_instance, shutdown_instance, supervisor_announce,
     supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
     supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
-    supervisor_start, supervisor_stop, supervisor_write_file, verify_scope,
+    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
     wait_for_instance_ready, wait_for_ready,
 };
 use crate::backup::{
@@ -49,13 +49,12 @@ use crate::modrinth::{
 };
 use crate::notify::Escalation;
 use crate::prompts::{
-    self, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
+    self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DestroyServer, EditFile, EditFileParams, Forget, ForgetParams, ListArchives, ListBackups,
     ListServers, ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs,
     ReadLogsParams, RecoverServer, Remember, RememberParams, RestartServer, RestoreFile,
     RestoreServer, RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand,
-    SendCommandParams, ServerStatus, ShutdownServer, StartServer, StopServer, WriteFile,
-    WriteFileParams,
+    SendCommandParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
 
 /// How a destructive tool obtains the human approval it requires.
@@ -231,7 +230,7 @@ struct TargetName {
 fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     vec![
         (AccessLevel::ReadOnly, ListServers::spec().into()),
-        (AccessLevel::ReadOnly, ServerStatus::spec().into()),
+        (AccessLevel::ReadOnly, AboutServer::spec().into()),
         (AccessLevel::ReadOnly, ListBackups::spec().into()),
         (AccessLevel::ReadOnly, ListArchives::spec().into()),
         (AccessLevel::Manager, CreateServer::spec().into()),
@@ -324,8 +323,8 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let name = call.function.name.as_str();
     match name {
         ListServers::NAME => exec_list_servers(ctx).await,
-        ServerStatus::NAME => match parse::<NameParams>(args) {
-            Ok(params) => exec_server_status(ctx, &params.name).await,
+        AboutServer::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_about_server(ctx, &params.name).await,
             Err(message) => message,
         },
         ListBackups::NAME => match parse::<NameParams>(args) {
@@ -510,7 +509,7 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
-        ServerStatus::NAME
+        AboutServer::NAME
             | StopServer::NAME
             | StartServer::NAME
             | RestartServer::NAME
@@ -569,7 +568,7 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
+async fn exec_about_server(ctx: &ToolCtx<'_>, server: &str) -> String {
     let summaries = match list_active_servers(
         ctx.data.kube_client.clone(),
         &ctx.data.namespace,
@@ -580,7 +579,7 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     {
         Ok(summaries) => summaries,
         Err(err) => {
-            error!(error = ?err, "agent: server_status failed");
+            error!(error = ?err, "agent: about_server failed");
             return cluster_error();
         }
     };
@@ -589,10 +588,115 @@ async fn exec_server_status(ctx: &ToolCtx<'_>, server: &str) -> String {
     };
     let mut out = format_summary(summary);
     out.push_str(&occupancy_line(ctx, server).await);
+    out.push_str(&process_line(ctx, server).await);
+    out.push_str(&history_lines(ctx, server).await);
     out
 }
 
-/// A "Players online" line appended to `server_status` so Gary always sees
+/// Lifecycle kinds that count as "something was done to this server". Excludes
+/// `ServerCreated` — creation is not a *change*, and reporting it as the last one
+/// on a server nobody has touched since would read as recent activity.
+const LAST_ACTION_KINDS: &[EventKind] = &[
+    EventKind::ServerStarted,
+    EventKind::ServerStopped,
+    EventKind::ServerRestarted,
+    EventKind::ServerShutdown,
+    EventKind::ServerRestored,
+    EventKind::ServerRecovered,
+];
+
+/// Uptime and crash count, read live from the supervisor. Neither is derivable
+/// from the Agones state the listing shows: a server crash-looping every few
+/// minutes is `Ready` in every listing between relaunches.
+async fn process_line(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let status = supervisor_status(
+        &ctx.data.kube_client,
+        &ctx.data.http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+    )
+    .await;
+    let rendered = match status {
+        Ok(StatusPoll::Ok(status)) => prompts::AboutServerProcess {
+            uptime: &format_uptime(status.uptime_seconds),
+            restarts: &status.restarts.to_string(),
+        }
+        .render(),
+        Ok(_) => prompts::AboutServerProcessUnknown::render(),
+        Err(err) => {
+            error!(error = ?err, %server, "agent: about_server status lookup failed");
+            prompts::AboutServerProcessUnknown::render()
+        }
+    };
+    format!("\n{rendered}")
+}
+
+/// When this server was last backed up and last acted on, from the product event
+/// log. Both degrade to an explicit "no record" line rather than being dropped —
+/// the log is optional, and a missing line would let the model infer the more
+/// alarming of the two readings ("never backed up") from what may just be an
+/// absent database.
+async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let mut kinds = vec![EventKind::BackupTaken];
+    kinds.extend_from_slice(LAST_ACTION_KINDS);
+    let events = ctx.data.events.latest_per_kind(server, &kinds).await;
+
+    let backup = events
+        .iter()
+        .find(|event| event.kind == EventKind::BackupTaken.as_str())
+        .map_or_else(prompts::AboutServerNoBackup::render, |event| {
+            prompts::AboutServerLastBackup {
+                when: &event.created_at,
+            }
+            .render()
+        });
+
+    // `latest_per_kind` returns one row per kind, so the most recent *action* is
+    // the newest among them — the query can't order across kinds for us.
+    let action = events
+        .iter()
+        .filter(|event| event.kind != EventKind::BackupTaken.as_str())
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .map_or_else(prompts::AboutServerNoAction::render, |event| {
+            prompts::AboutServerLastAction {
+                action: past_tense(&event.kind),
+                actor: &event.actor,
+                when: &event.created_at,
+            }
+            .render()
+        });
+
+    format!("\n{backup}\n{action}")
+}
+
+/// An event kind as the model should read it back: `server_restarted` is a column
+/// value, "restarted" is what happened.
+fn past_tense(kind: &str) -> &str {
+    kind.strip_prefix("server_").unwrap_or(kind)
+}
+
+/// Seconds as a coarse human duration. Deliberately lossy — the reader wants
+/// "about a week" or "ten minutes", and a precise second count invites the model
+/// to quote it back as though it were meaningful.
+fn format_uptime(seconds: u64) -> String {
+    let (days, hours, minutes) = (
+        seconds / 86_400,
+        (seconds % 86_400) / 3600,
+        (seconds % 3600) / 60,
+    );
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        "just started".to_owned()
+    }
+}
+
+/// A "Players online" line appended to `about_server` so Gary always sees
 /// occupancy before deciding whether a restart would kick anyone. The count is a
 /// live RCON read; games with no RCON (or a console that isn't up yet) report
 /// `unknown`, which means "can't confirm it's empty" — never treat it as empty.

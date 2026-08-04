@@ -3,7 +3,7 @@ id: IngameServerUnclear
 type: prompt
 annotations:
   sent_when: >-
-    tool result on the in-game surface when server_status is called but the
+    tool result on the in-game surface when about_server is called but the
     server name argument didn't parse, so it's unclear which server was meant
   used_by:
     - file: ingame/agent.rs

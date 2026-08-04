@@ -3,7 +3,7 @@ id: OccupancyUnknown
 type: prompt
 annotations:
   sent_when: >-
-    appended to a server_status result when the live player count couldn't be
+    appended to a about_server result when the live player count couldn't be
     read — the reason clause explains why
   used_by:
     - file: discord/gary/tools.rs

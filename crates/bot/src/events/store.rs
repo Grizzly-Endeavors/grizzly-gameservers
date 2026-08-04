@@ -19,7 +19,7 @@ use kube::Client;
 use sqlx::postgres::PgPool;
 use tracing::{error, info, warn};
 
-use super::catalog::ProductEvent;
+use super::catalog::{EventKind, ProductEvent};
 use super::resources::ResourceSample;
 use super::sampler::OccupancySample;
 use crate::config::DbConfig;
@@ -127,6 +127,25 @@ const INSERT_RESOURCE_SAMPLES: &str = "INSERT INTO resource_samples \
     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], \
     $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::bigint[])";
 
+/// The most recent event of each kind for one instance. `DISTINCT ON (kind)`
+/// collapses the history to one row per kind, which is what a "when did this last
+/// happen" question wants — the alternative is pulling the whole instance's
+/// history back and folding it in Rust.
+const LATEST_PER_KIND: &str = "SELECT DISTINCT ON (kind) kind, actor, created_at::text \
+    FROM events WHERE instance = $1 AND kind = ANY($2) \
+    ORDER BY kind, created_at DESC";
+
+/// When something last happened to an instance, and who did it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LatestEvent {
+    pub(crate) kind: String,
+    pub(crate) actor: String,
+    /// RFC-3339-ish timestamp text, for display only — same treatment as
+    /// [`crate::backup::ArchiveRecord::created_at`], which avoids a chrono/time
+    /// sqlx feature for a value nothing computes on.
+    pub(crate) created_at: String,
+}
+
 /// The product event log, or a disabled no-op when persistence isn't configured.
 pub(crate) struct EventLog {
     pool: Option<PgPool>,
@@ -217,6 +236,41 @@ impl EventLog {
                 outcome = event.outcome,
                 "failed to record product event"
             );
+        }
+    }
+
+    /// When each of `kinds` last happened to `instance`, keyed by kind.
+    ///
+    /// Returns empty when the log is disabled or the query fails: this backs a
+    /// detail line in a tool result, so a database problem should cost that one
+    /// line rather than fail the whole lookup. The failure is logged.
+    pub(crate) async fn latest_per_kind(
+        &self,
+        instance: &str,
+        kinds: &[EventKind],
+    ) -> Vec<LatestEvent> {
+        let Some(pool) = self.pool.as_ref() else {
+            return Vec::new();
+        };
+        let wanted: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+        match sqlx::query_as::<_, (String, String, String)>(LATEST_PER_KIND)
+            .bind(instance)
+            .bind(&wanted)
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(kind, actor, created_at)| LatestEvent {
+                    kind,
+                    actor,
+                    created_at,
+                })
+                .collect(),
+            Err(err) => {
+                error!(error = ?err, instance, "failed to read latest events for a server");
+                Vec::new()
+            }
         }
     }
 

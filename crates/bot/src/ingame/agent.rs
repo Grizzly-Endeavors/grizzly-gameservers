@@ -29,7 +29,7 @@ use crate::domain::{GameId, GuildId};
 use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
-use crate::prompts::{IngameListServers, IngameServerStatus, NameParams};
+use crate::prompts::{IngameAboutServer, IngameListServers, NameParams};
 
 /// Ceiling on the answer broadcast into chat. Game chat wraps long lines poorly,
 /// and the prompt already asks for brevity — this is a defensive cap so a runaway
@@ -258,7 +258,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
 fn ingame_tools() -> Vec<ToolDef> {
     vec![
         IngameListServers::spec().into(),
-        IngameServerStatus::spec().into(),
+        IngameAboutServer::spec().into(),
     ]
 }
 
@@ -268,11 +268,11 @@ fn ingame_tools() -> Vec<ToolDef> {
 async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall) -> String {
     match call.function.name.as_str() {
         IngameListServers::NAME => exec_list_servers(deps, scope).await,
-        IngameServerStatus::NAME => {
+        IngameAboutServer::NAME => {
             match serde_json::from_str::<NameParams>(call.function.arguments.as_str()) {
-                Ok(arg) => exec_server_status(deps, scope, &arg.name).await,
+                Ok(arg) => exec_about_server(deps, scope, &arg.name).await,
                 Err(err) => {
-                    debug!(error = ?err, "ingame: server_status args failed to parse");
+                    debug!(error = ?err, "ingame: about_server args failed to parse");
                     prompts::IngameServerUnclear::render()
                 }
             }
@@ -291,14 +291,14 @@ async fn exec_list_servers(deps: &IngameDeps, scope: &ServerScope) -> String {
     }
 }
 
-async fn exec_server_status(deps: &IngameDeps, scope: &ServerScope, name: &str) -> String {
+async fn exec_about_server(deps: &IngameDeps, scope: &ServerScope, name: &str) -> String {
     match list_active_servers(deps.client.clone(), &deps.namespace, &deps.domain, scope).await {
         Ok(summaries) => summaries
             .iter()
             .find(|summary| summary.name == name)
             .map_or_else(|| no_such(name), format_summary),
         Err(err) => {
-            error!(error = ?err, "ingame: server_status failed");
+            error!(error = ?err, "ingame: about_server failed");
             cluster_error()
         }
     }

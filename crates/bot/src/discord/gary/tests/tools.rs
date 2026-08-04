@@ -1,3 +1,4 @@
+use crate::agones::ServerState;
 use crate::agones::{DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, SupervisorOutcome};
 
 use super::*;
@@ -48,7 +49,7 @@ fn read_only_callers_get_only_the_read_only_tools() {
         names,
         vec![
             ListServers::NAME,
-            ServerStatus::NAME,
+            AboutServer::NAME,
             ListBackups::NAME,
             ListArchives::NAME
         ]
@@ -309,7 +310,7 @@ fn name_param_schema_is_clean_object() {
     // A NameParams-backed tool: the assembled schema is a bare object with the
     // name field, additionalProperties locked off, and none of the metadata keys
     // some providers reject (the generator never emits $schema/title).
-    let schema = ServerStatus::spec().parameters;
+    let schema = AboutServer::spec().parameters;
     let object = schema.as_object().unwrap();
     assert_eq!(
         object.get("type").and_then(serde_json::Value::as_str),
@@ -684,4 +685,51 @@ fn confirmations_default_to_a_human_click() {
     // pre-approval. If the default ever flips, every caller that doesn't spell
     // its posture out inherits the ability to destroy a world unprompted.
     assert_eq!(ConfirmMode::default(), ConfirmMode::Interactive);
+}
+
+#[test]
+fn uptime_reads_as_a_duration_not_a_second_count() {
+    assert_eq!(format_uptime(0), "just started");
+    assert_eq!(format_uptime(59), "just started");
+    assert_eq!(format_uptime(60), "1m");
+    assert_eq!(format_uptime(45 * 60), "45m");
+    assert_eq!(format_uptime(3600), "1h 0m");
+    assert_eq!(format_uptime(3600 * 5 + 60 * 12), "5h 12m");
+    assert_eq!(format_uptime(86_400), "1d 0h");
+    assert_eq!(format_uptime(86_400 * 3 + 3600 * 4), "3d 4h");
+}
+
+/// The model reads this back to a friend, so it has to be a word rather than the
+/// database's column value.
+#[test]
+fn an_event_kind_reads_as_what_happened() {
+    assert_eq!(past_tense("server_restarted"), "restarted");
+    assert_eq!(past_tense("server_stopped"), "stopped");
+    assert_eq!(past_tense("server_restored"), "restored");
+    // Kinds outside the server_ family pass through rather than being mangled.
+    assert_eq!(past_tense("backup_taken"), "backup_taken");
+}
+
+/// `about_server` earns its place over `list_servers` only if it says things the
+/// listing can't. If this ever collapses back to the summary line, the two tools
+/// are interchangeable again and #44 has regressed.
+#[test]
+fn about_server_reports_more_than_the_listing_does() {
+    let summary = ServerSummary {
+        name: "mc".to_owned(),
+        game: Some("minecraft".to_owned()),
+        state: ServerState::Ready,
+        address: Some("mc.example.com:7000".to_owned()),
+    };
+    let listing = format_summary(&summary);
+    for detail in [
+        prompts::AboutServerProcessUnknown::render(),
+        prompts::AboutServerNoBackup::render(),
+        prompts::AboutServerNoAction::render(),
+    ] {
+        assert!(
+            !listing.contains(&detail),
+            "the roster line already carries {detail:?}, so about_server adds nothing by repeating it"
+        );
+    }
 }
