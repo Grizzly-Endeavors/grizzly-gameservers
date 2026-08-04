@@ -2,7 +2,7 @@ use poise::serenity_prelude as serenity;
 use tracing::error;
 
 use super::render::guild_required_embed;
-use super::{Context, Error};
+use super::{Context, Data, Error};
 use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
 use crate::store::GrantSet;
 
@@ -144,44 +144,81 @@ async fn require_at_least(
     Ok(false)
 }
 
-/// The invoking user's access tier in the guild the command ran in. Operators
-/// are admins everywhere (including DMs); everyone else needs a guild and is
-/// scored against the owner check plus the DB-configured admin/manager grants.
-/// Cluster/Discord read failures fall through as the weaker tier (fail-closed)
-/// after logging.
-pub(crate) async fn access_level_of(ctx: Context<'_>) -> AccessLevel {
-    let data = ctx.data();
-    let user = ctx.author().id.get();
-    if data.operator_ids.contains(&user) {
+/// Who is acting, gathered by whichever surface has the facts — a slash command,
+/// a chat message, or a button click. Three surfaces need the same tier answer,
+/// so they collect this and share one resolver rather than each re-deriving the
+/// policy.
+pub(crate) struct Speaker {
+    pub(crate) user: u64,
+    /// `None` in a DM, where only an operator holds a tier.
+    pub(crate) guild: Option<serenity::GuildId>,
+    /// The guild roles they hold, empty when unknown.
+    pub(crate) roles: Vec<u64>,
+}
+
+/// `speaker`'s access tier in the guild they're speaking in. Operators are
+/// admins everywhere (including DMs); everyone else needs a guild and is scored
+/// against the owner check plus the DB-configured admin/manager grants. A guild
+/// read failure falls through as the weaker tier (fail-closed) after logging.
+pub(crate) async fn access_level_for(
+    ctx: &serenity::Context,
+    data: &Data,
+    speaker: &Speaker,
+) -> AccessLevel {
+    if data.operator_ids.contains(&speaker.user) {
         return AccessLevel::Admin;
     }
-    let Some(guild_id) = ctx.guild_id() else {
+    let Some(guild_id) = speaker.guild else {
         // Non-operator in a DM: no guild to hold a tier in.
         return AccessLevel::ReadOnly;
-    };
-    let roles: Vec<u64> = match ctx.author_member().await {
-        Some(member) => member.roles.iter().map(|role| role.get()).collect(),
-        None => Vec::new(),
-    };
-    let guild_owner = if let Some(guild) = ctx.partial_guild().await {
-        Some(guild.owner_id.get())
-    } else {
-        error!(
-            guild = guild_id.get(),
-            "failed to read guild for owner check"
-        );
-        None
     };
     let guild_admins = data.guild_config.admins(guild_id.get()).await;
     let guild_managers = data.guild_config.managers(guild_id.get()).await;
     access_level(&AccessCheck {
-        user,
-        roles: &roles,
-        guild_owner,
+        user: speaker.user,
+        roles: &speaker.roles,
+        guild_owner: guild_owner_id(ctx, guild_id).await,
         operators: &data.operator_ids,
         guild_admins: &guild_admins,
         guild_managers: &guild_managers,
     })
+}
+
+/// The guild's owner id, cache-first (the guild is cached from its `GuildCreate`),
+/// falling back to an HTTP fetch. `None` on a read failure — auth then fails
+/// closed to operators only for that check.
+pub(crate) async fn guild_owner_id(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+) -> Option<u64> {
+    if let Some(guild) = guild_id.to_guild_cached(&ctx.cache) {
+        return Some(guild.owner_id.get());
+    }
+    match guild_id.to_partial_guild(&ctx.http).await {
+        Ok(guild) => Some(guild.owner_id.get()),
+        Err(err) => {
+            error!(error = ?err, guild = guild_id.get(), "failed to read guild for owner check");
+            None
+        }
+    }
+}
+
+/// The invoking user's access tier in the guild the command ran in.
+pub(crate) async fn access_level_of(ctx: Context<'_>) -> AccessLevel {
+    let roles: Vec<u64> = match ctx.author_member().await {
+        Some(member) => member.roles.iter().map(|role| role.get()).collect(),
+        None => Vec::new(),
+    };
+    access_level_for(
+        ctx.serenity_context(),
+        ctx.data(),
+        &Speaker {
+            user: ctx.author().id.get(),
+            guild: ctx.guild_id(),
+            roles,
+        },
+    )
+    .await
 }
 
 /// poise global `command_check` confining a server-targeting command to the

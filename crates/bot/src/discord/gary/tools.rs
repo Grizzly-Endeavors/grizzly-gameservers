@@ -6,9 +6,10 @@
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serenity::futures::StreamExt as _;
 use serenity::{
     ButtonStyle, ComponentInteractionCollector, CreateActionRow, CreateButton,
-    CreateInteractionResponse, CreateMessage, EditMessage,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
 };
 use tracing::{error, info, warn};
 
@@ -18,7 +19,7 @@ use grizzly_control_api::{
 
 use super::recovery::{PendingChange, RecoveryStep, next_step};
 
-use super::super::auth::AccessLevel;
+use super::super::auth::{AccessLevel, Speaker, access_level_for};
 use super::super::render::{
     archive_confirm_embed, archive_result_embed, delete_archive_confirm_embed,
     delete_archive_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed,
@@ -1438,7 +1439,78 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Post the Danger/Cancel buttons and wait for the invoking user's click.
+/// Wait for a click from someone entitled to approve, ignoring anyone who isn't.
+///
+/// The conversation belongs to the channel, so the person who asked for a
+/// destructive action and the person allowed to approve it are routinely
+/// different people — an admin signing off on a friend's request is the case
+/// this exists for. Any click at `required` or above counts; anyone below is
+/// told why, ephemerally, and the prompt stays live for someone who can. The
+/// timeout is the total wait, not a per-click one, so a stream of unqualified
+/// clicks can't hold a destructive prompt open indefinitely.
+///
+/// Returns the approving interaction **unacknowledged** — the caller answers it,
+/// because only the caller knows whether it approved or cancelled.
+async fn await_approval(
+    ctx: &ToolCtx<'_>,
+    message_id: serenity::MessageId,
+    required: AccessLevel,
+) -> Option<serenity::ComponentInteraction> {
+    let mut clicks = ComponentInteractionCollector::new(ctx.serenity)
+        .message_id(message_id)
+        .timeout(COMPONENT_TIMEOUT)
+        .stream();
+    while let Some(interaction) = clicks.next().await {
+        let clicker = Speaker {
+            user: interaction.user.id.get(),
+            guild: interaction.guild_id,
+            roles: interaction
+                .member
+                .as_ref()
+                .map(|member| member.roles.iter().map(|role| role.get()).collect())
+                .unwrap_or_default(),
+        };
+        if access_level_for(ctx.serenity, ctx.data, &clicker).await >= required {
+            return Some(interaction);
+        }
+        refuse_approval(ctx, &interaction, required).await;
+    }
+    None
+}
+
+/// Tell an unqualified clicker why nothing happened, only to them. Silence would
+/// read as the button being broken — which is what it did before this gate
+/// existed, since a non-matching click was simply dropped.
+async fn refuse_approval(
+    ctx: &ToolCtx<'_>,
+    interaction: &serenity::ComponentInteraction,
+    required: AccessLevel,
+) {
+    let notice = format!(
+        "You need {} access to answer this one. Ask {} in this channel to confirm it.",
+        required.as_str(),
+        match required {
+            AccessLevel::Admin => "an admin",
+            AccessLevel::Manager | AccessLevel::ReadOnly => "a manager or admin",
+        }
+    );
+    if let Err(err) = interaction
+        .create_response(
+            ctx.serenity,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(notice)
+                    .ephemeral(true),
+            ),
+        )
+        .await
+    {
+        warn!(error = ?err, user = %interaction.user.id, "agent: failed to refuse a confirmation click");
+    }
+}
+
+/// Post the Danger/Cancel buttons and wait for a click from anyone who may
+/// approve a destroy.
 async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new("gary_destroy_confirm")
@@ -1465,11 +1537,8 @@ async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
 
-    let decision = ComponentInteractionCollector::new(ctx.serenity)
-        .author_id(ctx.author_id)
-        .message_id(prompt.id)
-        .timeout(COMPONENT_TIMEOUT)
-        .await;
+    // destroy_server is admin-only, so an admin is who may sign it off.
+    let decision = await_approval(ctx, prompt.id, AccessLevel::Admin).await;
 
     finish_destroy(ctx, server, prompt, decision).await
 }
@@ -2158,11 +2227,8 @@ async fn confirm_destructive(
             return Confirm::Declined(prompts::ConfirmNoChannel::render());
         }
     };
-    let decision = ComponentInteractionCollector::new(ctx.serenity)
-        .author_id(ctx.author_id)
-        .message_id(prompt_msg.id)
-        .timeout(COMPONENT_TIMEOUT)
-        .await;
+    // Every tool routed through here is admin-tier (archive, restore, delete).
+    let decision = await_approval(ctx, prompt_msg.id, AccessLevel::Admin).await;
     let Some(interaction) = decision else {
         edit_prompt(
             ctx,

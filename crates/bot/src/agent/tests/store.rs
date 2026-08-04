@@ -3,7 +3,7 @@ use std::time::Duration;
 use super::super::llm::Role;
 use super::*;
 
-const KEY: SessionKey = (7, 42);
+const KEY: SessionKey = SessionKey::Channel(7);
 
 fn roles(messages: &[ChatMessage]) -> Vec<Role> {
     messages.iter().map(|m| m.role).collect()
@@ -206,10 +206,88 @@ fn separate_conversations_get_separate_ids() {
     let now = Instant::now();
 
     let one = store.checkout(KEY, now, || "sys".to_owned());
-    let other = store.checkout((8, 43), now, || "sys".to_owned());
+    let other = store.checkout(SessionKey::Channel(8), now, || "sys".to_owned());
 
     assert_ne!(
         one.id, other.id,
         "two conversations must never share a session id"
+    );
+}
+
+#[test]
+fn a_channel_and_an_ingame_player_never_collide() {
+    // The old tuple key relied on channel ids and player-name hashes happening
+    // not to overlap. The variant makes that structural: even with identical
+    // numbers, a channel is not a player.
+    let store = SessionStore::new();
+    let now = Instant::now();
+
+    let channel = SessionKey::Channel(7);
+    let player = SessionKey::IngamePlayer {
+        guild: 7,
+        player: 7,
+    };
+    assert_ne!(channel, player);
+
+    let opened = store.checkout(channel, now, || "channel".to_owned());
+    let mut messages = opened.messages;
+    messages.push(ChatMessage::user("in the channel"));
+    store.commit(channel, opened.id, messages, now);
+
+    let ingame = store.checkout(player, now, || "ingame".to_owned());
+    assert_eq!(
+        roles(&ingame.messages),
+        [Role::System],
+        "the player's conversation must not inherit the channel's transcript"
+    );
+}
+
+#[tokio::test]
+async fn turns_on_one_key_are_serialized() {
+    // Two people mentioning Gary in the same channel at once is ordinary now, and
+    // `commit` is last-write-wins — so the lock is what stops one of the two
+    // exchanges vanishing along with the answer that was already posted.
+    let store = std::sync::Arc::new(SessionStore::new());
+    let held = store.turn_lock(KEY).await;
+
+    let waiter = {
+        let store = std::sync::Arc::clone(&store);
+        tokio::spawn(async move { store.turn_lock(KEY).await })
+    };
+    tokio::task::yield_now().await;
+    assert!(
+        !waiter.is_finished(),
+        "a second turn on the same key must wait for the first"
+    );
+
+    drop(held);
+    waiter
+        .await
+        .expect("the queued turn runs once the first ends");
+}
+
+#[tokio::test]
+async fn turns_on_different_keys_do_not_wait_for_each_other() {
+    let store = SessionStore::new();
+    let _held = store.turn_lock(KEY).await;
+
+    // Another channel's conversation is unrelated; making it queue would serialize
+    // the whole bot behind one slow turn.
+    let other = store.turn_lock(SessionKey::Channel(8)).await;
+    drop(other);
+}
+
+#[tokio::test]
+async fn the_lock_map_does_not_grow_with_finished_turns() {
+    let store = SessionStore::new();
+    for channel in 0..50 {
+        drop(store.turn_lock(SessionKey::Channel(channel)).await);
+    }
+    // Every guard is gone, so the next acquisition should sweep them all.
+    let _held = store.turn_lock(SessionKey::Channel(99)).await;
+    assert_eq!(
+        store.turn_locks.lock().unwrap().len(),
+        1,
+        "only in-flight turns keep a lock entry alive"
     );
 }

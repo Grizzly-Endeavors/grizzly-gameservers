@@ -21,5 +21,5 @@ pub(crate) use session::{
     DEFAULT_MAX_ROUNDS, EscalationReason, EscalationRequest, Generation, SessionCallbacks,
     SessionEvent, SessionOutcome, run_session,
 };
-pub(crate) use store::{SessionId, SessionStore};
+pub(crate) use store::{SessionId, SessionKey, SessionStore};
 pub(crate) use turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};
