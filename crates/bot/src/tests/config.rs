@@ -747,3 +747,40 @@ fn game_manifests_pin_the_shared_control_port() {
         );
     }
 }
+
+#[test]
+fn watchdog_mode_defaults_on_and_parses_each_value() {
+    let unset = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    assert_eq!(
+        BotConfig::from_env_with(&unset).unwrap().watchdog,
+        WatchdogMode::On,
+        "the code default is on; deployments opt down via the env"
+    );
+
+    for (raw, expected) in [
+        ("on", WatchdogMode::On),
+        ("shadow", WatchdogMode::Shadow),
+        ("off", WatchdogMode::Off),
+        ("  Shadow ", WatchdogMode::Shadow),
+    ] {
+        let pairs = [
+            ("DISCORD_BOT_TOKEN", "secret"),
+            ("GAMESERVERS_WATCHDOG", raw),
+        ];
+        let env = lookup_from(&pairs);
+        assert_eq!(BotConfig::from_env_with(&env).unwrap().watchdog, expected);
+    }
+}
+
+#[test]
+fn watchdog_mode_rejects_unknown_values() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_WATCHDOG", "shaddow"),
+    ]);
+    let err = BotConfig::from_env_with(&env).unwrap_err();
+    assert!(
+        err.to_string().contains("GAMESERVERS_WATCHDOG"),
+        "a typo must fail loudly, not silently run or suppress turns: {err}"
+    );
+}

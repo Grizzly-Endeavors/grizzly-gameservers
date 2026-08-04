@@ -22,6 +22,7 @@ use crate::backup::{
 };
 use crate::domain::{GuildId, InstanceName};
 use crate::notify::{Escalation, EscalationContext};
+use crate::watchdog::{Incident, IncidentFacts};
 
 use super::catalog::{Attribution, EventKind, ProductEvent};
 
@@ -42,6 +43,9 @@ pub(crate) const ROUND_BUDGET_EXHAUSTED: &str = "round_budget_exhausted";
 /// An automatic crash rollback didn't bring the server back, or couldn't be
 /// issued at all.
 pub(crate) const CRASH_ROLLBACK: &str = "crash_rollback";
+
+/// A watchdog incident was detected in shadow mode: recorded, nothing acted.
+pub(crate) const SHADOW: &str = "shadow";
 
 /// Which way Gary gave up. The escalation kind *is* the outcome, so the two
 /// escalation shapes are separable without reaching into the details payload.
@@ -79,6 +83,61 @@ pub(crate) fn escalation_event(
         event = event.instance(InstanceName::new(server));
     }
     event
+}
+
+/// The row for a watchdog incident: which signal fired, its numbers, and where
+/// the response went (`delivery` is null when nothing was delivered — shadow,
+/// suppressed, undeliverable).
+pub(crate) fn incident_event(
+    incident: &Incident,
+    outcome: &'static str,
+    delivery: Option<&str>,
+) -> ProductEvent {
+    ProductEvent::new(EventKind::Incident, &Attribution::system(), outcome)
+        .guild(incident.guild.clone())
+        .game(incident.game.clone())
+        .instance(incident.instance.clone())
+        .details(incident_details(incident, delivery))
+}
+
+/// Payload for a watchdog incident: the signal name plus its kind-specific
+/// numbers, flattened so SQL reaches each figure without knowing the kind.
+fn incident_details(incident: &Incident, delivery: Option<&str>) -> Value {
+    let facts = match &incident.facts {
+        IncidentFacts::CrashLoop {
+            restarts_delta,
+            window_minutes,
+            total_restarts,
+            uptime_seconds,
+        } => json!({
+            "restarts_delta": restarts_delta,
+            "window_minutes": window_minutes,
+            "total_restarts": total_restarts,
+            "uptime_seconds": uptime_seconds,
+        }),
+        IncidentFacts::Crashed { total_restarts } => json!({
+            "total_restarts": total_restarts,
+        }),
+        IncidentFacts::Unreachable { minutes } => json!({
+            "unreachable_minutes": minutes,
+        }),
+        IncidentFacts::MemoryPressure {
+            used_bytes,
+            limit_bytes,
+            percent,
+        } => json!({
+            "mem_used_bytes": used_bytes,
+            "mem_limit_bytes": limit_bytes,
+            "mem_percent": percent,
+        }),
+    };
+    let mut details = serde_json::Map::new();
+    details.insert("signal".to_owned(), json!(incident.kind.as_str()));
+    details.insert("delivery".to_owned(), json!(delivery));
+    if let Value::Object(fields) = facts {
+        details.extend(fields);
+    }
+    Value::Object(details)
 }
 
 /// How the provisioning phase of a create ended. A successful provision is not

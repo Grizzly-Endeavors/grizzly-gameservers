@@ -33,6 +33,10 @@ pub(crate) enum EventKind {
     /// First-ever sighting of a guild, backed by the known-guilds table so a
     /// gateway reconnect can't re-fire it.
     GuildJoined,
+    /// The proactive watchdog detected a problem on a running server. One row
+    /// per fired incident whatever its disposition (shadow, responded,
+    /// suppressed), so detection is auditable even when nothing acted.
+    Incident,
 }
 
 impl EventKind {
@@ -51,6 +55,7 @@ impl EventKind {
             Self::BackupCycle => "backup_cycle",
             Self::Escalation => "escalation",
             Self::GuildJoined => "guild_joined",
+            Self::Incident => "incident",
         }
     }
 }

@@ -92,6 +92,32 @@ const DEFAULT_RELEASE: &str = "dev";
 /// has stopped answering entirely.
 const DEFAULT_STRANDED_DWELL_MINUTES: u64 = 15;
 
+/// How the proactive watchdog behaves. Detection thresholds are code constants
+/// (`crate::watchdog::detect`); this knob only selects what a fired incident is
+/// allowed to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WatchdogMode {
+    /// Detect and respond: a fired incident runs a proactive Gary turn.
+    On,
+    /// Detect only: incidents are logged and recorded to the event log, but no
+    /// turn runs and nobody is messaged. The false-positive tuning instrument —
+    /// review `events WHERE kind='incident'` before trusting `on`.
+    Shadow,
+    /// No detection at all; the sampler behaves exactly as before the watchdog
+    /// existed.
+    Off,
+}
+
+impl WatchdogMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Shadow => "shadow",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
 pub struct BotConfig {
@@ -163,6 +189,9 @@ pub struct BotConfig {
     /// which, because prompt-lib compiles every model-visible string into the
     /// binary, also identifies the exact prompt set.
     pub(crate) release: String,
+    /// What the proactive watchdog may do with a fired incident. Sourced from
+    /// `GAMESERVERS_WATCHDOG`; defaults to [`WatchdogMode::On`].
+    pub(crate) watchdog: WatchdogMode,
 }
 
 /// Connection settings for turn telemetry. Only the key pair is secret (synced
@@ -283,6 +312,7 @@ impl BotConfig {
         let langfuse = langfuse_config_from_env(lookup);
         let release =
             optional(lookup, "GAMESERVERS_RELEASE").unwrap_or_else(|| DEFAULT_RELEASE.to_owned());
+        let watchdog = watchdog_mode_from_env(lookup)?;
 
         Ok(Self {
             token,
@@ -308,7 +338,25 @@ impl BotConfig {
             environment,
             langfuse,
             release,
+            watchdog,
         })
+    }
+}
+
+/// Parse `GAMESERVERS_WATCHDOG` into a [`WatchdogMode`], defaulting to `on`.
+/// An unrecognized value is an error, not a silent fallback — a typo'd
+/// `shaddow` must not quietly run turns the operator meant to suppress.
+fn watchdog_mode_from_env(lookup: EnvLookup) -> Result<WatchdogMode> {
+    let Some(raw) = optional(lookup, "GAMESERVERS_WATCHDOG") else {
+        return Ok(WatchdogMode::On);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "on" => Ok(WatchdogMode::On),
+        "shadow" => Ok(WatchdogMode::Shadow),
+        "off" => Ok(WatchdogMode::Off),
+        _ => Err(anyhow!(
+            "GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"
+        )),
     }
 }
 

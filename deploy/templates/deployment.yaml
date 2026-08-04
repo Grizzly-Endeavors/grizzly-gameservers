@@ -157,6 +157,10 @@ spec:
             # absent DB_PASSWORD disables the sampler along with the event log.
             - name: GAMESERVERS_SAMPLE_INTERVAL_MINUTES
               value: {{ .Values.bot.sampling.intervalMinutes | quote }}
+            # Proactive watchdog mode (on/shadow/off); detection rides the
+            # sampler, so no database also means no watchdog.
+            - name: GAMESERVERS_WATCHDOG
+              value: {{ .Values.bot.watchdog | quote }}
             # In-game agent endpoint: game-pod supervisors POST player `@Gary`
             # chat triggers here (the reverse loop). The token authenticates
             # those POSTs; it's the same grizzly-gameservers-ingame Secret the

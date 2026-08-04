@@ -21,6 +21,7 @@ mod notify;
 mod prompts;
 mod store;
 mod telemetry;
+mod watchdog;
 
 pub use config::BotConfig;
 
@@ -106,6 +107,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
         kv::ValkeyClient::connect(config.valkey.as_ref()).await,
     ));
 
+    // The watchdog's sampler→responder seam: detection rides the sampler task
+    // (spawned below, before `Data` exists), the responder holds `Data` and is
+    // spawned after it. No channel when the watchdog is off.
+    let (watchdog_tx, watchdog_rx) = watchdog::channel(config.watchdog);
+
     // Starts the scheduled background work — stranded-server recovery always,
     // world backups when S3 is configured. The backup handle it returns also
     // goes into the command Data.
@@ -123,6 +129,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             provision_lock: std::sync::Arc::clone(&provision_lock),
             events: std::sync::Arc::clone(&events),
         },
+        watchdog_tx,
         &tasks,
         shutdown.clone(),
     )
@@ -137,10 +144,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // A token-only serenity HTTP client (no gateway) shared by both Gary surfaces
     // to DM operators on escalation. Built here so the in-game endpoint — spawned
     // below, before the gateway client exists — can carry it too.
-    let notifier = notify::OperatorNotifier::new(
-        std::sync::Arc::new(serenity::Http::new(&config.token)),
-        std::sync::Arc::clone(&operator_ids),
-    );
+    let notifier = build_notifier(&config.token, &operator_ids);
 
     let data = Data {
         kube_client,
@@ -166,6 +170,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
         telemetry: std::sync::Arc::clone(&telemetry),
         events,
     };
+
+    // The watchdog responder consumes fired incidents with the full `Data` in
+    // hand; spawned here because `Data` now exists, before the gateway so no
+    // incident is lost while Discord connects (it waits for a Context itself).
+    watchdog::spawn_responder(data.clone(), config.watchdog, watchdog_rx);
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
     // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
@@ -370,6 +379,15 @@ fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
     ]
 }
 
+/// Build the operator DM notifier on its own token-only serenity `Http` client
+/// (no gateway), so surfaces spawned before the gateway exists can carry it.
+fn build_notifier(token: &str, operator_ids: &std::sync::Arc<[u64]>) -> notify::OperatorNotifier {
+    notify::OperatorNotifier::new(
+        std::sync::Arc::new(serenity::Http::new(token)),
+        std::sync::Arc::clone(operator_ids),
+    )
+}
+
 /// Build Gary's model connection from config, logging whether the agent is on.
 /// `None` (no API key) means mentions are declined with a "not configured" reply.
 fn build_ollama(api_key: Option<String>, base_url: String, model: String) -> Option<OllamaConfig> {
@@ -455,6 +473,7 @@ async fn setup_cycles(
     s3: Option<&config::S3Config>,
     db: Option<&config::DbConfig>,
     handles: CycleHandles,
+    watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) -> backup::MaybeBackups {
@@ -466,6 +485,7 @@ async fn setup_cycles(
     );
     spawn_sampler(
         SamplerHandles::from_cycle(&handles),
+        watchdog,
         schedule.sample_interval,
         tasks,
         shutdown.clone(),
@@ -543,22 +563,30 @@ impl SamplerHandles {
 /// Record each running server's player count and restart counter, and every
 /// existing instance's resource footprint, on the sampler interval — in a
 /// tracked background task that stops at the next tick boundary once `shutdown`
-/// is cancelled.
+/// is cancelled. When the watchdog is configured, each tick's observations also
+/// feed its detector, and fired incidents cross to the responder.
 ///
 /// Unlike the stranded reconciler this does *not* start unconditionally: without
 /// a database the samples have nowhere to land, so polling every supervisor
 /// forever would be pure cluster chatter for no record.
 fn spawn_sampler(
     handles: SamplerHandles,
+    watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
     interval: std::time::Duration,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
     if !handles.events.enabled() {
         warn!("no database; occupancy and resource sampling disabled (nothing else changes)");
+        if watchdog.is_some() {
+            warn!("watchdog detection rides the sampler, so it is disabled too");
+        }
         return;
     }
     tasks.spawn(async move {
+        let mut detector = watchdog
+            .as_ref()
+            .map(|_| watchdog::DetectorState::new(interval));
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; skip it so a redeploy doesn't sample
@@ -576,14 +604,43 @@ fn spawn_sampler(
                 control_port: handles.control_port,
                 events: &handles.events,
             };
-            events::run_occupancy_cycle(&ctx).await;
-            events::run_resource_cycle(&ctx).await;
+            let observations = events::run_occupancy_cycle(&ctx).await;
+            let resources = events::run_resource_cycle(&ctx).await;
+            if let (Some(detector), Some(sender)) = (detector.as_mut(), watchdog.as_ref()) {
+                let fired = detector.tick(std::time::Instant::now(), &observations, &resources);
+                for incident in fired {
+                    forward_incident(sender, incident);
+                }
+            }
         }
     });
     info!(
         interval_secs = interval.as_secs(),
         "occupancy and resource sampling enabled"
     );
+}
+
+/// Hand a fired incident to the responder without blocking the sampler. A full
+/// queue means the responder is wedged mid-turn; dropping is bounded loss (a
+/// still-broken server re-fires after its cooldown) and is logged loudly.
+fn forward_incident(
+    sender: &tokio::sync::mpsc::Sender<watchdog::Incident>,
+    incident: watchdog::Incident,
+) {
+    use tokio::sync::mpsc::error::TrySendError;
+    match sender.try_send(incident) {
+        Ok(()) => {}
+        Err(TrySendError::Full(incident)) => warn!(
+            instance = %incident.instance,
+            signal = incident.kind.as_str(),
+            "watchdog incident queue full; dropping incident (re-fires after cooldown)"
+        ),
+        Err(TrySendError::Closed(incident)) => warn!(
+            instance = %incident.instance,
+            signal = incident.kind.as_str(),
+            "watchdog responder gone; dropping incident"
+        ),
+    }
 }
 
 /// Build the backup service (or `None` when S3 isn't configured) and, when built,
