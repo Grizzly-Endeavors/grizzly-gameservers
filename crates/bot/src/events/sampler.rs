@@ -31,6 +31,7 @@ use crate::agones::{
     supervisor_status,
 };
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::watchdog::{PollObservation, StatusObservation};
 
 /// One instance's reading at one moment, bound for the `occupancy_samples` table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,19 +57,22 @@ pub(crate) struct SamplerCtx<'a> {
     pub(crate) events: &'a EventLog,
 }
 
-/// Sample every running instance once and append the tick. Never fails: a
-/// listing error is logged and the tick skipped, an unreachable supervisor
-/// yields no row (or a null count), and the insert swallows its own errors.
-pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) {
+/// Sample every running instance once and append the tick, returning what each
+/// status poll yielded so the watchdog detector can fold the tick in. Never
+/// fails: a listing error is logged and the tick skipped, an unreachable
+/// supervisor yields no row (or a null count) but still an observation, and the
+/// insert swallows its own errors.
+pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObservation> {
     let instances = match list_live_instances(ctx.client, ctx.namespace).await {
         Ok(instances) => instances,
         Err(err) => {
             error!(error = ?err, "occupancy sampler could not list servers");
-            return;
+            return Vec::new();
         }
     };
 
     let mut samples = Vec::new();
+    let mut observations = Vec::new();
     for instance in instances.iter().filter(|instance| instance.running) {
         let name = instance.instance.as_str();
         let status =
@@ -78,9 +82,11 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) {
                 Ok(status) => status,
                 Err(err) => {
                     error!(error = ?err, instance = name, "occupancy sampler: status read failed");
+                    observations.push(status_observation(instance, None));
                     continue;
                 }
             };
+        observations.push(status_observation(instance, Some(&status)));
         let occupancy = match supervisor_occupancy(
             ctx.client,
             ctx.http,
@@ -107,6 +113,31 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) {
         "occupancy sampler tick"
     );
     ctx.events.record_samples(&samples).await;
+    observations
+}
+
+/// One instance's status poll as a watchdog observation — including the polls
+/// that yielded no sample row, which are exactly the ones the wedged-supervisor
+/// rule feeds on. `None` means the cluster query itself failed.
+fn status_observation(instance: &LiveInstance, status: Option<&StatusPoll>) -> StatusObservation {
+    let poll = match status {
+        Some(StatusPoll::Ok(status)) => PollObservation::Ok {
+            phase: status.process,
+            restarts: status.restarts,
+            uptime_seconds: status.uptime_seconds,
+        },
+        Some(StatusPoll::Unreachable) => PollObservation::Unreachable,
+        Some(StatusPoll::PodNotReady) => PollObservation::PodNotReady,
+        Some(StatusPoll::NotFound) => PollObservation::NotFound,
+        Some(StatusPoll::NotManaged) => PollObservation::NotManaged,
+        None => PollObservation::ReadFailed,
+    };
+    StatusObservation {
+        instance: instance.instance.clone(),
+        game: labelled(instance.game.as_str()).map(GameId::new),
+        guild: labelled(instance.guild.as_str()).map(GuildId::new),
+        poll,
+    }
 }
 
 /// Fold one instance's two supervisor readings into a row, or into nothing.

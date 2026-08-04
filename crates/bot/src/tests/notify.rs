@@ -135,3 +135,25 @@ fn render_crash_rollback_escalation_names_the_server_and_path() {
     assert!(!notice.contains("rounds"));
     assert!(!notice.contains("asked"));
 }
+
+#[test]
+fn render_watchdog_escalation_names_the_server_signal_and_no_asker() {
+    let notice = render_escalation(&Escalation::RoundBudgetExhausted {
+        context: EscalationContext::Watchdog {
+            server: "mc-summer".to_owned(),
+            signal: "crash".to_owned(),
+            guild: Some(42),
+        },
+        request: "investigate the crash loop".to_owned(),
+        attempts: vec!["read_logs".to_owned()],
+        rounds: 16,
+    });
+    assert!(notice.contains("mc-summer"));
+    assert!(notice.contains("`crash`"));
+    assert!(notice.contains("guild `42`"));
+    assert!(
+        notice.contains("nobody"),
+        "the who-line must say no one asked: {notice}"
+    );
+    assert!(notice.contains("read_logs"));
+}

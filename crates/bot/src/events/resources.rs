@@ -103,20 +103,21 @@ struct ContainerUsage {
 }
 
 /// Sample every managed instance's resource footprint once and append the
-/// tick. Never fails: without the PVC list there is no universe so the tick is
+/// tick, returning the rows so the watchdog detector can fold the tick in.
+/// Never fails: without the PVC list there is no universe so the tick is
 /// skipped; a failed pod or metrics listing degrades the affected columns to
 /// null; the insert swallows its own errors.
-pub(crate) async fn run_resource_cycle(ctx: &SamplerCtx<'_>) {
+pub(crate) async fn run_resource_cycle(ctx: &SamplerCtx<'_>) -> Vec<ResourceSample> {
     let pvcs = match list_managed_pvcs(ctx.client, ctx.namespace).await {
         Ok(pvcs) => pvcs,
         Err(err) => {
             error!(error = ?err, "resource sampler could not list pvcs");
-            return;
+            return Vec::new();
         }
     };
     if pvcs.is_empty() {
         debug!("resource sampler tick: no managed instances");
-        return;
+        return Vec::new();
     }
     let pods = match list_game_pods(ctx.client, ctx.namespace).await {
         Ok(pods) => pods,
@@ -147,6 +148,7 @@ pub(crate) async fn run_resource_cycle(ctx: &SamplerCtx<'_>) {
         "resource sampler tick"
     );
     ctx.events.record_resource_samples(&samples).await;
+    samples
 }
 
 /// The per-instance PVCs the bot provisioned — the sampling universe, since the

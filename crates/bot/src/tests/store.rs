@@ -67,3 +67,50 @@ async fn disabled_home_channels_reports_non_home_and_refuses_toggle() {
         HomeToggle::Unavailable
     ));
 }
+
+#[tokio::test]
+async fn disabled_home_channels_has_no_guild_home() {
+    let home = HomeChannels::connect(None).await;
+    assert_eq!(home.home_for_guild(42).await, None);
+}
+
+#[test]
+fn home_cache_resolves_oldest_home_per_guild() {
+    let mut cache = HomeCache::default();
+    cache.add(100, 1);
+    cache.add(200, 2);
+    cache.add(300, 1);
+    assert_eq!(
+        cache.home_for_guild(1),
+        Some(100),
+        "the oldest-registered channel is the guild's home"
+    );
+    assert_eq!(cache.home_for_guild(2), Some(200));
+    assert_eq!(
+        cache.home_for_guild(3),
+        None,
+        "an unknown guild has no home"
+    );
+}
+
+#[test]
+fn home_cache_removal_promotes_the_next_oldest() {
+    let mut cache = HomeCache::default();
+    cache.add(100, 1);
+    cache.add(300, 1);
+    cache.remove(100);
+    assert_eq!(cache.home_for_guild(1), Some(300));
+    cache.remove(300);
+    assert_eq!(cache.home_for_guild(1), None);
+}
+
+#[test]
+fn home_cache_readd_keeps_registration_order() {
+    let mut cache = HomeCache::default();
+    cache.add(100, 1);
+    cache.add(300, 1);
+    // A re-add only updates the guild (mirroring the store's upsert); it must
+    // not move the channel to the back of the order.
+    cache.add(100, 1);
+    assert_eq!(cache.home_for_guild(1), Some(100));
+}

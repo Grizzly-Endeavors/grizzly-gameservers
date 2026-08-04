@@ -65,6 +65,13 @@ impl GatewayHandle {
     pub(crate) fn current(&self) -> Option<serenity::Context> {
         self.current.borrow().clone()
     }
+
+    /// An awaitable view of the live Context, for a background consumer that
+    /// would rather wait for the first `Ready` than fail before it — the shape
+    /// [`Self::current`]'s honest `None` is wrong for.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<serenity::Context>> {
+        self.current.subscribe()
+    }
 }
 
 /// Per-command state shared with every poise command handler. `Clone` is cheap

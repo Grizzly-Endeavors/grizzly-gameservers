@@ -84,6 +84,11 @@ bot:
     # recorded. Minutes, not seconds: the rows are integrated into playtime and
     # differenced into crash frequency, and neither sharpens by polling harder.
     intervalMinutes: 5
+  # Proactive watchdog: on (detect + respond with a Gary turn), shadow (detect
+  # and record incident events only — the false-positive tuning mode), or off.
+  # Held at shadow until the recorded incidents look trustworthy; flipping to
+  # on is a deliberate one-line change.
+  watchdog: shadow
   # Per-game catalog path baked into the image; override only if relocated.
   catalogDir: ""
   resources:

@@ -86,12 +86,15 @@ impl HomeStore {
         Ok(Self { pool })
     }
 
-    /// Every registered home channel id.
-    async fn load_all(&self) -> Result<Vec<String>> {
-        sqlx::query_scalar::<_, String>("SELECT channel_id FROM home_channels")
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to load home channels")
+    /// Every registered home channel with its owning guild, oldest first —
+    /// the registration order [`HomeChannels::home_for_guild`] resolves by.
+    async fn load_all(&self) -> Result<Vec<(String, Option<String>)>> {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT channel_id, guild_id FROM home_channels ORDER BY added_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to load home channels")
     }
 
     async fn add(&self, channel: u64, guild: u64) -> Result<()> {
@@ -117,12 +120,48 @@ impl HomeStore {
     }
 }
 
+/// The in-memory image of the home-channel registry: which channels are home
+/// (with their owning guild) plus registration order, so both the per-message
+/// `is_home` check and the watchdog's "where do I post for guild X" read are
+/// answered without touching Postgres.
+#[derive(Default)]
+struct HomeCache {
+    /// Channel → owning guild. The guild is `None` only for rows written
+    /// before guilds were recorded alongside.
+    by_channel: HashMap<u64, Option<u64>>,
+    /// Channel ids oldest-registration-first, mirroring `added_at` order.
+    order: Vec<u64>,
+}
+
+impl HomeCache {
+    /// Register a channel, keeping order stable if it is already present
+    /// (a re-add only updates the guild, mirroring the upsert in the store).
+    fn add(&mut self, channel: u64, guild: u64) {
+        if self.by_channel.insert(channel, Some(guild)).is_none() {
+            self.order.push(channel);
+        }
+    }
+
+    fn remove(&mut self, channel: u64) {
+        self.by_channel.remove(&channel);
+        self.order.retain(|id| *id != channel);
+    }
+
+    /// The oldest-registered home channel belonging to `guild`.
+    fn home_for_guild(&self, guild: u64) -> Option<u64> {
+        self.order
+            .iter()
+            .find(|channel| self.by_channel.get(*channel) == Some(&Some(guild)))
+            .copied()
+    }
+}
+
 /// The set of channels where Gary answers without a mention, backed by Postgres
 /// and cached in memory. When persistence is unavailable the façade stays usable
 /// but reports every channel as non-home and refuses toggles (see module docs).
 pub(crate) struct HomeChannels {
     store: Option<HomeStore>,
-    cache: RwLock<HashSet<u64>>,
+    cache: RwLock<HomeCache>,
 }
 
 /// What a `/gary-home` toggle did, for the command to report back.
@@ -152,20 +191,23 @@ impl HomeChannels {
             }
         };
         match store.load_all().await {
-            Ok(ids) => {
-                let cache: HashSet<u64> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        if let Ok(parsed) = id.parse() {
-                            Some(parsed)
-                        } else {
-                            warn!(id = %id, "skipping home channel with unparseable id");
-                            None
-                        }
-                    })
-                    .collect();
+            Ok(rows) => {
+                let mut cache = HomeCache::default();
+                for (channel, guild) in &rows {
+                    let Ok(channel) = channel.parse::<u64>() else {
+                        warn!(id = %channel, "skipping home channel with unparseable id");
+                        continue;
+                    };
+                    // A guild that fails to parse degrades to "unknown guild"
+                    // rather than dropping the channel: is_home must keep
+                    // working for legacy rows either way.
+                    let guild = guild.as_deref().and_then(|id| id.parse::<u64>().ok());
+                    if cache.by_channel.insert(channel, guild).is_none() {
+                        cache.order.push(channel);
+                    }
+                }
                 info!(
-                    home_channels = cache.len(),
+                    home_channels = cache.order.len(),
                     "connected to postgres for no-mention home channels"
                 );
                 Self {
@@ -183,14 +225,21 @@ impl HomeChannels {
     fn disabled() -> Self {
         Self {
             store: None,
-            cache: RwLock::new(HashSet::new()),
+            cache: RwLock::new(HomeCache::default()),
         }
     }
 
     /// Whether `channel` is a registered home channel. Always `false` when
     /// persistence is disabled.
     pub(crate) async fn is_home(&self, channel: u64) -> bool {
-        self.cache.read().await.contains(&channel)
+        self.cache.read().await.by_channel.contains_key(&channel)
+    }
+
+    /// The guild's home channel for unprompted posts — the oldest-registered
+    /// one, which is deterministic and reads as "the guild's Gary channel".
+    /// `None` when the guild has none (or persistence is disabled).
+    pub(crate) async fn home_for_guild(&self, guild: u64) -> Option<u64> {
+        self.cache.read().await.home_for_guild(guild)
     }
 
     /// Flip `channel`'s home status, persisting the change and updating the
@@ -206,14 +255,14 @@ impl HomeChannels {
         let Some(store) = &self.store else {
             return Ok(HomeToggle::Unavailable);
         };
-        let currently_home = self.cache.read().await.contains(&channel);
+        let currently_home = self.cache.read().await.by_channel.contains_key(&channel);
         if currently_home {
             store.remove(channel).await?;
-            self.cache.write().await.remove(&channel);
+            self.cache.write().await.remove(channel);
             Ok(HomeToggle::Removed)
         } else {
             store.add(channel, guild).await?;
-            self.cache.write().await.insert(channel);
+            self.cache.write().await.add(channel, guild);
             Ok(HomeToggle::Added)
         }
     }
