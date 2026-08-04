@@ -26,8 +26,8 @@ mod store;
 
 pub(crate) use catalog::{Actor, Attribution, EventKind, ProductEvent, Surface};
 pub(crate) use resources::{
-    ReportedUnlabelledPvcs, ResourceSample, parse_bytes, parse_cpu_millicores, run_resource_cycle,
-    sample_instance,
+    ReportedUnlabelledPvcs, ResourceSample, declared_resources, parse_bytes, parse_cpu_millicores,
+    run_resource_cycle, sample_instance,
 };
 pub(crate) use sampler::{SamplerCtx, run_occupancy_cycle};
 pub(crate) use store::EventLog;

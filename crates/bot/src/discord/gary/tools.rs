@@ -29,16 +29,17 @@ use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{EscalationRequest, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
-    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ReadyWait, Replacement,
-    ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary, ShutdownOutcome,
-    StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name, catalog_sizing,
-    destroy_instance, instance_runtime_state, list_active_servers, now_entropy, provision_instance,
-    resize_instance, shutdown_instance, supervisor_announce, supervisor_edit_file,
-    supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,
-    supervisor_restart, supervisor_restore_file, supervisor_send_command, supervisor_start,
-    supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
+    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ProvisionSpec, ReadyWait,
+    Replacement, ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary,
+    ShutdownOutcome, StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name,
+    catalog_sizing, destroy_instance, instance_runtime_state, list_active_servers, now_entropy,
+    provision_instance, resize_instance, shutdown_instance, supervisor_announce,
+    supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
+    supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
+    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
     wait_for_instance_ready, wait_for_ready,
 };
+use crate::agones::{InstanceOwner, guild_usage, owner_of};
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
@@ -49,6 +50,7 @@ use crate::events::{
     Actor, Attribution, EventKind, ProductEvent, ResourceSample, Surface, mapping, parse_bytes,
     parse_cpu_millicores, sample_instance,
 };
+use crate::limits::{LimitRefusal, check_added_load, format_cores};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
     Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
@@ -833,14 +835,23 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         }
     };
 
+    let guild_key = ctx.guild.map(|guild| guild.to_string()).unwrap_or_default();
+    let caps = if guild_key.is_empty() {
+        None
+    } else {
+        Some(ctx.data.guild_limits.caps_for(&guild_key).await)
+    };
     match provision_instance(
         &ctx.data.kube_client,
         &ctx.data.namespace,
         &ctx.data.domain,
         &ctx.data.provision_lock,
-        entry,
-        &server,
-        &ctx.guild.map(|guild| guild.to_string()).unwrap_or_default(),
+        ProvisionSpec {
+            entry,
+            instance: &server,
+            guild: &guild_key,
+            caps: caps.as_ref(),
+        },
     )
     .await
     {
@@ -871,6 +882,28 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
             )
             .await;
             prompts::CreatePortsExhausted::render()
+        }
+        Ok(refused @ ProvisionOutcome::GuildLimitReached(refusal)) => {
+            let reply = match refusal {
+                LimitRefusal::ServerCount { current, cap } => prompts::CreateGuildLimitServers {
+                    current: &current.to_string(),
+                    cap: &cap.to_string(),
+                }
+                .render(),
+                LimitRefusal::AggregateCpu { .. } | LimitRefusal::AggregateMemory { .. } => {
+                    prompts::CreateGuildLimitResources {
+                        detail: &describe_limit_refusal(refusal),
+                    }
+                    .render()
+                }
+            };
+            ctx.record_action(
+                EventKind::ServerCreated,
+                &server,
+                mapping::provision(&refused),
+            )
+            .await;
+            reply
         }
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
@@ -1026,6 +1059,52 @@ async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> S
         }
         .render();
     }
+    // The aggregate cap binds the server's *owning* guild, read off its Service
+    // label rather than the channel the request came from — so an operator DM
+    // and the watchdog's unattended turns hit the same bound as a friend in the
+    // guild (ADR-022). Usage excludes the target so the proposal replaces its
+    // current figures instead of stacking onto them.
+    match owner_of(&ctx.data.kube_client, &ctx.data.namespace, &params.name).await {
+        Ok(Some(InstanceOwner {
+            guild: Some(guild), ..
+        })) => {
+            let caps = ctx.data.guild_limits.caps_for(guild.as_str()).await;
+            let usage = match guild_usage(
+                &ctx.data.kube_client,
+                &ctx.data.namespace,
+                guild.as_str(),
+                Some(&params.name),
+            )
+            .await
+            {
+                Ok(usage) => usage,
+                Err(err) => {
+                    error!(error = ?err, server = %params.name, "agent: guild usage read failed for resize");
+                    return cluster_error();
+                }
+            };
+            if let Err(refusal) = check_added_load(&usage, sizing, &caps) {
+                ctx.record_action(
+                    EventKind::ResourcesChanged,
+                    &params.name,
+                    mapping::limit_refusal(refusal),
+                )
+                .await;
+                return prompts::SetResourcesGuildLimit {
+                    detail: &describe_limit_refusal(refusal),
+                }
+                .render();
+            }
+        }
+        // No Service or no guild label: an operator's unscoped instance, which
+        // the caps don't bind. A missing instance is caught by the scope gate
+        // before this tool runs.
+        Ok(_) => {}
+        Err(err) => {
+            error!(error = ?err, server = %params.name, "agent: owner lookup failed for resize");
+            return cluster_error();
+        }
+    }
     if !ctx.data.sizing.is_available() {
         return prompts::SetResourcesUnavailable::render();
     }
@@ -1143,6 +1222,38 @@ fn describe_rejection(rejection: SizingRejection) -> String {
         SizingRejection::MemoryRequestExceedsLimit => {
             "the memory reservation is above its own maximum; the maximum has to be at least the reservation".to_owned()
         }
+    }
+}
+
+/// Turn a guild-cap refusal into a sentence naming the figures, so the model
+/// can explain the bound and offer a way out instead of retrying blindly.
+fn describe_limit_refusal(refusal: LimitRefusal) -> String {
+    match refusal {
+        LimitRefusal::ServerCount { current, cap } => {
+            format!("this community is at its server limit ({current} of {cap} in use)")
+        }
+        LimitRefusal::AggregateCpu {
+            current_millicores,
+            adding_millicores,
+            cap_millicores,
+        } => format!(
+            "this needs {} of CPU on top of the {} the community's servers already hold, \
+             but the community's allowance is {}",
+            format_cores(adding_millicores),
+            format_cores(current_millicores),
+            format_cores(cap_millicores),
+        ),
+        LimitRefusal::AggregateMemory {
+            current_bytes,
+            adding_bytes,
+            cap_bytes,
+        } => format!(
+            "this needs {} of memory on top of the {} the community's servers already hold, \
+             but the community's allowance is {}",
+            human_size(adding_bytes.unsigned_abs()),
+            human_size(current_bytes.unsigned_abs()),
+            human_size(cap_bytes.unsigned_abs()),
+        ),
     }
 }
 
@@ -1522,22 +1633,50 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
-    let begin = match begin_start(
-        &ctx.data.kube_client,
-        &ctx.data.namespace,
-        &ctx.data.domain,
-        &ctx.data.catalog,
-        server,
-        ctx.data.sizing.get(server).await,
-    )
-    .await
-    {
-        Ok(begin) => begin,
-        Err(err) => {
-            error!(error = ?err, %server, "agent: cold start failed");
-            ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+    // One hold of the provision lock covers the cap gate and the GameServer
+    // create, so a concurrent create can't add load in between (ADR-022). The
+    // returns inside the block release it before any long wait.
+    let begin = {
+        let _guard = ctx.data.provision_lock.lock().await;
+        match crate::discord::cold_start_refusal(ctx.data, server).await {
+            Ok(None) => {}
+            Ok(Some(refusal)) => {
+                ctx.record_action(
+                    EventKind::ServerStarted,
+                    server,
+                    mapping::limit_refusal(refusal),
+                )
                 .await;
-            return cluster_error();
+                return prompts::ColdStartGuildLimit {
+                    server,
+                    detail: &describe_limit_refusal(refusal),
+                }
+                .render();
+            }
+            Err(err) => {
+                error!(error = ?err, %server, "agent: cold start cap check failed");
+                ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+                    .await;
+                return cluster_error();
+            }
+        }
+        match begin_start(
+            &ctx.data.kube_client,
+            &ctx.data.namespace,
+            &ctx.data.domain,
+            &ctx.data.catalog,
+            server,
+            ctx.data.sizing.get(server).await,
+        )
+        .await
+        {
+            Ok(begin) => begin,
+            Err(err) => {
+                error!(error = ?err, %server, "agent: cold start failed");
+                ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+                    .await;
+                return cluster_error();
+            }
         }
     };
 
@@ -2869,6 +3008,10 @@ fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
         }
         .render(),
         RecoverOutcome::PortsExhausted => prompts::RecoverPortsExhausted::render(),
+        RecoverOutcome::GuildLimitReached(refusal) => prompts::RecoverGuildLimit {
+            detail: &describe_limit_refusal(*refusal),
+        }
+        .render(),
         RecoverOutcome::Failed(_) => prompts::RecoverFailed { name }.render(),
     }
 }

@@ -878,3 +878,58 @@ fn watchdog_mode_rejects_unknown_values() {
         "a typo must fail loudly, not silently run or suppress turns: {err}"
     );
 }
+
+#[test]
+fn guild_limit_defaults_apply_when_unset() {
+    let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
+    let limits = BotConfig::from_env_with(&env).unwrap().guild_limits;
+    assert_eq!(limits.servers, 5);
+    assert_eq!(limits.cpu_limit_millicores, 24_000);
+    assert_eq!(limits.mem_limit_bytes, 48 * 1024 * 1024 * 1024);
+}
+
+#[test]
+fn guild_limit_env_accepts_kubernetes_quantities() {
+    let env = lookup_from(&[
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_GUILD_MAX_SERVERS", "8"),
+        ("GAMESERVERS_GUILD_MAX_CPU", "32000m"),
+        ("GAMESERVERS_GUILD_MAX_MEMORY", "64Gi"),
+    ]);
+    let limits = BotConfig::from_env_with(&env).unwrap().guild_limits;
+    assert_eq!(limits.servers, 8);
+    assert_eq!(limits.cpu_limit_millicores, 32_000);
+    assert_eq!(limits.mem_limit_bytes, 64 * 1024 * 1024 * 1024);
+
+    let bare_pairs = [
+        ("DISCORD_BOT_TOKEN", "secret"),
+        ("GAMESERVERS_GUILD_MAX_CPU", "24"),
+    ];
+    let bare_cores = lookup_from(&bare_pairs);
+    assert_eq!(
+        BotConfig::from_env_with(&bare_cores)
+            .unwrap()
+            .guild_limits
+            .cpu_limit_millicores,
+        24_000,
+        "a bare number is cores, matching every other CPU surface"
+    );
+}
+
+#[test]
+fn guild_limit_env_rejects_garbage_loudly() {
+    for (key, value) in [
+        ("GAMESERVERS_GUILD_MAX_SERVERS", "many"),
+        ("GAMESERVERS_GUILD_MAX_SERVERS", "0"),
+        ("GAMESERVERS_GUILD_MAX_CPU", "plenty"),
+        ("GAMESERVERS_GUILD_MAX_MEMORY", "-48Gi"),
+    ] {
+        let pairs = [("DISCORD_BOT_TOKEN", "secret"), (key, value)];
+        let env = lookup_from(&pairs);
+        let err = BotConfig::from_env_with(&env).unwrap_err();
+        assert!(
+            err.to_string().contains(key),
+            "a typo'd cap must fail startup, not silently admit unbounded load: {err}"
+        );
+    }
+}

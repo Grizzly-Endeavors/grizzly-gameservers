@@ -120,6 +120,10 @@ pub(crate) struct Data {
     /// when persistence is down, which makes a resize a refusal rather than a
     /// change that would evaporate on the next start.
     pub(crate) sizing: Arc<InstanceSizing>,
+    /// Per-guild resource caps (ADR-022): global defaults plus operator-set
+    /// overrides. Backed by Postgres; with persistence down every guild is
+    /// capped at the defaults, so enforcement never turns off.
+    pub(crate) guild_limits: Arc<crate::limits::GuildLimits>,
     /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
     /// backup commands then report "not configured", same shape as Gary/home).
     pub(crate) backup: MaybeBackups,
@@ -164,7 +168,59 @@ pub(crate) fn backup_ctx(data: &Data) -> crate::backup::BackupCtx<'_> {
         catalog: &data.catalog,
         provision_lock: &data.provision_lock,
         sizing: &data.sizing,
+        guild_limits: &data.guild_limits,
     }
+}
+
+/// Whether cold-starting `instance` would push its owning guild over its
+/// CPU/memory allowance (ADR-022) — `None` means it may proceed. Shared by the
+/// `/start` cold branch and Gary's cold-start tool so the two shells can't
+/// drift; call it (and the `begin_start` that follows) under one hold of
+/// `Data::provision_lock` so a concurrent create can't add load in between.
+///
+/// Only the *pod-recreating* start is gated. A warm resume never dropped its
+/// pod, so its load never left the aggregate; the backup cycle's ensure-pod and
+/// the stranded reconciler restore previously-admitted load and are exempt by
+/// construction (they call `begin_start` directly).
+///
+/// The added load is the instance's recorded override, else its catalog sizing;
+/// an unreadable catalog contributes nothing, the same permissiveness as create.
+///
+/// # Errors
+///
+/// Returns an error if the owning Service or the guild's live usage can't be
+/// read from the Kubernetes API.
+pub(crate) async fn cold_start_refusal(
+    data: &Data,
+    instance: &str,
+) -> anyhow::Result<Option<crate::limits::LimitRefusal>> {
+    let Some(owner) = crate::agones::owner_of(&data.kube_client, &data.namespace, instance).await?
+    else {
+        return Ok(None);
+    };
+    let Some(guild) = owner.guild else {
+        // Pre-scoping or operator-created: no tenant, no caps.
+        return Ok(None);
+    };
+    let adding = match data.sizing.get(instance).await {
+        Some(sizing) => Some(sizing),
+        None => owner
+            .game
+            .and_then(|game| data.catalog.get(game.as_str()))
+            .and_then(crate::agones::catalog_sizing),
+    };
+    let Some(adding) = adding else {
+        return Ok(None);
+    };
+    let caps = data.guild_limits.caps_for(guild.as_str()).await;
+    let usage = crate::agones::guild_usage(
+        &data.kube_client,
+        &data.namespace,
+        guild.as_str(),
+        Some(instance),
+    )
+    .await?;
+    Ok(crate::limits::check_added_load(&usage, adding, &caps).err())
 }
 
 pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;

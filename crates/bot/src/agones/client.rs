@@ -1,19 +1,24 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
-use k8s_openapi::api::core::v1::Service;
+use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::api::ListParams;
 use kube::{Api, Client};
 use tracing::warn;
 
 use grizzly_control_api::{PROCESS_LABEL_KEY, PROCESS_LABEL_STOPPED};
 
-use super::labels::{GAME_KEY, GUILD_KEY, is_managed, label_value, service_gameserver_target};
+use super::labels::{
+    GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, is_managed, label_value,
+    service_gameserver_target,
+};
 use super::ports::{friend_facing_node_port, node_ports_by_gameserver};
 use super::provision::{DeletionState, deletion_state};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, ServerSummary, summarize};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::events::declared_resources;
+use crate::limits::GuildUsage;
 
 /// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
 /// each to its `NodePort` Service to resolve a connection address under
@@ -165,6 +170,78 @@ pub(crate) async fn list_live_instances(
         });
     }
     Ok(targets)
+}
+
+/// What `guild` currently holds, measured live off the cluster for guild-cap
+/// enforcement (ADR-022). The count spans every managed Service — the durable
+/// per-instance object, so running, paused, and stopped servers all count, since
+/// each holds a port lease and a PVC. The CPU/memory aggregate spans only pods
+/// that exist, summed with the same [`declared_resources`] arithmetic the
+/// resource sampler records. `exclude_instance` removes one instance's
+/// contribution from the *aggregate* (never the count) so a resize proposal
+/// replaces, rather than stacks onto, the target's current figures.
+///
+/// # Errors
+///
+/// Returns an error if the services or pods cannot be listed from the
+/// Kubernetes API.
+pub(crate) async fn guild_usage(
+    client: &Client,
+    namespace: &str,
+    guild: &str,
+    exclude_instance: Option<&str>,
+) -> Result<GuildUsage> {
+    let scope = ServerScope::Guild(guild.to_owned());
+    let mut params = ListParams::default();
+    if let Some(selector) = scope.label_selector() {
+        params = params.labels(&selector);
+    }
+
+    let services: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let svc_list = services
+        .list(&params)
+        .await
+        .with_context(|| format!("failed to list services in namespace {namespace}"))?;
+    let mut instances: HashSet<&str> = HashSet::new();
+    for service in &svc_list.items {
+        if !is_managed(service.metadata.labels.as_ref()) {
+            continue;
+        }
+        if let Some(target) = service_gameserver_target(service) {
+            instances.insert(target);
+        }
+    }
+
+    // Pods are matched through the Agones selector label back to the guild's
+    // Service set rather than trusting a guild label on the pod itself — the
+    // Service is the object the guild stamp is read back from everywhere else.
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let pod_list = pods
+        .list(&ListParams::default().labels(GAMESERVER_SELECTOR_KEY))
+        .await
+        .with_context(|| format!("failed to list game pods in namespace {namespace}"))?;
+    let mut live_cpu_limit_millicores: i64 = 0;
+    let mut live_mem_limit_bytes: i64 = 0;
+    for pod in &pod_list.items {
+        let Some(instance) = label_value(pod.metadata.labels.as_ref(), GAMESERVER_SELECTOR_KEY)
+        else {
+            continue;
+        };
+        if !instances.contains(instance) || exclude_instance == Some(instance) {
+            continue;
+        }
+        let declared = declared_resources(pod);
+        live_cpu_limit_millicores =
+            live_cpu_limit_millicores.saturating_add(declared.cpu_limit_millicores.unwrap_or(0));
+        live_mem_limit_bytes =
+            live_mem_limit_bytes.saturating_add(declared.mem_limit_bytes.unwrap_or(0));
+    }
+
+    Ok(GuildUsage {
+        server_count: instances.len(),
+        live_cpu_limit_millicores,
+        live_mem_limit_bytes,
+    })
 }
 
 /// A `/shutdown` deletes the `GameServer` but keeps its Service, so a managed Service

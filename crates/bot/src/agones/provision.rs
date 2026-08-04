@@ -12,13 +12,17 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 use super::catalog::{GameCatalog, GameCatalogEntry};
-use super::instance::{InstanceIdentity, render_gameserver, render_pvc, render_service};
+use super::client::guild_usage;
+use super::instance::{
+    InstanceIdentity, catalog_sizing, render_gameserver, render_pvc, render_service,
+};
 use super::labels::{GAME_KEY, GUILD_KEY, all_node_ports, is_managed, label_value};
 use super::naming::{pvc_name, select_free_ports};
 use super::ports::{assign, assignment_from_service, port_plan_from_service, ports_needed};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, server_address};
 use crate::domain::{GameId, GuildId, InstanceName};
+use crate::limits::{GuildCaps, LimitRefusal, check_create};
 use crate::sizing::Sizing;
 
 /// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
@@ -43,9 +47,14 @@ const DELETE_TIMEOUT: Duration = Duration::from_secs(150);
 /// Outcome of a `/create`. Expected friend-visible results (name clash, no free
 /// ports) are values, not errors; `Err` is reserved for cluster/internal faults.
 pub(crate) enum CreateOutcome {
-    Created { address: String, ready: bool },
+    Created {
+        address: String,
+        ready: bool,
+    },
     AlreadyExists,
     PortsExhausted,
+    /// The owning guild is at one of its resource caps (ADR-022).
+    GuildLimitReached(LimitRefusal),
 }
 
 pub(crate) enum ShutdownOutcome {
@@ -90,17 +99,33 @@ pub(crate) enum DestroyOutcome {
 /// then poll with [`wait_for_instance_ready`], giving the friend live progress
 /// instead of one silent multi-minute wait.
 pub(crate) enum ProvisionOutcome {
-    Provisioned { address: String },
+    Provisioned {
+        address: String,
+    },
     AlreadyExists,
     PortsExhausted,
+    /// The owning guild is at one of its resource caps (ADR-022).
+    GuildLimitReached(LimitRefusal),
+}
+
+/// What to provision: the catalog game, the instance name, the owning guild,
+/// and — when the owning guild's caps apply — the caps to enforce before
+/// anything is leased. `caps: None` means the caller decided the caps don't
+/// apply (an operator's unscoped instance).
+pub(crate) struct ProvisionSpec<'a> {
+    pub(crate) entry: &'a GameCatalogEntry,
+    pub(crate) instance: &'a str,
+    pub(crate) guild: &'a str,
+    pub(crate) caps: Option<&'a GuildCaps>,
 }
 
 /// Provision a new per-world instance: lease a port, create its Service, PVC and
 /// `GameServer`, and return its address. Does **not** wait for readiness — call
 /// [`wait_for_instance_ready`] for that. The `lock` serializes the
 /// port-lease→Service-create critical section so concurrent creates can't claim
-/// the same `NodePort`. `guild` is the owning Discord guild id, stamped onto
-/// the trio so scoped listing and mutation can confine to it later.
+/// the same `NodePort` — and the guild-cap check, so concurrent creates can't
+/// both squeeze under the cap. `spec.guild` is the owning Discord guild id,
+/// stamped onto the trio so scoped listing and mutation can confine to it later.
 ///
 /// # Errors
 ///
@@ -111,13 +136,10 @@ pub(crate) async fn provision_instance(
     namespace: &str,
     domain: &str,
     lock: &Mutex<()>,
-    entry: &GameCatalogEntry,
-    instance: &str,
-    guild: &str,
+    spec: ProvisionSpec<'_>,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
-    let provisioned =
-        provision_under_lock(client, namespace, domain, entry, instance, guild, false).await?;
+    let provisioned = provision_under_lock(client, namespace, domain, &spec, false).await?;
     Ok(provisioned.into_outcome())
 }
 
@@ -134,13 +156,10 @@ pub(crate) async fn provision_paused_instance(
     namespace: &str,
     domain: &str,
     lock: &Mutex<()>,
-    entry: &GameCatalogEntry,
-    instance: &str,
-    guild: &str,
+    spec: ProvisionSpec<'_>,
 ) -> Result<ProvisionOutcome> {
     let _guard = lock.lock().await;
-    let provisioned =
-        provision_under_lock(client, namespace, domain, entry, instance, guild, true).await?;
+    let provisioned = provision_under_lock(client, namespace, domain, &spec, true).await?;
     Ok(provisioned.into_outcome())
 }
 
@@ -148,6 +167,7 @@ enum Provisioned {
     Created(String),
     AlreadyExists,
     PortsExhausted,
+    GuildLimitReached(LimitRefusal),
 }
 
 impl Provisioned {
@@ -156,6 +176,7 @@ impl Provisioned {
             Self::Created(address) => ProvisionOutcome::Provisioned { address },
             Self::AlreadyExists => ProvisionOutcome::AlreadyExists,
             Self::PortsExhausted => ProvisionOutcome::PortsExhausted,
+            Self::GuildLimitReached(refusal) => ProvisionOutcome::GuildLimitReached(refusal),
         }
     }
 }
@@ -164,13 +185,28 @@ async fn provision_under_lock(
     client: &Client,
     namespace: &str,
     domain: &str,
-    entry: &GameCatalogEntry,
-    instance: &str,
-    guild: &str,
+    spec: &ProvisionSpec<'_>,
     start_paused: bool,
 ) -> Result<Provisioned> {
+    let ProvisionSpec {
+        entry,
+        instance,
+        guild,
+        caps,
+    } = *spec;
     if instance_exists(client, namespace, instance).await? {
         return Ok(Provisioned::AlreadyExists);
+    }
+
+    // Guild caps are checked under the provision lock so two concurrent creates
+    // can't both squeeze past the count. The newcomer's contribution is its
+    // catalog sizing — a brand-new instance renders with exactly that, and a
+    // recover re-renders the same way.
+    if let Some(caps) = caps {
+        let usage = guild_usage(client, namespace, guild, None).await?;
+        if let Err(refusal) = check_create(&usage, catalog_sizing(entry), caps) {
+            return Ok(Provisioned::GuildLimitReached(refusal));
+        }
     }
 
     let used = used_ports(client, namespace).await?;

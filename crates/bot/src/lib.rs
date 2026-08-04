@@ -15,6 +15,7 @@ mod events;
 mod http;
 mod ingame;
 mod kv;
+mod limits;
 mod memory;
 mod modrinth;
 mod notify;
@@ -87,8 +88,9 @@ pub async fn run(config: BotConfig) -> Result<()> {
         guild_config,
         memory,
         sizing,
+        guild_limits,
         events,
-    } = DurableState::connect(config.db.as_ref()).await;
+    } = DurableState::connect(config.db.as_ref(), config.guild_limits).await;
     // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
     // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
     // schedule, the same shape as db/s3/ollama.
@@ -121,6 +123,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
             provision_lock: std::sync::Arc::clone(&provision_lock),
             events: std::sync::Arc::clone(&events),
             sizing: std::sync::Arc::clone(&sizing),
+            guild_limits: std::sync::Arc::clone(&guild_limits),
         },
         watchdog_tx,
         &tasks,
@@ -155,6 +158,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         home_channels,
         memory,
         sizing,
+        guild_limits,
         backup,
         tasks: tasks.clone(),
         notifier,
@@ -411,6 +415,7 @@ struct CycleHandles {
     provision_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     events: std::sync::Arc<events::EventLog>,
     sizing: std::sync::Arc<sizing::InstanceSizing>,
+    guild_limits: std::sync::Arc<limits::GuildLimits>,
 }
 
 /// Cadences and budgets for the scheduled background cycles.
@@ -455,18 +460,25 @@ struct DurableState {
     guild_config: std::sync::Arc<GuildConfig>,
     memory: std::sync::Arc<GaryMemory>,
     sizing: std::sync::Arc<sizing::InstanceSizing>,
+    guild_limits: std::sync::Arc<limits::GuildLimits>,
     /// The product plane. Every layer that executes a lifecycle, backup, or
     /// escalation action writes here.
     events: std::sync::Arc<events::EventLog>,
 }
 
 impl DurableState {
-    async fn connect(db: Option<&config::DbConfig>) -> Self {
+    async fn connect(
+        db: Option<&config::DbConfig>,
+        limit_defaults: config::GuildLimitDefaults,
+    ) -> Self {
         Self {
             home_channels: std::sync::Arc::new(HomeChannels::connect(db).await),
             guild_config: std::sync::Arc::new(GuildConfig::connect(db).await),
             memory: std::sync::Arc::new(GaryMemory::connect(db).await),
             sizing: std::sync::Arc::new(sizing::InstanceSizing::connect(db).await),
+            guild_limits: std::sync::Arc::new(
+                limits::GuildLimits::connect(db, limit_defaults).await,
+            ),
             events: std::sync::Arc::new(events::EventLog::connect(db).await),
         }
     }
@@ -800,6 +812,7 @@ fn spawn_backup_cycle(
                 catalog: &handles.catalog,
                 provision_lock: &handles.provision_lock,
                 sizing: &handles.sizing,
+                guild_limits: &handles.guild_limits,
             };
             service.run_backup_cycle(&ctx).await;
         }

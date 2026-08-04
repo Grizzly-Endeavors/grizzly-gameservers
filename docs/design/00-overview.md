@@ -36,7 +36,7 @@ Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 
 ### Components
 
-**Discord shim** — the only piece that is purely "our product." Thin: authenticate the friend, map a command to an Agones allocation/teardown, hand back `IP:port`. No quotas, no billing — this is a friends-scale service.
+**Discord shim** — the only piece that is purely "our product." Thin: authenticate the friend, map a command to an Agones allocation/teardown, hand back `IP:port`. No billing; each guild carries generous resource caps (server count and aggregate CPU/memory, [ADR-022](../decisions/022-per-guild-resource-caps.md)) sized so no honest guild meets them — a blast-radius bound for the stranger beta, not metering.
 
 **Ops agent** ("Gary") — the center of gravity. An LLM loop (mentioned in Discord) that translates intent and operates running servers: read current config + logs, decide the change, mutate the right file, restart the GameServer, watch health, report back — all via the per-pod supervisor's HTTP control API (see below), never `kubectl exec` (see "Why not exec-as-tools" in [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md)). This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
 - *Apply a known change* (gather rate, difficulty, add a mod) — bounded and reliable. Shipped first.

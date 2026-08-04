@@ -5,7 +5,7 @@ use crate::events::{Actor, Surface};
 use crate::notify::EscalationContext;
 
 #[test]
-fn provision_names_the_two_capacity_rejections() {
+fn provision_names_every_capacity_rejection() {
     assert_eq!(
         provision(&ProvisionOutcome::Provisioned {
             address: "host:7000".to_owned()
@@ -16,6 +16,31 @@ fn provision_names_the_two_capacity_rejections() {
     assert_eq!(
         provision(&ProvisionOutcome::PortsExhausted),
         "ports_exhausted"
+    );
+    assert_eq!(
+        provision(&ProvisionOutcome::GuildLimitReached(
+            LimitRefusal::ServerCount { current: 5, cap: 5 }
+        )),
+        "guild_limit_servers"
+    );
+    assert_eq!(
+        provision(&ProvisionOutcome::GuildLimitReached(
+            LimitRefusal::AggregateCpu {
+                current_millicores: 20_000,
+                adding_millicores: 8_000,
+                cap_millicores: 24_000,
+            }
+        )),
+        "guild_limit_resources"
+    );
+    assert_eq!(
+        limit_refusal(LimitRefusal::AggregateMemory {
+            current_bytes: 1,
+            adding_bytes: 1,
+            cap_bytes: 1,
+        }),
+        "guild_limit_resources",
+        "both aggregate caps share one outcome; only the count cap is separate"
     );
 }
 
@@ -140,6 +165,12 @@ fn restore_and_recover_cover_every_outcome() {
         "unknown_game"
     );
     assert_eq!(recover(&RecoverOutcome::PortsExhausted), "ports_exhausted");
+    assert_eq!(
+        recover(&RecoverOutcome::GuildLimitReached(
+            LimitRefusal::ServerCount { current: 5, cap: 5 }
+        )),
+        "guild_limit_servers"
+    );
     assert_eq!(recover(&RecoverOutcome::Failed("boom".to_owned())), FAILED);
 }
 

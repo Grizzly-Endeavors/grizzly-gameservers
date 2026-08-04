@@ -20,7 +20,7 @@ mod supervisor_fs;
 mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
-pub(crate) use client::{LiveInstance, list_active_servers, list_live_instances};
+pub(crate) use client::{LiveInstance, guild_usage, list_active_servers, list_live_instances};
 pub(crate) use control_client::ControlClient;
 pub(crate) use instance::catalog_sizing;
 pub(crate) use labels::{
@@ -29,8 +29,8 @@ pub(crate) use labels::{
 };
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
-    CreateOutcome, DestroyOutcome, ProvisionOutcome, ShutdownOutcome, StartBegin, StartOutcome,
-    begin_start, destroy_instance, list_instance_names, provision_instance,
+    CreateOutcome, DestroyOutcome, ProvisionOutcome, ProvisionSpec, ShutdownOutcome, StartBegin,
+    StartOutcome, begin_start, destroy_instance, list_instance_names, provision_instance,
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
 pub(crate) use resize::{ResizeOutcome, resize_instance};

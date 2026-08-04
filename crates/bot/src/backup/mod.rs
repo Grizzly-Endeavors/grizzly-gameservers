@@ -73,6 +73,9 @@ pub(crate) struct BackupCtx<'a> {
     /// preserves whatever size the instance was resized to rather than handing
     /// it back the catalog's.
     pub(crate) sizing: &'a crate::sizing::InstanceSizing,
+    /// Per-guild resource caps, so a recover checks the archive's owning guild
+    /// against its allowance before recreating the server (ADR-022).
+    pub(crate) guild_limits: &'a crate::limits::GuildLimits,
 }
 
 /// Outcome of a manual or scheduled backup of a live server.
@@ -234,6 +237,9 @@ pub(crate) enum RecoverOutcome {
     UnknownGame(String),
     /// No free port to recreate the server.
     PortsExhausted,
+    /// The archive's owning guild is at one of its resource caps (ADR-022) —
+    /// recreating the server would put it over.
+    GuildLimitReached(crate::limits::LimitRefusal),
     Failed(String),
 }
 
@@ -247,7 +253,8 @@ impl RecoverOutcome {
             | Self::NameInUse
             | Self::Unavailable
             | Self::UnknownGame(_)
-            | Self::PortsExhausted => None,
+            | Self::PortsExhausted
+            | Self::GuildLimitReached(_) => None,
         }
     }
 }
