@@ -26,6 +26,18 @@ spec:
     agones:
       crds:
         install: true
+      # The SDK sidecar injected into every game pod. The chart's defaults set
+      # only a CPU request (30m) and leave the CPU limit and both memory values
+      # unset — which the namespace ResourceQuota in cluster/guardrails cannot
+      # tolerate: a quota on limits.* makes admission reject any pod with an
+      # undeclared container. Generous for what is a tiny gRPC shim; these
+      # figures are budgeted in the quota's headroom (ADR-022).
+      image:
+        sdk:
+          cpuRequest: 30m
+          cpuLimit: 200m
+          memoryRequest: 64Mi
+          memoryLimit: 128Mi
     gameservers:
       # Scope the SDK ServiceAccount + RBAC the chart provisions to the one
       # namespace game servers run in. This namespace must already exist when
