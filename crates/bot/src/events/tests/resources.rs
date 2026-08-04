@@ -3,6 +3,16 @@ use super::*;
 use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, PersistentVolumeClaimStatus, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
+/// Build against a fresh report log — the tests that don't care about the
+/// warn-once bookkeeping get the plain three-argument shape back.
+fn samples_from(
+    pvcs: &[PersistentVolumeClaim],
+    pods: &[Pod],
+    usage: &[PodUsage],
+) -> Vec<ResourceSample> {
+    build_resource_samples(pvcs, pods, usage, &mut ReportedUnlabelledPvcs::default())
+}
+
 fn quantity_map(entries: &[(&str, &str)]) -> BTreeMap<String, Quantity> {
     entries
         .iter()
@@ -120,7 +130,7 @@ fn a_pod_backed_instance_gets_a_full_row_running_or_paused() {
         mem_bytes: Some(1_610_612_736),
     }];
 
-    let samples = build_resource_samples(&pvcs, &pods, &usage);
+    let samples = samples_from(&pvcs, &pods, &usage);
     assert_eq!(samples.len(), 1);
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.instance.as_str(), "otter");
@@ -139,7 +149,7 @@ fn a_pod_backed_instance_gets_a_full_row_running_or_paused() {
 fn a_shut_down_instance_gets_a_pvc_only_row() {
     let pvcs = [labelled_pvc("otter", Some("5Gi"), None)];
 
-    let samples = build_resource_samples(&pvcs, &[], &[]);
+    let samples = samples_from(&pvcs, &[], &[]);
     assert_eq!(samples.len(), 1);
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.pvc_bytes, Some(5_368_709_120));
@@ -159,7 +169,7 @@ fn a_metrics_miss_keeps_the_row_with_null_actuals() {
         vec![container(&[("cpu", "500m"), ("memory", "2Gi")], &[])],
     )];
 
-    let samples = build_resource_samples(&pvcs, &pods, &[]);
+    let samples = samples_from(&pvcs, &pods, &[]);
     assert_eq!(samples.len(), 1);
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.cpu_millicores, None);
@@ -185,7 +195,7 @@ fn declared_figures_sum_over_containers_that_declare_them() {
         ],
     )];
 
-    let samples = build_resource_samples(&pvcs, &pods, &[]);
+    let samples = samples_from(&pvcs, &pods, &[]);
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.cpu_request_millicores, Some(530));
     assert_eq!(sample.mem_request_bytes, Some(2_147_483_648 + 67_108_864));
@@ -200,14 +210,37 @@ fn a_managed_pvc_without_an_instance_label_is_skipped() {
         labels.remove(INSTANCE_KEY);
     }
 
-    assert!(build_resource_samples(&[pvc], &[], &[]).is_empty());
+    assert!(samples_from(&[pvc], &[], &[]).is_empty());
+}
+
+#[test]
+fn an_unlabelled_pvc_is_reported_once_however_many_ticks_pass() {
+    // The condition never self-heals, so re-warning every tick would bury the
+    // log without adding information. Ticking the same PVC repeatedly must
+    // report it exactly once, while a second offender still gets its own line.
+    let mut orphan = labelled_pvc("otter", Some("5Gi"), None);
+    if let Some(labels) = orphan.metadata.labels.as_mut() {
+        labels.remove(INSTANCE_KEY);
+    }
+    let pvcs = [orphan];
+    let mut reported = ReportedUnlabelledPvcs::default();
+
+    // Three ticks against one shared log: the row stays absent every time, but
+    // only the first tick counts as a sighting worth warning about.
+    for _ in 0..3 {
+        assert!(build_resource_samples(&pvcs, &[], &[], &mut reported).is_empty());
+    }
+    assert!(!reported.first_sighting("otter-data"));
+
+    // A different offender is still its own first sighting.
+    assert!(reported.first_sighting("badger-data"));
 }
 
 #[test]
 fn pvc_capacity_falls_back_to_the_spec_request_while_binding() {
     let pvcs = [labelled_pvc("otter", None, Some("5Gi"))];
 
-    let samples = build_resource_samples(&pvcs, &[], &[]);
+    let samples = samples_from(&pvcs, &[], &[]);
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.pvc_bytes, Some(5_368_709_120));
 }

@@ -37,7 +37,7 @@ use kube::Client;
 use kube::api::{Api, ListParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use tracing::{debug, error, warn};
 
 use super::sampler::SamplerCtx;
@@ -76,6 +76,25 @@ pub(crate) struct ResourceSample {
     pub(crate) pvc_bytes: Option<i64>,
 }
 
+/// The unlabelled managed PVCs already reported, so the anomaly is stated once
+/// per name instead of on every tick.
+///
+/// A managed PVC with no instance label never grows one on its own — it takes a
+/// human deleting the volume or relabelling it. Re-warning every tick would
+/// therefore add no information while burying everything else in the log, so the
+/// sampler states it on first sight and stays quiet after. Process-lifetime
+/// state: a restart re-reports, which is what makes the condition visible to
+/// whoever is looking at a fresh log.
+#[derive(Default)]
+pub(crate) struct ReportedUnlabelledPvcs(HashSet<String>);
+
+impl ReportedUnlabelledPvcs {
+    /// True the first time `name` is seen — the caller warns only then.
+    fn first_sighting(&mut self, name: &str) -> bool {
+        self.0.insert(name.to_owned())
+    }
+}
+
 /// Parsed actual usage for one pod, as reported by metrics-server.
 struct PodUsage {
     name: String,
@@ -107,7 +126,10 @@ struct ContainerUsage {
 /// Never fails: without the PVC list there is no universe so the tick is
 /// skipped; a failed pod or metrics listing degrades the affected columns to
 /// null; the insert swallows its own errors.
-pub(crate) async fn run_resource_cycle(ctx: &SamplerCtx<'_>) -> Vec<ResourceSample> {
+pub(crate) async fn run_resource_cycle(
+    ctx: &SamplerCtx<'_>,
+    reported: &mut ReportedUnlabelledPvcs,
+) -> Vec<ResourceSample> {
     let pvcs = match list_managed_pvcs(ctx.client, ctx.namespace).await {
         Ok(pvcs) => pvcs,
         Err(err) => {
@@ -140,7 +162,7 @@ pub(crate) async fn run_resource_cycle(ctx: &SamplerCtx<'_>) -> Vec<ResourceSamp
         }
     };
 
-    let samples = build_resource_samples(&pvcs, &pods, &usage);
+    let samples = build_resource_samples(&pvcs, &pods, &usage, reported);
     // Per-tick, so debug like the occupancy cycle's tick line.
     debug!(
         sampled = samples.len(),
@@ -224,15 +246,20 @@ fn build_resource_samples(
     pvcs: &[PersistentVolumeClaim],
     pods: &[Pod],
     usage: &[PodUsage],
+    reported: &mut ReportedUnlabelledPvcs,
 ) -> Vec<ResourceSample> {
     let mut samples = Vec::new();
     for pvc in pvcs {
         let labels = pvc.metadata.labels.as_ref();
         let Some(instance) = label_value(labels, INSTANCE_KEY) else {
-            warn!(
-                pvc = pvc.metadata.name.as_deref().unwrap_or("(unnamed)"),
-                "resource sampler: managed pvc missing its instance label"
-            );
+            let name = pvc.metadata.name.as_deref().unwrap_or("(unnamed)");
+            if reported.first_sighting(name) {
+                warn!(
+                    pvc = name,
+                    "resource sampler: managed pvc missing its instance label; it is \
+                     excluded from the cost plane until relabelled or deleted"
+                );
+            }
             continue;
         };
         // The pod is found through the label Agones stamps rather than by name,

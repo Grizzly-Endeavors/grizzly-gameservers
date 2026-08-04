@@ -636,6 +636,7 @@ fn spawn_sampler(
         let mut detector = watchdog
             .as_ref()
             .map(|_| watchdog::DetectorState::new(interval));
+        let mut reported_unlabelled = events::ReportedUnlabelledPvcs::default();
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately; skip it so a redeploy doesn't sample
@@ -654,7 +655,7 @@ fn spawn_sampler(
                 events: &handles.events,
             };
             let observations = events::run_occupancy_cycle(&ctx).await;
-            let resources = events::run_resource_cycle(&ctx).await;
+            let resources = events::run_resource_cycle(&ctx, &mut reported_unlabelled).await;
             if let (Some(detector), Some(sender)) = (detector.as_mut(), watchdog.as_ref()) {
                 let fired = detector.tick(std::time::Instant::now(), &observations, &resources);
                 for incident in fired {
