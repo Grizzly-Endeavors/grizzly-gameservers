@@ -589,10 +589,10 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
 
 // ---- game manifest drift guards ----
 //
-// Two values in every `games/<game>/gameserver.yaml` must track a Rust source of
-// truth that no YAML-level check can cross-verify. These read the real manifests
-// off disk and fail CI the moment one drifts (mirroring the egress guards above
-// and the control-port assertion in `agones/tests/instance.rs`):
+// Values in every `games/<game>/gameserver.yaml` that no YAML-level check can
+// cross-verify. These read the real manifests off disk and fail CI the moment one
+// drifts (mirroring the egress guards above and the control-port assertion in
+// `agones/tests/instance.rs`):
 //
 //   * `spec.template.spec.terminationGracePeriodSeconds` — the window the kubelet
 //     grants the pod after SIGTERM before it SIGKILLs. The in-pod supervisor is
@@ -601,10 +601,16 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
 //   * the `control` containerPort — the port the bot dials the supervisor on. Both
 //     sides default it to `grizzly_control_api::CONTROL_PORT`; the manifests
 //     hardcode the same number and can't import the const.
+//   * the pod-hardening baseline — seccomp, privilege escalation, and the capability
+//     set. A pod missing these still runs perfectly, and the gap shows up only when
+//     something in a player-supplied mod goes looking for it, so nothing but a guard
+//     catches a new game onboarded without them. `_template` is checked alongside the
+//     real games precisely because that omission would propagate into every game
+//     copied from it afterwards.
 //
-// Both bounds are checked against the window each game *actually* uses, not the
-// shared default: an image that raises `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` for a
-// slower world-save moves both bounds with it, and that is precisely the case a
+// The grace-period bounds are checked against the window each game *actually* uses,
+// not the shared default: an image that raises `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` for
+// a slower world-save moves both bounds with it, and that is precisely the case a
 // guard written against the bare default cannot see.
 
 use std::time::Duration;
@@ -712,13 +718,45 @@ struct ManifestPodSpec {
     // below rather than serde's generic "missing field" error.
     #[serde(rename = "terminationGracePeriodSeconds")]
     termination_grace_period_seconds: Option<u64>,
+    #[serde(rename = "securityContext")]
+    security_context: Option<ManifestPodSecurityContext>,
     containers: Vec<ManifestContainer>,
 }
 
 #[derive(serde::Deserialize)]
+struct ManifestPodSecurityContext {
+    #[serde(rename = "seccompProfile")]
+    seccomp_profile: Option<ManifestSeccompProfile>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestSeccompProfile {
+    #[serde(rename = "type")]
+    profile_type: String,
+}
+
+#[derive(serde::Deserialize)]
 struct ManifestContainer {
+    name: String,
     #[serde(default)]
     ports: Vec<ManifestPort>,
+    #[serde(rename = "securityContext")]
+    security_context: Option<ManifestContainerSecurityContext>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestContainerSecurityContext {
+    #[serde(rename = "allowPrivilegeEscalation")]
+    allow_privilege_escalation: Option<bool>,
+    capabilities: Option<ManifestCapabilities>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestCapabilities {
+    #[serde(default)]
+    drop: Vec<String>,
+    #[serde(default)]
+    add: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -828,6 +866,108 @@ fn a_pod_reports_production_and_a_dev_box_does_not() {
         Environment::Development,
         "an off-cluster run must never be counted as production traffic"
     );
+}
+
+/// What a game base's root bootstrap actually uses: chown/chmod the mounted data
+/// dir (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`), drop to the game user (`SETUID`,
+/// `SETGID`), and let the supervisor signal that now-unprivileged child as PID 1
+/// (`KILL`). A manifest may add back fewer than these if its base needs fewer; it
+/// may not add back anything outside the set, which is the direction that widens
+/// the blast radius of a compromised mod.
+const BOOTSTRAP_CAPABILITIES: [&str; 6] = [
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "FOWNER",
+    "SETUID",
+    "SETGID",
+    "KILL",
+];
+
+#[test]
+fn game_pods_run_under_the_runtime_seccomp_profile() {
+    // Kubernetes does not apply a seccomp profile unless one is named — an absent
+    // securityContext means Unconfined, not "the Docker default". That is the single
+    // biggest barrier between a kernel exploit in mod code and the node, and its
+    // absence is invisible until it matters.
+    for (game, manifest) in load_game_manifests() {
+        let profile = manifest
+            .spec
+            .template
+            .spec
+            .security_context
+            .as_ref()
+            .and_then(|context| context.seccomp_profile.as_ref())
+            .map(|profile| profile.profile_type.as_str());
+        assert_eq!(
+            profile,
+            Some("RuntimeDefault"),
+            "games/{game}/gameserver.yaml does not set \
+             spec.template.spec.securityContext.seccompProfile.type=RuntimeDefault, \
+             so every container in the pod runs seccomp-unconfined while executing \
+             player-supplied mods"
+        );
+    }
+}
+
+#[test]
+fn game_containers_refuse_privilege_escalation() {
+    // The bases bootstrap as root and drop privileges with gosu/su-exec, which
+    // no_new_privs permits — it blocks only the *gaining* of privilege. So this
+    // costs the bootstrap nothing and there is no game that may opt out.
+    for (game, manifest) in load_game_manifests() {
+        for container in &manifest.spec.template.spec.containers {
+            let allowed = container
+                .security_context
+                .as_ref()
+                .and_then(|context| context.allow_privilege_escalation);
+            assert_eq!(
+                allowed,
+                Some(false),
+                "games/{game}/gameserver.yaml container {} does not set \
+                 securityContext.allowPrivilegeEscalation=false",
+                container.name
+            );
+        }
+    }
+}
+
+#[test]
+fn game_containers_drop_every_capability_the_bootstrap_does_not_use() {
+    for (game, manifest) in load_game_manifests() {
+        for container in &manifest.spec.template.spec.containers {
+            let name = &container.name;
+            let Some(capabilities) = container
+                .security_context
+                .as_ref()
+                .and_then(|context| context.capabilities.as_ref())
+            else {
+                panic!(
+                    "games/{game}/gameserver.yaml container {name} declares no \
+                     securityContext.capabilities, so it runs with the container \
+                     runtime's full default set"
+                );
+            };
+            assert_eq!(
+                capabilities.drop,
+                ["ALL"],
+                "games/{game}/gameserver.yaml container {name} must drop ALL capabilities \
+                 and add back only what its root bootstrap uses"
+            );
+            let unexpected: Vec<&str> = capabilities
+                .add
+                .iter()
+                .map(String::as_str)
+                .filter(|capability| !BOOTSTRAP_CAPABILITIES.contains(capability))
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "games/{game}/gameserver.yaml container {name} adds back {unexpected:?}, \
+                 which the root bootstrap (chown the data dir, become the game user, \
+                 signal the child) does not need; anything beyond \
+                 {BOOTSTRAP_CAPABILITIES:?} widens what a compromised mod can reach"
+            );
+        }
+    }
 }
 
 #[test]
