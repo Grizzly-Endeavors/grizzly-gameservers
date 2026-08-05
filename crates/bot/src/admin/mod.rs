@@ -14,7 +14,7 @@
 //! third-party server binary. The panel trusts request headers to say who is
 //! asking, so it must sit where only the ingress controller can reach it. Two
 //! ports let one `CiliumNetworkPolicy` say exactly that. See
-//! [ADR-025](../../docs/decisions/025-super-admin-panel.md), and note this is a
+//! [ADR-026](../../docs/decisions/026-super-admin-panel.md), and note this is a
 //! considered departure from ADR-011's "these routes stay ClusterIP-only".
 //!
 //! The listener does not bind at all unless `GAMESERVERS_ADMIN_PORT` is set —

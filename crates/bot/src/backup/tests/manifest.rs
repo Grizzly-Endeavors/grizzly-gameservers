@@ -1,12 +1,44 @@
 use super::*;
 
 #[test]
-fn backup_keys_pair_tarball_and_manifest_under_the_instance_prefix() {
-    let keys = backup_keys("nether", "20260707T143000Z");
-    assert_eq!(keys.tarball, "backups/nether/20260707T143000Z.tar.zst");
+fn backup_keys_nest_under_guild_and_instance() {
+    let keys = backup_keys("998877", "nether", "20260707T143000Z");
+    assert_eq!(
+        keys.tarball,
+        "backups/998877/nether/20260707T143000Z.tar.zst"
+    );
     assert_eq!(
         keys.manifest,
-        "backups/nether/20260707T143000Z.manifest.json"
+        "backups/998877/nether/20260707T143000Z.manifest.json"
+    );
+}
+
+#[test]
+fn two_guilds_reusing_one_instance_name_get_separate_prefixes() {
+    // The whole point of the layout: `/destroy` frees a friend-chosen name for the
+    // next guild to claim, and the previous owner's backups outlive the instance.
+    assert_ne!(backup_prefix("111", "smp"), backup_prefix("222", "smp"));
+}
+
+#[test]
+fn an_absent_guild_takes_the_reserved_segment_rather_than_collapsing() {
+    // An empty segment would render `backups//smp/`, which S3 normalises back into
+    // the shared namespace this layout exists to avoid.
+    assert_eq!(
+        backup_prefix("", "smp"),
+        format!("backups/{UNSCOPED_GUILD_SEGMENT}/smp/")
+    );
+    assert_eq!(
+        archive_prefix("", "smp"),
+        format!("archives/{UNSCOPED_GUILD_SEGMENT}/smp/")
+    );
+}
+
+#[test]
+fn the_reserved_segment_cannot_collide_with_a_discord_guild_id() {
+    assert!(
+        !UNSCOPED_GUILD_SEGMENT.chars().all(|c| c.is_ascii_digit()),
+        "a snowflake is all digits, so the reserved segment must not be"
     );
 }
 

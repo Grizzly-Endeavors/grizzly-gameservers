@@ -1,7 +1,7 @@
 # Who may open a connection *to* the bot.
 #
 # This is the policy that makes the super-admin panel's security model sound.
-# The panel (ADR-025) learns who is asking from `X-authentik-*` request headers.
+# The panel (ADR-026) learns who is asking from `X-authentik-*` request headers.
 # ingress-nginx overwrites those headers on every request it forwards, so they
 # cannot be forged through the front door — but anything already inside the
 # cluster could otherwise open a connection straight to the panel's port and

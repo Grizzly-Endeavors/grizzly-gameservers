@@ -2,7 +2,7 @@
 
 **<https://gameservers-admin.grizzly-endeavors.com>**
 
-The operator's view of the whole service: what it's running, who it's serving, and every knob that used to need a redeploy. Separate from Discord's admin tier — a guild admin runs their own Discord server, this reaches the settings that bound every guild at once. The "why" is [ADR-025](../decisions/025-super-admin-panel.md); the settings model underneath is [ADR-024](../decisions/024-runtime-settings.md).
+The operator's view of the whole service: what it's running, who it's serving, and every knob that used to need a redeploy. Separate from Discord's admin tier — a guild admin runs their own Discord server, this reaches the settings that bound every guild at once. The "why" is [ADR-026](../decisions/026-super-admin-panel.md); the settings model underneath is [ADR-024](../decisions/024-runtime-settings.md).
 
 ## Getting in
 

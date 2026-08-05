@@ -1,4 +1,4 @@
-# ADR-025 — A super-admin panel, on its own port behind Authentik
+# ADR-026 — A super-admin panel, on its own port behind Authentik
 
 **Status:** Accepted (2026-08-05)
 

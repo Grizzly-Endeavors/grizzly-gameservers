@@ -264,6 +264,7 @@ async fn finish_create(
         }
         Ok(
             refused @ (ProvisionOutcome::AlreadyExists
+            | ProvisionOutcome::NameUnavailable
             | ProvisionOutcome::PortsExhausted
             | ProvisionOutcome::GuildLimitReached(_)),
         ) => {
@@ -299,6 +300,7 @@ fn provision_to_create(outcome: ProvisionOutcome) -> CreateOutcome {
             ready: false,
         },
         ProvisionOutcome::AlreadyExists => CreateOutcome::AlreadyExists,
+        ProvisionOutcome::NameUnavailable => CreateOutcome::NameUnavailable,
         ProvisionOutcome::PortsExhausted => CreateOutcome::PortsExhausted,
         ProvisionOutcome::GuildLimitReached(refusal) => CreateOutcome::GuildLimitReached(refusal),
     }
@@ -316,6 +318,7 @@ async fn record_provision(
         Ok(ProvisionOutcome::Provisioned { .. }) => {}
         Ok(
             rejected @ (ProvisionOutcome::AlreadyExists
+            | ProvisionOutcome::NameUnavailable
             | ProvisionOutcome::PortsExhausted
             | ProvisionOutcome::GuildLimitReached(_)),
         ) => {
@@ -1707,7 +1710,7 @@ pub(crate) async fn backups(
             "Looking them up…",
         )))
         .await?;
-    match service.list_backups(&server).await {
+    match service.list_backups(&backup_ctx(data), &server).await {
         Ok(list) => {
             reply
                 .edit(ctx, cleared(backups_list_embed(&server, &list)))
@@ -1857,7 +1860,7 @@ pub(crate) async fn restore(
                 .ephemeral(true),
         )
         .await?;
-    let backups = match service.list_backups(&server).await {
+    let backups = match service.list_backups(&backup_ctx(data), &server).await {
         Ok(backups) => backups,
         Err(err) => {
             error!(error = ?err, server = %server, "failed to list backups for restore");

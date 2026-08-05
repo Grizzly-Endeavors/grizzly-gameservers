@@ -1,5 +1,5 @@
 {{- if and .Values.bot.enabled .Values.bot.adminPanel.enabled -}}
-# The super-admin panel's public route (ADR-025).
+# The super-admin panel's public route (ADR-026).
 #
 # Four objects, the pattern grizzly-platform's metabase/roundcube/grizzly-invite
 # gates use: a gated Ingress, an ungated one for the sign-in endpoints, an

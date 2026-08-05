@@ -121,6 +121,17 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_NEUTRAL,
             body: format!("A server named **{server}** already exists."),
         },
+        // Deliberately says nothing about who holds it or that anything is running
+        // there: server names are shared across every Discord server on the
+        // platform, and confirming a guess would leak another guild's server list
+        // one name at a time.
+        CreateOutcome::NameUnavailable => EmbedSpec {
+            title: "Name unavailable".to_owned(),
+            colour: COLOUR_NEUTRAL,
+            body: format!(
+                "**{server}** isn't available as a name. Pick a different one and try again."
+            ),
+        },
         CreateOutcome::PortsExhausted => EmbedSpec {
             title: "No slots free".to_owned(),
             colour: COLOUR_ERROR,

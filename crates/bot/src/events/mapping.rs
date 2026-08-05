@@ -213,6 +213,7 @@ pub(crate) fn provision(outcome: &ProvisionOutcome) -> &'static str {
     match outcome {
         ProvisionOutcome::Provisioned { .. } => "provisioned",
         ProvisionOutcome::AlreadyExists => "name_taken",
+        ProvisionOutcome::NameUnavailable => "name_held_by_another_guild",
         ProvisionOutcome::PortsExhausted => "ports_exhausted",
         ProvisionOutcome::GuildLimitReached(refusal) => limit_refusal(*refusal),
     }
