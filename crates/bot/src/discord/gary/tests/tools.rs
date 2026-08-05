@@ -879,14 +879,28 @@ fn every_resize_outcome_says_whether_the_change_is_live_yet() {
 #[test]
 fn a_rejected_sizing_names_the_figure_and_its_bound() {
     // "invalid resources" gives the model nothing to propose instead.
-    let below = describe_rejection(SizingRejection::MemoryBelowFloor);
+    let bounds = SizingBounds::default();
+    let below = describe_rejection(SizingRejection::MemoryBelowFloor, bounds);
     assert!(below.contains("memory") && below.contains("least"));
 
-    let above = describe_rejection(SizingRejection::CpuAboveCeiling);
+    let above = describe_rejection(SizingRejection::CpuAboveCeiling, bounds);
     assert!(above.contains("CPU") && above.contains("most"));
 
-    let inverted = describe_rejection(SizingRejection::CpuRequestExceedsLimit);
+    let inverted = describe_rejection(SizingRejection::CpuRequestExceedsLimit, bounds);
     assert!(inverted.contains("CPU") && inverted.contains("maximum"));
+}
+
+/// The message has to quote the bound that actually refused the value, not the
+/// compiled default — an operator who tightened the ceiling would otherwise have
+/// Gary tell a friend to try a number that is still out of range.
+#[test]
+fn a_rejection_quotes_the_bound_in_force_rather_than_the_default() {
+    let tightened = SizingBounds {
+        max_cpu_millicores: 4_000,
+        ..SizingBounds::default()
+    };
+    let above = describe_rejection(SizingRejection::CpuAboveCeiling, tightened);
+    assert!(above.contains("4000m"), "{above}");
 }
 
 #[test]

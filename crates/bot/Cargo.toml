@@ -11,6 +11,12 @@ grizzly-prompt-lib = { path = "../prompt-lib", version = "0.1.0", features = ["c
 
 [dependencies]
 anyhow = "1.0.103"
+# Holds the operator-tunable settings snapshot (crate::settings). Reads are on
+# per-event hot paths that are already synchronous — guild admission, a turn's
+# config capture — and vastly outnumber writes, which only happen when the
+# operator changes a knob. The whole snapshot is swapped as one Arc, which is
+# what makes a reader unable to observe half of a multi-field change.
+arc-swap = "1.9.2"
 # Encodes the Langfuse key pair into the OTLP exporter's HTTP Basic header.
 base64 = "0.22.1"
 dotenvy = "0.15.7"

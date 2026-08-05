@@ -17,6 +17,7 @@
 //! capped at the generous baseline.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use sqlx::postgres::PgPool;
@@ -24,6 +25,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use crate::config::{DbConfig, GuildLimitDefaults};
+use crate::settings::RuntimeSettings;
 use crate::sizing::Sizing;
 use crate::store::connect_pool;
 
@@ -303,22 +305,25 @@ impl LimitsStore {
 pub(crate) struct GuildLimits {
     store: Option<LimitsStore>,
     cache: RwLock<HashMap<String, GuildLimitOverrides>>,
-    defaults: GuildLimitDefaults,
+    /// The global defaults, read live rather than copied: they are an operator
+    /// setting, and a cached copy is how "raise everyone's cap" would silently
+    /// need a restart.
+    settings: Arc<RuntimeSettings>,
 }
 
 impl GuildLimits {
     /// Connect to Postgres (if configured), load every override, and return the
     /// façade. Never fails: any problem is logged and leaves the façade
     /// disabled, in which case every guild is capped at the global defaults.
-    pub(crate) async fn connect(config: Option<&DbConfig>, defaults: GuildLimitDefaults) -> Self {
+    pub(crate) async fn connect(config: Option<&DbConfig>, settings: Arc<RuntimeSettings>) -> Self {
         let Some(config) = config else {
-            return Self::disabled(defaults);
+            return Self::disabled(settings);
         };
         let store = match LimitsStore::connect(config).await {
             Ok(store) => store,
             Err(err) => {
                 error!(error = ?err, "postgres unavailable; per-guild cap overrides disabled");
-                return Self::disabled(defaults);
+                return Self::disabled(settings);
             }
         };
         match store.load_all().await {
@@ -330,22 +335,27 @@ impl GuildLimits {
                 Self {
                     store: Some(store),
                     cache: RwLock::new(cache),
-                    defaults,
+                    settings,
                 }
             }
             Err(err) => {
                 error!(error = ?err, "failed to load guild limits; overrides disabled");
-                Self::disabled(defaults)
+                Self::disabled(settings)
             }
         }
     }
 
-    fn disabled(defaults: GuildLimitDefaults) -> Self {
+    fn disabled(settings: Arc<RuntimeSettings>) -> Self {
         Self {
             store: None,
             cache: RwLock::new(HashMap::new()),
-            defaults,
+            settings,
         }
+    }
+
+    /// The global defaults every guild starts from, before its own overrides.
+    pub(crate) fn defaults(&self) -> GuildLimitDefaults {
+        self.settings.snapshot().guild_limits
     }
 
     /// Whether overrides can be recorded. `false` means an adjustment must be
@@ -361,7 +371,7 @@ impl GuildLimits {
 
     /// This guild's effective caps: overrides merged onto the global defaults.
     pub(crate) async fn caps_for(&self, guild: &str) -> GuildCaps {
-        effective_caps(self.overrides_for(guild).await, self.defaults)
+        effective_caps(self.overrides_for(guild).await, self.defaults())
     }
 
     /// Record a single-column adjustment, replacing any earlier value.

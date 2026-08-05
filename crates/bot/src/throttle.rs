@@ -65,7 +65,7 @@ impl TurnSubject {
 }
 
 /// How many turns a subject may start, and how fast the allowance returns.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ThrottlePolicy {
     pub(crate) burst: u32,
     pub(crate) refill_interval: Duration,
@@ -149,6 +149,11 @@ impl TurnThrottle {
         }
     }
 
+    /// The policy in force right now.
+    pub(crate) fn policy(&self) -> ThrottlePolicy {
+        self.policy
+    }
+
     /// Spend one of `subject`'s turns, or refuse.
     ///
     /// Call this at the door — before spawning a task or touching a transcript —
@@ -157,24 +162,27 @@ impl TurnThrottle {
     /// and then stay quiet.
     pub(crate) async fn claim(&self, subject: &TurnSubject) -> Result<(), TurnRefusal> {
         let now = Instant::now();
+        // Copied once at the door so every decision in this call is made against
+        // one policy, even if the operator retunes it mid-claim.
+        let policy = self.policy();
         let mut buckets = self.buckets.lock().await;
         if buckets.len() >= SWEEP_THRESHOLD {
-            sweep_idle(&mut buckets, self.policy, now);
+            sweep_idle(&mut buckets, policy, now);
         }
         let bucket = buckets.entry(subject.clone()).or_insert(Bucket {
-            tokens: f64::from(self.policy.burst),
+            tokens: f64::from(policy.burst),
             updated: now,
             notified: false,
         });
         bucket.tokens = refilled(
             bucket.tokens,
-            self.policy.burst,
-            self.policy.refill_interval,
+            policy.burst,
+            policy.refill_interval,
             now.saturating_duration_since(bucket.updated),
         );
         bucket.updated = now;
         if bucket.tokens < 1.0 {
-            let wait = retry_after(bucket.tokens, self.policy.refill_interval);
+            let wait = retry_after(bucket.tokens, policy.refill_interval);
             let first = !bucket.notified;
             bucket.notified = true;
             if first {
@@ -205,7 +213,7 @@ impl TurnThrottle {
             Err(err) => {
                 warn!(
                     error = ?err,
-                    max_concurrent = self.policy.max_concurrent,
+                    max_concurrent = self.policy().max_concurrent,
                     "refused a gary turn: every concurrency permit is in use"
                 );
                 Err(TurnRefusal::Busy)
