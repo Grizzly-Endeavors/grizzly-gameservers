@@ -41,11 +41,18 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: valheim
-    # Pod hardening deferred, matching the other game pods (supervisor as PID 1,
-    # root at startup). NOT in the bot deploy path; rootless hardening is tracked
-    # with game-image CI signing and the Agones carve-out (ADR-003).
+    # runAsNonRoot / readOnlyRootFilesystem are the only two hardening controls this
+    # pod leaves unset, matching the other game pods (supervisor as PID 1, base
+    # bootstraps as root). The rest of the baseline is applied below; see
+    # games/_template/gameserver.yaml.
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
+      # The runtime's own seccomp filter. Kubernetes leaves this Unconfined unless
+      # set; see games/_template/gameserver.yaml.
+      # nosemgrep: yaml.kubernetes.security.run-as-non-root-security-context-pod-level
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # SIGKILL grace after SIGTERM. Must stay ≥ this game's graceful save window
       # so the world-save finishes; see games/_template/gameserver.yaml. Valheim's
       # save runs long enough that its image raises that window to 120s
@@ -55,7 +62,7 @@ spec:
       # no margin at all.
       terminationGracePeriodSeconds: 150
       containers:
-        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        # nosemgrep: yaml.kubernetes.security.writable-filesystem-container
         - name: valheim
           # Composite image: grizzly supervisor (PID 1) wrapping lloesche's server.
           # CI replaces the tag with the gate-signed digest (ADR-020).
@@ -64,6 +71,15 @@ spec:
           # under the default IfNotPresent. Always re-pull so a fresh push lands.
           # Superseded once CI pins a gate-signed digest (digests are immutable).
           imagePullPolicy: Always
+          securityContext:
+            # The base's privilege drop still works — no_new_privs blocks only the
+            # *gaining* of privilege. The capability set is the root bootstrap's
+            # working set: chown the data dir, become the game user, signal the child
+            # as PID 1. See games/_template/gameserver.yaml.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "KILL"]
           ports:
             - name: valheim
               containerPort: 2456

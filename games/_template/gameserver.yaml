@@ -1,10 +1,12 @@
 # Skeleton for a new game. Copy this directory to games/<game>/ and replace the
-# REPLACE_* placeholders. The pod defers the *rootless* hardening baseline
-# (runAsNonRoot / readOnlyRootFilesystem) by default, matching all 6 current
-# games: their upstream bases bootstrap as root (chown the data dir, then drop
-# privileges) — see the pod-hardening comment below the labels. A documented
-# nosemgrep block keeps the manifest gate-clean. If your game's base genuinely
-# runs rootless, restore the full baseline (this directory's README documents it).
+# REPLACE_* placeholders. The pod is hardened except for the two *rootless*
+# controls (runAsNonRoot / readOnlyRootFilesystem), matching all 6 current games:
+# their upstream bases bootstrap as root (chown the data dir, then drop
+# privileges) — see the pod-hardening comment below the labels. Seccomp, no
+# privilege escalation and a minimal capability set are applied and are not
+# optional; a documented nosemgrep block covers the two that are unset. If your
+# game's base genuinely runs rootless, restore the full baseline (this
+# directory's README documents it).
 #
 # The image bakes in the grizzly supervisor as its entrypoint (Dockerfile in
 # this directory): it launches the game as a child, owns the Agones SDK
@@ -38,24 +40,35 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: REPLACE_GAME
-    # Pod hardening (runAsNonRoot / readOnlyRootFilesystem / allowPrivilegeEscalation)
-    # is deferred by default — that's what all 6 current games do, because the common
-    # self-hosted-game bases (itzg, factoriotools, palworld/wolveix, lloesche, ryshe,
-    # and similar) bootstrap as root: they chown the mounted data dir to a configurable
-    # PUID/PGID, then drop privileges (gosu/su-exec) before launching the game. A forced
-    # non-root user or read-only root filesystem breaks that bootstrap. This pod is NOT
-    # in the bot deploy path; rootless hardening is tracked alongside game-image CI
-    # signing and the Agones carve-out (ADR-003). The three nosemgrep lines below keep
-    # the manifest gate-clean while the baseline is deferred.
+    # Two hardening controls are unset here, and only two: runAsNonRoot and
+    # readOnlyRootFilesystem. The common self-hosted-game bases (itzg, factoriotools,
+    # thijsvanloef, wolveix, lloesche, ryshe, and similar) bootstrap as root — they
+    # chown the mounted data dir to a configurable PUID/PGID, then drop privileges
+    # (gosu/su-exec) before launching the game — and both controls break that
+    # bootstrap. Nothing else is waived: seccomp is applied at the pod level below,
+    # and the container drops every capability the bootstrap doesn't use. This is the
+    # one pod that executes mods, plugins and datapacks chosen by people we don't
+    # vet, so the gap between "runs as root" and "runs unconfined" is worth closing
+    # even while the root bootstrap stands. Three nosemgrep lines cover the two unset
+    # controls — runAsNonRoot trips a rule at the pod level and another at the
+    # container level, readOnlyRootFilesystem one more.
     #
-    # If your game's base genuinely runs rootless (no root chown on startup), it's one
-    # of the exceptions: DELETE the three nosemgrep lines and restore the full hardening
-    # baseline (documented in this directory's README) — a pod securityContext
-    # (runAsNonRoot/runAsUser/runAsGroup/fsGroup/seccompProfile), a container
-    # securityContext (allowPrivilegeEscalation: false, readOnlyRootFilesystem: true,
-    # capabilities drop [ALL]), and a writable /tmp emptyDir mount.
+    # If your game's base genuinely runs rootless (no root chown on startup), it is
+    # the exception: DELETE all three nosemgrep lines, add runAsNonRoot/runAsUser/
+    # runAsGroup/fsGroup to the pod securityContext, set readOnlyRootFilesystem: true
+    # with a writable /tmp emptyDir, and drop the capability add-back list — this
+    # directory's README documents that full rootless baseline.
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
+      # RuntimeDefault is the container runtime's own seccomp filter — the same one
+      # each of these images already runs under in plain Docker, and the biggest
+      # single barrier between a kernel exploit in mod code and the node. Kubernetes
+      # does not apply it by default: an unset seccompProfile means Unconfined, so
+      # this has to be stated to be true.
+      # nosemgrep: yaml.kubernetes.security.run-as-non-root-security-context-pod-level
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # The kubelet SIGKILLs the pod this long after SIGTERM. Must stay ≥ this
       # game's graceful save window: the supervisor is PID 1 and catches SIGTERM to
       # save the world within that window, so a shorter grace period truncates the
@@ -67,12 +80,25 @@ spec:
       # and the bot's control-client timeout clear of it.
       terminationGracePeriodSeconds: 120
       containers:
-        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        # nosemgrep: yaml.kubernetes.security.writable-filesystem-container
         - name: REPLACE_GAME
           # REPLACE_IMAGE: the composite image from this directory's Dockerfile
           # (grizzly supervisor as PID 1, wrapping the game as its child). CI
           # replaces the tag with the gate-signed digest (ADR-020).
           image: REPLACE_IMAGE          # pin a tag/digest — no floating :latest
+          securityContext:
+            # A root bootstrap that drops privileges is unaffected by this:
+            # no_new_privs blocks *gaining* privilege, and gosu/su-exec only shed it.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # Exactly what the root bootstrap uses and nothing more: chown/chmod the
+              # mounted data dir (CHOWN, DAC_OVERRIDE, FOWNER), become the game user
+              # (SETUID, SETGID), and signal that now-unprivileged child as PID 1
+              # (KILL — root stripped of this capability cannot signal another uid).
+              # The rest of Docker's default set is gone, NET_BIND_SERVICE included:
+              # no game here listens on a privileged port.
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "KILL"]
           # REPLACE with the game's config env. If this game enables the in-game
           # chat → Gary reverse loop (SUPERVISOR_CHAT_FORMAT in the Dockerfile),
           # also wire these three, matching games/minecraft/gameserver.yaml:
@@ -109,10 +135,9 @@ spec:
             - name: control
               containerPort: 9359
               protocol: TCP
-          # Container hardening (securityContext) is deferred here too — see the
-          # pod-hardening comment above the pod spec for why, and for what to restore
-          # if your game's base runs rootless. The nosemgrep on the container line
-          # above keeps writable-filesystem / privilege-escalation gate-clean.
+          # readOnlyRootFilesystem is the one container control left unset — the base
+          # writes outside the data volume during its root bootstrap. The nosemgrep on
+          # the container line above covers exactly that.
           volumeMounts:
             - name: data
               mountPath: /data          # REPLACE with the game's data dir

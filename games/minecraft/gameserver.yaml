@@ -43,20 +43,24 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: minecraft
-    # Pod hardening (runAsNonRoot / readOnlyRootFilesystem / allowPrivilegeEscalation)
-    # is deliberately deferred for the game pod: the composite image runs the
-    # supervisor as PID 1 wrapping itzg/minecraft-server, which bootstraps as root
-    # (chowns /data, writes outside the world volume) and would break under a
-    # read-only root or forced non-root user without live validation. This pod is
-    # NOT in the bot deploy path; rootless hardening is tracked alongside game-image
-    # CI signing and the Agones carve-out (ADR-003).
+    # runAsNonRoot / readOnlyRootFilesystem are the only two hardening controls this
+    # pod leaves unset: the composite image runs the supervisor as PID 1 wrapping
+    # itzg/minecraft-server, which bootstraps as root (chowns /data, writes outside
+    # the world volume) and breaks under either. The rest of the baseline is applied
+    # below; see games/_template/gameserver.yaml for the reasoning.
     # nosemgrep: yaml.kubernetes.security.run-as-non-root
     spec:
+      # The runtime's own seccomp filter. Kubernetes leaves this Unconfined unless
+      # set; see games/_template/gameserver.yaml.
+      # nosemgrep: yaml.kubernetes.security.run-as-non-root-security-context-pod-level
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       # SIGKILL grace after SIGTERM. Must stay ≥ this game's graceful save window
       # so the world-save finishes; see games/_template/gameserver.yaml.
       terminationGracePeriodSeconds: 120
       containers:
-        # nosemgrep: yaml.kubernetes.security.allow-privilege-escalation-no-securitycontext, yaml.kubernetes.security.writable-filesystem-container
+        # nosemgrep: yaml.kubernetes.security.writable-filesystem-container
         - name: minecraft
           # Composite image: grizzly supervisor (PID 1) wrapping itzg's server.
           # CI replaces the tag with the gate-signed digest (ADR-020).
@@ -65,6 +69,15 @@ spec:
           # under the default IfNotPresent. Always re-pull so a fresh push lands.
           # Superseded once CI pins a gate-signed digest (digests are immutable).
           imagePullPolicy: Always
+          securityContext:
+            # itzg's su-exec drop still works — no_new_privs blocks only the *gaining*
+            # of privilege. The capability set is the root bootstrap's working set:
+            # chown /data, become the game user, signal the child as PID 1. See
+            # games/_template/gameserver.yaml.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "KILL"]
           env:
             # Required on every call the bot makes to this pod's control API.
             # Defence in depth behind the egress leash: optional, so an
