@@ -75,6 +75,16 @@ impl GatewayHandle {
     }
 }
 
+/// Whether the operator has admitted `guild`. An empty allowlist admits every
+/// guild — the posture before the list existed, kept so an un-configured deploy
+/// serves the guilds already relying on it rather than going dark.
+///
+/// Applied to command registration and to every agent surface, because a guild
+/// that isn't served must not be able to spend model turns either.
+pub(crate) fn guild_is_admitted(data: &Data, guild: u64) -> bool {
+    data.guild_allowlist.is_empty() || data.guild_allowlist.contains(&guild)
+}
+
 /// Per-command state shared with every poise command handler. `Clone` is cheap
 /// (handles are `Arc`/client clones) so an event handler can hand an owned copy
 /// to a spawned, drainable Gary session (see `crate::run`'s task tracker).
@@ -98,6 +108,9 @@ pub(crate) struct Data {
     /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
     /// every guild and carrying the all-guilds visibility scope.
     pub(crate) operator_ids: Arc<[u64]>,
+    /// Guilds the operator has admitted. Empty serves every guild — see
+    /// [`BotConfig::guild_allowlist`](crate::config::BotConfig::guild_allowlist).
+    pub(crate) guild_allowlist: Arc<[u64]>,
     /// Per-guild admin config (admin roles/users) set at runtime via `/config`,
     /// backed by Postgres. Empty per guild when persistence is down — auth then
     /// falls back to operators + guild owner (fail-closed).
@@ -127,6 +140,11 @@ pub(crate) struct Data {
     /// S3-backed backups/archive/restore, or `None` when S3 isn't configured (the
     /// backup commands then report "not configured", same shape as Gary/home).
     pub(crate) backup: MaybeBackups,
+    /// Admission control for model-driven turns: a per-subject rate bucket and a
+    /// global concurrency bound. Every surface that can start a paid turn — a
+    /// Discord mention, a home-channel message, an in-game `@Gary` — passes
+    /// through it, because each is reachable by someone the operator never vetted.
+    pub(crate) turn_throttle: std::sync::Arc<crate::throttle::TurnThrottle>,
     /// Tracks spawned Gary sessions so the shutdown drain can await an in-flight
     /// turn (e.g. between a mutating tool call and its follow-up) before exit.
     pub(crate) tasks: TaskTracker,

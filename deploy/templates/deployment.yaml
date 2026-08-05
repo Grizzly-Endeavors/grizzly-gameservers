@@ -67,6 +67,18 @@ spec:
                 secretKeyRef:
                   name: discord-bot
                   key: admin_user_ids
+            # Guilds the operator has admitted. A Secret rather than a value
+            # because guild ids are Discord identifiers, which stay out of git for
+            # the same reason the operator ids do. Optional, and an absent or
+            # empty list serves every guild — the posture before the allowlist
+            # existed — so a sync failure can't lock out the guilds already using
+            # the bot. Populate it to make "onboarding is gated" true in code.
+            - name: GAMESERVERS_GUILD_ALLOWLIST
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot
+                  key: guild_allowlist
+                  optional: true
             # Ops agent (Gary). The key is synced from 1Password into the ollama-api
             # Secret; marked optional so a missing key leaves Gary disabled (the
             # binary's documented behaviour) rather than crash-looping the pod.
@@ -238,6 +250,20 @@ spec:
           # Service/rollout; liveness recovers a wedged process (the bot's real work
           # is outbound to Discord, so a hung gateway won't surface here — but a
           # deadlocked process stops answering and gets restarted).
+          # Startup is gated separately from liveness because the bot opens its
+          # Postgres pools before it binds /health, and sqlx retries a refused
+          # connection until its own 30s deadline — so an unreachable database
+          # delays the listener by minutes. Under the liveness probe alone that
+          # reads as a wedged process and CrashLoopBackOffs the bot, turning
+          # "degrades gracefully without Postgres" into an outage. A startup
+          # probe gives the boot up to 5 minutes; liveness only arms after it
+          # passes, so a genuine deadlock is still caught just as fast.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: agent
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet:
               path: /health

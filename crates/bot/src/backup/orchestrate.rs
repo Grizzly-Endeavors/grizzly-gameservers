@@ -35,6 +35,12 @@ use crate::events::{Attribution, EventKind, ProductEvent, mapping};
 /// overwrites a world, so an overwrite is always undoable.
 const CREATED_BY_PRE_RESTORE: &str = "auto-pre-restore";
 
+/// How long to wait for a supervisor or S3 to accept a connection.
+const BACKUP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a transfer may stall between chunks before it counts as wedged.
+/// Generous: a big world pauses while the game flushes it to disk.
+const BACKUP_READ_TIMEOUT: Duration = Duration::from_mins(5);
+
 /// A streaming `GET /archive` against a supervisor, or why it couldn't be opened.
 enum ArchiveSource {
     Ready(reqwest::Response),
@@ -70,9 +76,17 @@ impl BackupService {
         interval: Duration,
         events: std::sync::Arc<crate::events::EventLog>,
     ) -> Result<Self> {
-        // No global timeout: a multi-gigabyte world can stream for minutes. The
-        // per-op work is bounded by the supervisor and S3 responding, not a clock.
+        // No *total* timeout: a multi-gigabyte world legitimately streams for
+        // minutes. A read timeout instead, which resets on every chunk — so a
+        // healthy slow transfer runs as long as it needs while a peer that
+        // accepts the connection and then stops answering (a wedged JVM, a
+        // blackholed node) fails instead of hanging. That distinction matters
+        // because `run_backup_cycle` walks servers serially inside the tick loop:
+        // one socket waiting forever silently stops backups for every guild, and
+        // the last thing logged is that the cycle started.
         let stream_http = reqwest::Client::builder()
+            .connect_timeout(BACKUP_CONNECT_TIMEOUT)
+            .read_timeout(BACKUP_READ_TIMEOUT)
             .build()
             .map_err(|err| anyhow::anyhow!("failed to build the backup http client: {err}"))?;
         let s3 = S3Store::new(s3_config, stream_http.clone())?;

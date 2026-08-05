@@ -49,6 +49,26 @@ pub(crate) struct HttpDeps {
     pub(crate) operator_token: Option<String>,
 }
 
+impl HttpDeps {
+    /// Carve the endpoint's dependencies out of the command `Data`, taking the
+    /// two bearer tokens by value — this is their only consumer, and a credential
+    /// copied is a credential that can be logged somewhere else.
+    pub(crate) fn from_data(
+        data: &crate::discord::Data,
+        port: u16,
+        ingame_token: Option<String>,
+        operator_token: Option<String>,
+    ) -> Self {
+        Self {
+            ingame: IngameDeps::from_data(data),
+            operator: operator::OperatorDeps::from_data(data),
+            port,
+            ingame_token,
+            operator_token,
+        }
+    }
+}
+
 /// The expected bearer token for one router. `None` means that router runs open.
 #[derive(Clone)]
 pub(crate) struct BearerGate {
@@ -144,6 +164,14 @@ pub(crate) async fn require_token(
     if authorized(gate.expected.as_deref(), request.headers()) {
         next.run(request).await
     } else {
+        // Logged at warn, mirroring the supervisor's gate: these routes carry the
+        // operator harness (any tool, admin tier) and the in-game trigger, and a
+        // rejection here is either a half-rolled deploy or something in the
+        // cluster probing. A silent 401 would leave a brute-force no trace at all.
+        warn!(
+            path = %request.uri().path(),
+            "rejected an unauthenticated request to the agent endpoint"
+        );
         StatusCode::UNAUTHORIZED.into_response()
     }
 }

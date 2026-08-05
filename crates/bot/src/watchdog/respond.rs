@@ -248,6 +248,20 @@ async fn resolve_channel(
 
 /// Run the incident as a one-shot manager-tier Gary turn — the deferred-batch
 /// shape — and record how it went.
+/// The tenant an incident's turn is confined to. An instance carrying no owning
+/// guild label gets no turn at all: scoping it `All` would hand an unattended
+/// manager-tier turn the cross-guild operator view over one missing label.
+fn incident_scope(incident: &Incident) -> Option<ServerScope> {
+    let Some(guild) = incident.guild.as_ref() else {
+        warn!(
+            instance = %incident.instance,
+            "watchdog: incident on an instance with no owning guild; not responding"
+        );
+        return None;
+    };
+    Some(ServerScope::Guild(guild.as_str().to_owned()))
+}
+
 async fn run_incident_turn(
     data: &Data,
     ctx: &serenity::Context,
@@ -267,9 +281,9 @@ async fn run_incident_turn(
         .guild
         .as_ref()
         .and_then(|guild| guild.as_str().parse::<u64>().ok());
-    let scope = incident.guild.as_ref().map_or(ServerScope::All, |guild| {
-        ServerScope::Guild(guild.as_str().to_owned())
-    });
+    let Some(scope) = incident_scope(incident) else {
+        return;
+    };
     // The turn has no requester; the bot's own snowflake is the honest author
     // ("Gary did it, unprompted"), and the watchdog surface disambiguates it.
     let author_id = ctx.cache.current_user().id;

@@ -37,6 +37,7 @@ use crate::domain::GuildId;
 use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
+use crate::throttle::{TurnRefusal, TurnSubject};
 
 /// How often the typing indicator is refreshed while a session runs. Discord's
 /// indicator lasts ~10s, so 8s keeps it lit without a visible gap.
@@ -74,6 +75,15 @@ pub(crate) async fn on_event(
         return Ok(());
     };
     if new_message.author.bot {
+        return Ok(());
+    }
+
+    // A guild the operator never admitted gets no agent, matching the empty
+    // command set it was registered with. DMs carry no guild and are handled by
+    // the tenancy check in `handle_message`, which refuses before any model call.
+    if let Some(guild) = new_message.guild_id
+        && !super::guild_is_admitted(data, guild.get())
+    {
         return Ok(());
     }
 
@@ -118,9 +128,47 @@ fn spawn_session(
     let data = data.clone();
     let message = message.clone();
     data.tasks.clone().spawn(async move {
+        // Claim the turn before anything expensive happens. Refusing here — rather
+        // than queueing — is the point: a queued flood is still a billed flood.
+        let subject = TurnSubject::Discord(message.author.id.get());
+        match data.turn_throttle.claim(&subject).await {
+            Ok(()) => {}
+            Err(TurnRefusal::RateLimited { retry_after, first }) => {
+                if first {
+                    reply(&ctx, &message, &rate_limited_reply(retry_after)).await;
+                }
+                return;
+            }
+            Err(TurnRefusal::Busy) => {
+                reply(&ctx, &message, BUSY_REPLY).await;
+                return;
+            }
+        }
         handle_message(&ctx, &data, &message, prompt).await;
     });
 }
+
+/// What to tell someone who has spent their allowance. Plain language with the
+/// wait spelled out, per the project's user-facing error rules — the person is a
+/// friend who typed too fast, not an attacker, in every case that matters.
+fn rate_limited_reply(retry_after: std::time::Duration) -> String {
+    let seconds = retry_after.as_secs().max(1);
+    if seconds >= 60 {
+        let minutes = seconds.div_ceil(60);
+        format!(
+            "I need a moment to catch up — you've asked for a lot at once. Try me again in about {minutes} minute{}.",
+            if minutes == 1 { "" } else { "s" }
+        )
+    } else {
+        format!(
+            "I need a moment to catch up — you've asked for a lot at once. Try me again in about {seconds} seconds."
+        )
+    }
+}
+
+/// Shown when every concurrency permit is held by other people's turns.
+const BUSY_REPLY: &str =
+    "I'm working through a few requests right now — give me a minute and ask again.";
 
 /// Whether a no-mention message is something Gary should answer: non-empty and
 /// not a slash-command-style line (leading `/`). Real slash commands arrive as
@@ -180,6 +228,14 @@ async fn handle_message(
     // and `commit` is last-write-wins.
     let key = SessionKey::Channel(message.channel_id.get());
     let _turn_lock = data.sessions.turn_lock(key).await;
+
+    // Taken *after* the channel lock so a permit is only ever held by work that is
+    // actually running — permits held while queueing would let one busy channel
+    // starve every other one.
+    let Ok(_permit) = data.turn_throttle.admit_now() else {
+        reply(ctx, message, BUSY_REPLY).await;
+        return;
+    };
 
     // Continue the channel's conversation if it's still live, else start fresh;
     // the appended user turn is what the model answers.

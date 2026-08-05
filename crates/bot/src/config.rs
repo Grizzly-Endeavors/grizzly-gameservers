@@ -146,6 +146,17 @@ pub struct BotConfig {
     /// (`GuildConfig`); this env allowlist is only the bootstrap operator(s).
     /// Sourced from `GAMESERVERS_ADMIN_USER_IDS`.
     pub(crate) operator_ids: Vec<u64>,
+    /// Guild ids the operator has admitted, from `GAMESERVERS_GUILD_ALLOWLIST`.
+    /// **Empty means every guild is served** — the open posture the service ran
+    /// under before the list existed, kept as the default so a deploy that hasn't
+    /// been given a list yet doesn't lock out the guilds already using it.
+    /// Non-empty makes admission explicit: an unlisted guild gets no commands and
+    /// no agent, which is what "onboarding is gated behind the operator"
+    /// ([ADR-022](../../docs/decisions/022-per-guild-resource-caps.md)) has always
+    /// claimed and nothing enforced.
+    pub(crate) guild_allowlist: Vec<u64>,
+    /// Admission control for paid model turns.
+    pub(crate) throttle: crate::throttle::ThrottlePolicy,
     /// Ollama Cloud API key for the agent ("Gary"). Absent disables the agent —
     /// mentions are answered with a "not configured" reply, slash commands still
     /// work. Sourced from the `ollama-api` Secret's `api_key` in-cluster.
@@ -307,6 +318,11 @@ impl BotConfig {
             optional_port(lookup, "GAMESERVERS_CONTROL_PORT")?.unwrap_or(DEFAULT_CONTROL_PORT);
         let operator_ids =
             parse_user_ids(optional(lookup, "GAMESERVERS_ADMIN_USER_IDS").as_deref())?;
+        let guild_allowlist = parse_snowflakes(
+            optional(lookup, "GAMESERVERS_GUILD_ALLOWLIST").as_deref(),
+            "GAMESERVERS_GUILD_ALLOWLIST",
+        )?;
+        let throttle = throttle_policy_from_env(lookup)?;
 
         let ollama_api_key = optional(lookup, "OLLAMA_API_KEY").filter(|key| !key.is_empty());
         let ollama_base_url = optional(lookup, "OLLAMA_BASE_URL")
@@ -347,10 +363,14 @@ impl BotConfig {
         );
         let agent_port =
             optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
+        // Trimmed, like `supervisor_token` above: a secret that syncs as a blank
+        // line would otherwise mount these routes behind a credential nobody
+        // holds — the in-game trigger runs *open* without a token, so reading
+        // whitespace as "a token" is the difference between guarded and not.
         let ingame_token =
-            optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.is_empty());
+            optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.trim().is_empty());
         let operator_token =
-            optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.is_empty());
+            optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.trim().is_empty());
         let environment = environment_from_env(lookup);
         let langfuse = langfuse_config_from_env(lookup);
         let release =
@@ -365,6 +385,8 @@ impl BotConfig {
             catalog_dir,
             control_port,
             operator_ids,
+            guild_allowlist,
+            throttle,
             ollama_api_key,
             ollama_base_url,
             ollama_model,
@@ -612,6 +634,13 @@ fn optional_port(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
 /// Parse a comma-separated list of Discord user ids. Blank entries are ignored
 /// so trailing commas and whitespace are tolerated.
 fn parse_user_ids(raw: Option<&str>) -> Result<Vec<u64>> {
+    parse_snowflakes(raw, "GAMESERVERS_ADMIN_USER_IDS")
+}
+
+/// Parse a comma-separated list of Discord snowflakes (user or guild ids).
+/// Blank entries are ignored so trailing commas and whitespace are tolerated;
+/// `key` names the variable so a typo points at the right line of the deploy.
+fn parse_snowflakes(raw: Option<&str>, key: &str) -> Result<Vec<u64>> {
     let Some(raw) = raw else {
         return Ok(Vec::new());
     };
@@ -619,11 +648,47 @@ fn parse_user_ids(raw: Option<&str>) -> Result<Vec<u64>> {
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
         .map(|entry| {
-            entry.parse::<u64>().with_context(|| {
-                format!("GAMESERVERS_ADMIN_USER_IDS contains a non-integer: {entry:?}")
-            })
+            entry
+                .parse::<u64>()
+                .with_context(|| format!("{key} contains a non-integer: {entry:?}"))
         })
         .collect()
+}
+
+/// Read the turn-admission policy, falling back to the module's defaults per
+/// field so an operator can retune one axis without restating the others.
+fn throttle_policy_from_env(lookup: EnvLookup) -> Result<crate::throttle::ThrottlePolicy> {
+    let burst = optional_number::<u32>(lookup, "GAMESERVERS_TURN_BURST")?
+        .filter(|&burst| burst > 0)
+        .unwrap_or(crate::throttle::DEFAULT_TURN_BURST);
+    let refill_seconds = optional_number::<u64>(lookup, "GAMESERVERS_TURN_REFILL_SECONDS")?
+        .filter(|&seconds| seconds > 0)
+        .unwrap_or(crate::throttle::DEFAULT_TURN_REFILL_SECONDS);
+    let max_concurrent = optional_number::<usize>(lookup, "GAMESERVERS_MAX_CONCURRENT_TURNS")?
+        .filter(|&permits| permits > 0)
+        .unwrap_or(crate::throttle::DEFAULT_MAX_CONCURRENT_TURNS);
+    Ok(crate::throttle::ThrottlePolicy {
+        burst,
+        refill_interval: std::time::Duration::from_secs(refill_seconds),
+        max_concurrent,
+    })
+}
+
+/// Parse an optional numeric env var, erroring rather than silently falling back
+/// when it is set to something unparseable — a typo'd limit must not read as
+/// "use the default".
+fn optional_number<T>(lookup: EnvLookup, key: &str) -> Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let Some(raw) = optional(lookup, key) else {
+        return Ok(None);
+    };
+    raw.trim()
+        .parse::<T>()
+        .map(Some)
+        .map_err(|err| anyhow!("{key} must be a number, got {raw:?}: {err}"))
 }
 
 fn required(lookup: EnvLookup, key: &str) -> Result<String> {
