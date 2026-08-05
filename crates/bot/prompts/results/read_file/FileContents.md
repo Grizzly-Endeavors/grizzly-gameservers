@@ -28,6 +28,14 @@ annotations:
       model doesn't treat a cut-off file as complete. The content and the
       optional note are data entering through variables; only the "contents of"
       framing is prompt text.
+    - >-
+      Fenced because a file on a game's PVC is not platform-authored text: the
+      game writes it, and much of what a game writes is whatever its players
+      typed — names, signs, chat history, mod output. The markers are matched by
+      crate::untrusted, which removes any line of the file that tries to write
+      one.
 ---
 contents of {{path}}{{note}}:
+-----BEGIN UNTRUSTED FILE-----
 {{content}}
+-----END UNTRUSTED FILE-----

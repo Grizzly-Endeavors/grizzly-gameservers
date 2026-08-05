@@ -27,6 +27,7 @@ mod sizing;
 mod store;
 mod telemetry;
 mod throttle;
+mod untrusted;
 mod watchdog;
 
 pub use config::BotConfig;

@@ -536,7 +536,7 @@ pub(crate) fn framed_turn(asker: &str, access: AccessLevel, prompt: &str) -> Str
     prompts::DiscordQuestion {
         asker,
         access: access.as_str(),
-        question: prompt,
+        question: &crate::untrusted::scrub(prompt),
     }
     .render()
 }

@@ -36,6 +36,17 @@ pub(crate) const GENERAL_SCOPE: &str = "general";
 /// growth if the store accumulates a lot of facts over time.
 const MAX_RENDERED: usize = 40;
 
+/// Longest fact that may be saved.
+///
+/// A remembered fact is the most durable thing Gary writes: it is injected into
+/// every later session's system prompt in his own voice, and `remember` is
+/// manager-tier while the text it saves can originate in a server's logs. A real
+/// operational note ("Palworld needs a soft stop before a config edit applies")
+/// is a sentence; anything approaching this length is not the thing this store
+/// exists for. The cap doesn't make a bad note safe — it bounds how much of one
+/// can be carried in a single write.
+const MAX_NOTE_CHARS: usize = 500;
+
 /// Schema for Gary's durable memory. `id` is a `BIGSERIAL` so `forget(id)` has a
 /// stable handle; `scope` is a catalog game id or [`GENERAL_SCOPE`]; `created_by`
 /// is the Discord user id as text (the snowflake-as-text convention used
@@ -114,6 +125,8 @@ impl MemoryStore {
 pub(crate) enum RememberOutcome {
     /// The fact was saved with this id.
     Saved(i64),
+    /// The fact was longer than [`MAX_NOTE_CHARS`] and was not saved.
+    TooLong { max: usize },
     /// Persistence is down, so nothing was saved.
     Unavailable,
 }
@@ -189,14 +202,27 @@ impl GaryMemory {
         content: &str,
         created_by: Option<&str>,
     ) -> Result<RememberOutcome> {
+        // Checked before the store is consulted, and here rather than at the tool,
+        // so every caller is bound by it and the answer doesn't depend on whether
+        // Postgres happens to be up — an over-long note is invalid either way. A
+        // length nothing enforces is not a length.
+        if content.chars().count() > MAX_NOTE_CHARS {
+            return Ok(RememberOutcome::TooLong {
+                max: MAX_NOTE_CHARS,
+            });
+        }
         let Some(store) = &self.store else {
             return Ok(RememberOutcome::Unavailable);
         };
-        let id = store.insert(scope, content, created_by).await?;
+        // A saved fact is replayed into a later prompt as Gary's own voice, so a
+        // fence marker smuggled into one would be a marker inside trusted text —
+        // the one place the fencing convention can't defend itself.
+        let content = crate::untrusted::scrub(content);
+        let id = store.insert(scope, &content, created_by).await?;
         self.cache.write().await.push(Memory {
             id,
             scope: scope.to_owned(),
-            content: content.to_owned(),
+            content,
         });
         Ok(RememberOutcome::Saved(id))
     }

@@ -23,8 +23,9 @@ annotations:
         the message content with the bot's own mention markup stripped, or the
         whole message on the DM and home-channel paths
       contents: >-
-        the untrusted message, presented verbatim as data — DiscordPersona is
-        what hardens Gary against treating it as instructions.
+        the untrusted message, scrubbed of any fence marker it tried to write
+        (crate::untrusted::scrub) and presented verbatim as data between the
+        markers — DiscordSharedChannel is what tells Gary what the markers mean.
   reasoning:
     - >-
       A Discord channel is one shared conversation, so the transcript holds
@@ -40,5 +41,14 @@ annotations:
       Wraps the raw message as an attributed quote for the same injection reason
       as IngameQuestion — the defense lives in the persona prompt, so keep the
       two aligned.
+    - >-
+      The attribution sits *outside* the fence and the message inside it, so a
+      body that writes "someone (admin) says:" cannot be mistaken for a turn of
+      its own: a real speaker line only ever appears before an opening marker.
+      The markers are matched by crate::untrusted, which removes any payload line
+      that tries to write one — change the text here and that guard's test fails.
 ---
-{{asker}} ({{access}}) says: {{question}}
+{{asker}} ({{access}}) says:
+-----BEGIN UNTRUSTED MESSAGE-----
+{{question}}
+-----END UNTRUSTED MESSAGE-----

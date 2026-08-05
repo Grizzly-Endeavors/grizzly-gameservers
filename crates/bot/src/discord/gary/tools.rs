@@ -1333,6 +1333,10 @@ async fn exec_remember(ctx: &ToolCtx<'_>, scope: &str, note: &str) -> String {
             }
             .render()
         }
+        Ok(RememberOutcome::TooLong { max }) => prompts::RememberTooLong {
+            max: &max.to_string(),
+        }
+        .render(),
         Ok(RememberOutcome::Unavailable) => prompts::RememberMemoryOffline::render(),
         Err(err) => {
             error!(error = ?err, %scope, "agent: remember failed");
@@ -2791,7 +2795,7 @@ fn format_file(file: &ReadResponse) -> String {
     prompts::FileContents {
         path: file.path.as_str(),
         note: &note,
-        content: file.content.as_str(),
+        content: &crate::untrusted::scrub(file.content.as_str()),
     }
     .render()
 }
@@ -2800,7 +2804,7 @@ fn format_logs(server: &str, lines: &[String]) -> String {
     if lines.is_empty() {
         return prompts::LogsEmpty { server }.render();
     }
-    let joined = lines.join("\n");
+    let joined = crate::untrusted::scrub(&lines.join("\n"));
     prompts::LogsOutput {
         server,
         lines: &joined,

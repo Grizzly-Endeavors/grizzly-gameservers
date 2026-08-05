@@ -86,6 +86,43 @@ fn normalize_scope_rejects_unknown() {
 }
 
 #[tokio::test]
+async fn an_over_long_note_is_refused_before_the_store_is_consulted() {
+    // The cap answers the same way whether or not Postgres is up: an over-long
+    // note is invalid on its own terms, and reporting it as "memory offline"
+    // would send the model off retrying a save that will never be accepted.
+    let memory = GaryMemory::disabled();
+    let long = "x".repeat(MAX_NOTE_CHARS + 1);
+    assert!(matches!(
+        memory.remember("palworld", &long, None).await,
+        Ok(RememberOutcome::TooLong { max }) if max == MAX_NOTE_CHARS
+    ));
+}
+
+#[tokio::test]
+async fn a_note_at_the_cap_is_not_refused_for_length() {
+    // Exactly at the cap is allowed — the disabled store is what stops it here,
+    // which is how we know length wasn't the reason.
+    let memory = GaryMemory::disabled();
+    let at_cap = "x".repeat(MAX_NOTE_CHARS);
+    assert!(matches!(
+        memory.remember("palworld", &at_cap, None).await,
+        Ok(RememberOutcome::Unavailable)
+    ));
+}
+
+#[tokio::test]
+async fn the_cap_counts_characters_not_bytes() {
+    // Counting bytes would reject an all-emoji note at roughly a third of the
+    // documented limit, which the caller has no way to make sense of.
+    let memory = GaryMemory::disabled();
+    let wide = "🎮".repeat(MAX_NOTE_CHARS);
+    assert!(matches!(
+        memory.remember("palworld", &wide, None).await,
+        Ok(RememberOutcome::Unavailable)
+    ));
+}
+
+#[tokio::test]
 async fn disabled_memory_saves_nothing_and_renders_blank() {
     let memory = GaryMemory::disabled();
     assert!(matches!(

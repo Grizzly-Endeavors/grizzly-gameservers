@@ -242,7 +242,11 @@ fn framed_question(player: &str, question: &str) -> String {
     if question.trim().is_empty() {
         prompts::IngameNoQuestion { player }.render()
     } else {
-        prompts::IngameQuestion { player, question }.render()
+        prompts::IngameQuestion {
+            player,
+            question: &crate::untrusted::scrub(question),
+        }
+        .render()
     }
 }
 
