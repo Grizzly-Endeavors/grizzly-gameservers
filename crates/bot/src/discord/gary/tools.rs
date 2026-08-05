@@ -841,7 +841,7 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
     } else {
         Some(ctx.data.guild_limits.caps_for(&guild_key).await)
     };
-    match provision_instance(
+    let provisioned = provision_instance(
         &ctx.data.kube_client,
         &ctx.data.namespace,
         &ctx.data.domain,
@@ -853,53 +853,43 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
             caps: caps.as_ref(),
         },
     )
-    .await
-    {
+    .await;
+    create_reply(ctx, game, &server, provisioned).await
+}
+
+/// Turn a provision result into Gary's reply, recording the terminal outcome of
+/// everything except a successful provision — that one resolves later in
+/// [`watch_boot`], once the boot it started has actually finished.
+async fn create_reply(
+    ctx: &ToolCtx<'_>,
+    game: &str,
+    server: &str,
+    provisioned: anyhow::Result<ProvisionOutcome>,
+) -> String {
+    match provisioned {
         // Don't block the loop on first-boot world generation (minutes). Report
         // the address now; the user can ask for status to see when it's ready.
         Ok(ProvisionOutcome::Provisioned { address }) => {
-            watch_boot(ctx, EventKind::ServerCreated, &server, &address);
+            watch_boot(ctx, EventKind::ServerCreated, server, &address);
             prompts::CreateCreated {
-                server: &server,
+                server,
                 address: &address,
             }
             .render()
         }
-        Ok(ProvisionOutcome::AlreadyExists) => {
+        Ok(
+            refused @ (ProvisionOutcome::AlreadyExists
+            | ProvisionOutcome::NameUnavailable
+            | ProvisionOutcome::PortsExhausted
+            | ProvisionOutcome::GuildLimitReached(_)),
+        ) => {
+            let reply = refusal_reply(server, &refused).unwrap_or_else(|| {
+                error!(server, "agent: create refusal had no reply to render");
+                cluster_error()
+            });
             ctx.record_action(
                 EventKind::ServerCreated,
-                &server,
-                mapping::provision(&ProvisionOutcome::AlreadyExists),
-            )
-            .await;
-            prompts::CreateNameTaken { server: &server }.render()
-        }
-        Ok(ProvisionOutcome::PortsExhausted) => {
-            ctx.record_action(
-                EventKind::ServerCreated,
-                &server,
-                mapping::provision(&ProvisionOutcome::PortsExhausted),
-            )
-            .await;
-            prompts::CreatePortsExhausted::render()
-        }
-        Ok(refused @ ProvisionOutcome::GuildLimitReached(refusal)) => {
-            let reply = match refusal {
-                LimitRefusal::ServerCount { current, cap } => prompts::CreateGuildLimitServers {
-                    current: &current.to_string(),
-                    cap: &cap.to_string(),
-                }
-                .render(),
-                LimitRefusal::AggregateCpu { .. } | LimitRefusal::AggregateMemory { .. } => {
-                    prompts::CreateGuildLimitResources {
-                        detail: &describe_limit_refusal(refusal),
-                    }
-                    .render()
-                }
-            };
-            ctx.record_action(
-                EventKind::ServerCreated,
-                &server,
+                server,
                 mapping::provision(&refused),
             )
             .await;
@@ -907,11 +897,37 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
         }
         Err(err) => {
             error!(error = ?err, game, server, "agent: create failed");
-            ctx.record_action(EventKind::ServerCreated, &server, mapping::FAILED)
+            ctx.record_action(EventKind::ServerCreated, server, mapping::FAILED)
                 .await;
             cluster_error()
         }
     }
+}
+
+/// The reply explaining a refused create. `None` for a *successful* provision,
+/// which has an address to report and is rendered by the caller instead — so a
+/// caller that reaches here with one gets a generic fault rather than a confident
+/// wrong answer.
+fn refusal_reply(server: &str, outcome: &ProvisionOutcome) -> Option<String> {
+    Some(match outcome {
+        ProvisionOutcome::Provisioned { .. } => return None,
+        ProvisionOutcome::AlreadyExists => prompts::CreateNameTaken { server }.render(),
+        ProvisionOutcome::NameUnavailable => prompts::CreateNameUnavailable { server }.render(),
+        ProvisionOutcome::PortsExhausted => prompts::CreatePortsExhausted::render(),
+        ProvisionOutcome::GuildLimitReached(LimitRefusal::ServerCount { current, cap }) => {
+            prompts::CreateGuildLimitServers {
+                current: &current.to_string(),
+                cap: &cap.to_string(),
+            }
+            .render()
+        }
+        ProvisionOutcome::GuildLimitReached(
+            refusal @ (LimitRefusal::AggregateCpu { .. } | LimitRefusal::AggregateMemory { .. }),
+        ) => prompts::CreateGuildLimitResources {
+            detail: &describe_limit_refusal(*refusal),
+        }
+        .render(),
+    })
 }
 
 /// Resolve a create or cold start's readiness in the background and record its
@@ -2298,7 +2314,7 @@ async fn exec_list_backups(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
     };
-    match service.list_backups(server).await {
+    match service.list_backups(&backup_ctx(ctx.data), server).await {
         Ok(list) => format_backup_list(server, &list),
         Err(err) => {
             error!(error = ?err, %server, "agent: list_backups failed");
@@ -2436,7 +2452,7 @@ async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
     };
-    let backups = match service.list_backups(server).await {
+    let backups = match service.list_backups(&backup_ctx(ctx.data), server).await {
         Ok(backups) => backups,
         Err(err) => {
             error!(error = ?err, %server, "agent: restore listing failed");

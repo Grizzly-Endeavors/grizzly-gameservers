@@ -245,14 +245,41 @@ impl BackupService {
 
     /// List a server's backups, newest first.
     ///
+    /// The prefix is keyed by the guild that owns the instance *now*, read off its
+    /// Service — the one object of the trio that outlives both `/stop` and
+    /// `/shutdown`, so this answers for a shut-down server too. An instance with no
+    /// Service has been destroyed and has no owner to answer for, so it lists
+    /// nothing: whatever sits under a previous owner's prefix is theirs, not the
+    /// caller's, even when the caller now holds the same name.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the bucket can't be listed or a manifest can't be read.
-    pub(crate) async fn list_backups(&self, instance: &str) -> Result<Vec<ArtifactSummary>> {
-        let mut tarballs = self.s3.list_tarballs(&backup_prefix(instance)).await?;
+    /// Returns an error if the owner can't be read, the bucket can't be listed, or
+    /// a manifest can't be read.
+    pub(crate) async fn list_backups(
+        &self,
+        ctx: &BackupCtx<'_>,
+        instance: &str,
+    ) -> Result<Vec<ArtifactSummary>> {
+        let Some(guild) = self.owning_guild(ctx, instance).await? else {
+            return Ok(Vec::new());
+        };
+        let mut tarballs = self
+            .s3
+            .list_tarballs(&backup_prefix(&guild, instance))
+            .await?;
         tarballs.sort();
         tarballs.reverse();
         self.summaries(tarballs).await
+    }
+
+    /// The guild that currently owns `instance`, or `None` when no Service names
+    /// it. An owned instance whose guild label is absent (a pre-scoping object)
+    /// resolves to the empty string, which [`backup_prefix`] maps to its reserved
+    /// unscoped segment rather than treating as "no owner".
+    async fn owning_guild(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<Option<String>> {
+        let owner = owner_of(ctx.client, ctx.namespace, instance).await?;
+        Ok(owner.map(|owner| owner.guild.map(GuildId::into_string).unwrap_or_default()))
     }
 
     /// List the archives visible under `scope` (latest per name), newest first.
@@ -704,6 +731,26 @@ impl BackupService {
         instance: &str,
         tarball_key: &str,
     ) -> Result<RestoreOutcome> {
+        // Every caller picks the key out of a `list_backups` result, which is
+        // already confined to the instance's owner — so this only fires if a key
+        // reaches here by some other route. It is the step that writes one world
+        // over another, which is worth not resting solely on the caller. Reported
+        // as NotFound, never "that isn't yours", so a probe learns nothing about
+        // another tenant's artifacts.
+        let owner = self.owning_guild(ctx, instance).await?;
+        let expected = owner
+            .as_deref()
+            .map(|guild| backup_prefix(guild, instance))
+            .unwrap_or_default();
+        if expected.is_empty() || !tarball_key.starts_with(&expected) {
+            warn!(
+                instance,
+                tarball_key,
+                "refused a restore from a key outside the instance's own backup prefix"
+            );
+            return Ok(RestoreOutcome::NotFound);
+        }
+
         match self.ensure_pod_reachable(ctx, instance).await? {
             EnsurePod::Ready => {}
             EnsurePod::NotFound => return Ok(RestoreOutcome::NotFound),
@@ -872,7 +919,9 @@ impl BackupService {
         .await?
         {
             ProvisionOutcome::Provisioned { address } => address,
-            ProvisionOutcome::AlreadyExists => return Ok(RecoverOutcome::NameInUse),
+            ProvisionOutcome::AlreadyExists | ProvisionOutcome::NameUnavailable => {
+                return Ok(RecoverOutcome::NameInUse);
+            }
             ProvisionOutcome::PortsExhausted => return Ok(RecoverOutcome::PortsExhausted),
             ProvisionOutcome::GuildLimitReached(refusal) => {
                 return Ok(RecoverOutcome::GuildLimitReached(refusal));
@@ -965,7 +1014,7 @@ impl BackupService {
             ArchiveSource::Unreachable(reason) => return Ok(BackupOutcome::Unreachable(reason)),
         };
         let stamp = stamp_now();
-        let keys = backup_keys(instance, &stamp);
+        let keys = backup_keys(target.guild.as_str(), instance, &stamp);
         let size = self
             .s3
             .upload_stream(&keys.tarball, source)
@@ -984,14 +1033,14 @@ impl BackupService {
             .put_manifest(&keys.manifest, &manifest)
             .await
             .with_context(|| format!("failed to upload backup manifest for {instance}"))?;
-        self.prune_backups(instance).await;
+        self.prune_backups(target.guild.as_str(), instance).await;
         Ok(BackupOutcome::BackedUp { size_bytes: size })
     }
 
     /// Delete backups older than the newest `retention` under a server's prefix.
     /// Best-effort: a prune failure is logged, never fatal to the backup itself.
-    async fn prune_backups(&self, instance: &str) {
-        let tarballs = match self.s3.list_tarballs(&backup_prefix(instance)).await {
+    async fn prune_backups(&self, guild: &str, instance: &str) {
+        let tarballs = match self.s3.list_tarballs(&backup_prefix(guild, instance)).await {
             Ok(tarballs) => tarballs,
             Err(err) => {
                 warn!(error = ?err, instance, "could not list backups to prune");

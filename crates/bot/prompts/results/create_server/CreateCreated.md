@@ -7,7 +7,7 @@ annotations:
     continues asynchronously so the address is given up front
   used_by:
     - file: discord/gary/tools.rs
-      function: exec_create
+      function: create_reply
   variables:
     server:
       source: the newly built instance name

@@ -56,20 +56,40 @@ pub(crate) struct ArtifactKeys {
     pub(crate) manifest: String,
 }
 
-/// Prefix under which an instance's automatic/manual backups live. The instance
-/// is its own index — enumerating this prefix lists its backups, no DB needed.
-pub(crate) fn backup_prefix(instance: &str) -> String {
-    format!("backups/{instance}/")
+/// Stands in for the owning guild of a pre-scoping instance, which carries no
+/// guild label. A Discord snowflake is all digits, so this can never collide with
+/// a real guild — and a reserved segment is what keeps an absent owner from
+/// collapsing `backups/{guild}/` into the bucket root, where it would land back
+/// in the shared namespace this layout exists to avoid.
+pub(crate) const UNSCOPED_GUILD_SEGMENT: &str = "_unscoped";
+
+/// The path segment naming an artifact's owning guild.
+fn guild_segment(guild: &str) -> &str {
+    if guild.is_empty() {
+        UNSCOPED_GUILD_SEGMENT
+    } else {
+        guild
+    }
+}
+
+/// Prefix under which a guild's automatic/manual backups of `instance` live.
+///
+/// Namespaced by guild for the same reason archives are: instance names are
+/// friend-chosen, carry no entropy, and are freed for reuse by `/destroy` while
+/// the backups outlive the instance. A flat `backups/{instance}/` lets the next
+/// guild to claim a released name inherit the previous owner's worlds.
+pub(crate) fn backup_prefix(guild: &str, instance: &str) -> String {
+    format!("backups/{}/{instance}/", guild_segment(guild))
 }
 
 /// Prefix under which a guild's archives of `name` live.
 pub(crate) fn archive_prefix(guild: &str, name: &str) -> String {
-    format!("archives/{guild}/{name}/")
+    format!("archives/{}/{name}/", guild_segment(guild))
 }
 
-/// Keys for a backup of `instance` stamped at `stamp` (see [`stamp_now`]).
-pub(crate) fn backup_keys(instance: &str, stamp: &str) -> ArtifactKeys {
-    keys(&format!("{}{stamp}", backup_prefix(instance)))
+/// Keys for a backup of `guild`'s `instance` stamped at `stamp` (see [`stamp_now`]).
+pub(crate) fn backup_keys(guild: &str, instance: &str, stamp: &str) -> ArtifactKeys {
+    keys(&format!("{}{stamp}", backup_prefix(guild, instance)))
 }
 
 /// Keys for an archive of `name` in `guild` stamped at `stamp`.

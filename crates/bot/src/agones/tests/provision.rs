@@ -55,3 +55,41 @@ fn pre_ready_and_unhealthy_gameservers_are_not_ready() {
     assert!(!is_ready(&gameserver_in_state(Some("Unhealthy"))));
     assert!(!is_ready(&gameserver_in_state(None)));
 }
+
+// ---- name-holder tenancy (issue #80) ----
+//
+// Instance names are Kubernetes object names, so they are unique across the whole
+// namespace and one guild's choice can block another's. Which of the two happened
+// decides what the friend is told: their own server by that name is worth naming,
+// another guild's must not be confirmed to exist.
+
+#[test]
+fn a_name_held_by_the_asking_guild_is_theirs() {
+    assert!(matches!(
+        classify_holder(Some("111"), "111"),
+        NameHolder::Caller
+    ));
+}
+
+#[test]
+fn a_name_held_by_another_guild_is_not_reported_as_theirs() {
+    assert!(matches!(
+        classify_holder(Some("222"), "111"),
+        NameHolder::Other
+    ));
+}
+
+#[test]
+fn an_unlabelled_holder_is_never_the_caller() {
+    // A pre-scoping object carries no guild label. Treating that as "yours" would
+    // hand whoever asked first an instance nobody was recorded as owning.
+    assert!(matches!(classify_holder(None, "111"), NameHolder::Other));
+}
+
+#[test]
+fn a_guildless_caller_matches_nobody() {
+    // The unscoped operator path passes an empty guild. Without the emptiness
+    // guard it would compare equal to every unlabelled object.
+    assert!(matches!(classify_holder(Some(""), ""), NameHolder::Other));
+    assert!(matches!(classify_holder(None, ""), NameHolder::Other));
+}

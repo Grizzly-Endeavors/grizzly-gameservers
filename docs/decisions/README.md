@@ -25,5 +25,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-021 — Resize a running server in place; keep the override in Postgres](021-in-place-resource-resize.md)
 - [ADR-022 — Per-guild resource caps, measured live and backstopped by a namespace quota](022-per-guild-resource-caps.md)
 - [ADR-023 — Game pods are confined but not rootless](023-game-pod-partial-hardening.md)
+- [ADR-024 — Backups are keyed by guild, and the existing ones were migrated](024-guild-scoped-backup-keys.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).
