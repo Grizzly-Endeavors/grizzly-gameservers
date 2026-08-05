@@ -37,7 +37,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
-use discord::{Data, commands};
+use discord::Data;
 use memory::GaryMemory;
 use store::{GuildConfig, HomeChannels};
 
@@ -267,7 +267,7 @@ async fn run_gateway(
 ) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: slash_commands(),
+            commands: discord::slash_commands(),
             command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
             event_handler: |ctx, event, framework, event_data| {
                 Box::pin(on_gateway_event(ctx, event, framework, event_data))
@@ -339,16 +339,21 @@ async fn on_gateway_event(
         // skipped: a guild removed from the allowlist must lose the commands it
         // was already registered with, and re-registering empty is how that
         // revocation reaches Discord.
-        if !discord::guild_is_admitted(data, guild.id.get()) {
-            let revoked: Vec<poise::Command<Data, discord::Error>> = Vec::new();
-            poise::builtins::register_in_guild(ctx, &revoked, guild.id).await?;
+        let admitted = discord::guild_is_admitted(data, guild.id.get());
+        discord::register_guild_commands(
+            ctx,
+            framework.options().commands.as_slice(),
+            guild.id,
+            admitted,
+        )
+        .await?;
+        if !admitted {
             warn!(
                 guild = guild.id.get(),
                 "ignoring a guild that is not on the allowlist"
             );
             return Ok(());
         }
-        poise::builtins::register_in_guild(ctx, &framework.options().commands, guild.id).await?;
         // GuildCreate re-fires on every gateway reconnect/resume, so this would be
         // routine repeat noise at info — the interesting signal is a *new* guild,
         // which the join path already surfaces.
@@ -407,30 +412,6 @@ fn spawn_shutdown_watch(
         shutdown.cancel();
         shard_manager.shutdown_all().await;
     });
-}
-
-/// The slash commands the bot registers with each guild it's in.
-fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
-    vec![
-        commands::servers(),
-        commands::create(),
-        commands::shutdown(),
-        commands::stop(),
-        commands::start(),
-        commands::restart(),
-        commands::destroy(),
-        commands::backup(),
-        commands::backups(),
-        commands::archive(),
-        commands::archives(),
-        commands::delete_archive(),
-        commands::restore(),
-        commands::recover(),
-        commands::new_session(),
-        commands::gary_home(),
-        commands::gary_memory(),
-        commands::config(),
-    ]
 }
 
 /// Build the operator DM notifier on its own token-only serenity `Http` client

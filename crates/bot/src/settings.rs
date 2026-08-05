@@ -598,6 +598,34 @@ impl SettingsStore {
         Ok(Self { pool })
     }
 
+    /// Write an override, returning the timestamp Postgres stamped on it — read
+    /// back rather than guessed so the panel's "changed at" is the database's
+    /// own answer, not this process's clock.
+    async fn upsert(&self, key: SettingKey, value: &str, actor: &str) -> Result<String> {
+        let (updated_at,): (String,) = sqlx::query_as(
+            "INSERT INTO runtime_settings (key, value, updated_by) VALUES ($1, $2, $3) \
+             ON CONFLICT (key) DO UPDATE SET \
+             value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by \
+             RETURNING updated_at::text",
+        )
+        .bind(key.as_str())
+        .bind(value)
+        .bind(actor)
+        .fetch_one(&self.pool)
+        .await
+        .with_context(|| format!("failed to save the {} setting", key.as_str()))?;
+        Ok(updated_at)
+    }
+
+    async fn delete(&self, key: SettingKey) -> Result<()> {
+        sqlx::query("DELETE FROM runtime_settings WHERE key = $1")
+            .bind(key.as_str())
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("failed to clear the {} setting", key.as_str()))?;
+        Ok(())
+    }
+
     async fn load_all(&self) -> Result<BTreeMap<SettingKey, StoredOverride>> {
         let rows: Vec<SettingRow> =
             sqlx::query_as("SELECT key, value, updated_at::text, updated_by FROM runtime_settings")
@@ -781,6 +809,76 @@ impl RuntimeSettings {
     /// The stored overrides, for showing provenance beside each value.
     pub(crate) async fn overrides(&self) -> BTreeMap<SettingKey, StoredOverride> {
         self.overrides.read().await.clone()
+    }
+
+    /// Set an override, or clear it back to the deployed value with `raw = None`.
+    ///
+    /// Validated before it is written and written before it is served, so a value
+    /// the panel accepted is one the database holds and the live snapshot never
+    /// claims a setting that persistence didn't take. Returns the new snapshot,
+    /// which the caller propagates to the consumers that can't pull (see
+    /// `crate::discord::settings_changed`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persistence is unavailable, the value doesn't parse,
+    /// the result would be internally inconsistent, or the write fails. The
+    /// message is plain-language: it reaches the operator in the panel.
+    pub(crate) async fn apply(
+        &self,
+        key: SettingKey,
+        raw: Option<&str>,
+        actor: &str,
+    ) -> Result<Arc<SettingsSnapshot>> {
+        let store = self
+            .store
+            .as_ref()
+            .context("settings can't be changed right now — there's no database connection")?;
+        // Held across the whole read-modify-write, so two concurrent changes
+        // can't compose a snapshot out of each other's half-applied state.
+        let mut overrides = self.overrides.write().await;
+        let mut candidate = overrides.clone();
+        match raw {
+            Some(raw) => {
+                // Parsed against the baseline first, so the message names this
+                // value rather than some interaction with another override.
+                let mut probe = self.baseline.clone();
+                key.assign(&mut probe, raw)?;
+                candidate.insert(
+                    key,
+                    StoredOverride {
+                        value: raw.trim().to_owned(),
+                        updated_at: String::new(),
+                        updated_by: Some(actor.to_owned()),
+                    },
+                );
+            }
+            None => {
+                candidate.remove(&key);
+            }
+        }
+        let next = compose(&self.baseline, &candidate).coherence_checked()?;
+
+        match raw {
+            Some(raw) => {
+                let stamped = store.upsert(key, raw.trim(), actor).await?;
+                if let Some(entry) = candidate.get_mut(&key) {
+                    entry.updated_at = stamped;
+                }
+            }
+            None => store.delete(key).await?,
+        }
+
+        let next = Arc::new(next);
+        self.current.store(Arc::clone(&next));
+        *overrides = candidate;
+        info!(
+            key = key.as_str(),
+            actor,
+            cleared = raw.is_none(),
+            "runtime setting changed"
+        );
+        Ok(next)
     }
 }
 

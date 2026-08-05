@@ -21,7 +21,9 @@
 //! fail-closed by absence, the same shape as the operator token, so a
 //! half-configured deploy serves nothing rather than something unguarded.
 
+mod actions;
 pub(crate) mod auth;
+mod csrf;
 mod pages;
 mod render;
 
@@ -74,12 +76,21 @@ async fn serve(
     let gate = AdminGate {
         required_group: config.required_group.clone(),
     };
+    let origin = csrf::ExpectedOrigin {
+        origin: config.public_origin.clone(),
+    };
+    // Layers run outermost-first, so identity is established before the
+    // same-origin check — a cross-origin write from a stranger should be logged
+    // as unidentified, not as a bad origin.
+    let guarded = pages::router(deps)
+        .layer(from_fn_with_state(origin, csrf::require_same_origin))
+        .layer(from_fn_with_state(gate, auth::require_admin));
     // The stylesheet sits outside the gate: it carries nothing, and a denial
     // page that can't load its own styling is a worse first impression than a
     // publicly readable CSS file is a risk.
     let router = Router::new()
         .route("/panel.css", get(render::stylesheet))
-        .merge(pages::router(deps).layer(from_fn_with_state(gate, auth::require_admin)));
+        .merge(guarded);
 
     let address = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, config.port));
     let listener = tokio::net::TcpListener::bind(address)

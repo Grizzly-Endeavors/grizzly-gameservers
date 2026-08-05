@@ -227,3 +227,91 @@ fn a_facade_without_persistence_serves_the_baseline() {
     assert_eq!(settings.snapshot().gary_model, "glm-5.2");
     assert_eq!(settings.snapshot().backup_retention, 7);
 }
+
+#[tokio::test]
+async fn a_facade_without_persistence_refuses_writes_rather_than_pretending() {
+    let settings = RuntimeSettings::fixed(baseline());
+    assert!(!settings.is_available());
+    let err = settings
+        .apply(SettingKey::GaryModel, Some("qwen3"), "tester")
+        .await
+        .expect_err("writes are refused without a database");
+    assert!(err.to_string().contains("no database"), "{err}");
+    // The refusal changed nothing, so the running configuration is still honest.
+    assert_eq!(settings.snapshot().gary_model, "glm-5.2");
+}
+
+#[test]
+fn the_booted_snapshot_is_what_the_process_started_with() {
+    let settings = RuntimeSettings::fixed(baseline());
+    assert_eq!(settings.booted().backup_retention, 7);
+    assert_eq!(settings.baseline().backup_retention, 7);
+}
+
+/// Restart-class keys are the ones a consumer captures at startup. Getting this
+/// list wrong is invisible until an operator changes one and it silently does
+/// nothing, so it is pinned rather than left to the reader of `reload()`.
+#[test]
+fn only_the_cycle_cadences_wait_for_a_restart() {
+    let restart: Vec<&str> = SettingKey::ALL
+        .iter()
+        .filter(|key| key.reload() == Reload::Restart)
+        .map(|key| key.as_str())
+        .collect();
+    assert_eq!(
+        restart,
+        [
+            "backup.interval_hours",
+            "backup.retention",
+            "archive.retention_days",
+            "reconcile.interval_minutes",
+            "reconcile.stranded_dwell_minutes",
+            "sampling.interval_minutes",
+        ]
+    );
+}
+
+#[test]
+fn every_key_carries_operator_facing_copy() {
+    for key in SettingKey::ALL {
+        assert!(!key.summary().is_empty(), "{} has no summary", key.as_str());
+        assert!(!key.section().title().is_empty());
+    }
+}
+
+/// The panel puts a rendered value straight into an editable field, so anything
+/// that doesn't survive the round trip would silently rewrite a setting the
+/// operator only opened to look at.
+#[test]
+fn rendering_a_value_round_trips_through_assign() {
+    let baseline = baseline();
+    for key in SettingKey::ALL {
+        let rendered = key.render(&baseline);
+        let mut probe = baseline.clone();
+        key.assign(&mut probe, &rendered)
+            .unwrap_or_else(|err| panic!("{} did not round trip: {err}", key.as_str()));
+        assert_eq!(
+            probe,
+            baseline,
+            "{} round tripped to a different value ({rendered})",
+            key.as_str()
+        );
+    }
+}
+
+#[test]
+fn bytes_render_in_the_largest_exact_binary_unit() {
+    assert_eq!(exact_bytes(48 * 1024 * 1024 * 1024), "48Gi");
+    assert_eq!(exact_bytes(512 * 1024 * 1024), "512Mi");
+    assert_eq!(exact_bytes(1536), "1536");
+    assert_eq!(exact_bytes(3 * 1024), "3Ki");
+}
+
+/// A bare number means *cores* to the CPU parser, so millicores must always be
+/// rendered with their suffix or a save would multiply the value by a thousand.
+#[test]
+fn cpu_renders_with_an_explicit_millicore_suffix() {
+    assert_eq!(exact_cpu(24_000), "24000m");
+    assert_eq!(exact_cpu(250), "250m");
+    assert_eq!(parse_cpu_millicores(&exact_cpu(250)), Some(250));
+}

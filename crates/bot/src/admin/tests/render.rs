@@ -90,3 +90,80 @@ fn the_active_nav_entry_is_the_only_one_marked() {
     );
     assert!(rendered.contains("bear"), "{rendered}");
 }
+
+#[test]
+fn percent_encoding_leaves_the_unreserved_set_alone() {
+    assert_eq!(percent_encode("abcXYZ019-_.~"), "abcXYZ019-_.~");
+    assert_eq!(percent_encode("a/b?c"), "a%2Fb%3Fc");
+    assert_eq!(percent_encode("a b&c=d"), "a%20b%26c%3Dd");
+}
+
+/// A flash message is arbitrary text — it carries a setting value or an error —
+/// so it has to survive the round trip through a query string intact.
+#[test]
+fn a_flash_message_survives_the_redirect_it_rides_on() {
+    let response = redirect("/settings", &Flash::ok("gary.model is now qwen3 & friends"));
+    let location = response
+        .headers()
+        .get("location")
+        .expect("a redirect carries a location")
+        .to_str()
+        .expect("ascii");
+    assert!(location.starts_with("/settings?flash="), "{location}");
+    assert!(
+        location.contains("%26"),
+        "an ampersand must not split the query: {location}"
+    );
+    assert!(!location.contains("err=1"), "{location}");
+}
+
+#[test]
+fn an_error_flash_is_marked_as_one() {
+    let response = redirect("/settings", &Flash::error("nope"));
+    let location = response
+        .headers()
+        .get("location")
+        .expect("a redirect carries a location")
+        .to_str()
+        .expect("ascii");
+    assert!(location.contains("err=1"), "{location}");
+}
+
+/// A destination that already carries a query keeps it — the confirmation
+/// bounce relies on `?confirm=…` surviving the flash being appended.
+#[test]
+fn a_flash_appends_to_an_existing_query_string() {
+    let response = redirect("/guilds?confirm=open", &Flash::ok("done"));
+    let location = response
+        .headers()
+        .get("location")
+        .expect("a redirect carries a location")
+        .to_str()
+        .expect("ascii");
+    assert!(
+        location.starts_with("/guilds?confirm=open&flash="),
+        "{location}"
+    );
+}
+
+#[test]
+fn a_redirect_without_a_message_carries_no_query() {
+    let response = redirect("/guilds?confirm=admit&guild=1", &Flash::none());
+    let location = response
+        .headers()
+        .get("location")
+        .expect("a redirect carries a location")
+        .to_str()
+        .expect("ascii");
+    assert_eq!(location, "/guilds?confirm=admit&guild=1");
+}
+
+/// The message is operator-supplied text echoed back into the page, so it is
+/// escaped like anything else rather than trusted.
+#[test]
+fn a_flash_message_is_escaped_into_the_page() {
+    let flash = Flash::error("<script>alert(1)</script>");
+    let rendered = flash.render().into_string();
+    assert!(!rendered.contains("<script>"), "{rendered}");
+    assert!(rendered.contains("&lt;script&gt;"), "{rendered}");
+}

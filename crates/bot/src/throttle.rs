@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tracing::{info, warn};
 
@@ -128,10 +129,17 @@ fn retry_after(tokens: f64, refill_interval: Duration) -> Duration {
 pub(crate) type TurnPermit = OwnedSemaphorePermit;
 
 /// The admission gate shared by every surface that can start a Gary turn.
+///
+/// The policy is retunable while the process runs (`crate::settings`), which is
+/// why it sits behind an [`ArcSwap`] rather than being a plain field: every
+/// surface holds this by `Arc` for the life of the process, so a change has to
+/// reach them in place. This is the one settings consumer that can't simply read
+/// the snapshot at the point of use — the concurrency bound is a live semaphore,
+/// not a number, so it has to be *pushed*.
 pub(crate) struct TurnThrottle {
-    policy: ThrottlePolicy,
+    policy: ArcSwap<ThrottlePolicy>,
     buckets: Mutex<HashMap<TurnSubject, Bucket>>,
-    concurrency: Arc<Semaphore>,
+    concurrency: ArcSwap<Semaphore>,
 }
 
 impl TurnThrottle {
@@ -143,15 +151,45 @@ impl TurnThrottle {
             "gary turn admission control active"
         );
         Self {
-            concurrency: Arc::new(Semaphore::new(policy.max_concurrent)),
-            policy,
+            concurrency: ArcSwap::new(Arc::new(Semaphore::new(policy.max_concurrent))),
+            policy: ArcSwap::new(Arc::new(policy)),
             buckets: Mutex::new(HashMap::new()),
         }
     }
 
     /// The policy in force right now.
     pub(crate) fn policy(&self) -> ThrottlePolicy {
-        self.policy
+        *self.policy.load_full()
+    }
+
+    /// Retune the gate in place.
+    ///
+    /// `burst` and `refill_interval` bind on the next [`Self::claim`]; a bucket
+    /// holding more than a lowered burst self-corrects the next time it is
+    /// touched, since a refill is capped at the burst.
+    ///
+    /// A change to `max_concurrent` installs a *fresh* semaphore. Turns already
+    /// running hold permits from the old one, so for as long as they last the two
+    /// are additive and concurrency can briefly exceed the new figure. The
+    /// alternative — tracking a permit deficit that drains as turns finish — is a
+    /// lot of standing machinery for a knob turned by hand, and both converge
+    /// within one turn's lifetime.
+    pub(crate) fn update_policy(&self, policy: ThrottlePolicy) {
+        let previous = self.policy();
+        if previous == policy {
+            return;
+        }
+        self.policy.store(Arc::new(policy));
+        if previous.max_concurrent != policy.max_concurrent {
+            self.concurrency
+                .store(Arc::new(Semaphore::new(policy.max_concurrent)));
+        }
+        info!(
+            burst = policy.burst,
+            refill_seconds = policy.refill_interval.as_secs(),
+            max_concurrent = policy.max_concurrent,
+            "gary turn admission control retuned"
+        );
     }
 
     /// Spend one of `subject`'s turns, or refuse.
@@ -208,7 +246,7 @@ impl TurnThrottle {
     /// the system is saturated. Acquire this *after* any per-channel serialization
     /// so a permit is only held by work that is actually running.
     pub(crate) fn admit_now(&self) -> Result<TurnPermit, TurnRefusal> {
-        match Arc::clone(&self.concurrency).try_acquire_owned() {
+        match self.concurrency.load_full().try_acquire_owned() {
             Ok(permit) => Ok(permit),
             Err(err) => {
                 warn!(

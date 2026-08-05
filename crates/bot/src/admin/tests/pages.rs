@@ -122,12 +122,6 @@ fn filter_values_are_percent_encoded_into_the_page_link() {
 }
 
 #[test]
-fn urlencode_leaves_the_unreserved_set_alone() {
-    assert_eq!(urlencode("abcXYZ019-_.~"), "abcXYZ019-_.~");
-    assert_eq!(urlencode("a/b?c"), "a%2Fb%3Fc");
-}
-
-#[test]
 fn human_bytes_reads_the_way_a_person_would_say_it() {
     assert_eq!(human_bytes(48 * 1024 * 1024 * 1024), "48 GiB");
     assert_eq!(human_bytes(512 * 1024 * 1024), "512 MiB");
