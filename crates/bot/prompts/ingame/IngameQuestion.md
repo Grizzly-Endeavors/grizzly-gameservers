@@ -24,5 +24,13 @@ annotations:
       named player's question, not its own instructions. Presenting the text as
       data is deliberate; the injection defense lives in IngamePersona, so keep
       the two aligned.
+    - >-
+      Fenced for the same reason as DiscordQuestion, and it matters more here:
+      this surface carries no Discord identity and is reachable by anyone who can
+      connect to a public game port. The markers are matched by crate::untrusted,
+      which removes any payload line that tries to write one.
 ---
-Player {{player}} asked in game chat: {{question}}
+Player {{player}} asked in game chat:
+-----BEGIN UNTRUSTED MESSAGE-----
+{{question}}
+-----END UNTRUSTED MESSAGE-----
