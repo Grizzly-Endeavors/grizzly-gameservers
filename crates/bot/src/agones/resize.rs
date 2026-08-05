@@ -55,6 +55,14 @@ const CONDITION_TRUE: &str = "True";
 /// case that reaches this in practice.
 const REFUSED_STATUS: u16 = 422;
 
+/// A resize the namespace quota won't admit comes back as a plain `403`
+/// carrying `exceeded quota`. It belongs with the other refusals rather than in
+/// the error path: the cluster objected to the request, it didn't fail to
+/// answer, and the message it sends names the exhausted dimension and its
+/// figures better than anything reconstructed here would.
+const QUOTA_STATUS: u16 = 403;
+const QUOTA_MARKER: &str = "exceeded quota";
+
 /// What happened to a requested in-place resize.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ResizeOutcome {
@@ -63,7 +71,7 @@ pub(crate) enum ResizeOutcome {
     /// The kubelet accepted it but hadn't finished within the settle window. The
     /// change is still in flight, not lost.
     InProgress,
-    /// The change can't be made on a *running* container. Two distinct causes
+    /// The change can't be made on a *running* container. Three distinct causes
     /// land here because they have one story for the caller — the setting is
     /// saved and applies at the next start:
     ///
@@ -72,6 +80,10 @@ pub(crate) enum ResizeOutcome {
     ///   `resizePolicy: RestartContainer` for memory, which the catalog
     ///   deliberately doesn't — restarting the game to shrink it would give away
     ///   the one property this path exists for.
+    /// - The namespace quota won't admit the growth (403, `exceeded quota`).
+    ///   The bot prices *creates* against the quota up front (ADR-027), but a
+    ///   resize's delta depends on what the pod already holds, so here the
+    ///   cluster's own rejection is the answer.
     /// - The kubelet accepts it and then reports it `Infeasible`, typically
     ///   because the node has no room left to grow into.
     ///
@@ -159,7 +171,10 @@ pub(crate) async fn resize_instance(
         // A refusal is not a failure to reach the cluster, and reporting it as
         // one would send the caller looking for a network problem that isn't
         // there. The API's own message says exactly what it objected to.
-        Err(kube::Error::Api(response)) if response.code == REFUSED_STATUS => {
+        Err(kube::Error::Api(response))
+            if response.code == REFUSED_STATUS
+                || (response.code == QUOTA_STATUS && response.message.contains(QUOTA_MARKER)) =>
+        {
             debug!(
                 instance,
                 pod = %pod_name,
