@@ -15,8 +15,7 @@ use super::condition::{Condition, compose_batch_prompt, next_empty_since, wait_k
 use super::task::DeferredTask;
 use crate::agent::{ChatMessage, SessionOutcome, TurnOrigin};
 use crate::agones::{
-    FsOutcome, InstanceOwner, ReadyWait, ServerScope, owner_of, supervisor_occupancy,
-    wait_for_ready_within,
+    FsOutcome, ReadyWait, ServerScope, owner_of, supervisor_occupancy, wait_for_ready_within,
 };
 use crate::discord::gary::{
     ConfirmMode, GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
@@ -224,11 +223,23 @@ async fn run_batch(
         Ok(owner) => owner.unwrap_or_default(),
         Err(err) => {
             error!(error = ?err, server = %server, "deferred batch: failed to resolve guild scope");
-            InstanceOwner::default()
+            // Abandon the batch rather than run it unscoped. Falling through here
+            // used to yield an owner with no guild, which `ServerScope::All`
+            // reads as the cross-guild operator view — so a transient API error
+            // silently widened an unattended manager-tier turn to every tenant's
+            // servers. A dropped batch is recoverable; a cross-tenant edit is not.
+            return;
         }
     };
-    let guild = owner.guild.map(|id| id.as_str().to_owned());
-    let scope = guild.clone().map_or(ServerScope::All, ServerScope::Guild);
+    let Some(guild) = owner.guild.map(|id| id.as_str().to_owned()) else {
+        error!(
+            server = %server,
+            "deferred batch: server has no owning guild label; refusing to run it unscoped"
+        );
+        return;
+    };
+    let scope = ServerScope::Guild(guild.clone());
+    let guild = Some(guild);
     let guild_id = guild.as_deref().and_then(|id| id.parse::<u64>().ok());
 
     let games = game_catalog_list(data);

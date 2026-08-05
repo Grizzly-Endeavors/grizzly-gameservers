@@ -23,6 +23,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::agent::{Environment, OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
+use crate::throttle::{TurnSubject, TurnThrottle};
 
 /// Cloneable handles the in-game endpoint shares with the rest of the bot. Every
 /// field is a cheap clone (an `Arc` bump or a short owned string), so the endpoint
@@ -53,6 +54,9 @@ pub(crate) struct IngameDeps {
     /// Records an in-game escalation in the product event log. In-game tools are
     /// read-only, so this is the only event the endpoint emits.
     pub(crate) events: Arc<crate::events::EventLog>,
+    /// Admission control for paid turns. The in-game surface needs it most: its
+    /// callers hold no Discord identity and reach it over a public game port.
+    pub(crate) turn_throttle: Arc<TurnThrottle>,
 }
 
 impl IngameDeps {
@@ -73,6 +77,7 @@ impl IngameDeps {
             environment: data.environment,
             telemetry: Arc::clone(&data.telemetry),
             events: Arc::clone(&data.events),
+            turn_throttle: Arc::clone(&data.turn_throttle),
         }
     }
 }
@@ -107,7 +112,24 @@ async fn ingame_trigger(
     axum::Json(request): axum::Json<IngameTriggerRequest>,
 ) -> StatusCode {
     let deps = server.deps;
+    // The only other brake on this path is a cooldown inside the game pod, which
+    // is code the asker is a client of — it paces a polite player and bounds
+    // nothing else. This is the authoritative one: the caller needs no Discord
+    // identity, so the player name the pod reports is the finest subject there is.
+    let subject = TurnSubject::InGamePlayer {
+        server: request.server.clone(),
+        player: request.player.clone(),
+    };
+    if deps.turn_throttle.claim(&subject).await.is_err() {
+        // Nothing to say back: the reply path is an RCON broadcast into the game's
+        // public chat, so answering a flood would spam every player on the server.
+        // `claim` has already logged the refusal.
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
     server.tasks.spawn(async move {
+        let Ok(_permit) = deps.turn_throttle.admit_now() else {
+            return;
+        };
         agent::handle_ingame_question(&deps, &request.server, &request.player, &request.message)
             .await;
     });

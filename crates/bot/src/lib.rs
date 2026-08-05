@@ -23,6 +23,7 @@ mod prompts;
 mod sizing;
 mod store;
 mod telemetry;
+mod throttle;
 mod watchdog;
 
 pub use config::BotConfig;
@@ -81,6 +82,10 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let domain = config.domain;
     let control_port = config.control_port;
     let operator_ids: std::sync::Arc<[u64]> = config.operator_ids.into();
+    let guild_allowlist = announce_guild_allowlist(config.guild_allowlist);
+    let agent_port = config.agent_port;
+    let ingame_token = config.ingame_token;
+    let operator_token = config.operator_token;
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
     let DurableState {
@@ -152,6 +157,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         catalog,
         provision_lock,
         operator_ids,
+        guild_allowlist,
         guild_config,
         ollama,
         sessions,
@@ -160,6 +166,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sizing,
         guild_limits,
         backup,
+        turn_throttle: std::sync::Arc::new(throttle::TurnThrottle::new(config.throttle)),
         tasks: tasks.clone(),
         notifier,
         defer,
@@ -181,18 +188,25 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // cycle), so it must be built after `Data` — and before the gateway, so the
     // k8s probes have a `/health` target while Discord is still connecting.
     http::spawn(
-        http::HttpDeps {
-            ingame: ingame::IngameDeps::from_data(&data),
-            operator: http::operator::OperatorDeps::from_data(&data),
-            port: config.agent_port,
-            ingame_token: config.ingame_token,
-            operator_token: config.operator_token,
-        },
+        http::HttpDeps::from_data(&data, agent_port, ingame_token, operator_token),
         &tasks,
         shutdown.clone(),
     );
 
     run_gateway(config.token, data, shutdown, tasks, telemetry).await
+}
+
+/// Share the admitted-guild list, saying at startup which posture is in force.
+/// An empty list is the open posture and is worth a `warn`: it is correct for a
+/// deploy that hasn't been given a list, and wrong for one that was meant to have
+/// one, and only the log distinguishes them.
+fn announce_guild_allowlist(guilds: Vec<u64>) -> std::sync::Arc<[u64]> {
+    if guilds.is_empty() {
+        warn!("no GAMESERVERS_GUILD_ALLOWLIST set: every guild the bot is invited to is served");
+    } else {
+        info!(guilds = guilds.len(), "serving only allowlisted guilds");
+    }
+    guilds.into()
 }
 
 /// Stand up turn telemetry and put its score poster on the tracked task set, so
@@ -294,6 +308,19 @@ async fn on_gateway_event(
     data: &Data,
 ) -> Result<(), discord::Error> {
     if let serenity::FullEvent::GuildCreate { guild, .. } = event {
+        // An unadmitted guild gets an *empty* command set rather than being
+        // skipped: a guild removed from the allowlist must lose the commands it
+        // was already registered with, and re-registering empty is how that
+        // revocation reaches Discord.
+        if !discord::guild_is_admitted(data, guild.id.get()) {
+            let revoked: Vec<poise::Command<Data, discord::Error>> = Vec::new();
+            poise::builtins::register_in_guild(ctx, &revoked, guild.id).await?;
+            warn!(
+                guild = guild.id.get(),
+                "ignoring a guild that is not on the allowlist"
+            );
+            return Ok(());
+        }
         poise::builtins::register_in_guild(ctx, &framework.options().commands, guild.id).await?;
         // GuildCreate re-fires on every gateway reconnect/resume, so this would be
         // routine repeat noise at info — the interesting signal is a *new* guild,
