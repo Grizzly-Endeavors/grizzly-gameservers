@@ -21,7 +21,6 @@ use tokio::sync::mpsc;
 pub(crate) use detect::{DetectorState, PollObservation, StatusObservation};
 pub(crate) use respond::spawn_responder;
 
-use crate::config::WatchdogMode;
 use crate::domain::{GameId, GuildId, InstanceName};
 
 /// How many fired incidents may sit between the sampler and the responder before
@@ -97,20 +96,12 @@ pub(crate) struct Incident {
     pub(crate) facts: IncidentFacts,
 }
 
-/// The sampler→responder incident channel, or `(None, None)` when the watchdog
-/// is off — no channel means the sampler skips detection entirely and the
-/// responder is never spawned.
-pub(crate) fn channel(
-    mode: WatchdogMode,
-) -> (
-    Option<mpsc::Sender<Incident>>,
-    Option<mpsc::Receiver<Incident>>,
-) {
-    match mode {
-        WatchdogMode::Off => (None, None),
-        WatchdogMode::On | WatchdogMode::Shadow => {
-            let (tx, rx) = mpsc::channel(QUEUE_DEPTH);
-            (Some(tx), Some(rx))
-        }
-    }
+/// The sampler→responder incident channel.
+///
+/// Built unconditionally, including when the watchdog is off: the mode is an
+/// operator setting that can change while the process runs, so wiring the seam
+/// at startup is what lets `off` become `shadow` — or `on` — without a restart.
+/// Both ends consult the live mode themselves; an empty channel costs nothing.
+pub(crate) fn channel() -> (mpsc::Sender<Incident>, mpsc::Receiver<Incident>) {
+    mpsc::channel(QUEUE_DEPTH)
 }

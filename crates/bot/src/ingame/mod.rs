@@ -39,9 +39,13 @@ pub(crate) struct IngameDeps {
     pub(crate) domain: String,
     pub(crate) control_port: u16,
     pub(crate) catalog: Arc<GameCatalog>,
-    /// Gary's model connection. `None` means there is nothing to answer with, so
-    /// the route isn't mounted at all.
+    /// Gary's boot model connection. `None` means there is nothing to answer
+    /// with, so the route isn't mounted at all. Resolve a turn's actual
+    /// connection through [`Self::ollama_now`] — the model tag is a live setting.
     pub(crate) ollama: Option<OllamaConfig>,
+    /// The operator-tunable knobs. Held rather than copied out, so the model tag
+    /// and round budget a turn runs with are the current ones.
+    pub(crate) settings: Arc<crate::settings::RuntimeSettings>,
     pub(crate) sessions: Arc<SessionStore>,
     /// DMs the operators when an in-game `@Gary` question exhausts the round
     /// budget, so the escalation reaches a human instead of only a `warn` log.
@@ -72,6 +76,7 @@ impl IngameDeps {
             control_port: data.control_port,
             catalog: Arc::clone(&data.catalog),
             ollama: data.ollama.clone(),
+            settings: Arc::clone(&data.settings),
             sessions: Arc::clone(&data.sessions),
             notifier: data.notifier.clone(),
             environment: data.environment,
@@ -79,6 +84,12 @@ impl IngameDeps {
             events: Arc::clone(&data.events),
             turn_throttle: Arc::clone(&data.turn_throttle),
         }
+    }
+
+    /// Gary's model connection as it stands right now. Same resolution the
+    /// Discord shell uses; call it once per turn.
+    pub(crate) fn ollama_now(&self) -> Option<OllamaConfig> {
+        crate::discord::ollama_now(self.ollama.as_ref(), &self.settings)
     }
 }
 

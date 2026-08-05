@@ -80,9 +80,12 @@ impl GatewayHandle {
 /// serves the guilds already relying on it rather than going dark.
 ///
 /// Applied to command registration and to every agent surface, because a guild
-/// that isn't served must not be able to spend model turns either.
+/// that isn't served must not be able to spend model turns either. Read from the
+/// live settings snapshot on every call rather than from a copy, so admitting or
+/// revoking a guild in the admin panel binds immediately.
 pub(crate) fn guild_is_admitted(data: &Data, guild: u64) -> bool {
-    data.guild_allowlist.is_empty() || data.guild_allowlist.contains(&guild)
+    let allowlist = &data.settings.snapshot().guild_allowlist;
+    allowlist.is_empty() || allowlist.contains(&guild)
 }
 
 /// Per-command state shared with every poise command handler. `Clone` is cheap
@@ -108,9 +111,10 @@ pub(crate) struct Data {
     /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
     /// every guild and carrying the all-guilds visibility scope.
     pub(crate) operator_ids: Arc<[u64]>,
-    /// Guilds the operator has admitted. Empty serves every guild — see
-    /// [`BotConfig::guild_allowlist`](crate::config::BotConfig::guild_allowlist).
-    pub(crate) guild_allowlist: Arc<[u64]>,
+    /// The operator-tunable knobs, resolved database override > environment >
+    /// compiled default. Read at the point of use — never copied into a field —
+    /// so a change made in the admin panel reaches every surface at once.
+    pub(crate) settings: Arc<crate::settings::RuntimeSettings>,
     /// Per-guild admin config (admin roles/users) set at runtime via `/config`,
     /// backed by Postgres. Empty per guild when persistence is down — auth then
     /// falls back to operators + guild owner (fail-closed).
@@ -171,6 +175,37 @@ pub(crate) struct Data {
     /// from which surface. Backed by Postgres; a disabled log accepts and
     /// discards, so emission sites never branch on it.
     pub(crate) events: Arc<crate::events::EventLog>,
+}
+
+impl Data {
+    /// Gary's model connection as it stands right now, or `None` when no API key
+    /// was configured at startup.
+    ///
+    /// The credential half is frozen at boot — it is a secret, so it arrives
+    /// through ESO and rotating it is a redeploy — while the model tag and base
+    /// URL come from the live settings. **Call this once, at the start of a
+    /// turn, and use the result for every round**: a turn that re-read the model
+    /// between rounds could switch models mid-conversation, which reads to the
+    /// person as Gary changing his mind about what he is.
+    pub(crate) fn ollama_now(&self) -> Option<OllamaConfig> {
+        ollama_now(self.ollama.as_ref(), &self.settings)
+    }
+}
+
+/// Merge the boot credential with the live model settings. Free of [`Data`] so
+/// the in-game endpoint, which carries its own carved-out handles, resolves the
+/// connection exactly the same way.
+pub(crate) fn ollama_now(
+    boot: Option<&OllamaConfig>,
+    settings: &crate::settings::RuntimeSettings,
+) -> Option<OllamaConfig> {
+    let boot = boot?;
+    let effective = settings.snapshot();
+    Some(OllamaConfig {
+        api_key: boot.api_key.clone(),
+        base_url: effective.gary_base_url.clone(),
+        model: effective.gary_model.clone(),
+    })
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

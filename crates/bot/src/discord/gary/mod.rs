@@ -28,9 +28,9 @@ use super::auth::{AccessLevel, Speaker, access_level_for};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::{
-    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, Role, SessionCallbacks,
-    SessionEvent, SessionId, SessionKey, SessionOutcome, ToolDef, TurnActor, TurnIdentity,
-    TurnOrigin, TurnRecorder, run_session, send_chat_completion,
+    ChatMessage, Completion, EscalationReason, Role, SessionCallbacks, SessionEvent, SessionId,
+    SessionKey, SessionOutcome, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
+    run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
 use crate::domain::GuildId;
@@ -340,7 +340,10 @@ pub(crate) async fn run_gary_turn(
     turn: &GaryTurn<'_>,
     messages: &mut Vec<ChatMessage>,
 ) -> Result<SessionOutcome> {
-    let Some(ollama) = turn.data.ollama.as_ref() else {
+    // Resolved once, here, and used for every round below: the model tag is an
+    // operator setting, and re-reading it per round could swap models partway
+    // through a conversation.
+    let Some(connection) = turn.data.ollama_now() else {
         // Callers gate on Gary being configured; this is defense in depth.
         send_chunks(turn.ctx, turn.channel_id, GARY_NOT_CONFIGURED_REPLY).await;
         return Ok(SessionOutcome {
@@ -349,6 +352,8 @@ pub(crate) async fn run_gary_turn(
             generations: Vec::new(),
         });
     };
+    let ollama = &connection;
+    let max_rounds = turn.data.settings.snapshot().gary_max_rounds;
 
     let tool_defs = tools::available_tools(turn.access);
     let tool_ctx = tools::ToolCtx {
@@ -398,7 +403,7 @@ pub(crate) async fn run_gary_turn(
     let outcome = run_session(
         messages,
         tool_defs,
-        DEFAULT_MAX_ROUNDS,
+        max_rounds,
         &recorder,
         &SessionCallbacks {
             complete: &complete,

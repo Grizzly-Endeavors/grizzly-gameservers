@@ -43,17 +43,10 @@ const STORM_MAX_TURNS: usize = 3;
 const STORM_WINDOW: Duration = Duration::from_mins(30);
 
 /// Consume incidents until shutdown, on the tracked task set so an in-flight
-/// response is drained rather than cut off. `None` (the watchdog is off, so no
-/// channel exists) spawns nothing.
-pub(crate) fn spawn_responder(
-    data: Data,
-    mode: WatchdogMode,
-    incidents: Option<mpsc::Receiver<Incident>>,
-) {
-    let Some(mut incidents) = incidents else {
-        return;
-    };
+/// response is drained rather than cut off.
+pub(crate) fn spawn_responder(data: Data, mut incidents: mpsc::Receiver<Incident>) {
     let tasks = data.tasks.clone();
+    let mode = data.settings.snapshot().watchdog;
     tasks.spawn(async move {
         let mut turn_starts: VecDeque<Instant> = VecDeque::new();
         loop {
@@ -64,7 +57,7 @@ pub(crate) fn spawn_responder(
                     None => return,
                 },
             };
-            handle_incident(&data, mode, &incident, &mut turn_starts).await;
+            handle_incident(&data, &incident, &mut turn_starts).await;
         }
     });
     info!(mode = mode.as_str(), "proactive watchdog responder started");
@@ -72,23 +65,22 @@ pub(crate) fn spawn_responder(
 
 /// Dispose of one incident according to the watchdog mode, recording exactly
 /// one incident event for it whatever happens.
-async fn handle_incident(
-    data: &Data,
-    mode: WatchdogMode,
-    incident: &Incident,
-    turn_starts: &mut VecDeque<Instant>,
-) {
+///
+/// The mode is read here, per incident, rather than captured when the responder
+/// spawned: an operator who turns the watchdog down mid-storm expects the next
+/// incident to be recorded rather than acted on, not the one after the restart.
+async fn handle_incident(data: &Data, incident: &Incident, turn_starts: &mut VecDeque<Instant>) {
     warn!(
         instance = %incident.instance,
         signal = incident.kind.as_str(),
         facts = ?incident.facts,
         "watchdog incident fired"
     );
-    match mode {
+    match data.settings.snapshot().watchdog {
         WatchdogMode::On => respond(data, incident, turn_starts).await,
-        // Off is unreachable in practice — that mode never creates the channel
-        // this loop consumes — but recording it like shadow keeps even a
-        // miswiring auditable.
+        // `Off` reaches here only for an incident the detector had already fired
+        // when the mode changed under it. Recording it like shadow keeps the
+        // event log's one-row-per-incident promise through the transition.
         WatchdogMode::Shadow | WatchdogMode::Off => {
             data.events
                 .record(mapping::incident_event(incident, mapping::SHADOW, None))

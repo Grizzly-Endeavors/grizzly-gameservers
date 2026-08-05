@@ -18,9 +18,9 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::{
-    ChatMessage, Completion, DEFAULT_MAX_ROUNDS, EscalationReason, SessionCallbacks, SessionEvent,
-    SessionKey, SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin,
-    TurnRecorder, run_session, send_chat_completion,
+    ChatMessage, Completion, EscalationReason, SessionCallbacks, SessionEvent, SessionKey,
+    SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
+    run_session, send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
@@ -81,11 +81,15 @@ pub(crate) async fn handle_ingame_question(
     player: &str,
     question: &str,
 ) {
-    let Some(ollama) = deps.ollama.as_ref() else {
+    // Resolved once for the whole turn, like the Discord shell: the model tag is
+    // an operator setting, and a turn must not change models between rounds.
+    let Some(connection) = deps.ollama_now() else {
         // The endpoint isn't started without Gary, so this is defense in depth.
         warn!(server, "in-game trigger arrived but Gary isn't configured");
         return;
     };
+    let ollama = &connection;
+    let max_rounds = deps.settings.snapshot().gary_max_rounds;
 
     let Some((guild, game)) = resolve_scope(deps, server).await else {
         return;
@@ -136,7 +140,7 @@ pub(crate) async fn handle_ingame_question(
     let outcome = run_session(
         &mut messages,
         tool_defs,
-        DEFAULT_MAX_ROUNDS,
+        max_rounds,
         &recorder,
         &SessionCallbacks {
             complete: &complete,

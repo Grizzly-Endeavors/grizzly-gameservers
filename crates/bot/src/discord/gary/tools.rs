@@ -67,9 +67,7 @@ use crate::prompts::{
     SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
     SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
-use crate::sizing::{
-    MAX_CPU_MILLICORES, MAX_MEM_BYTES, MIN_CPU_MILLICORES, MIN_MEM_BYTES, Sizing, SizingRejection,
-};
+use crate::sizing::{Sizing, SizingBounds, SizingRejection};
 
 /// How a destructive tool obtains the human approval it requires.
 ///
@@ -1053,9 +1051,10 @@ async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> S
         Ok(sizing) => sizing,
         Err(detail) => return prompts::SetResourcesOutOfRange { detail: &detail }.render(),
     };
-    if let Err(rejection) = sizing.validate() {
+    let bounds = ctx.data.settings.snapshot().sizing_bounds;
+    if let Err(rejection) = sizing.validate(bounds) {
         return prompts::SetResourcesOutOfRange {
-            detail: &describe_rejection(rejection),
+            detail: &describe_rejection(rejection, bounds),
         }
         .render();
     }
@@ -1200,21 +1199,25 @@ fn parse_sizing(params: &SetResourcesParams) -> Result<Sizing, String> {
 
 /// Turn a validation failure into a sentence naming the figure and its bound, so
 /// the model can propose a value that would work instead of retrying blindly.
-fn describe_rejection(rejection: SizingRejection) -> String {
+/// The bounds are passed in rather than read from the constants, so the number
+/// quoted is the one that actually refused the value.
+fn describe_rejection(rejection: SizingRejection, bounds: SizingBounds) -> String {
     match rejection {
         SizingRejection::CpuBelowFloor => format!(
-            "the CPU reservation is too small — {MIN_CPU_MILLICORES}m is the least a server can have"
+            "the CPU reservation is too small — {}m is the least a server can have",
+            bounds.min_cpu_millicores
         ),
         SizingRejection::MemoryBelowFloor => format!(
             "the memory reservation is too small — {} is the least a server can have",
-            human_size(MIN_MEM_BYTES.unsigned_abs())
+            human_size(bounds.min_mem_bytes.unsigned_abs())
         ),
         SizingRejection::CpuAboveCeiling => format!(
-            "that's more CPU than any machine here has — {MAX_CPU_MILLICORES}m is the most a server can be given"
+            "that's more CPU than any machine here has — {}m is the most a server can be given",
+            bounds.max_cpu_millicores
         ),
         SizingRejection::MemoryAboveCeiling => format!(
             "that's more memory than any machine here has — {} is the most a server can be given",
-            human_size(MAX_MEM_BYTES.unsigned_abs())
+            human_size(bounds.max_mem_bytes.unsigned_abs())
         ),
         SizingRejection::CpuRequestExceedsLimit => {
             "the CPU reservation is above its own maximum; the maximum has to be at least the reservation".to_owned()

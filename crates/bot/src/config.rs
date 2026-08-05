@@ -132,6 +132,21 @@ impl WatchdogMode {
     }
 }
 
+/// Parse a watchdog mode from a bare string, case- and whitespace-insensitively.
+/// Shared with `crate::settings` so a mode chosen in the admin panel is held to
+/// the same vocabulary the environment variable accepts. `None` is an
+/// unrecognized value, which every caller turns into a refusal rather than a
+/// silent fallback — a typo'd `shaddow` must not quietly run turns the operator
+/// meant to suppress.
+pub(crate) fn parse_watchdog_mode(raw: &str) -> Option<WatchdogMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "on" => Some(WatchdogMode::On),
+        "shadow" => Some(WatchdogMode::Shadow),
+        "off" => Some(WatchdogMode::Off),
+        _ => None,
+    }
+}
+
 /// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
 pub struct BotConfig {
@@ -470,14 +485,8 @@ fn watchdog_mode_from_env(lookup: EnvLookup) -> Result<WatchdogMode> {
     let Some(raw) = optional(lookup, "GAMESERVERS_WATCHDOG") else {
         return Ok(WatchdogMode::On);
     };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "on" => Ok(WatchdogMode::On),
-        "shadow" => Ok(WatchdogMode::Shadow),
-        "off" => Ok(WatchdogMode::Off),
-        _ => Err(anyhow!(
-            "GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"
-        )),
-    }
+    parse_watchdog_mode(&raw)
+        .with_context(|| format!("GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"))
 }
 
 /// Which population this process's traffic belongs to. Derived rather than
@@ -641,16 +650,25 @@ fn parse_user_ids(raw: Option<&str>) -> Result<Vec<u64>> {
 /// Blank entries are ignored so trailing commas and whitespace are tolerated;
 /// `key` names the variable so a typo points at the right line of the deploy.
 fn parse_snowflakes(raw: Option<&str>, key: &str) -> Result<Vec<u64>> {
-    let Some(raw) = raw else {
-        return Ok(Vec::new());
-    };
+    raw.map_or_else(|| Ok(Vec::new()), |raw| parse_snowflake_list(raw, key))
+}
+
+/// Parse a comma-separated list of Discord snowflakes from a bare string.
+/// Shared with `crate::settings` so a list typed into the admin panel is held to
+/// exactly the grammar the environment variable accepts — `label` names whatever
+/// the caller is reading, so the error points at the right place either way.
+///
+/// # Errors
+///
+/// Returns an error naming the first entry that isn't an integer.
+pub(crate) fn parse_snowflake_list(raw: &str, label: &str) -> Result<Vec<u64>> {
     raw.split(',')
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
         .map(|entry| {
             entry
                 .parse::<u64>()
-                .with_context(|| format!("{key} contains a non-integer: {entry:?}"))
+                .with_context(|| format!("{label} contains a non-integer: {entry:?}"))
         })
         .collect()
 }

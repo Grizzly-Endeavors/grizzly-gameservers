@@ -12,7 +12,7 @@ fn valid() -> Sizing {
 
 #[test]
 fn a_sizing_within_every_bound_is_accepted() {
-    assert_eq!(valid().validate(), Ok(()));
+    assert_eq!(valid().validate(SizingBounds::default()), Ok(()));
 }
 
 #[test]
@@ -23,14 +23,14 @@ fn the_floors_are_inclusive() {
         mem_request_bytes: MIN_MEM_BYTES,
         ..valid()
     };
-    assert_eq!(floor.validate(), Ok(()));
+    assert_eq!(floor.validate(SizingBounds::default()), Ok(()));
 
     assert_eq!(
         Sizing {
             cpu_request_millicores: MIN_CPU_MILLICORES - 1,
             ..floor
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::CpuBelowFloor)
     );
     assert_eq!(
@@ -38,7 +38,7 @@ fn the_floors_are_inclusive() {
             mem_request_bytes: MIN_MEM_BYTES - 1,
             ..floor
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::MemoryBelowFloor)
     );
 }
@@ -50,14 +50,14 @@ fn the_ceilings_are_inclusive() {
         mem_limit_bytes: MAX_MEM_BYTES,
         ..valid()
     };
-    assert_eq!(ceiling.validate(), Ok(()));
+    assert_eq!(ceiling.validate(SizingBounds::default()), Ok(()));
 
     assert_eq!(
         Sizing {
             cpu_limit_millicores: MAX_CPU_MILLICORES + 1,
             ..ceiling
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::CpuAboveCeiling)
     );
     assert_eq!(
@@ -65,7 +65,7 @@ fn the_ceilings_are_inclusive() {
             mem_limit_bytes: MAX_MEM_BYTES + 1,
             ..ceiling
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::MemoryAboveCeiling)
     );
 }
@@ -80,7 +80,7 @@ fn a_request_above_its_limit_is_refused_rather_than_left_unschedulable() {
             cpu_limit_millicores: 2000,
             ..valid()
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::CpuRequestExceedsLimit)
     );
     assert_eq!(
@@ -89,7 +89,7 @@ fn a_request_above_its_limit_is_refused_rather_than_left_unschedulable() {
             mem_limit_bytes: 4 * 1024 * 1024 * 1024,
             ..valid()
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Err(SizingRejection::MemoryRequestExceedsLimit)
     );
 }
@@ -104,7 +104,7 @@ fn a_request_equal_to_its_limit_is_fine() {
             mem_request_bytes: 4 * 1024 * 1024 * 1024,
             mem_limit_bytes: 4 * 1024 * 1024 * 1024,
         }
-        .validate(),
+        .validate(SizingBounds::default()),
         Ok(())
     );
 }

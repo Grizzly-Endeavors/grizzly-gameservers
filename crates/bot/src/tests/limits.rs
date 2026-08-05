@@ -164,3 +164,21 @@ fn oversized_server_count_still_refuses() {
     let result = check_create(&usage(usize::MAX, 0, 0), None, &caps);
     assert!(matches!(result, Err(LimitRefusal::ServerCount { .. })));
 }
+
+/// The global defaults are an operator setting, so they have to be read live.
+/// A cached copy here is how "raise everyone's cap" would silently need a
+/// restart to take effect.
+#[tokio::test]
+async fn the_global_defaults_come_from_the_live_settings() {
+    let mut snapshot = crate::settings::SettingsSnapshot::for_test();
+    snapshot.guild_limits = GuildLimitDefaults {
+        servers: 9,
+        cpu_limit_millicores: 32_000,
+        mem_limit_bytes: 64 * 1024 * 1024 * 1024,
+    };
+    let settings = Arc::new(crate::settings::RuntimeSettings::fixed(snapshot));
+    let limits = GuildLimits::connect(None, settings).await;
+    let caps = limits.caps_for("123").await;
+    assert_eq!(caps.servers, 9);
+    assert_eq!(caps.cpu_limit_millicores, 32_000);
+}
