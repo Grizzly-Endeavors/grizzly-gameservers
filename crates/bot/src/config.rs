@@ -87,6 +87,10 @@ const IN_CLUSTER_MARKER: &str = "KUBERNETES_SERVICE_HOST";
 /// match the hardcoded pod selector/port in
 /// `cluster/guardrails/bot-to-langfuse-egress.yaml` (see issue #42).
 const DEFAULT_LANGFUSE_HOST: &str = "http://langfuse-web.langfuse.svc.cluster.local:3000";
+/// Authentik group whose members may reach the super-admin panel. The platform's
+/// superuser group (grizzly-platform ADR-049 binds app visibility to it), so the
+/// panel admits exactly the people who already administer the homelab.
+const DEFAULT_ADMIN_GROUP: &str = "grizzly-admins";
 /// Stands in for the image digest on an off-cluster run, where there is no
 /// digest to report. Traces from such a run are quarantined by their
 /// `development` environment anyway.
@@ -245,6 +249,47 @@ pub struct BotConfig {
     /// Postgres (`crate::limits::GuildLimits`); these are the baseline every
     /// guild starts from, and the enforcement floor when persistence is down.
     pub(crate) guild_limits: GuildLimitDefaults,
+    /// The super-admin panel's listener, or `None` when no port is set — in
+    /// which case it is never served.
+    pub(crate) admin: Option<AdminConfig>,
+}
+
+/// Where the super-admin panel is served and who may reach it.
+///
+/// A separate listener from the agent endpoint, because the two get different
+/// network trust: the agent port must stay reachable by game pods (the in-game
+/// `@Gary` trigger), while the panel's forward-auth headers are only meaningful
+/// if nothing but the ingress controller can reach it. See
+/// [ADR-025](../../docs/decisions/025-super-admin-panel.md).
+#[derive(Clone, Debug)]
+pub(crate) struct AdminConfig {
+    pub(crate) port: u16,
+    /// Authentik group a signed-in user must hold. Checked in-process as defense
+    /// in depth behind the outpost's own policy binding, and so a non-member
+    /// gets a page that says why rather than a bare 403.
+    pub(crate) required_group: String,
+}
+
+/// Build the admin panel's settings, or `None` when `GAMESERVERS_ADMIN_PORT` is
+/// unset — in which case the listener never binds at all.
+///
+/// Fail-closed by absence, the same posture as the operator token: a panel that
+/// is reachable but misconfigured is worse than one that was never served, and
+/// "unset means off" cannot be got wrong by a half-rolled deploy.
+///
+/// # Errors
+///
+/// Returns an error if the port is set but isn't a usable port number.
+fn admin_config_from_env(lookup: EnvLookup) -> Result<Option<AdminConfig>> {
+    let Some(port) = optional_port(lookup, "GAMESERVERS_ADMIN_PORT")? else {
+        return Ok(None);
+    };
+    Ok(Some(AdminConfig {
+        port,
+        required_group: optional(lookup, "GAMESERVERS_ADMIN_GROUP")
+            .filter(|group| !group.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_GROUP.to_owned()),
+    }))
 }
 
 /// The global per-guild cap defaults: how many servers a guild may hold and what
@@ -392,6 +437,7 @@ impl BotConfig {
             optional(lookup, "GAMESERVERS_RELEASE").unwrap_or_else(|| DEFAULT_RELEASE.to_owned());
         let watchdog = watchdog_mode_from_env(lookup)?;
         let guild_limits = guild_limit_defaults_from_env(lookup)?;
+        let admin = admin_config_from_env(lookup)?;
 
         Ok(Self {
             token,
@@ -423,6 +469,7 @@ impl BotConfig {
             release,
             watchdog,
             guild_limits,
+            admin,
         })
     }
 }

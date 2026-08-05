@@ -26,7 +26,10 @@
 //!
 //! **Not everything can be hot.** The background cycles bake their cadence into a
 //! ticker when their task spawns, so an override to one of those is in force from
-//! the next boot rather than immediately.
+//! the next boot rather than immediately. [`RuntimeSettings::booted`] keeps what
+//! this process actually started with, so the panel can show "configured 12h,
+//! still running the 24h it booted with" rather than leaving the operator to
+//! remember.
 //!
 //! **Secrets are deliberately absent.** `OLLAMA_API_KEY`, the database password,
 //! the bearer tokens — none of them are settings. They live in 1Password and
@@ -47,6 +50,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use arc_swap::ArcSwap;
 use sqlx::postgres::PgPool;
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::config::{
@@ -69,10 +73,58 @@ const SETTINGS_SCHEMA: &str = "\
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
         updated_by TEXT)";
 
+/// Which group of the admin panel a setting belongs under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Section {
+    Agent,
+    Throttle,
+    Guilds,
+    Limits,
+    Sizing,
+    Watchdog,
+    Cycles,
+}
+
+impl Section {
+    /// Every section, in the order the panel lists them.
+    pub(crate) const ALL: &'static [Self] = &[
+        Self::Agent,
+        Self::Throttle,
+        Self::Guilds,
+        Self::Limits,
+        Self::Sizing,
+        Self::Watchdog,
+        Self::Cycles,
+    ];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Agent => "Gary",
+            Self::Throttle => "Turn admission",
+            Self::Guilds => "Guild admission",
+            Self::Limits => "Per-guild caps",
+            Self::Sizing => "Per-server bounds",
+            Self::Watchdog => "Watchdog",
+            Self::Cycles => "Background cycles",
+        }
+    }
+}
+
+/// When a change to a setting starts mattering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reload {
+    /// Live: the next read of the snapshot sees it. A turn already in flight
+    /// keeps the view it started with, by design.
+    Hot,
+    /// Recorded now, in force after the next restart — the consumer captured the
+    /// value at startup (a ticker's period, most often) and has no re-read point.
+    Restart,
+}
+
 /// One operator-tunable knob. The variants are the whole catalog: `as_str` is
 /// what lands in the database, and every other method matches exhaustively, so
-/// adding a variant without deciding its grammar is a compile error rather than a
-/// silently half-wired setting.
+/// adding a variant without deciding its grammar, its section, or how it renders
+/// is a compile error rather than a silently half-wired setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SettingKey {
     GaryModel,
@@ -156,6 +208,134 @@ impl SettingKey {
     /// build doesn't know — a row left behind by an older or newer release.
     pub(crate) fn from_key(raw: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|key| key.as_str() == raw)
+    }
+
+    /// Which group of the admin panel this key is listed under. Presentation
+    /// only, but it lives beside the key so a new setting can't be added without
+    /// deciding where a human would look for it.
+    pub(crate) fn section(self) -> Section {
+        match self {
+            Self::GaryModel | Self::GaryBaseUrl | Self::GaryMaxRounds => Section::Agent,
+            Self::ThrottleBurst | Self::ThrottleRefillSeconds | Self::ThrottleMaxConcurrent => {
+                Section::Throttle
+            }
+            Self::GuildAllowlist => Section::Guilds,
+            Self::GuildMaxServers | Self::GuildMaxCpu | Self::GuildMaxMemory => Section::Limits,
+            Self::SizingMinCpu
+            | Self::SizingMinMemory
+            | Self::SizingMaxCpu
+            | Self::SizingMaxMemory => Section::Sizing,
+            Self::WatchdogModeKey => Section::Watchdog,
+            Self::BackupIntervalHours
+            | Self::BackupRetention
+            | Self::ArchiveRetentionDays
+            | Self::ReconcileIntervalMinutes
+            | Self::StrandedDwellMinutes
+            | Self::SampleIntervalMinutes => Section::Cycles,
+        }
+    }
+
+    /// Whether a change is live or waits for the next restart. The cycle
+    /// cadences are the restart set: each is captured into a `tokio` ticker when
+    /// its task spawns, and re-reading it per tick would buy a few minutes'
+    /// latency on a knob nobody turns in a hurry.
+    pub(crate) fn reload(self) -> Reload {
+        match self {
+            Self::BackupIntervalHours
+            | Self::BackupRetention
+            | Self::ArchiveRetentionDays
+            | Self::ReconcileIntervalMinutes
+            | Self::StrandedDwellMinutes
+            | Self::SampleIntervalMinutes => Reload::Restart,
+            Self::GaryModel
+            | Self::GaryBaseUrl
+            | Self::GaryMaxRounds
+            | Self::ThrottleBurst
+            | Self::ThrottleRefillSeconds
+            | Self::ThrottleMaxConcurrent
+            | Self::GuildAllowlist
+            | Self::GuildMaxServers
+            | Self::GuildMaxCpu
+            | Self::GuildMaxMemory
+            | Self::SizingMinCpu
+            | Self::SizingMinMemory
+            | Self::SizingMaxCpu
+            | Self::SizingMaxMemory
+            | Self::WatchdogModeKey => Reload::Hot,
+        }
+    }
+
+    /// One line describing what the knob does, shown beside its field.
+    pub(crate) fn summary(self) -> &'static str {
+        match self {
+            Self::GaryModel => "Model tag Gary drives for every turn.",
+            Self::GaryBaseUrl => "OpenAI-compatible chat-completions base URL.",
+            Self::GaryMaxRounds => "Model calls one turn may spend before it escalates to a human.",
+            Self::ThrottleBurst => "Turns one person may start back-to-back.",
+            Self::ThrottleRefillSeconds => "Seconds to earn one turn back.",
+            Self::ThrottleMaxConcurrent => "Turns allowed to run at once across every surface.",
+            Self::GuildAllowlist => {
+                "Discord servers admitted, comma-separated. Empty serves every server the bot is \
+                 invited to."
+            }
+            Self::GuildMaxServers => "Game servers one Discord server may hold at once.",
+            Self::GuildMaxCpu => "Total CPU one Discord server's live game servers may declare.",
+            Self::GuildMaxMemory => {
+                "Total memory one Discord server's live game servers may declare."
+            }
+            Self::SizingMinCpu => "Least CPU a single game server may be given.",
+            Self::SizingMinMemory => "Least memory a single game server may be given.",
+            Self::SizingMaxCpu => "Most CPU a single game server may be given.",
+            Self::SizingMaxMemory => "Most memory a single game server may be given.",
+            Self::WatchdogModeKey => {
+                "on responds to incidents, shadow only records them, off disables detection."
+            }
+            Self::BackupIntervalHours => "How often every running server is backed up.",
+            Self::BackupRetention => "Backups kept per server before older ones are pruned.",
+            Self::ArchiveRetentionDays => "How long an archived world is kept.",
+            Self::ReconcileIntervalMinutes => "How often stranded servers are swept for.",
+            Self::StrandedDwellMinutes => {
+                "How long a pod must sit terminating before it is forced out."
+            }
+            Self::SampleIntervalMinutes => "How often occupancy and resource samples are taken.",
+        }
+    }
+
+    /// Render this key's value out of `snapshot` in a form [`Self::assign`]
+    /// accepts back unchanged — the panel puts it straight into an editable
+    /// field, so a round trip that isn't lossless would silently rewrite a
+    /// setting the operator only opened to look at.
+    pub(crate) fn render(self, snapshot: &SettingsSnapshot) -> String {
+        match self {
+            Self::GaryModel => snapshot.gary_model.clone(),
+            Self::GaryBaseUrl => snapshot.gary_base_url.clone(),
+            Self::GaryMaxRounds => snapshot.gary_max_rounds.to_string(),
+            Self::ThrottleBurst => snapshot.throttle.burst.to_string(),
+            Self::ThrottleRefillSeconds => snapshot.throttle.refill_interval.as_secs().to_string(),
+            Self::ThrottleMaxConcurrent => snapshot.throttle.max_concurrent.to_string(),
+            Self::GuildAllowlist => snapshot
+                .guild_allowlist
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            Self::GuildMaxServers => snapshot.guild_limits.servers.to_string(),
+            Self::GuildMaxCpu => exact_cpu(snapshot.guild_limits.cpu_limit_millicores),
+            Self::GuildMaxMemory => exact_bytes(snapshot.guild_limits.mem_limit_bytes),
+            Self::SizingMinCpu => exact_cpu(snapshot.sizing_bounds.min_cpu_millicores),
+            Self::SizingMinMemory => exact_bytes(snapshot.sizing_bounds.min_mem_bytes),
+            Self::SizingMaxCpu => exact_cpu(snapshot.sizing_bounds.max_cpu_millicores),
+            Self::SizingMaxMemory => exact_bytes(snapshot.sizing_bounds.max_mem_bytes),
+            Self::WatchdogModeKey => snapshot.watchdog.as_str().to_owned(),
+            Self::BackupIntervalHours => (snapshot.backup_interval.as_secs() / 3600).to_string(),
+            Self::BackupRetention => snapshot.backup_retention.to_string(),
+            Self::ArchiveRetentionDays => snapshot.archive_retention_days.to_string(),
+            Self::ReconcileIntervalMinutes => {
+                (snapshot.reconcile_interval.as_secs() / 60).to_string()
+            }
+            Self::StrandedDwellMinutes => (snapshot.stranded_dwell.as_secs() / 60).to_string(),
+            Self::SampleIntervalMinutes => (snapshot.sample_interval.as_secs() / 60).to_string(),
+        }
     }
 
     /// The grammar this key accepts, phrased to complete "needs …". Used in the
@@ -473,9 +653,42 @@ fn compose(
     snapshot
 }
 
-/// The settings façade: the resolved snapshot every consumer reads.
+/// Millicores in the form the CPU parser reads back exactly. Always suffixed,
+/// because a bare `24` means twenty-four *cores* to that parser and rendering
+/// 24 millicores as `24` would multiply the value by a thousand on the next save.
+fn exact_cpu(millicores: i64) -> String {
+    format!("{millicores}m")
+}
+
+/// Bytes in the largest binary unit that divides them exactly, so `51539607552`
+/// comes back as `48Gi` and still parses to the same number. Exactness is the
+/// point: a rounded display value saved unchanged would quietly resize the cap.
+fn exact_bytes(bytes: i64) -> String {
+    if bytes <= 0 {
+        return bytes.to_string();
+    }
+    for (scale, suffix) in [
+        (1_i64 << 30, "Gi"),
+        (1_i64 << 20, "Mi"),
+        (1_i64 << 10, "Ki"),
+    ] {
+        if bytes % scale == 0 {
+            return format!("{}{suffix}", bytes / scale);
+        }
+    }
+    bytes.to_string()
+}
+
+/// The settings façade: baseline, stored overrides, and the resolved snapshot
+/// every consumer reads.
 pub(crate) struct RuntimeSettings {
+    store: Option<SettingsStore>,
+    baseline: SettingsSnapshot,
+    /// What this process actually started with. Compared against the live
+    /// snapshot to show which restart-class overrides aren't in force yet.
+    booted: Arc<SettingsSnapshot>,
     current: ArcSwap<SettingsSnapshot>,
+    overrides: RwLock<BTreeMap<SettingKey, StoredOverride>>,
 }
 
 impl RuntimeSettings {
@@ -508,23 +721,33 @@ impl RuntimeSettings {
                     error = ?err,
                     "stored runtime settings are inconsistent; running on the deployed values"
                 );
-                baseline
+                baseline.clone()
             }
         };
         info!(
             overrides = overrides.len(),
             "loaded runtime setting overrides"
         );
+        let resolved = Arc::new(resolved);
         Self {
-            current: ArcSwap::new(Arc::new(resolved)),
+            store: Some(store),
+            baseline,
+            booted: Arc::clone(&resolved),
+            current: ArcSwap::new(resolved),
+            overrides: RwLock::new(overrides),
         }
     }
 
-    /// A façade serving exactly `snapshot`. The shape when there's no database,
-    /// and the constructor tests and other façades use.
+    /// A façade serving exactly `snapshot`, with no persistence behind it. The
+    /// shape when there's no database, and the constructor tests use.
     pub(crate) fn fixed(snapshot: SettingsSnapshot) -> Self {
+        let resolved = Arc::new(snapshot.clone());
         Self {
-            current: ArcSwap::new(Arc::new(snapshot)),
+            store: None,
+            baseline: snapshot,
+            booted: Arc::clone(&resolved),
+            current: ArcSwap::new(resolved),
+            overrides: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -532,6 +755,32 @@ impl RuntimeSettings {
     /// a reference-count bump.
     pub(crate) fn snapshot(&self) -> Arc<SettingsSnapshot> {
         self.current.load_full()
+    }
+
+    /// What this process started with. A restart-class override shows up in
+    /// [`Self::snapshot`] the moment it is recorded but doesn't reach the running
+    /// subsystem until the next boot, and comparing the two is what lets the
+    /// panel say so instead of leaving the operator to remember.
+    pub(crate) fn booted(&self) -> Arc<SettingsSnapshot> {
+        Arc::clone(&self.booted)
+    }
+
+    /// The deployed values an override layers on top of — environment where set,
+    /// compiled default otherwise. Shown as the value clearing a setting returns
+    /// it to.
+    pub(crate) fn baseline(&self) -> &SettingsSnapshot {
+        &self.baseline
+    }
+
+    /// Whether overrides can be recorded. `false` means the panel is read-only;
+    /// the settings themselves keep working on the baseline.
+    pub(crate) fn is_available(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// The stored overrides, for showing provenance beside each value.
+    pub(crate) async fn overrides(&self) -> BTreeMap<SettingKey, StoredOverride> {
+        self.overrides.read().await.clone()
     }
 }
 
