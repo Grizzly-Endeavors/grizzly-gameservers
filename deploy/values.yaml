@@ -38,6 +38,23 @@ bot:
   # an absent key disables Gary). Override the model here without a rebuild.
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
+  # Super-admin web panel (ADR-025). Its own port, its own Service, and its own
+  # Ingress: the agent port above must stay reachable by game pods, while this
+  # one is reachable only by ingress-nginx — the CiliumNetworkPolicy in
+  # cluster/guardrails/bot-ingress.yaml is what enforces that, and it is what
+  # makes the panel's trust in Authentik's forward-auth headers sound. Disabled
+  # renders none of it and leaves GAMESERVERS_ADMIN_PORT unset, which is how the
+  # binary decides not to listen at all.
+  adminPanel:
+    enabled: true
+    host: gameservers-admin.grizzly-endeavors.com
+    # Must match DEFAULT_ADMIN_PORT expectations in the CNP below (see issue #42
+    # — YAML can't import a Rust const, and a mismatch is a silent Cilium drop).
+    port: 9361
+    # Authentik group whose members may reach it. Also bound as a policy on the
+    # application itself in the grizzly-platform blueprint, so this is the
+    # in-app half of a two-layer check.
+    requiredGroup: grizzly-admins
   # Foundation Postgres for the bot's durable state (the no-mention home-channel
   # registry). Host/port/name/user are plain config; the password is synced from
   # 1Password into the grizzly-gameservers-db Secret and injected via secretKeyRef
