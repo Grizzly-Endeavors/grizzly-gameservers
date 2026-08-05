@@ -1,4 +1,4 @@
-# ADR-024: Backups are keyed by guild, and the existing ones were migrated
+# ADR-025: Backups are keyed by guild, and the existing ones were migrated
 
 ## Status
 

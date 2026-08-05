@@ -19,6 +19,7 @@ use poise::serenity_prelude as serenity;
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use tracing::{error, info};
 
 use crate::agent::{Environment, OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
@@ -80,9 +81,12 @@ impl GatewayHandle {
 /// serves the guilds already relying on it rather than going dark.
 ///
 /// Applied to command registration and to every agent surface, because a guild
-/// that isn't served must not be able to spend model turns either.
+/// that isn't served must not be able to spend model turns either. Read from the
+/// live settings snapshot on every call rather than from a copy, so admitting or
+/// revoking a guild in the admin panel binds immediately.
 pub(crate) fn guild_is_admitted(data: &Data, guild: u64) -> bool {
-    data.guild_allowlist.is_empty() || data.guild_allowlist.contains(&guild)
+    let allowlist = &data.settings.snapshot().guild_allowlist;
+    allowlist.is_empty() || allowlist.contains(&guild)
 }
 
 /// Per-command state shared with every poise command handler. `Clone` is cheap
@@ -108,9 +112,10 @@ pub(crate) struct Data {
     /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
     /// every guild and carrying the all-guilds visibility scope.
     pub(crate) operator_ids: Arc<[u64]>,
-    /// Guilds the operator has admitted. Empty serves every guild — see
-    /// [`BotConfig::guild_allowlist`](crate::config::BotConfig::guild_allowlist).
-    pub(crate) guild_allowlist: Arc<[u64]>,
+    /// The operator-tunable knobs, resolved database override > environment >
+    /// compiled default. Read at the point of use — never copied into a field —
+    /// so a change made in the admin panel reaches every surface at once.
+    pub(crate) settings: Arc<crate::settings::RuntimeSettings>,
     /// Per-guild admin config (admin roles/users) set at runtime via `/config`,
     /// backed by Postgres. Empty per guild when persistence is down — auth then
     /// falls back to operators + guild owner (fail-closed).
@@ -171,6 +176,147 @@ pub(crate) struct Data {
     /// from which surface. Backed by Postgres; a disabled log accepts and
     /// discards, so emission sites never branch on it.
     pub(crate) events: Arc<crate::events::EventLog>,
+}
+
+impl Data {
+    /// Gary's model connection as it stands right now, or `None` when no API key
+    /// was configured at startup.
+    ///
+    /// The credential half is frozen at boot — it is a secret, so it arrives
+    /// through ESO and rotating it is a redeploy — while the model tag and base
+    /// URL come from the live settings. **Call this once, at the start of a
+    /// turn, and use the result for every round**: a turn that re-read the model
+    /// between rounds could switch models mid-conversation, which reads to the
+    /// person as Gary changing his mind about what he is.
+    pub(crate) fn ollama_now(&self) -> Option<OllamaConfig> {
+        ollama_now(self.ollama.as_ref(), &self.settings)
+    }
+}
+
+/// Merge the boot credential with the live model settings. Free of [`Data`] so
+/// the in-game endpoint, which carries its own carved-out handles, resolves the
+/// connection exactly the same way.
+pub(crate) fn ollama_now(
+    boot: Option<&OllamaConfig>,
+    settings: &crate::settings::RuntimeSettings,
+) -> Option<OllamaConfig> {
+    let boot = boot?;
+    let effective = settings.snapshot();
+    Some(OllamaConfig {
+        api_key: boot.api_key.clone(),
+        base_url: effective.gary_base_url.clone(),
+        model: effective.gary_model.clone(),
+    })
+}
+
+/// The slash commands the bot registers with each guild it's in.
+pub(crate) fn slash_commands() -> Vec<poise::Command<Data, Error>> {
+    vec![
+        self::commands::servers(),
+        self::commands::create(),
+        self::commands::shutdown(),
+        self::commands::stop(),
+        self::commands::start(),
+        self::commands::restart(),
+        self::commands::destroy(),
+        self::commands::backup(),
+        self::commands::backups(),
+        self::commands::archive(),
+        self::commands::archives(),
+        self::commands::delete_archive(),
+        self::commands::restore(),
+        self::commands::recover(),
+        self::commands::new_session(),
+        self::commands::gary_home(),
+        self::commands::gary_memory(),
+        self::commands::config(),
+    ]
+}
+
+/// Register (or revoke) this guild's slash commands.
+///
+/// An unadmitted guild is registered with an *empty* set rather than skipped: a
+/// guild that has just been removed from the allowlist must lose the commands it
+/// already has, and re-registering empty is how that revocation reaches Discord.
+/// Idempotent, so the `GuildCreate` replays on every gateway reconnect are free.
+///
+/// # Errors
+///
+/// Propagates a serenity failure from the registration call.
+pub(crate) async fn register_guild_commands(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+    guild: serenity::GuildId,
+    admitted: bool,
+) -> Result<(), Error> {
+    let revoked: Vec<poise::Command<Data, Error>> = Vec::new();
+    let registering = if admitted { commands } else { &revoked };
+    poise::builtins::register_in_guild(ctx, registering, guild).await?;
+    Ok(())
+}
+
+/// What a registration sweep did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SweepOutcome {
+    pub(crate) served: usize,
+    pub(crate) revoked: usize,
+    pub(crate) failed: usize,
+}
+
+/// Re-register every guild the bot is in against the current allowlist.
+///
+/// The allowlist is read live, so admission binds immediately for Gary and for
+/// the command *check*. Discord's own command list, though, is a thing the bot
+/// pushed at some point — changing the allowlist doesn't retract it. This is what
+/// does, and it is why an admission change is a push rather than a pure pull.
+///
+/// Returns `None` when the gateway isn't connected: there is nothing to register
+/// against yet, and the `GuildCreate` replay on reconnect reconciles anyway.
+pub(crate) async fn registration_sweep(data: &Data) -> Option<SweepOutcome> {
+    let ctx = data.gateway.current()?;
+    let commands = slash_commands();
+    let mut outcome = SweepOutcome::default();
+    for guild in ctx.cache.guilds() {
+        let admitted = guild_is_admitted(data, guild.get());
+        match register_guild_commands(&ctx, &commands, guild, admitted).await {
+            Ok(()) if admitted => outcome.served += 1,
+            Ok(()) => outcome.revoked += 1,
+            Err(err) => {
+                error!(
+                    error = ?err,
+                    guild = guild.get(),
+                    "failed to re-register commands for a guild after an admission change"
+                );
+                outcome.failed += 1;
+            }
+        }
+    }
+    info!(
+        served = outcome.served,
+        revoked = outcome.revoked,
+        failed = outcome.failed,
+        "re-registered slash commands after an admission change"
+    );
+    Some(outcome)
+}
+
+/// Push a settings change to the consumers that can't read the snapshot at the
+/// point of use.
+///
+/// Almost every consumer pulls, which is what makes a hot setting reliably hot.
+/// Two can't: the turn throttle holds a live semaphore rather than a number, and
+/// Discord's registered command list is remote state that only a push can
+/// correct. Routing both through one function is what stops a future mutation
+/// site from remembering one and forgetting the other.
+pub(crate) async fn settings_changed(
+    data: &Data,
+    key: crate::settings::SettingKey,
+    snapshot: &crate::settings::SettingsSnapshot,
+) {
+    data.turn_throttle.update_policy(snapshot.throttle);
+    if key == crate::settings::SettingKey::GuildAllowlist {
+        registration_sweep(data).await;
+    }
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

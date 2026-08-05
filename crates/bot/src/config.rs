@@ -87,6 +87,13 @@ const IN_CLUSTER_MARKER: &str = "KUBERNETES_SERVICE_HOST";
 /// match the hardcoded pod selector/port in
 /// `cluster/guardrails/bot-to-langfuse-egress.yaml` (see issue #42).
 const DEFAULT_LANGFUSE_HOST: &str = "http://langfuse-web.langfuse.svc.cluster.local:3000";
+/// Authentik group whose members may reach the super-admin panel. The platform's
+/// superuser group (grizzly-platform ADR-049 binds app visibility to it), so the
+/// panel admits exactly the people who already administer the homelab.
+const DEFAULT_ADMIN_GROUP: &str = "grizzly-admins";
+/// Where the panel is served. Only ever used to reject a cross-origin write, so
+/// a wrong value fails closed (writes refused) rather than open.
+const DEFAULT_ADMIN_ORIGIN: &str = "https://gameservers-admin.grizzly-endeavors.com";
 /// Stands in for the image digest on an off-cluster run, where there is no
 /// digest to report. Traces from such a run are quarantined by their
 /// `development` environment anyway.
@@ -129,6 +136,21 @@ impl WatchdogMode {
             Self::Shadow => "shadow",
             Self::Off => "off",
         }
+    }
+}
+
+/// Parse a watchdog mode from a bare string, case- and whitespace-insensitively.
+/// Shared with `crate::settings` so a mode chosen in the admin panel is held to
+/// the same vocabulary the environment variable accepts. `None` is an
+/// unrecognized value, which every caller turns into a refusal rather than a
+/// silent fallback — a typo'd `shaddow` must not quietly run turns the operator
+/// meant to suppress.
+pub(crate) fn parse_watchdog_mode(raw: &str) -> Option<WatchdogMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "on" => Some(WatchdogMode::On),
+        "shadow" => Some(WatchdogMode::Shadow),
+        "off" => Some(WatchdogMode::Off),
+        _ => None,
     }
 }
 
@@ -230,6 +252,57 @@ pub struct BotConfig {
     /// Postgres (`crate::limits::GuildLimits`); these are the baseline every
     /// guild starts from, and the enforcement floor when persistence is down.
     pub(crate) guild_limits: GuildLimitDefaults,
+    /// The super-admin panel's listener, or `None` when no port is set — in
+    /// which case it is never served.
+    pub(crate) admin: Option<AdminConfig>,
+}
+
+/// Where the super-admin panel is served and who may reach it.
+///
+/// A separate listener from the agent endpoint, because the two get different
+/// network trust: the agent port must stay reachable by game pods (the in-game
+/// `@Gary` trigger), while the panel's forward-auth headers are only meaningful
+/// if nothing but the ingress controller can reach it. See
+/// [ADR-025](../../docs/decisions/025-super-admin-panel.md).
+#[derive(Clone, Debug)]
+pub(crate) struct AdminConfig {
+    pub(crate) port: u16,
+    /// The origin the panel is reached at, e.g.
+    /// `https://gameservers-admin.grizzly-endeavors.com`. Compared against a
+    /// write's `Origin` header, so a form on another site can't act through a
+    /// signed-in admin's browser. Defaults to the panel host under the service
+    /// domain, which is where the chart puts it.
+    pub(crate) public_origin: String,
+    /// Authentik group a signed-in user must hold. Checked in-process as defense
+    /// in depth behind the outpost's own policy binding, and so a non-member
+    /// gets a page that says why rather than a bare 403.
+    pub(crate) required_group: String,
+}
+
+/// Build the admin panel's settings, or `None` when `GAMESERVERS_ADMIN_PORT` is
+/// unset — in which case the listener never binds at all.
+///
+/// Fail-closed by absence, the same posture as the operator token: a panel that
+/// is reachable but misconfigured is worse than one that was never served, and
+/// "unset means off" cannot be got wrong by a half-rolled deploy.
+///
+/// # Errors
+///
+/// Returns an error if the port is set but isn't a usable port number.
+fn admin_config_from_env(lookup: EnvLookup) -> Result<Option<AdminConfig>> {
+    let Some(port) = optional_port(lookup, "GAMESERVERS_ADMIN_PORT")? else {
+        return Ok(None);
+    };
+    Ok(Some(AdminConfig {
+        port,
+        public_origin: optional(lookup, "GAMESERVERS_ADMIN_PUBLIC_URL")
+            .map(|raw| raw.trim().trim_end_matches('/').to_owned())
+            .filter(|origin| !origin.is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_ORIGIN.to_owned()),
+        required_group: optional(lookup, "GAMESERVERS_ADMIN_GROUP")
+            .filter(|group| !group.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_GROUP.to_owned()),
+    }))
 }
 
 /// The global per-guild cap defaults: how many servers a guild may hold and what
@@ -377,6 +450,7 @@ impl BotConfig {
             optional(lookup, "GAMESERVERS_RELEASE").unwrap_or_else(|| DEFAULT_RELEASE.to_owned());
         let watchdog = watchdog_mode_from_env(lookup)?;
         let guild_limits = guild_limit_defaults_from_env(lookup)?;
+        let admin = admin_config_from_env(lookup)?;
 
         Ok(Self {
             token,
@@ -408,6 +482,7 @@ impl BotConfig {
             release,
             watchdog,
             guild_limits,
+            admin,
         })
     }
 }
@@ -470,14 +545,8 @@ fn watchdog_mode_from_env(lookup: EnvLookup) -> Result<WatchdogMode> {
     let Some(raw) = optional(lookup, "GAMESERVERS_WATCHDOG") else {
         return Ok(WatchdogMode::On);
     };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "on" => Ok(WatchdogMode::On),
-        "shadow" => Ok(WatchdogMode::Shadow),
-        "off" => Ok(WatchdogMode::Off),
-        _ => Err(anyhow!(
-            "GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"
-        )),
-    }
+    parse_watchdog_mode(&raw)
+        .with_context(|| format!("GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"))
 }
 
 /// Which population this process's traffic belongs to. Derived rather than
@@ -641,16 +710,25 @@ fn parse_user_ids(raw: Option<&str>) -> Result<Vec<u64>> {
 /// Blank entries are ignored so trailing commas and whitespace are tolerated;
 /// `key` names the variable so a typo points at the right line of the deploy.
 fn parse_snowflakes(raw: Option<&str>, key: &str) -> Result<Vec<u64>> {
-    let Some(raw) = raw else {
-        return Ok(Vec::new());
-    };
+    raw.map_or_else(|| Ok(Vec::new()), |raw| parse_snowflake_list(raw, key))
+}
+
+/// Parse a comma-separated list of Discord snowflakes from a bare string.
+/// Shared with `crate::settings` so a list typed into the admin panel is held to
+/// exactly the grammar the environment variable accepts — `label` names whatever
+/// the caller is reading, so the error points at the right place either way.
+///
+/// # Errors
+///
+/// Returns an error naming the first entry that isn't an integer.
+pub(crate) fn parse_snowflake_list(raw: &str, label: &str) -> Result<Vec<u64>> {
     raw.split(',')
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
         .map(|entry| {
             entry
                 .parse::<u64>()
-                .with_context(|| format!("{key} contains a non-integer: {entry:?}"))
+                .with_context(|| format!("{label} contains a non-integer: {entry:?}"))
         })
         .collect()
 }

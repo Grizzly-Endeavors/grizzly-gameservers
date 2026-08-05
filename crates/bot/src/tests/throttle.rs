@@ -162,3 +162,112 @@ fn sweeping_drops_only_fully_refilled_buckets() {
         "a spent bucket must survive, or the limit resets itself"
     );
 }
+
+/// Retuning has to reach the surfaces already holding this by `Arc`, which is
+/// the whole reason the policy isn't a plain field.
+#[test]
+fn retuning_replaces_the_policy_in_place() {
+    let throttle = TurnThrottle::new(ThrottlePolicy::default());
+    throttle.update_policy(ThrottlePolicy {
+        burst: 3,
+        refill_interval: Duration::from_secs(90),
+        max_concurrent: 2,
+    });
+    let policy = throttle.policy();
+    assert_eq!(policy.burst, 3);
+    assert_eq!(policy.refill_interval, Duration::from_secs(90));
+    assert_eq!(policy.max_concurrent, 2);
+}
+
+#[tokio::test]
+async fn raising_the_concurrency_bound_admits_more_turns_at_once() {
+    let throttle = TurnThrottle::new(ThrottlePolicy {
+        max_concurrent: 1,
+        ..ThrottlePolicy::default()
+    });
+    let held = throttle.admit_now().expect("the first turn is admitted");
+    assert!(throttle.admit_now().is_err(), "the bound is one");
+
+    throttle.update_policy(ThrottlePolicy {
+        max_concurrent: 3,
+        ..ThrottlePolicy::default()
+    });
+    // The raise is immediate for new turns. The turn still holding a permit from
+    // the old semaphore keeps it, which is the accepted transient overshoot.
+    // Permits are bound, not dropped: an unbound `admit_now()` returns its permit
+    // at the end of the statement, which would make any bound look infinite.
+    let second = throttle
+        .admit_now()
+        .expect("the raised bound admits a second");
+    let third = throttle.admit_now().expect("and a third");
+    drop((held, second, third));
+}
+
+#[tokio::test]
+async fn lowering_the_concurrency_bound_binds_on_the_next_turn() {
+    let throttle = TurnThrottle::new(ThrottlePolicy {
+        max_concurrent: 4,
+        ..ThrottlePolicy::default()
+    });
+    let held = throttle.admit_now().expect("admitted under the old bound");
+    throttle.update_policy(ThrottlePolicy {
+        max_concurrent: 1,
+        ..ThrottlePolicy::default()
+    });
+    let fresh = throttle
+        .admit_now()
+        .expect("the fresh semaphore has one permit");
+    assert!(throttle.admit_now().is_err(), "and only one");
+    drop((held, fresh));
+}
+
+/// A bucket holding more tokens than a lowered burst must not keep them: the
+/// refill is capped at the burst, so it self-corrects on the next claim rather
+/// than needing the map to be swept.
+#[tokio::test]
+async fn a_lowered_burst_caps_an_existing_allowance() {
+    let throttle = TurnThrottle::new(ThrottlePolicy {
+        burst: 10,
+        refill_interval: Duration::from_millis(1),
+        max_concurrent: 8,
+    });
+    let subject = TurnSubject::Discord(1);
+    throttle.claim(&subject).await.expect("first claim");
+
+    throttle.update_policy(ThrottlePolicy {
+        burst: 2,
+        refill_interval: Duration::from_hours(1),
+        max_concurrent: 8,
+    });
+    // At most two claims can get through before the (now hour-long) refill binds.
+    let mut admitted = 0;
+    for _ in 0..6 {
+        if throttle.claim(&subject).await.is_ok() {
+            admitted += 1;
+        }
+    }
+    assert!(
+        admitted <= 2,
+        "a lowered burst let {admitted} turns through"
+    );
+}
+
+/// Retuning to the same values is a no-op, so a settings write that didn't touch
+/// the throttle can't quietly reset everyone's in-flight allowance.
+#[tokio::test]
+async fn retuning_to_the_same_policy_leaves_permits_alone() {
+    let throttle = TurnThrottle::new(ThrottlePolicy {
+        max_concurrent: 1,
+        ..ThrottlePolicy::default()
+    });
+    let held = throttle.admit_now().expect("admitted");
+    throttle.update_policy(ThrottlePolicy {
+        max_concurrent: 1,
+        ..ThrottlePolicy::default()
+    });
+    assert!(
+        throttle.admit_now().is_err(),
+        "an unchanged policy must not install a fresh semaphore"
+    );
+    drop(held);
+}

@@ -4,6 +4,7 @@
 //! chat-completions/tool-calling core; [`agones`] talks to Kubernetes and
 //! Agones. [`run`] wires them together and drives the gateway loop.
 
+mod admin;
 mod agent;
 mod agones;
 mod backup;
@@ -20,6 +21,7 @@ mod memory;
 mod modrinth;
 mod notify;
 mod prompts;
+mod settings;
 mod sizing;
 mod store;
 mod telemetry;
@@ -35,7 +37,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use agent::{OllamaConfig, SessionStore};
-use discord::{Data, commands};
+use discord::Data;
 use memory::GaryMemory;
 use store::{GuildConfig, HomeChannels};
 
@@ -77,15 +79,23 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // anything that carries it.
     let telemetry = setup_telemetry(&config, http.clone(), &tasks, shutdown.clone());
 
-    let schedule = CycleSchedule::from_config(&config);
+    // The operator-tunable knobs, resolved database override > environment >
+    // compiled default. Built before everything that reads a tunable value, so
+    // the subsystems below are wired from the *effective* figures rather than
+    // from `BotConfig` directly — that is what makes a stored override real on
+    // this boot rather than only after the next deploy.
+    let settings = connect_settings(&config).await;
+    let effective = settings.snapshot();
+
+    let schedule = CycleSchedule::from_settings(&effective);
     let namespace = config.namespace;
     let domain = config.domain;
     let control_port = config.control_port;
     let operator_ids: std::sync::Arc<[u64]> = config.operator_ids.into();
-    let guild_allowlist = announce_guild_allowlist(config.guild_allowlist);
     let agent_port = config.agent_port;
     let ingame_token = config.ingame_token;
     let operator_token = config.operator_token;
+    let admin_config = config.admin;
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
     let DurableState {
@@ -95,7 +105,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sizing,
         guild_limits,
         events,
-    } = DurableState::connect(config.db.as_ref(), config.guild_limits).await;
+    } = DurableState::connect(config.db.as_ref(), std::sync::Arc::clone(&settings)).await;
     // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
     // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
     // schedule, the same shape as db/s3/ollama.
@@ -105,8 +115,9 @@ pub async fn run(config: BotConfig) -> Result<()> {
 
     // The watchdog's sampler→responder seam: detection rides the sampler task
     // (spawned below, before `Data` exists), the responder holds `Data` and is
-    // spawned after it. No channel when the watchdog is off.
-    let (watchdog_tx, watchdog_rx) = watchdog::channel(config.watchdog);
+    // spawned after it. Wired whatever the mode says, because the mode is a
+    // runtime setting — both ends read it live.
+    let (watchdog_tx, watchdog_rx) = watchdog::channel();
 
     // Starts the scheduled background work — stranded-server recovery always,
     // world backups when S3 is configured. The backup handle it returns also
@@ -131,16 +142,13 @@ pub async fn run(config: BotConfig) -> Result<()> {
             guild_limits: std::sync::Arc::clone(&guild_limits),
         },
         watchdog_tx,
+        std::sync::Arc::clone(&settings),
         &tasks,
         shutdown.clone(),
     )
     .await;
 
-    let ollama = build_ollama(
-        config.ollama_api_key,
-        config.ollama_base_url,
-        config.ollama_model,
-    );
+    let ollama = build_ollama(config.ollama_api_key, &effective);
 
     // A token-only serenity HTTP client (no gateway) shared by both Gary surfaces
     // to DM operators on escalation. Built here so the in-game endpoint — spawned
@@ -157,7 +165,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         catalog,
         provision_lock,
         operator_ids,
-        guild_allowlist,
+        settings: std::sync::Arc::clone(&settings),
         guild_config,
         ollama,
         sessions,
@@ -166,7 +174,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sizing,
         guild_limits,
         backup,
-        turn_throttle: std::sync::Arc::new(throttle::TurnThrottle::new(config.throttle)),
+        turn_throttle: std::sync::Arc::new(throttle::TurnThrottle::new(effective.throttle)),
         tasks: tasks.clone(),
         notifier,
         defer,
@@ -180,7 +188,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // The watchdog responder consumes fired incidents with the full `Data` in
     // hand; spawned here because `Data` now exists, before the gateway so no
     // incident is lost while Discord connects (it waits for a Context itself).
-    watchdog::spawn_responder(data.clone(), config.watchdog, watchdog_rx);
+    watchdog::spawn_responder(data.clone(), watchdog_rx);
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
     // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
@@ -193,20 +201,39 @@ pub async fn run(config: BotConfig) -> Result<()> {
         shutdown.clone(),
     );
 
+    // The super-admin panel, on its own port so a network policy can admit only
+    // the ingress controller to it — the agent port above must stay reachable by
+    // game pods, which run third-party server binaries.
+    admin::spawn(&data, admin_config, &tasks, shutdown.clone());
+
     run_gateway(config.token, data, shutdown, tasks, telemetry).await
 }
 
-/// Share the admitted-guild list, saying at startup which posture is in force.
-/// An empty list is the open posture and is worth a `warn`: it is correct for a
-/// deploy that hasn't been given a list, and wrong for one that was meant to have
-/// one, and only the log distinguishes them.
-fn announce_guild_allowlist(guilds: Vec<u64>) -> std::sync::Arc<[u64]> {
+/// Resolve this boot's settings — stored overrides layered onto the environment
+/// values — and announce the admission posture they resolve to.
+async fn connect_settings(config: &BotConfig) -> std::sync::Arc<settings::RuntimeSettings> {
+    let settings = std::sync::Arc::new(
+        settings::RuntimeSettings::connect(
+            config.db.as_ref(),
+            settings::SettingsSnapshot::baseline(config),
+        )
+        .await,
+    );
+    announce_guild_allowlist(&settings.snapshot().guild_allowlist);
+    settings
+}
+
+/// Say at startup which admission posture is in force. An empty list is the open
+/// posture and is worth a `warn`: it is correct for a deploy that hasn't been
+/// given a list, and wrong for one that was meant to have one, and only the log
+/// distinguishes them. Reports the *effective* list, so an operator-set override
+/// is what's announced rather than whatever the environment happened to carry.
+fn announce_guild_allowlist(guilds: &[u64]) {
     if guilds.is_empty() {
-        warn!("no GAMESERVERS_GUILD_ALLOWLIST set: every guild the bot is invited to is served");
+        warn!("no guild allowlist set: every guild the bot is invited to is served");
     } else {
         info!(guilds = guilds.len(), "serving only allowlisted guilds");
     }
-    guilds.into()
 }
 
 /// Stand up turn telemetry and put its score poster on the tracked task set, so
@@ -240,7 +267,7 @@ async fn run_gateway(
 ) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: slash_commands(),
+            commands: discord::slash_commands(),
             command_check: Some(|ctx| Box::pin(discord::require_scope(ctx))),
             event_handler: |ctx, event, framework, event_data| {
                 Box::pin(on_gateway_event(ctx, event, framework, event_data))
@@ -312,16 +339,21 @@ async fn on_gateway_event(
         // skipped: a guild removed from the allowlist must lose the commands it
         // was already registered with, and re-registering empty is how that
         // revocation reaches Discord.
-        if !discord::guild_is_admitted(data, guild.id.get()) {
-            let revoked: Vec<poise::Command<Data, discord::Error>> = Vec::new();
-            poise::builtins::register_in_guild(ctx, &revoked, guild.id).await?;
+        let admitted = discord::guild_is_admitted(data, guild.id.get());
+        discord::register_guild_commands(
+            ctx,
+            framework.options().commands.as_slice(),
+            guild.id,
+            admitted,
+        )
+        .await?;
+        if !admitted {
             warn!(
                 guild = guild.id.get(),
                 "ignoring a guild that is not on the allowlist"
             );
             return Ok(());
         }
-        poise::builtins::register_in_guild(ctx, &framework.options().commands, guild.id).await?;
         // GuildCreate re-fires on every gateway reconnect/resume, so this would be
         // routine repeat noise at info — the interesting signal is a *new* guild,
         // which the join path already surfaces.
@@ -382,30 +414,6 @@ fn spawn_shutdown_watch(
     });
 }
 
-/// The slash commands the bot registers with each guild it's in.
-fn slash_commands() -> Vec<poise::Command<Data, discord::Error>> {
-    vec![
-        commands::servers(),
-        commands::create(),
-        commands::shutdown(),
-        commands::stop(),
-        commands::start(),
-        commands::restart(),
-        commands::destroy(),
-        commands::backup(),
-        commands::backups(),
-        commands::archive(),
-        commands::archives(),
-        commands::delete_archive(),
-        commands::restore(),
-        commands::recover(),
-        commands::new_session(),
-        commands::gary_home(),
-        commands::gary_memory(),
-        commands::config(),
-    ]
-}
-
 /// Build the operator DM notifier on its own token-only serenity `Http` client
 /// (no gateway), so surfaces spawned before the gateway exists can carry it.
 fn build_notifier(token: &str, operator_ids: &std::sync::Arc<[u64]>) -> notify::OperatorNotifier {
@@ -415,18 +423,27 @@ fn build_notifier(token: &str, operator_ids: &std::sync::Arc<[u64]>) -> notify::
     )
 }
 
-/// Build Gary's model connection from config, logging whether the agent is on.
-/// `None` (no API key) means mentions are declined with a "not configured" reply.
-fn build_ollama(api_key: Option<String>, base_url: String, model: String) -> Option<OllamaConfig> {
+/// Build Gary's model connection, logging whether the agent is on. `None` (no
+/// API key) means mentions are declined with a "not configured" reply.
+///
+/// The key is the startup-frozen half — it is a credential, so it stays in the
+/// environment and rotating it is a redeploy — while the model and base URL come
+/// from the settings snapshot and are re-read per turn. This value is therefore
+/// the *boot* connection: whether Gary exists at all, plus the endpoint he
+/// started with. See [`discord::Data::ollama_now`].
+fn build_ollama(
+    api_key: Option<String>,
+    effective: &settings::SettingsSnapshot,
+) -> Option<OllamaConfig> {
     let Some(api_key) = api_key else {
         warn!("OLLAMA_API_KEY not set; agent (Gary) disabled — mentions will be declined");
         return None;
     };
-    info!(model = %model, "agent (Gary) enabled");
+    info!(model = %effective.gary_model, "agent (Gary) enabled");
     Some(OllamaConfig {
         api_key,
-        base_url,
-        model,
+        base_url: effective.gary_base_url.clone(),
+        model: effective.gary_model.clone(),
     })
 }
 
@@ -456,14 +473,18 @@ struct CycleSchedule {
 }
 
 impl CycleSchedule {
-    fn from_config(config: &BotConfig) -> Self {
+    /// Read from the resolved settings rather than from `BotConfig`, so an
+    /// override the operator recorded is in force from this boot. Each value is
+    /// captured into a ticker below and not re-read, which is why these keys are
+    /// the restart-class ones in `crate::settings`.
+    fn from_settings(effective: &settings::SettingsSnapshot) -> Self {
         Self {
-            backup_interval: config.backup_interval,
-            backup_retention: config.backup_retention,
-            archive_retention_days: config.archive_retention_days,
-            reconcile_interval: config.reconcile_interval,
-            stranded_dwell: config.stranded_dwell,
-            sample_interval: config.sample_interval,
+            backup_interval: effective.backup_interval,
+            backup_retention: effective.backup_retention,
+            archive_retention_days: effective.archive_retention_days,
+            reconcile_interval: effective.reconcile_interval,
+            stranded_dwell: effective.stranded_dwell,
+            sample_interval: effective.sample_interval,
         }
     }
 }
@@ -496,16 +517,14 @@ struct DurableState {
 impl DurableState {
     async fn connect(
         db: Option<&config::DbConfig>,
-        limit_defaults: config::GuildLimitDefaults,
+        settings: std::sync::Arc<settings::RuntimeSettings>,
     ) -> Self {
         Self {
             home_channels: std::sync::Arc::new(HomeChannels::connect(db).await),
             guild_config: std::sync::Arc::new(GuildConfig::connect(db).await),
             memory: std::sync::Arc::new(GaryMemory::connect(db).await),
             sizing: std::sync::Arc::new(sizing::InstanceSizing::connect(db).await),
-            guild_limits: std::sync::Arc::new(
-                limits::GuildLimits::connect(db, limit_defaults).await,
-            ),
+            guild_limits: std::sync::Arc::new(limits::GuildLimits::connect(db, settings).await),
             events: std::sync::Arc::new(events::EventLog::connect(db).await),
         }
     }
@@ -548,7 +567,8 @@ async fn setup_cycles(
     schedule: CycleSchedule,
     backups: BackupInputs<'_>,
     handles: CycleHandles,
-    watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
+    watchdog: tokio::sync::mpsc::Sender<watchdog::Incident>,
+    settings: std::sync::Arc<settings::RuntimeSettings>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) -> backup::MaybeBackups {
@@ -561,6 +581,7 @@ async fn setup_cycles(
     spawn_sampler(
         SamplerHandles::from_cycle(&handles),
         watchdog,
+        settings,
         schedule.sample_interval,
         tasks,
         shutdown.clone(),
@@ -693,22 +714,23 @@ impl SamplerHandles {
 /// forever would be pure cluster chatter for no record.
 fn spawn_sampler(
     handles: SamplerHandles,
-    watchdog: Option<tokio::sync::mpsc::Sender<watchdog::Incident>>,
+    watchdog: tokio::sync::mpsc::Sender<watchdog::Incident>,
+    settings: std::sync::Arc<settings::RuntimeSettings>,
     interval: std::time::Duration,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
     if !handles.events.enabled() {
         warn!("no database; occupancy and resource sampling disabled (nothing else changes)");
-        if watchdog.is_some() {
-            warn!("watchdog detection rides the sampler, so it is disabled too");
-        }
+        warn!("watchdog detection rides the sampler, so it is disabled too");
         return;
     }
     tasks.spawn(async move {
-        let mut detector = watchdog
-            .as_ref()
-            .map(|_| watchdog::DetectorState::new(interval));
+        // Absent while the watchdog is off, and rebuilt from scratch when it
+        // comes back on: the detector works by differencing each tick against
+        // the last one it saw, so carrying state across a gap would read the
+        // whole quiet period as a crash burst the moment detection resumed.
+        let mut detector: Option<watchdog::DetectorState> = None;
         let mut reported_unlabelled = events::ReportedUnlabelledPvcs::default();
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -729,11 +751,17 @@ fn spawn_sampler(
             };
             let observations = events::run_occupancy_cycle(&ctx).await;
             let resources = events::run_resource_cycle(&ctx, &mut reported_unlabelled).await;
-            if let (Some(detector), Some(sender)) = (detector.as_mut(), watchdog.as_ref()) {
-                let fired = detector.tick(std::time::Instant::now(), &observations, &resources);
-                for incident in fired {
-                    forward_incident(sender, incident);
-                }
+            // Sampling itself is unconditional — the occupancy and cost series
+            // are wanted whatever the watchdog is doing. Only detection follows
+            // the mode, which is read here so a change binds on the next tick.
+            if settings.snapshot().watchdog == config::WatchdogMode::Off {
+                detector = None;
+                continue;
+            }
+            let state = detector.get_or_insert_with(|| watchdog::DetectorState::new(interval));
+            let fired = state.tick(std::time::Instant::now(), &observations, &resources);
+            for incident in fired {
+                forward_incident(&watchdog, incident);
             }
         }
     });

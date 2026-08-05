@@ -38,6 +38,11 @@ pub(crate) const COMPLETED: &str = "completed";
 /// The outcome for a first-ever guild sighting.
 pub(crate) const JOINED: &str = "joined";
 
+/// The outcome for a runtime setting an operator changed from the admin panel.
+/// A setting change has no partial result — it either landed or the write failed
+/// — so this and [`FAILED`] are the whole vocabulary.
+pub(crate) const CHANGED: &str = "changed";
+
 /// An archive was deleted on request.
 pub(crate) const DELETED: &str = "deleted";
 

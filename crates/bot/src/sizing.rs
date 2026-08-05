@@ -45,6 +45,40 @@ pub(crate) const MIN_MEM_BYTES: i64 = 512 * 1024 * 1024;
 pub(crate) const MAX_CPU_MILLICORES: i64 = 16_000;
 pub(crate) const MAX_MEM_BYTES: i64 = 32 * 1024 * 1024 * 1024;
 
+/// The floors and ceilings a proposed sizing is checked against. Passed into
+/// [`Sizing::validate`] rather than read from the constants directly so the
+/// bounds themselves are operator-tunable (`crate::settings`) while the check
+/// stays a pure function — the constants above are the compiled baseline the
+/// operator's overrides start from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SizingBounds {
+    pub(crate) min_cpu_millicores: i64,
+    pub(crate) min_mem_bytes: i64,
+    pub(crate) max_cpu_millicores: i64,
+    pub(crate) max_mem_bytes: i64,
+}
+
+impl Default for SizingBounds {
+    fn default() -> Self {
+        Self {
+            min_cpu_millicores: MIN_CPU_MILLICORES,
+            min_mem_bytes: MIN_MEM_BYTES,
+            max_cpu_millicores: MAX_CPU_MILLICORES,
+            max_mem_bytes: MAX_MEM_BYTES,
+        }
+    }
+}
+
+impl SizingBounds {
+    /// Whether the floors sit at or below the ceilings. A pair that crosses over
+    /// would refuse every sizing, so it is rejected where it is set rather than
+    /// discovered when the next resize fails.
+    pub(crate) fn is_coherent(self) -> bool {
+        self.min_cpu_millicores <= self.max_cpu_millicores
+            && self.min_mem_bytes <= self.max_mem_bytes
+    }
+}
+
 const SIZING_SCHEMA: &str = "\
     CREATE TABLE IF NOT EXISTS instance_sizing (\
         instance TEXT PRIMARY KEY, \
@@ -93,17 +127,17 @@ impl Sizing {
     /// # Errors
     ///
     /// Returns the first violated rule, in the order declared above.
-    pub(crate) fn validate(self) -> Result<(), SizingRejection> {
-        if self.cpu_request_millicores < MIN_CPU_MILLICORES {
+    pub(crate) fn validate(self, bounds: SizingBounds) -> Result<(), SizingRejection> {
+        if self.cpu_request_millicores < bounds.min_cpu_millicores {
             return Err(SizingRejection::CpuBelowFloor);
         }
-        if self.mem_request_bytes < MIN_MEM_BYTES {
+        if self.mem_request_bytes < bounds.min_mem_bytes {
             return Err(SizingRejection::MemoryBelowFloor);
         }
-        if self.cpu_limit_millicores > MAX_CPU_MILLICORES {
+        if self.cpu_limit_millicores > bounds.max_cpu_millicores {
             return Err(SizingRejection::CpuAboveCeiling);
         }
-        if self.mem_limit_bytes > MAX_MEM_BYTES {
+        if self.mem_limit_bytes > bounds.max_mem_bytes {
             return Err(SizingRejection::MemoryAboveCeiling);
         }
         if self.cpu_request_millicores > self.cpu_limit_millicores {
