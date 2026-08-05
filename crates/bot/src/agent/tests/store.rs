@@ -291,3 +291,131 @@ async fn the_lock_map_does_not_grow_with_finished_turns() {
         "only in-flight turns keep a lock entry alive"
     );
 }
+
+// ---- reaping and the byte budget (issue #83) ----
+
+#[test]
+fn committing_reaps_sessions_that_went_idle_past_the_ttl() {
+    // Nothing else evicts: checkout only reads the TTL to decide freshness, so
+    // without this an entry survives for the life of the process for every
+    // channel Gary was ever mentioned in.
+    let store = SessionStore::new();
+    let start = Instant::now();
+    let stale = SessionKey::Channel(1);
+    let active = SessionKey::Channel(2);
+
+    store.commit(
+        stale,
+        SessionId::mint(),
+        vec![ChatMessage::system("s")],
+        start,
+    );
+    let later = start + SESSION_TTL + Duration::from_secs(1);
+    store.commit(
+        active,
+        SessionId::mint(),
+        vec![ChatMessage::system("s")],
+        later,
+    );
+
+    let inner = store.inner.lock().unwrap();
+    assert_eq!(
+        inner.len(),
+        1,
+        "the idle session should have been reaped by the later commit"
+    );
+    assert!(
+        inner.contains_key(&active),
+        "the session being committed must survive its own sweep"
+    );
+}
+
+#[test]
+fn a_live_session_is_not_reaped_by_another_keys_commit() {
+    let store = SessionStore::new();
+    let now = Instant::now();
+    let other = SessionKey::Channel(9);
+
+    store.commit(KEY, SessionId::mint(), vec![ChatMessage::system("s")], now);
+    store.commit(
+        other,
+        SessionId::mint(),
+        vec![ChatMessage::system("s")],
+        now,
+    );
+
+    assert_eq!(
+        store.inner.lock().unwrap().len(),
+        2,
+        "sweeping must only drop sessions past the TTL"
+    );
+}
+
+#[test]
+fn a_few_huge_tool_results_are_trimmed_by_bytes_not_just_count() {
+    // The count cap alone allows ~30 max-size read_file results to sit in one
+    // transcript and be re-billed as prompt tokens on every later turn.
+    let store = SessionStore::new();
+    let now = Instant::now();
+
+    let big = "x".repeat(64 * 1024);
+    let mut messages = vec![ChatMessage::system("sys")];
+    for i in 0..8 {
+        messages.push(ChatMessage::user(format!("read {i}")));
+        messages.push(ChatMessage::tool_result(format!("call{i}"), big.clone()));
+    }
+    store.commit(KEY, SessionId::mint(), messages, now);
+
+    let trimmed = store.checkout(KEY, now, || "ignored".to_owned());
+    let bytes: usize = trimmed.messages.iter().map(message_bytes).sum();
+    assert!(
+        bytes <= MAX_TRANSCRIPT_BYTES + big.len(),
+        "retained transcript should be bounded by the byte budget, got {bytes}"
+    );
+    assert!(
+        trimmed.messages.len() < MAX_TRANSCRIPT,
+        "the byte budget should have cut deeper than the count cap"
+    );
+    assert_eq!(
+        trimmed.messages.first().map(|m| m.role),
+        Some(Role::System),
+        "system stays first"
+    );
+}
+
+#[test]
+fn one_oversized_result_is_still_delivered() {
+    // A single result larger than the whole budget must survive: dropping it
+    // would leave the model answering about a tool call it can no longer see.
+    let store = SessionStore::new();
+    let now = Instant::now();
+    let huge = "x".repeat(MAX_TRANSCRIPT_BYTES * 2);
+    let messages = vec![
+        ChatMessage::system("sys"),
+        ChatMessage::user("read it"),
+        ChatMessage::tool_result("call0", huge.clone()),
+    ];
+    store.commit(KEY, SessionId::mint(), messages, now);
+
+    let trimmed = store.checkout(KEY, now, || "ignored".to_owned());
+    assert_eq!(
+        trimmed.messages.last().and_then(|m| m.content.as_deref()),
+        Some(huge.as_str()),
+        "the newest message is kept even when it alone exceeds the budget"
+    );
+}
+
+#[test]
+fn a_small_transcript_is_untouched_by_either_limit() {
+    let store = SessionStore::new();
+    let now = Instant::now();
+    let messages = vec![
+        ChatMessage::system("sys"),
+        ChatMessage::user("hello"),
+        ChatMessage::user("still here"),
+    ];
+    store.commit(KEY, SessionId::mint(), messages, now);
+
+    let kept = store.checkout(KEY, now, || "ignored".to_owned());
+    assert_eq!(kept.messages.len(), 3, "nothing to trim");
+}

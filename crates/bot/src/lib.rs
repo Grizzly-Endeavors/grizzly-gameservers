@@ -9,6 +9,7 @@ mod agent;
 mod agones;
 mod backup;
 mod config;
+mod cycles;
 mod defer;
 mod discord;
 mod domain;
@@ -87,7 +88,6 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let settings = connect_settings(&config).await;
     let effective = settings.snapshot();
 
-    let schedule = CycleSchedule::from_settings(&effective);
     let namespace = config.namespace;
     let domain = config.domain;
     let control_port = config.control_port;
@@ -97,7 +97,6 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let operator_token = config.operator_token;
     let admin_config = config.admin;
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    let sessions = std::sync::Arc::new(SessionStore::new());
     let DurableState {
         home_channels,
         guild_config,
@@ -121,9 +120,9 @@ pub async fn run(config: BotConfig) -> Result<()> {
 
     // Starts the scheduled background work — stranded-server recovery always,
     // world backups when S3 is configured. The backup handle it returns also
-    // goes into the command Data.
-    let backup = setup_cycles(
-        schedule,
+    // goes into the command Data; the health handle goes to the probes.
+    let (backup, cycle_health) = setup_cycles(
+        CycleSchedule::from_settings(&effective),
         BackupInputs {
             s3: config.s3.as_ref(),
             db: config.db.as_ref(),
@@ -168,7 +167,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         settings: std::sync::Arc::clone(&settings),
         guild_config,
         ollama,
-        sessions,
+        sessions: std::sync::Arc::new(SessionStore::new()),
         home_channels,
         memory,
         sizing,
@@ -188,18 +187,21 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // The watchdog responder consumes fired incidents with the full `Data` in
     // hand; spawned here because `Data` now exists, before the gateway so no
     // incident is lost while Discord connects (it waits for a Context itself).
-    watchdog::spawn_responder(data.clone(), watchdog_rx);
+    watchdog::spawn_responder(data.clone(), watchdog_rx, &cycle_health);
 
     // Start the inbound HTTP surface, whose in-game trigger route the game-pod
     // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
     // clones carved from the command `Data` (the same pattern as the backup
     // cycle), so it must be built after `Data` — and before the gateway, so the
     // k8s probes have a `/health` target while Discord is still connecting.
-    http::spawn(
-        http::HttpDeps::from_data(&data, agent_port, ingame_token, operator_token),
-        &tasks,
-        shutdown.clone(),
+    let deps = http::HttpDeps::from_data(
+        &data,
+        agent_port,
+        ingame_token,
+        operator_token,
+        cycle_health,
     );
+    http::spawn(deps, &tasks, shutdown.clone());
 
     // The super-admin panel, on its own port so a network policy can admit only
     // the ingress controller to it — the agent port above must stay reachable by
@@ -449,6 +451,7 @@ fn build_ollama(
 
 /// Owned cluster/catalog handles the scheduled backup cycle's background task
 /// needs. Cloned from the same handles that move into the command `Data`.
+#[derive(Clone)]
 struct CycleHandles {
     client: kube::Client,
     http: agones::ControlClient,
@@ -533,6 +536,7 @@ impl DurableState {
 /// Owned cluster/catalog handles the stranded-instance reconciler needs. It
 /// reaches only the Kubernetes API, so it carries none of the backup cycle's
 /// HTTP/supervisor handles.
+#[derive(Clone)]
 struct ReconcileHandles {
     client: kube::Client,
     namespace: String,
@@ -571,10 +575,15 @@ async fn setup_cycles(
     settings: std::sync::Arc<settings::RuntimeSettings>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
-) -> backup::MaybeBackups {
+) -> (backup::MaybeBackups, std::sync::Arc<cycles::CycleHealth>) {
+    // Shared by every supervised cycle and by the health endpoint: a cycle that
+    // keeps panicking is the one thing a liveness probe can act on that a log
+    // line can't.
+    let health = &cycles::CycleHealth::new();
     spawn_stranded_cycle(
         ReconcileHandles::from_cycle(&handles, schedule.stranded_dwell),
         schedule.reconcile_interval,
+        health,
         tasks,
         shutdown.clone(),
     );
@@ -583,10 +592,11 @@ async fn setup_cycles(
         watchdog,
         settings,
         schedule.sample_interval,
+        health,
         tasks,
         shutdown.clone(),
     );
-    setup_backups(
+    let service = setup_backups(
         backups,
         Retention {
             backups: schedule.backup_retention,
@@ -594,10 +604,12 @@ async fn setup_cycles(
         },
         schedule.backup_interval,
         handles,
+        health,
         tasks,
         shutdown,
     )
-    .await
+    .await;
+    (service, std::sync::Arc::clone(health))
 }
 
 /// What the backups subsystem is built from: where artifacts live, where the
@@ -650,29 +662,35 @@ struct Retention {
 fn spawn_stranded_cycle(
     handles: ReconcileHandles,
     interval: std::time::Duration,
+    health: &std::sync::Arc<cycles::CycleHealth>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
-    tasks.spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The first tick fires immediately; skip it so a redeploy doesn't sweep
-        // before the cluster has settled, only once per interval thereafter.
-        ticker.tick().await;
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {}
-                () = shutdown.cancelled() => break,
+    let cancel = shutdown.clone();
+    cycles::spawn_supervised("stranded-reconciler", health, tasks, shutdown, move || {
+        let handles = handles.clone();
+        let stop = cancel.clone();
+        async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately; skip it so a redeploy doesn't sweep
+            // before the cluster has settled, only once per interval thereafter.
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    () = stop.cancelled() => break,
+                }
+                let ctx = agones::StrandedCtx {
+                    client: &handles.client,
+                    namespace: &handles.namespace,
+                    domain: &handles.domain,
+                    catalog: &handles.catalog,
+                    events: &handles.events,
+                    sizing: &handles.sizing,
+                };
+                agones::run_stranded_cycle(&ctx, handles.dwell).await;
             }
-            let ctx = agones::StrandedCtx {
-                client: &handles.client,
-                namespace: &handles.namespace,
-                domain: &handles.domain,
-                catalog: &handles.catalog,
-                events: &handles.events,
-                sizing: &handles.sizing,
-            };
-            agones::run_stranded_cycle(&ctx, handles.dwell).await;
         }
     });
     info!(
@@ -683,6 +701,7 @@ fn spawn_stranded_cycle(
 
 /// Owned handles the sampler needs: the cluster and supervisor reach to take a
 /// reading, and the store to append it to.
+#[derive(Clone)]
 struct SamplerHandles {
     client: kube::Client,
     http: agones::ControlClient,
@@ -717,6 +736,7 @@ fn spawn_sampler(
     watchdog: tokio::sync::mpsc::Sender<watchdog::Incident>,
     settings: std::sync::Arc<settings::RuntimeSettings>,
     interval: std::time::Duration,
+    health: &std::sync::Arc<cycles::CycleHealth>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
@@ -725,43 +745,52 @@ fn spawn_sampler(
         warn!("watchdog detection rides the sampler, so it is disabled too");
         return;
     }
-    tasks.spawn(async move {
-        // Absent while the watchdog is off, and rebuilt from scratch when it
-        // comes back on: the detector works by differencing each tick against
-        // the last one it saw, so carrying state across a gap would read the
-        // whole quiet period as a crash burst the moment detection resumed.
-        let mut detector: Option<watchdog::DetectorState> = None;
-        let mut reported_unlabelled = events::ReportedUnlabelledPvcs::default();
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The first tick fires immediately; skip it so a redeploy doesn't sample
-        // before the cluster has settled, only once per interval thereafter.
-        ticker.tick().await;
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {}
-                () = shutdown.cancelled() => break,
-            }
-            let ctx = events::SamplerCtx {
-                client: &handles.client,
-                http: &handles.http,
-                namespace: &handles.namespace,
-                control_port: handles.control_port,
-                events: &handles.events,
-            };
-            let observations = events::run_occupancy_cycle(&ctx).await;
-            let resources = events::run_resource_cycle(&ctx, &mut reported_unlabelled).await;
-            // Sampling itself is unconditional — the occupancy and cost series
-            // are wanted whatever the watchdog is doing. Only detection follows
-            // the mode, which is read here so a change binds on the next tick.
-            if settings.snapshot().watchdog == config::WatchdogMode::Off {
-                detector = None;
-                continue;
-            }
-            let state = detector.get_or_insert_with(|| watchdog::DetectorState::new(interval));
-            let fired = state.tick(std::time::Instant::now(), &observations, &resources);
-            for incident in fired {
-                forward_incident(&watchdog, incident);
+    let cancel = shutdown.clone();
+    cycles::spawn_supervised("sampler", health, tasks, shutdown, move || {
+        let handles = handles.clone();
+        let watchdog = watchdog.clone();
+        let settings = std::sync::Arc::clone(&settings);
+        let stop = cancel.clone();
+        async move {
+            // Absent while the watchdog is off, and rebuilt from scratch when it
+            // comes back on: the detector works by differencing each tick against
+            // the last one it saw, so carrying state across a gap would read the
+            // whole quiet period as a crash burst the moment detection resumed.
+            // A restart after a panic is such a gap, and starts it over for the
+            // same reason.
+            let mut detector: Option<watchdog::DetectorState> = None;
+            let mut reported_unlabelled = events::ReportedUnlabelledPvcs::default();
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately; skip it so a redeploy doesn't
+            // sample before the cluster has settled, only once per interval after.
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    () = stop.cancelled() => break,
+                }
+                let ctx = events::SamplerCtx {
+                    client: &handles.client,
+                    http: &handles.http,
+                    namespace: &handles.namespace,
+                    control_port: handles.control_port,
+                    events: &handles.events,
+                };
+                let observations = events::run_occupancy_cycle(&ctx).await;
+                let resources = events::run_resource_cycle(&ctx, &mut reported_unlabelled).await;
+                // Sampling itself is unconditional — the occupancy and cost series
+                // are wanted whatever the watchdog is doing. Only detection follows
+                // the mode, which is read here so a change binds on the next tick.
+                if settings.snapshot().watchdog == config::WatchdogMode::Off {
+                    detector = None;
+                    continue;
+                }
+                let state = detector.get_or_insert_with(|| watchdog::DetectorState::new(interval));
+                let fired = state.tick(std::time::Instant::now(), &observations, &resources);
+                for incident in fired {
+                    forward_incident(&watchdog, incident);
+                }
             }
         }
     });
@@ -801,6 +830,7 @@ async fn setup_backups(
     retention: Retention,
     interval: std::time::Duration,
     handles: CycleHandles,
+    health: &std::sync::Arc<cycles::CycleHealth>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) -> backup::MaybeBackups {
@@ -832,7 +862,13 @@ async fn setup_backups(
         }
     };
     info!("backups enabled");
-    spawn_backup_cycle(std::sync::Arc::clone(&service), handles, tasks, shutdown);
+    spawn_backup_cycle(
+        std::sync::Arc::clone(&service),
+        handles,
+        health,
+        tasks,
+        shutdown,
+    );
     Some(service)
 }
 
@@ -843,33 +879,40 @@ async fn setup_backups(
 fn spawn_backup_cycle(
     service: std::sync::Arc<backup::BackupService>,
     handles: CycleHandles,
+    health: &std::sync::Arc<cycles::CycleHealth>,
     tasks: &TaskTracker,
     shutdown: CancellationToken,
 ) {
     let interval = service.interval();
-    tasks.spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // The first tick fires immediately; skip it so a restart doesn't snapshot
-        // right away, only once per interval thereafter.
-        ticker.tick().await;
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {}
-                () = shutdown.cancelled() => break,
+    let cancel = shutdown.clone();
+    cycles::spawn_supervised("backup-cycle", health, tasks, shutdown, move || {
+        let service = std::sync::Arc::clone(&service);
+        let handles = handles.clone();
+        let stop = cancel.clone();
+        async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The first tick fires immediately; skip it so a restart doesn't
+            // snapshot right away, only once per interval thereafter.
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {}
+                    () = stop.cancelled() => break,
+                }
+                let ctx = backup::BackupCtx {
+                    client: &handles.client,
+                    http: &handles.http,
+                    namespace: &handles.namespace,
+                    domain: &handles.domain,
+                    control_port: handles.control_port,
+                    catalog: &handles.catalog,
+                    provision_lock: &handles.provision_lock,
+                    sizing: &handles.sizing,
+                    guild_limits: &handles.guild_limits,
+                };
+                service.run_backup_cycle(&ctx).await;
             }
-            let ctx = backup::BackupCtx {
-                client: &handles.client,
-                http: &handles.http,
-                namespace: &handles.namespace,
-                domain: &handles.domain,
-                control_port: handles.control_port,
-                catalog: &handles.catalog,
-                provision_lock: &handles.provision_lock,
-                sizing: &handles.sizing,
-                guild_limits: &handles.guild_limits,
-            };
-            service.run_backup_cycle(&ctx).await;
         }
     });
     info!(
