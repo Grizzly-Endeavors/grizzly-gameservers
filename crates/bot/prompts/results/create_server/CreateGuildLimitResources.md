@@ -7,7 +7,7 @@ annotations:
     memory limits would push the community's live total over its allowance
   used_by:
     - file: discord/gary/tools.rs
-      function: exec_create
+      function: refusal_reply
   variables:
     detail:
       source: describe_limit_refusal over the carried LimitRefusal figures

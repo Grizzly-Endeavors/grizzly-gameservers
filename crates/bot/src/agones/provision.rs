@@ -51,7 +51,12 @@ pub(crate) enum CreateOutcome {
         address: String,
         ready: bool,
     },
+    /// The caller's own guild already has a server by this name.
     AlreadyExists,
+    /// Another guild holds the name. Instance names are cluster-unique, so this
+    /// still refuses — but it is reported without confirming that a server exists,
+    /// which is the same masking `ScopeVerdict::Foreign` gets everywhere else.
+    NameUnavailable,
     PortsExhausted,
     /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
@@ -102,7 +107,10 @@ pub(crate) enum ProvisionOutcome {
     Provisioned {
         address: String,
     },
+    /// The caller's own guild already has a server by this name.
     AlreadyExists,
+    /// Another guild holds the name — see [`CreateOutcome::NameUnavailable`].
+    NameUnavailable,
     PortsExhausted,
     /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
@@ -166,6 +174,7 @@ pub(crate) async fn provision_paused_instance(
 enum Provisioned {
     Created(String),
     AlreadyExists,
+    NameUnavailable,
     PortsExhausted,
     GuildLimitReached(LimitRefusal),
 }
@@ -175,6 +184,7 @@ impl Provisioned {
         match self {
             Self::Created(address) => ProvisionOutcome::Provisioned { address },
             Self::AlreadyExists => ProvisionOutcome::AlreadyExists,
+            Self::NameUnavailable => ProvisionOutcome::NameUnavailable,
             Self::PortsExhausted => ProvisionOutcome::PortsExhausted,
             Self::GuildLimitReached(refusal) => ProvisionOutcome::GuildLimitReached(refusal),
         }
@@ -194,8 +204,10 @@ async fn provision_under_lock(
         guild,
         caps,
     } = *spec;
-    if instance_exists(client, namespace, instance).await? {
-        return Ok(Provisioned::AlreadyExists);
+    match name_holder(client, namespace, instance, guild).await? {
+        NameHolder::Free => {}
+        NameHolder::Caller => return Ok(Provisioned::AlreadyExists),
+        NameHolder::Other => return Ok(Provisioned::NameUnavailable),
     }
 
     // Guild caps are checked under the provision lock so two concurrent creates
@@ -500,22 +512,64 @@ pub(super) fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObj
     Api::namespaced_with(client.clone(), namespace, &resource)
 }
 
-async fn instance_exists(client: &Client, namespace: &str, instance: &str) -> Result<bool> {
+/// Who, if anyone, holds an instance name. Instance names are Kubernetes object
+/// names and so are unique across the whole namespace, which means one guild's
+/// choice can block another's — but which of the two it is must not be reported
+/// the same way.
+enum NameHolder {
+    Free,
+    /// Held by the guild that is asking.
+    Caller,
+    /// Held by a different guild, or by an object carrying no guild label.
+    Other,
+}
+
+/// Whether `instance` is free, and if not, whether `guild` is the holder.
+///
+/// The Service is checked first because it carries the guild label and outlives
+/// both `/stop` and `/shutdown`. A `GameServer` with no Service is a partially
+/// torn-down instance whose owner can't be read; it still holds the name, and an
+/// unreadable owner is treated as somebody else's rather than assumed to be the
+/// caller's.
+async fn name_holder(
+    client: &Client,
+    namespace: &str,
+    instance: &str,
+    guild: &str,
+) -> Result<NameHolder> {
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
-    if services
+    if let Some(service) = services
         .get_opt(instance)
         .await
         .with_context(|| format!("failed to check for existing service {instance}"))?
-        .is_some()
     {
-        return Ok(true);
+        let holder = label_value(service.metadata.labels.as_ref(), GUILD_KEY);
+        return Ok(classify_holder(holder, guild));
     }
-    let exists = gameserver_api(client, namespace)
+    let gameserver_exists = gameserver_api(client, namespace)
         .get_opt(instance)
         .await
         .with_context(|| format!("failed to check for existing gameserver {instance}"))?
         .is_some();
-    Ok(exists)
+    Ok(if gameserver_exists {
+        NameHolder::Other
+    } else {
+        NameHolder::Free
+    })
+}
+
+/// Whether the guild holding a name (`holder`, absent on a pre-scoping object) is
+/// the one asking for it. Pure so the tenancy policy is unit-tested without a live
+/// cluster, matching `scope::classify`.
+///
+/// An unlabelled holder is [`Other`](NameHolder::Other), never the caller: a
+/// caller with no guild of its own (the unscoped operator path, where `guild` is
+/// empty) must not come out matching every unlabelled object by default.
+fn classify_holder(holder: Option<&str>, guild: &str) -> NameHolder {
+    match holder {
+        Some(holder) if !guild.is_empty() && holder == guild => NameHolder::Caller,
+        Some(_) | None => NameHolder::Other,
+    }
 }
 
 async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
