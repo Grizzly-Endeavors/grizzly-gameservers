@@ -58,6 +58,11 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 # axum serves the inbound agent endpoint game-pod supervisors POST in-game `@Gary`
 # triggers to; matches the version the supervisor's control API already uses.
 axum = "0.8.7"
+# Compile-time HTML for the admin panel. Templates are Rust macros rather than a
+# second language with its own files, so a page that references a field that
+# stopped existing fails the build instead of at render time — and the markup is
+# embedded in the binary, which the pod's readOnlyRootFilesystem requires anyway.
+maud = "0.27.0"
 # `ring` explicitly selects rustls' crypto provider so rustls 0.23 can install a
 # process default; without it kube's rustls-tls enables no provider and the
 # client panics at startup ("could not automatically determine the CryptoProvider").

@@ -102,6 +102,80 @@ const INSERT_EVENT: &str = "INSERT INTO events \
     (kind, guild_id, game, instance, actor, surface, outcome, details) \
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)";
 
+/// Newest-first page of the log, with every filter optional. A `NULL` bind makes
+/// its clause vacuous, so one prepared statement serves every combination the
+/// panel offers rather than assembling SQL per request.
+const RECENT_EVENTS: &str = "SELECT id, kind, guild_id, game, instance, actor, surface, outcome, \
+    details::text, created_at::text FROM events \
+    WHERE ($1::text IS NULL OR kind = $1) \
+    AND ($2::text IS NULL OR guild_id = $2) \
+    AND ($3::text IS NULL OR instance = $3) \
+    AND ($4::text IS NULL OR surface = $4) \
+    AND ($5::bigint IS NULL OR id < $5) \
+    ORDER BY id DESC LIMIT $6";
+
+/// Which slice of the event log to show. Every field unset is "everything,
+/// newest first".
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EventFilter {
+    pub(crate) kind: Option<String>,
+    pub(crate) guild: Option<String>,
+    pub(crate) instance: Option<String>,
+    pub(crate) surface: Option<String>,
+    /// Page backwards from this id, exclusive. Keyset rather than offset, so a
+    /// page stays put as new events land at the head.
+    pub(crate) before_id: Option<i64>,
+}
+
+/// One event as the panel renders it. Timestamps and `details` arrive as text
+/// because `sqlx` here carries neither a date nor a json feature.
+type EventRowColumns = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+/// One row of the event log, named.
+#[derive(Clone, Debug)]
+pub(crate) struct EventRow {
+    pub(crate) id: i64,
+    pub(crate) kind: String,
+    pub(crate) guild: Option<String>,
+    pub(crate) game: Option<String>,
+    pub(crate) instance: Option<String>,
+    pub(crate) actor: String,
+    pub(crate) surface: String,
+    pub(crate) outcome: String,
+    pub(crate) details: String,
+    pub(crate) created_at: String,
+}
+
+impl From<EventRowColumns> for EventRow {
+    fn from(columns: EventRowColumns) -> Self {
+        let (id, kind, guild, game, instance, actor, surface, outcome, details, created_at) =
+            columns;
+        Self {
+            id,
+            kind,
+            guild,
+            game,
+            instance,
+            actor,
+            surface,
+            outcome,
+            details,
+            created_at,
+        }
+    }
+}
+
 /// Claim a guild as known. `RETURNING` fires only on a real insert, so the row
 /// count *is* the answer to "is this a genuine join?" — no read-then-write race.
 const CLAIM_GUILD: &str =
@@ -236,6 +310,56 @@ impl EventLog {
                 outcome = event.outcome,
                 "failed to record product event"
             );
+        }
+    }
+
+    /// The most recent events, newest first, narrowed by whichever filters are
+    /// set. Backs the admin panel's browser.
+    ///
+    /// Returns empty when the log is disabled or the query fails — the panel
+    /// shows an empty table rather than an error page, and the failure is logged.
+    /// `before_id` pages backwards by id rather than by offset, so a page can't
+    /// shift under the reader as new events land.
+    pub(crate) async fn recent(&self, filter: &EventFilter, limit: i64) -> Vec<EventRow> {
+        let Some(pool) = self.pool.as_ref() else {
+            return Vec::new();
+        };
+        // Every filter is bound rather than interpolated, and a `NULL` bind
+        // disables its clause — one prepared statement covers every combination.
+        match sqlx::query_as::<_, EventRowColumns>(RECENT_EVENTS)
+            .bind(filter.kind.as_deref())
+            .bind(filter.guild.as_deref())
+            .bind(filter.instance.as_deref())
+            .bind(filter.surface.as_deref())
+            .bind(filter.before_id)
+            .bind(limit)
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows.into_iter().map(EventRow::from).collect(),
+            Err(err) => {
+                error!(error = ?err, "failed to read recent events");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The distinct event kinds present in the log, for the browser's filter
+    /// menu — the catalog lists every kind the code can emit, but only the ones
+    /// that actually happened are worth offering.
+    pub(crate) async fn observed_kinds(&self) -> Vec<String> {
+        let Some(pool) = self.pool.as_ref() else {
+            return Vec::new();
+        };
+        match sqlx::query_as::<_, (String,)>("SELECT DISTINCT kind FROM events ORDER BY kind")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows.into_iter().map(|(kind,)| kind).collect(),
+            Err(err) => {
+                error!(error = ?err, "failed to read the event kinds present in the log");
+                Vec::new()
+            }
         }
     }
 

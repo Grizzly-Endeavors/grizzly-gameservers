@@ -4,6 +4,7 @@
 //! chat-completions/tool-calling core; [`agones`] talks to Kubernetes and
 //! Agones. [`run`] wires them together and drives the gateway loop.
 
+mod admin;
 mod agent;
 mod agones;
 mod backup;
@@ -94,6 +95,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let agent_port = config.agent_port;
     let ingame_token = config.ingame_token;
     let operator_token = config.operator_token;
+    let admin_config = config.admin;
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let sessions = std::sync::Arc::new(SessionStore::new());
     let DurableState {
@@ -198,6 +200,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
         &tasks,
         shutdown.clone(),
     );
+
+    // The super-admin panel, on its own port so a network policy can admit only
+    // the ingress controller to it — the agent port above must stay reachable by
+    // game pods, which run third-party server binaries.
+    admin::spawn(&data, admin_config, &tasks, shutdown.clone());
 
     run_gateway(config.token, data, shutdown, tasks, telemetry).await
 }

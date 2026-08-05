@@ -30,4 +30,4 @@ pub(crate) use resources::{
     run_resource_cycle, sample_instance,
 };
 pub(crate) use sampler::{SamplerCtx, run_occupancy_cycle};
-pub(crate) use store::EventLog;
+pub(crate) use store::{EventFilter, EventLog, EventRow};
