@@ -47,6 +47,11 @@ pub(crate) enum EventKind {
     /// given at each tick, this says when somebody decided to change it and how
     /// that landed.
     ResourcesChanged,
+    /// An operator changed a runtime setting from the admin panel. Details carry
+    /// the key and both values, so a behaviour change that starts at a given
+    /// moment can be traced to the knob that caused it — the same question the
+    /// release digest answers for a deploy.
+    SettingChanged,
 }
 
 impl EventKind {
@@ -68,6 +73,7 @@ impl EventKind {
             Self::GuildJoined => "guild_joined",
             Self::Incident => "incident",
             Self::ResourcesChanged => "resources_changed",
+            Self::SettingChanged => "setting_changed",
         }
     }
 }
@@ -97,6 +103,11 @@ pub(crate) enum Surface {
     Watchdog,
     /// An automatic cycle — scheduled backups, stranded-instance recovery.
     System,
+    /// The super-admin web panel. Separate from [`Self::Operator`] even though
+    /// both are the operator acting: the harness is a coding agent driving the
+    /// bot, and this is a human clicking a button. Telling them apart is what
+    /// keeps "what did I actually do by hand" answerable.
+    Admin,
 }
 
 impl Surface {
@@ -118,6 +129,7 @@ impl Surface {
             Self::Operator => "operator",
             Self::Watchdog => "watchdog",
             Self::System => "system",
+            Self::Admin => "admin",
         }
     }
 }
@@ -132,6 +144,10 @@ pub(crate) enum Actor {
     Player(String),
     /// An action nobody asked for: a scheduled cycle or a reconciler.
     System,
+    /// Someone signed in to the admin panel, by their identity-provider
+    /// username. Prefixed on the way into the column for the same reason a
+    /// player name is: an admin called `12345` must not read as a snowflake.
+    Admin(String),
 }
 
 impl Actor {
@@ -149,6 +165,7 @@ impl Actor {
             Self::Discord(id) => id.to_string(),
             Self::Player(name) => format!("player:{name}"),
             Self::System => "system".to_owned(),
+            Self::Admin(username) => format!("admin:{username}"),
         }
     }
 }

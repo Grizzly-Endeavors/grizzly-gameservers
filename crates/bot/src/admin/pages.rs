@@ -12,9 +12,9 @@
 use std::collections::BTreeMap;
 
 use axum::Router;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::response::Response;
-use axum::routing::get;
+use axum::routing::{get, post};
 use maud::{Markup, html};
 use serde::Deserialize;
 use tracing::error;
@@ -25,8 +25,11 @@ use crate::limits::format_cores;
 use crate::settings::{Reload, Section, SettingKey, SettingsSnapshot, StoredOverride};
 
 use super::AdminDeps;
+use super::actions::{self, InstanceAction};
 use super::auth::AdminIdentity;
-use super::render::{Nav, Tone, availability, badge, html_response, notice, page, table, tile};
+use super::render::{
+    Flash, Nav, Tone, availability, badge, html_response, notice, page, percent_encode, table, tile,
+};
 
 /// Rows shown on one page of the event log. Generous — this is a scan-and-close
 /// view, and paging is cheap — but bounded so one query can't hold the pool.
@@ -36,8 +39,16 @@ pub(crate) fn router(deps: AdminDeps) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/settings", get(settings))
+        .route("/settings/{key}", post(actions::set_setting))
         .route("/guilds", get(guilds))
+        .route("/guilds/{guild}/limits", post(actions::set_guild_limit))
+        .route("/guilds/{guild}/admission", post(actions::set_admission))
         .route("/instances", get(instances))
+        .route("/instances/{name}", get(instance_detail))
+        .route(
+            "/instances/{name}/{action}",
+            post(actions::run_instance_action),
+        )
         .route("/events", get(events))
         .with_state(deps)
 }
@@ -66,6 +77,7 @@ fn human_bytes(bytes: i64) -> String {
 async fn dashboard(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
 ) -> Response {
     let data = &deps.data;
     let effective = data.settings.snapshot();
@@ -85,6 +97,7 @@ async fn dashboard(
         .map_or(0, |ctx| ctx.cache.guilds().len());
 
     let body = html! {
+        (flash.render())
         (pending_restart_notice(&effective, &booted, &overrides))
         @if !data.settings.is_available() {
             (notice(Tone::Bad, &html! {
@@ -175,14 +188,17 @@ fn pending_restart_notice(
 async fn settings(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
 ) -> Response {
     let settings = &deps.data.settings;
     let effective = settings.snapshot();
     let booted = settings.booted();
     let baseline = settings.baseline();
     let overrides = settings.overrides().await;
+    let editable = settings.is_available();
 
     let body = html! {
+        (flash.render())
         (pending_restart_notice(&effective, &booted, &overrides))
         @if !settings.is_available() {
             (notice(Tone::Bad, &html! {
@@ -201,7 +217,7 @@ async fn settings(
             (table(&["Setting", "Value", "Source", "When"], SettingKey::ALL
                 .iter()
                 .filter(|key| key.section() == *section)
-                .map(|key| setting_row(*key, &effective, baseline, overrides.get(key)))
+                .map(|key| setting_row(*key, &effective, baseline, overrides.get(key), editable))
                 .collect(), "No settings in this section."))
         }
     };
@@ -213,16 +229,32 @@ fn setting_row(
     effective: &SettingsSnapshot,
     baseline: &SettingsSnapshot,
     stored: Option<&StoredOverride>,
+    editable: bool,
 ) -> Markup {
     let value = key.render(effective);
     let deployed = key.render(baseline);
+    let action = format!("/settings/{}", key.as_str());
     html! {
         tr {
             td {
                 div .mono { (key.as_str()) }
                 div .hint { (key.summary()) }
             }
-            td .value { (value) }
+            td {
+                form .inline method="post" action=(action) {
+                    // The rendered value is what round-trips, so the field starts
+                    // as exactly what is in force — an operator who saves without
+                    // editing changes nothing.
+                    input type="text" name="value" value=(value) disabled[!editable]
+                        aria-label=(format!("{} value", key.as_str()));
+                    button type="submit" disabled[!editable] { "Save" }
+                    @if stored.is_some() {
+                        button type="submit" name="clear" value="1" disabled[!editable]
+                            title=(format!("Back to the deployed value: {deployed}")) { "Reset" }
+                    }
+                }
+                div .hint { "Needs " (key.expected()) "." }
+            }
             td {
                 @match stored {
                     Some(override_row) => {
@@ -233,7 +265,7 @@ fn setting_row(
                             }
                             (override_row.updated_at)
                         }
-                        div .hint { "Deployed value: " span .mono { (deployed) } }
+                        div .hint { "Deployed: " span .mono { (deployed) } }
                     }
                     None => { (badge("deployed", Tone::Neutral)) }
                 }
@@ -253,6 +285,8 @@ fn setting_row(
 async fn guilds(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Response {
     let data = &deps.data;
     let effective = data.settings.snapshot();
@@ -321,12 +355,26 @@ async fn guilds(
                 }
                 td {
                     @if overridden { (badge("custom caps", Tone::Accent)) }
+                    (cap_form(&key, "servers", "Servers"))
+                    (cap_form(&key, "cpu", "CPU"))
+                    (cap_form(&key, "memory", "Memory"))
+                }
+                td {
+                    form .inline method="post" action=(format!("/guilds/{key}/admission")) {
+                        @if admitted {
+                            button type="submit" { "Stop serving" }
+                        } @else {
+                            button type="submit" name="admit" value="1" { "Serve" }
+                        }
+                    }
                 }
             }
         });
     }
 
     let body = html! {
+        (flash.render())
+        (admission_confirm(&confirm))
         @if allowlist.is_empty() {
             (notice(Tone::Warn, &html! {
                 strong { "Every Discord server is served." }
@@ -339,10 +387,67 @@ async fn guilds(
             "CPU and memory count each live server's configured maximum, so stopped servers \
              use none. A \"?\" means the cluster couldn't be read just now."
         }
-        (table(&["Discord server", "Admission", "Servers", "CPU", "Memory", ""],
+        (table(&["Discord server", "Admission", "Servers", "CPU", "Memory", "Caps", ""],
             rows, "The bot isn't in any Discord servers."))
     };
     html_response(page("Guilds", Nav::Guilds, &identity, &body))
+}
+
+/// A one-field form for a single cap. Blank means "back to the global default",
+/// matching what `/config limits … default` does in Discord.
+fn cap_form(guild: &str, field: &str, label: &str) -> Markup {
+    html! {
+        form .inline method="post" action=(format!("/guilds/{guild}/limits")) {
+            input type="hidden" name="field" value=(field);
+            input type="text" name="value" placeholder="default" size="7"
+                aria-label=(format!("{label} cap for {guild}"));
+            button type="submit" { (label) }
+        }
+    }
+}
+
+/// The two allowlist edits that change what *every other* guild gets, spelled
+/// out before they happen.
+///
+/// Admitting the first guild flips the service from "serves everyone" to "serves
+/// this one"; removing the last one flips it back. Both read as a change to one
+/// guild and are a change to all of them, which is exactly the shape that
+/// deserves a second click.
+fn admission_confirm(confirm: &ConfirmQuery) -> Markup {
+    let Some(guild) = confirm.guild.as_deref() else {
+        return html! {};
+    };
+    match confirm.confirm.as_deref() {
+        Some("admit") => notice(
+            Tone::Warn,
+            &html! {
+                strong { "This closes the door on every other Discord server." }
+                " The allowlist is empty right now, which serves everyone. Adding "
+                span .mono { (guild) }
+                " makes it the only one served — every other server loses its commands."
+                form .inline method="post" action=(format!("/guilds/{guild}/admission")) {
+                    input type="hidden" name="admit" value="1";
+                    input type="hidden" name="confirm" value="1";
+                    button type="submit" { "Serve only this one" }
+                }
+            },
+        ),
+        Some("open") => notice(
+            Tone::Warn,
+            &html! {
+                strong { "This opens the door to every Discord server." }
+                " Removing "
+                span .mono { (guild) }
+                " empties the allowlist, and an empty allowlist serves every server the bot is \
+                  invited to — the opposite of what stopping one usually means."
+                form .inline method="post" action=(format!("/guilds/{guild}/admission")) {
+                    input type="hidden" name="confirm" value="1";
+                    button type="submit" { "Serve everyone" }
+                }
+            },
+        ),
+        _ => html! {},
+    }
 }
 
 // --------------------------------------------------------------- instances
@@ -350,11 +455,12 @@ async fn guilds(
 async fn instances(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
 ) -> Response {
     let data = &deps.data;
     let live = list_live_instances(&data.kube_client, &data.namespace).await;
 
-    let body = match live {
+    let listing = match live {
         Err(err) => {
             error!(error = ?err, "admin panel could not list servers");
             notice(
@@ -373,7 +479,7 @@ async fn instances(
                 let sizing = data.sizing.get(name).await;
                 rows.push(html! {
                     tr {
-                        td .mono { (name) }
+                        td .mono { a href=(format!("/instances/{name}")) { (name) } }
                         td { (instance.game.as_str()) }
                         td .mono { (instance.guild.as_str()) }
                         td {
@@ -405,7 +511,145 @@ async fn instances(
             }
         }
     };
+    let body = html! { (flash.render()) (listing) };
     html_response(page("Servers", Nav::Instances, &identity, &body))
+}
+
+/// One server: what it is, what it's allowed, and the buttons that act on it.
+///
+/// Destroy sits behind a typed confirmation on this page rather than a checkbox
+/// in the list — losing a world should take a deliberate act, and typing the
+/// server's own name is one.
+async fn instance_detail(
+    State(deps): State<AdminDeps>,
+    Extension(identity): Extension<AdminIdentity>,
+    Path(name): Path<String>,
+    Query(flash): Query<Flash>,
+    Query(confirm): Query<ConfirmQuery>,
+) -> Response {
+    let data = &deps.data;
+    let live = list_live_instances(&data.kube_client, &data.namespace)
+        .await
+        .unwrap_or_default();
+    let found = live
+        .iter()
+        .find(|instance| instance.instance.as_str() == name);
+    let sizing = data.sizing.get(&name).await;
+    let backups_on = data.backup.is_some();
+    let recent = data
+        .events
+        .recent(
+            &EventFilter {
+                instance: Some(name.clone()),
+                ..EventFilter::default()
+            },
+            20,
+        )
+        .await;
+
+    let body = html! {
+        (flash.render())
+        @if confirm.confirm.as_deref() == Some("destroy") {
+            (notice(Tone::Bad, &html! {
+                strong { "Destroy " span .mono { (name) } "?" }
+                " This deletes the server and its world. Archives it already has are kept, \
+                  but anything not archived is gone. Type the server's name to confirm."
+                form .inline method="post" action=(format!("/instances/{name}/destroy")) {
+                    input type="text" name="confirm" placeholder=(name)
+                        aria-label="Type the server name to confirm";
+                    button type="submit" .danger { "Destroy it" }
+                }
+            }))
+        }
+
+        @match found {
+            Some(instance) => {
+                h2 { "State" }
+                div .tiles {
+                    (tile("Server", &name))
+                    (tile("Game", instance.game.as_str()))
+                    (tile("Discord server", instance.guild.as_str()))
+                    (tile("Process", if instance.unhealthy {
+                        "unhealthy"
+                    } else if instance.running { "running" } else { "stopped" }))
+                }
+            }
+            None => {
+                (notice(Tone::Warn, &html! {
+                    strong { "No pod for " span .mono { (name) } "." }
+                    " It's either shut down — its world is still on disk — or it doesn't \
+                      exist. Starting it will bring the pod back if the world is there."
+                }))
+            }
+        }
+
+        h2 { "Allowed" }
+        (table(&["", ""], vec![
+            html! { tr {
+                td { "CPU / memory" }
+                td .value {
+                    @match sizing {
+                        Some(sizing) => {
+                            (format_cores(sizing.cpu_limit_millicores))
+                            " · " (human_bytes(sizing.mem_limit_bytes))
+                        }
+                        None => { span .hint { "the game's catalog default" } }
+                    }
+                }
+            } },
+        ], "—"))
+
+        h2 { "Actions" }
+        div .card {
+            div .actions {
+                (action_button(&name, InstanceAction::Stop, "Stop", true))
+                (action_button(&name, InstanceAction::Start, "Start", true))
+                (action_button(&name, InstanceAction::Restart, "Restart", true))
+                (action_button(&name, InstanceAction::Backup, "Back up now", backups_on))
+                (action_button(&name, InstanceAction::Shutdown, "Shut down", true))
+                (action_button(&name, InstanceAction::Destroy, "Destroy", true))
+            }
+            div .hint style="padding: 0 0.95rem 0.9rem" {
+                "Stop leaves the pod up, so starting again is instant. Shut down removes the \
+                 pod and keeps the world. Destroy removes both."
+            }
+        }
+
+        h2 { "Recent events" }
+        (table(&["When", "Kind", "Actor", "Surface", "Outcome"],
+            recent.iter().map(|row| html! {
+                tr {
+                    td .mono { (row.created_at) }
+                    td .mono { (row.kind) }
+                    td .mono { (row.actor) }
+                    td { (row.surface) }
+                    td { (row.outcome) }
+                }
+            }).collect(),
+            "Nothing recorded for this server."))
+    };
+    html_response(page(&name, Nav::Instances, &identity, &body))
+}
+
+/// One action button. Destructive actions send the operator to a confirmation
+/// instead of acting, which the handler enforces independently — this only
+/// decides what the button looks like.
+fn action_button(name: &str, action: InstanceAction, label: &str, enabled: bool) -> Markup {
+    let path = format!("/instances/{name}/{}", action.as_str());
+    html! {
+        form .inline method="post" action=(path) {
+            button type="submit" disabled[!enabled]
+                class=[action.is_destructive().then_some("danger")] { (label) }
+        }
+    }
+}
+
+/// A `?confirm=…` marker, set by a handler that bounced an action back for
+/// confirmation.
+#[derive(Debug, Default, Deserialize)]
+struct ConfirmQuery {
+    confirm: Option<String>,
+    guild: Option<String>,
 }
 
 // ------------------------------------------------------------------ events
@@ -448,42 +692,18 @@ impl EventQuery {
             ("surface", self.surface.as_ref()),
         ] {
             if let Some(value) = value.filter(|raw| !raw.trim().is_empty()) {
-                parts.push(format!("{name}={}", urlencode(value.trim())));
+                parts.push(format!("{name}={}", percent_encode(value.trim())));
             }
         }
         format!("/events?{}", parts.join("&"))
     }
 }
 
-/// Percent-encode a query-string value. Only the handful of characters that can
-/// appear in an event filter (ids, instance names, kinds) need escaping, but
-/// anything outside the unreserved set is encoded rather than guessed at.
-fn urlencode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(hex_digit(byte >> 4));
-            out.push(hex_digit(byte & 0x0f));
-        }
-    }
-    out
-}
-
-/// One nibble as an uppercase hex digit.
-fn hex_digit(nibble: u8) -> char {
-    char::from(match nibble {
-        0..=9 => b'0' + nibble,
-        _ => b'A' + (nibble - 10),
-    })
-}
-
 async fn events(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
     Query(query): Query<EventQuery>,
+    Query(flash): Query<Flash>,
 ) -> Response {
     let data = &deps.data;
     let rows = data.events.recent(&query.filter(), EVENT_PAGE_SIZE).await;
@@ -492,6 +712,7 @@ async fn events(
     let full_page = i64::try_from(rows.len()).unwrap_or(i64::MAX) == EVENT_PAGE_SIZE;
 
     let body = html! {
+        (flash.render())
         @if !data.events.enabled() {
             (notice(Tone::Bad, &html! {
                 strong { "No event log." }

@@ -235,3 +235,57 @@ details.details pre {
   word-break: break-word;
   color: var(--text-dim);
 }
+
+/* Inline forms: a field and its button sitting on one line inside a table cell
+   or a notice, rather than stacking the way a block form would. */
+form.inline {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+  margin: 0.2rem 0.35rem 0.2rem 0;
+}
+
+form.inline input[type="text"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.3rem 0.45rem;
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  min-width: 6rem;
+  max-width: 22rem;
+  width: 100%;
+}
+
+form.inline button {
+  background: var(--surface-raised);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.3rem 0.6rem;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+form.inline button:hover:not(:disabled) { border-color: var(--accent); }
+
+form.inline button.danger { color: var(--bad); }
+form.inline button.danger:hover:not(:disabled) { border-color: var(--bad); }
+
+form.inline input:disabled, form.inline button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem;
+}
+
+.notice form.inline { margin-top: 0.6rem; display: flex; }

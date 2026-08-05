@@ -19,6 +19,7 @@ use poise::serenity_prelude as serenity;
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use tracing::{error, info};
 
 use crate::agent::{Environment, OllamaConfig, SessionStore};
 use crate::agones::GameCatalog;
@@ -206,6 +207,116 @@ pub(crate) fn ollama_now(
         base_url: effective.gary_base_url.clone(),
         model: effective.gary_model.clone(),
     })
+}
+
+/// The slash commands the bot registers with each guild it's in.
+pub(crate) fn slash_commands() -> Vec<poise::Command<Data, Error>> {
+    vec![
+        self::commands::servers(),
+        self::commands::create(),
+        self::commands::shutdown(),
+        self::commands::stop(),
+        self::commands::start(),
+        self::commands::restart(),
+        self::commands::destroy(),
+        self::commands::backup(),
+        self::commands::backups(),
+        self::commands::archive(),
+        self::commands::archives(),
+        self::commands::delete_archive(),
+        self::commands::restore(),
+        self::commands::recover(),
+        self::commands::new_session(),
+        self::commands::gary_home(),
+        self::commands::gary_memory(),
+        self::commands::config(),
+    ]
+}
+
+/// Register (or revoke) this guild's slash commands.
+///
+/// An unadmitted guild is registered with an *empty* set rather than skipped: a
+/// guild that has just been removed from the allowlist must lose the commands it
+/// already has, and re-registering empty is how that revocation reaches Discord.
+/// Idempotent, so the `GuildCreate` replays on every gateway reconnect are free.
+///
+/// # Errors
+///
+/// Propagates a serenity failure from the registration call.
+pub(crate) async fn register_guild_commands(
+    ctx: &serenity::Context,
+    commands: &[poise::Command<Data, Error>],
+    guild: serenity::GuildId,
+    admitted: bool,
+) -> Result<(), Error> {
+    let revoked: Vec<poise::Command<Data, Error>> = Vec::new();
+    let registering = if admitted { commands } else { &revoked };
+    poise::builtins::register_in_guild(ctx, registering, guild).await?;
+    Ok(())
+}
+
+/// What a registration sweep did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SweepOutcome {
+    pub(crate) served: usize,
+    pub(crate) revoked: usize,
+    pub(crate) failed: usize,
+}
+
+/// Re-register every guild the bot is in against the current allowlist.
+///
+/// The allowlist is read live, so admission binds immediately for Gary and for
+/// the command *check*. Discord's own command list, though, is a thing the bot
+/// pushed at some point — changing the allowlist doesn't retract it. This is what
+/// does, and it is why an admission change is a push rather than a pure pull.
+///
+/// Returns `None` when the gateway isn't connected: there is nothing to register
+/// against yet, and the `GuildCreate` replay on reconnect reconciles anyway.
+pub(crate) async fn registration_sweep(data: &Data) -> Option<SweepOutcome> {
+    let ctx = data.gateway.current()?;
+    let commands = slash_commands();
+    let mut outcome = SweepOutcome::default();
+    for guild in ctx.cache.guilds() {
+        let admitted = guild_is_admitted(data, guild.get());
+        match register_guild_commands(&ctx, &commands, guild, admitted).await {
+            Ok(()) if admitted => outcome.served += 1,
+            Ok(()) => outcome.revoked += 1,
+            Err(err) => {
+                error!(
+                    error = ?err,
+                    guild = guild.get(),
+                    "failed to re-register commands for a guild after an admission change"
+                );
+                outcome.failed += 1;
+            }
+        }
+    }
+    info!(
+        served = outcome.served,
+        revoked = outcome.revoked,
+        failed = outcome.failed,
+        "re-registered slash commands after an admission change"
+    );
+    Some(outcome)
+}
+
+/// Push a settings change to the consumers that can't read the snapshot at the
+/// point of use.
+///
+/// Almost every consumer pulls, which is what makes a hot setting reliably hot.
+/// Two can't: the turn throttle holds a live semaphore rather than a number, and
+/// Discord's registered command list is remote state that only a push can
+/// correct. Routing both through one function is what stops a future mutation
+/// site from remembering one and forgetting the other.
+pub(crate) async fn settings_changed(
+    data: &Data,
+    key: crate::settings::SettingKey,
+    snapshot: &crate::settings::SettingsSnapshot,
+) {
+    data.turn_throttle.update_policy(snapshot.throttle);
+    if key == crate::settings::SettingKey::GuildAllowlist {
+        registration_sweep(data).await;
+    }
 }
 
 /// Build the backup-flow context from the shared per-command [`Data`]. Shared by

@@ -9,6 +9,7 @@
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use maud::{DOCTYPE, Markup, html};
+use serde::Deserialize;
 
 use super::auth::{AdminIdentity, Denial};
 
@@ -160,6 +161,104 @@ pub(crate) fn table(headers: &[&str], rows: Vec<Markup>, empty: &str) -> Markup 
             }
         }
     }
+}
+
+/// The one-line result of the last action, carried across the redirect that
+/// follows every mutation.
+///
+/// A query parameter rather than a session or a cookie: the panel has no
+/// server-side session to hang one on, and a message that survives exactly one
+/// navigation is all this needs. Nothing here is trusted — it is escaped into
+/// the page like any other value.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub(crate) struct Flash {
+    pub(crate) flash: Option<String>,
+    /// Present and `1` when the message is a failure.
+    pub(crate) err: Option<u8>,
+}
+
+impl Flash {
+    pub(crate) fn ok(message: &str) -> Self {
+        Self {
+            flash: Some(message.to_owned()),
+            err: None,
+        }
+    }
+
+    pub(crate) fn error(message: &str) -> Self {
+        Self {
+            flash: Some(message.to_owned()),
+            err: Some(1),
+        }
+    }
+
+    /// No message — used by a redirect whose destination speaks for itself.
+    pub(crate) fn none() -> Self {
+        Self::default()
+    }
+
+    /// This flash as query parameters, ready to append to a path.
+    fn query(&self) -> String {
+        let Some(message) = self.flash.as_deref() else {
+            return String::new();
+        };
+        let failed = if self.err.is_some() { "&err=1" } else { "" };
+        format!("flash={}{failed}", percent_encode(message))
+    }
+
+    /// The message as a notice, or nothing.
+    pub(crate) fn render(&self) -> Markup {
+        let Some(message) = self.flash.as_deref() else {
+            return html! {};
+        };
+        let tone = if self.err.is_some() {
+            Tone::Bad
+        } else {
+            Tone::Ok
+        };
+        notice(tone, &html! { (message) })
+    }
+}
+
+/// Percent-encode a query-string value, encoding everything outside the
+/// unreserved set rather than guessing at what needs it.
+pub(crate) fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(hex_digit(byte >> 4));
+            out.push(hex_digit(byte & 0x0f));
+        }
+    }
+    out
+}
+
+/// One nibble as an uppercase hex digit.
+fn hex_digit(nibble: u8) -> char {
+    char::from(match nibble {
+        0..=9 => b'0' + nibble,
+        _ => b'A' + (nibble - 10),
+    })
+}
+
+/// Answer a mutation with a redirect to a view.
+///
+/// Every mutation ends this way (POST → 303 → GET) so a reload can't repeat the
+/// action and the back button lands on a page rather than a resubmission
+/// prompt. `path` may already carry a query string.
+pub(crate) fn redirect(path: &str, flash: &Flash) -> Response {
+    let query = flash.query();
+    let location = if query.is_empty() {
+        path.to_owned()
+    } else if path.contains('?') {
+        format!("{path}&{query}")
+    } else {
+        format!("{path}?{query}")
+    };
+    (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
 }
 
 /// A rendered page.

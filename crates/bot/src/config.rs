@@ -91,6 +91,9 @@ const DEFAULT_LANGFUSE_HOST: &str = "http://langfuse-web.langfuse.svc.cluster.lo
 /// superuser group (grizzly-platform ADR-049 binds app visibility to it), so the
 /// panel admits exactly the people who already administer the homelab.
 const DEFAULT_ADMIN_GROUP: &str = "grizzly-admins";
+/// Where the panel is served. Only ever used to reject a cross-origin write, so
+/// a wrong value fails closed (writes refused) rather than open.
+const DEFAULT_ADMIN_ORIGIN: &str = "https://gameservers-admin.grizzly-endeavors.com";
 /// Stands in for the image digest on an off-cluster run, where there is no
 /// digest to report. Traces from such a run are quarantined by their
 /// `development` environment anyway.
@@ -264,6 +267,12 @@ pub struct BotConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct AdminConfig {
     pub(crate) port: u16,
+    /// The origin the panel is reached at, e.g.
+    /// `https://gameservers-admin.grizzly-endeavors.com`. Compared against a
+    /// write's `Origin` header, so a form on another site can't act through a
+    /// signed-in admin's browser. Defaults to the panel host under the service
+    /// domain, which is where the chart puts it.
+    pub(crate) public_origin: String,
     /// Authentik group a signed-in user must hold. Checked in-process as defense
     /// in depth behind the outpost's own policy binding, and so a non-member
     /// gets a page that says why rather than a bare 403.
@@ -286,6 +295,10 @@ fn admin_config_from_env(lookup: EnvLookup) -> Result<Option<AdminConfig>> {
     };
     Ok(Some(AdminConfig {
         port,
+        public_origin: optional(lookup, "GAMESERVERS_ADMIN_PUBLIC_URL")
+            .map(|raw| raw.trim().trim_end_matches('/').to_owned())
+            .filter(|origin| !origin.is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_ORIGIN.to_owned()),
         required_group: optional(lookup, "GAMESERVERS_ADMIN_GROUP")
             .filter(|group| !group.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_ADMIN_GROUP.to_owned()),
