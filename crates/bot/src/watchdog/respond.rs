@@ -44,20 +44,36 @@ const STORM_WINDOW: Duration = Duration::from_mins(30);
 
 /// Consume incidents until shutdown, on the tracked task set so an in-flight
 /// response is drained rather than cut off.
-pub(crate) fn spawn_responder(data: Data, mut incidents: mpsc::Receiver<Incident>) {
+pub(crate) fn spawn_responder(
+    data: Data,
+    incidents: mpsc::Receiver<Incident>,
+    health: &std::sync::Arc<crate::cycles::CycleHealth>,
+) {
     let tasks = data.tasks.clone();
     let mode = data.settings.snapshot().watchdog;
-    tasks.spawn(async move {
-        let mut turn_starts: VecDeque<Instant> = VecDeque::new();
-        loop {
-            let incident = tokio::select! {
-                () = data.shutdown.cancelled() => return,
-                received = incidents.recv() => match received {
-                    Some(incident) => incident,
-                    None => return,
-                },
-            };
-            handle_incident(&data, &incident, &mut turn_starts).await;
+    let shutdown = data.shutdown.clone();
+    // Shared so a restart after a panic can resume consuming the same queue: the
+    // receiver is the one piece of this loop that cannot be rebuilt, and dropping
+    // it would leave the sampler firing incidents into a closed channel.
+    let incidents = std::sync::Arc::new(tokio::sync::Mutex::new(incidents));
+    crate::cycles::spawn_supervised("watchdog-responder", health, &tasks, shutdown, move || {
+        let data = data.clone();
+        let incidents = std::sync::Arc::clone(&incidents);
+        async move {
+            // Reset by a restart, which widens the storm guard for one window —
+            // preferable to holding a lock across the panic that lost it.
+            let mut turn_starts: VecDeque<Instant> = VecDeque::new();
+            let mut incidents = incidents.lock().await;
+            loop {
+                let incident = tokio::select! {
+                    () = data.shutdown.cancelled() => return,
+                    received = incidents.recv() => match received {
+                        Some(incident) => incident,
+                        None => return,
+                    },
+                };
+                handle_incident(&data, &incident, &mut turn_starts).await;
+            }
         }
     });
     info!(mode = mode.as_str(), "proactive watchdog responder started");

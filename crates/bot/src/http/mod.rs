@@ -47,6 +47,9 @@ pub(crate) struct HttpDeps {
     pub(crate) ingame_token: Option<String>,
     /// Bearer token for the operator routes. `None` leaves them unmounted.
     pub(crate) operator_token: Option<String>,
+    /// Panic counts for the supervised background cycles, so a subsystem that
+    /// keeps dying can reach the k8s probes.
+    pub(crate) cycle_health: Arc<crate::cycles::CycleHealth>,
 }
 
 impl HttpDeps {
@@ -58,6 +61,7 @@ impl HttpDeps {
         port: u16,
         ingame_token: Option<String>,
         operator_token: Option<String>,
+        cycle_health: Arc<crate::cycles::CycleHealth>,
     ) -> Self {
         Self {
             ingame: IngameDeps::from_data(data),
@@ -65,6 +69,7 @@ impl HttpDeps {
             port,
             ingame_token,
             operator_token,
+            cycle_health,
         }
     }
 }
@@ -101,13 +106,23 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
         port,
         ingame_token,
         operator_token,
+        cycle_health,
     } = deps;
 
     // `GET /health` is always served: unauthenticated, stateless, and independent
     // of Gary, so the k8s probes have a target whether or not the token-guarded
     // feature routes are mounted. Each gate is scoped to its own sub-router — a
     // probe carries no bearer token and must not be turned away.
-    let mut app: Router = Router::new().route(HEALTH_PATH, get(health));
+    let mut app: Router = Router::new().route(
+        HEALTH_PATH,
+        get({
+            let health_state = Arc::clone(&cycle_health);
+            move || {
+                let state = Arc::clone(&health_state);
+                async move { health(&state) }
+            }
+        }),
+    );
 
     let ingame_route = ingame.ollama.is_some();
     if ingame_route {
@@ -214,11 +229,30 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Liveness/readiness target for the k8s probes: `200` whenever the process is
-/// serving. It does no work and touches no state on purpose — an unconfigured Gary
-/// or an idle Discord gateway must not read as dead, and a genuinely wedged process
-/// (what the liveness probe exists to catch) stops answering regardless.
-async fn health() -> StatusCode {
-    StatusCode::OK
+/// serving and its background cycles are not in a panic loop.
+///
+/// It does almost no work on purpose — an unconfigured Gary or an idle Discord
+/// gateway must not read as dead, and a genuinely wedged process (what the
+/// liveness probe exists to catch) stops answering regardless.
+///
+/// The one thing it does check is the supervised cycles, because a panicking
+/// backup or sampler loop is invisible from outside the process: it doesn't stop
+/// the gateway, doesn't stop serving, and produces no traffic whose absence
+/// anything notices. A cycle that has panicked repeatedly is not recovering on
+/// its own, and a pod restart is the only remaining lever — so this reports
+/// unhealthy and lets the kubelet pull it. A *single* panic deliberately does
+/// not: the supervisor already restarted the cycle, and rolling the pod for one
+/// bad tick would cost more than the tick did.
+fn health(cycles: &crate::cycles::CycleHealth) -> StatusCode {
+    let failing = cycles.failing();
+    if failing.is_empty() {
+        return StatusCode::OK;
+    }
+    error!(
+        ?failing,
+        "background cycles are panicking repeatedly; reporting unhealthy so the pod is restarted"
+    );
+    StatusCode::SERVICE_UNAVAILABLE
 }
 
 #[cfg(test)]

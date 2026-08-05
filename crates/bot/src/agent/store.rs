@@ -24,6 +24,18 @@ const SESSION_TTL: Duration = Duration::from_mins(30);
 /// long-running back-and-forth; trimming keeps the most recent turns.
 const MAX_TRANSCRIPT: usize = 30;
 
+/// Ceiling on retained transcript *bytes* per session, alongside the message
+/// count.
+///
+/// A count alone doesn't bound anything that matters: a single `read_file`
+/// result carries up to 256 KiB verbatim, so thirty of them is several megabytes
+/// resident — and, worse, re-sent as prompt tokens on every later turn in that
+/// channel. One big read should age out quickly rather than ride along for the
+/// next twenty-nine messages. The newest message is always kept even when it
+/// exceeds this on its own; dropping the result the model just asked for would
+/// leave it answering about nothing.
+const MAX_TRANSCRIPT_BYTES: usize = 128 * 1024;
+
 /// What counts as one conversation. Raw ids rather than Discord types, so this
 /// module stays trivially testable.
 ///
@@ -194,6 +206,14 @@ impl SessionStore {
         let Ok(mut store) = self.inner.lock() else {
             return;
         };
+        // Reap here rather than from a timer. `checkout` only *reads* the TTL to
+        // decide freshness, so without this an entry persists for the life of the
+        // process for every channel Gary was ever mentioned in and every
+        // (guild, player) pair that ever typed @Gary in game — none of which ever
+        // come back. Sweeping on write costs one pass over the live keys at the
+        // one moment the lock is already held, and mirrors how `turn_locks`
+        // self-prunes rather than adding a task that itself needs supervising.
+        store.retain(|_, entry| now.duration_since(entry.last_seen) <= self.ttl);
         store.insert(
             key,
             Entry {
@@ -213,20 +233,34 @@ impl SessionStore {
     }
 }
 
-/// Keep the system message plus the most recent turns within [`MAX_TRANSCRIPT`].
+/// Keep the system message plus the most recent turns within [`MAX_TRANSCRIPT`]
+/// and [`MAX_TRANSCRIPT_BYTES`].
+///
 /// The retained window must not begin with a tool result — that would dangle
 /// without the assistant turn that requested it and malform the next request —
-/// so the cut point advances past any leading tool messages.
+/// so the cut point advances past any leading tool messages, after both limits
+/// have had their say.
 fn trim(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    if messages.len() <= MAX_TRANSCRIPT {
-        return messages;
-    }
-
     let mut start = messages
         .len()
         .saturating_sub(MAX_TRANSCRIPT.saturating_sub(1));
-    while messages.get(start).is_some_and(|m| m.role == Role::Tool) {
+    start = start.max(byte_budget_start(&messages));
+    // Skip leading tool results, which would dangle without the assistant turn
+    // that asked for them — but never past the newest message, or a transcript
+    // whose last message *is* a tool result would be trimmed away entirely.
+    let last = messages.len().saturating_sub(1);
+    while start < last && messages.get(start).is_some_and(|m| m.role == Role::Tool) {
         start += 1;
+    }
+    // Landing on a tool result now means it is the newest message, so walk back
+    // to the assistant turn that requested it and keep the pair intact. This can
+    // exceed the byte budget; a well-formed request matters more than the budget,
+    // and the alternative is a call with no visible result.
+    while start > 1 && messages.get(start).is_some_and(|m| m.role == Role::Tool) {
+        start -= 1;
+    }
+    if start == 0 {
+        return messages;
     }
 
     let mut trimmed = Vec::with_capacity(messages.len() - start + 1);
@@ -235,6 +269,44 @@ fn trim(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     }
     trimmed.extend(messages.into_iter().skip(start));
     trimmed
+}
+
+/// The earliest message index (after the system prompt) that keeps the retained
+/// tail within [`MAX_TRANSCRIPT_BYTES`].
+///
+/// Walks backwards from the newest so the most recent exchange is what survives,
+/// and always admits at least one message — a single oversized result still has
+/// to reach the model that asked for it. The system prompt is excluded from the
+/// walk because it is never dropped; it is charged against the budget so a large
+/// prompt doesn't leave the tail unbounded.
+fn byte_budget_start(messages: &[ChatMessage]) -> usize {
+    let system_bytes = messages.first().map_or(0, message_bytes);
+    let budget = MAX_TRANSCRIPT_BYTES.saturating_sub(system_bytes);
+    let mut used = 0_usize;
+    let mut start = messages.len();
+    for (index, message) in messages.iter().enumerate().skip(1).rev() {
+        let bytes = message_bytes(message);
+        if used > 0 && used.saturating_add(bytes) > budget {
+            break;
+        }
+        used = used.saturating_add(bytes);
+        start = index;
+    }
+    start
+}
+
+/// What one message costs the transcript: its content plus the arguments of any
+/// tool calls it carries, which are re-sent with it and are not always small.
+/// Near enough for a budget — bounding growth is the point, not exactness.
+fn message_bytes(message: &ChatMessage) -> usize {
+    let content = message.content.as_ref().map_or(0, String::len);
+    let calls: usize = message
+        .tool_calls
+        .iter()
+        .flatten()
+        .map(|call| call.function.name.len() + call.function.arguments.len())
+        .sum();
+    content.saturating_add(calls)
 }
 
 #[cfg(test)]
