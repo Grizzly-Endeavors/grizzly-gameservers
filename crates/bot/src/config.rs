@@ -263,7 +263,7 @@ pub struct BotConfig {
 /// network trust: the agent port must stay reachable by game pods (the in-game
 /// `@Gary` trigger), while the panel's forward-auth headers are only meaningful
 /// if nothing but the ingress controller can reach it. See
-/// [ADR-025](../../docs/decisions/025-super-admin-panel.md).
+/// [ADR-026](../../docs/decisions/026-super-admin-panel.md).
 #[derive(Clone, Debug)]
 pub(crate) struct AdminConfig {
     pub(crate) port: u16,

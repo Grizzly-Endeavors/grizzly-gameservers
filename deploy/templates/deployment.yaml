@@ -173,6 +173,19 @@ spec:
             # sampler, so no database also means no watchdog.
             - name: GAMESERVERS_WATCHDOG
               value: {{ .Values.bot.watchdog | quote }}
+            {{- if .Values.bot.adminPanel.enabled }}
+            # Super-admin panel. An unset port is how the binary decides not to
+            # serve it at all, so this block is the whole switch — fail-closed by
+            # absence, the same posture as the operator token.
+            - name: GAMESERVERS_ADMIN_PORT
+              value: {{ .Values.bot.adminPanel.port | quote }}
+            # Compared against a write's Origin header, so a form on another site
+            # can't act through a signed-in admin's browser.
+            - name: GAMESERVERS_ADMIN_PUBLIC_URL
+              value: "https://{{ .Values.bot.adminPanel.host }}"
+            - name: GAMESERVERS_ADMIN_GROUP
+              value: {{ .Values.bot.adminPanel.requiredGroup | quote }}
+            {{- end }}
             # In-game agent endpoint: game-pod supervisors POST player `@Gary`
             # chat triggers here (the reverse loop). The token authenticates
             # those POSTs; it's the same grizzly-gameservers-ingame Secret the
@@ -244,6 +257,15 @@ spec:
             - name: agent
               containerPort: 9360
               protocol: TCP
+            {{- if .Values.bot.adminPanel.enabled }}
+            # The super-admin panel. A separate port from the agent endpoint on
+            # purpose: game pods legitimately reach 9360, and the panel trusts
+            # request headers for identity, so it has to sit where only
+            # ingress-nginx can reach it (cluster/guardrails/bot-ingress.yaml).
+            - name: admin
+              containerPort: {{ .Values.bot.adminPanel.port }}
+              protocol: TCP
+            {{- end }}
           # Both probes hit the always-on `GET /health` on the agent port — served
           # whether or not Gary (and thus the trigger route) is configured, so the
           # probes never fail-closed on a Gary-less deploy. Readiness gates the

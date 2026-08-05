@@ -1,0 +1,137 @@
+{{- if and .Values.bot.enabled .Values.bot.adminPanel.enabled -}}
+# The super-admin panel's public route (ADR-026).
+#
+# Four objects, the pattern grizzly-platform's metabase/roundcube/grizzly-invite
+# gates use: a gated Ingress, an ungated one for the sign-in endpoints, an
+# ExternalName bridge to the outpost, and a ConfigMap that tells the outpost
+# which provider applies.
+#
+# TLS terminates upstream at the VPS Caddy (wildcard *.grizzly-endeavors.com),
+# which reverse-proxies to this nginx ingress over the WireGuard tunnel — so
+# there is no `tls:` block here, no cert-manager issuer, and no DNS change (the
+# wildcard already resolves).
+#
+# The gate is Authentik, not the network: this hostname is on the public
+# internet. What keeps the *header* trust sound is the companion
+# CiliumNetworkPolicy in cluster/guardrails/bot-ingress.yaml, which admits only
+# ingress-nginx to this port. Without it, anything in the cluster could reach
+# the panel with headers of its own choosing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grizzly-gameservers-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+  ports:
+    - name: admin
+      port: 80
+      targetPort: admin
+      protocol: TCP
+---
+# Bridges the browser-facing forward-auth endpoints (/outpost.goauthentik.io/*)
+# to Authentik's embedded outpost, served by authentik-server in the authentik
+# namespace. An Ingress backend can't point cross-namespace, so this
+# ExternalName Service is the hop. Mirrors the metabase and roundcube bridges.
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentik-outpost
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+spec:
+  type: ExternalName
+  externalName: authentik-server.authentik.svc.cluster.local
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+# The forward-auth subrequest reaches Authentik with Host set to the authentik
+# Service, not the panel's hostname — so the outpost cannot tell which proxy
+# provider applies unless the real host is passed explicitly. nginx snippet
+# annotations are disabled cluster-wide, hence a ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grizzly-gameservers-admin-auth-headers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+data:
+  X-Forwarded-Host: {{ .Values.bot.adminPanel.host | quote }}
+  X-Forwarded-Proto: "https"
+---
+# Forward-auth gate for the whole panel. The blueprint in grizzly-platform binds
+# a {{ .Values.bot.adminPanel.requiredGroup }} policy to the application, and the
+# bot re-checks the group in-process — so a non-member who somehow reaches this
+# gets a page naming the group they're missing rather than a bare 403.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grizzly-gameservers-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+  annotations:
+    nginx.ingress.kubernetes.io/auth-url: "http://authentik-server.authentik.svc.cluster.local:80/outpost.goauthentik.io/auth/nginx"
+    nginx.ingress.kubernetes.io/auth-signin: "https://{{ .Values.bot.adminPanel.host }}/outpost.goauthentik.io/start?rd=$escaped_request_uri"
+    # X-authentik-username and X-authentik-groups are what the panel reads; this
+    # annotation is what copies them onto the forwarded request, *overwriting*
+    # anything the client sent. Dropping either name from this list would leave
+    # the panel unable to identify anyone, which it treats as a refusal.
+    nginx.ingress.kubernetes.io/auth-response-headers: "Set-Cookie,X-authentik-username,X-authentik-groups,X-authentik-email,X-authentik-uid"
+    nginx.ingress.kubernetes.io/auth-proxy-set-headers: "{{ .Release.Namespace }}/grizzly-gameservers-admin-auth-headers"
+    # A cold start waits on a pod coming up, which can outrun the default 60s.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.bot.adminPanel.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grizzly-gameservers-admin
+                port:
+                  number: 80
+---
+# Unauthenticated route for the forward-auth endpoints themselves — this IS the
+# sign-in surface, so gating it would loop. A more specific path than "/", so
+# nginx matches it first.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grizzly-gameservers-admin-outpost
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: grizzly-gameservers
+    app.kubernetes.io/component: bot
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.bot.adminPanel.host | quote }}
+      http:
+        paths:
+          - path: /outpost.goauthentik.io
+            pathType: Prefix
+            backend:
+              service:
+                name: authentik-outpost
+                port:
+                  number: 80
+{{- end -}}

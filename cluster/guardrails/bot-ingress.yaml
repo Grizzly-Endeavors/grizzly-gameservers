@@ -1,0 +1,80 @@
+# Who may open a connection *to* the bot.
+#
+# This is the policy that makes the super-admin panel's security model sound.
+# The panel (ADR-026) learns who is asking from `X-authentik-*` request headers.
+# ingress-nginx overwrites those headers on every request it forwards, so they
+# cannot be forged through the front door — but anything already inside the
+# cluster could otherwise open a connection straight to the panel's port and
+# send whatever headers it liked. Restricting that port to ingress-nginx is what
+# closes it, and the reason the panel listens on a port of its own rather than
+# sharing the agent endpoint's.
+#
+# It matters here in particular because game-server pods run third-party server
+# binaries and legitimately reach the bot on 9360. "Only ingress-nginx may reach
+# the panel" and "game pods may reach the agent endpoint" cannot both be said
+# about one port.
+#
+# CARE: this is the first *ingress* policy on the bot workload, so it flips that
+# pod from allow-all to default-deny on the inbound side. Every legitimate
+# inbound flow has to be listed below or it silently stops working — Cilium
+# drops, it does not error. Egress is untouched: Cilium policies are directional,
+# and the namespace egress leash (networkpolicy.yaml) still governs outbound.
+#
+# Known inbound flows, all covered here:
+#   - kubelet liveness/readiness probes on 9360
+#   - `kubectl port-forward` for the operator harness (ADR-011), also 9360
+#   - game-server pods POSTing in-game `@Gary` triggers to 9360
+#   - ingress-nginx forwarding admin panel requests to 9361
+#
+# Residual, and accepted: the host entity reaches the pod on any port, so anyone
+# holding cluster credentials can port-forward the panel and present headers of
+# their own. That person already outranks the panel — they can read its database
+# and edit its deployment — so the boundary is drawn at the cluster edge, not
+# inside it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-ingress
+  namespace: game-servers
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grizzly-gameservers
+      app.kubernetes.io/component: bot
+  ingress:
+    # The node's own host namespace: kubelet probes and the `kubectl
+    # port-forward` the operator harness runs over. Listed explicitly rather than
+    # left to Cilium's `allow-localhost` default, so the policy documents the
+    # flow instead of depending on an agent setting nothing here controls.
+    # `remote-node` covers a probe or forward arriving from another node.
+    - fromEntities:
+        - host
+        - remote-node
+    # Game-server pods → the in-game agent endpoint. The mirror of
+    # game-to-bot-agent-egress.yaml, which permits the same path outbound; both
+    # sides must allow it or the connection is dropped.
+    - fromEndpoints:
+        - matchLabels:
+            agones.dev/role: gameserver
+      toPorts:
+        - ports:
+            # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs (issue
+            # #42 — YAML can't import a Rust const, and a mismatch is a silent
+            # drop rather than an error).
+            - port: "9360"
+              protocol: TCP
+    # ingress-nginx → the super-admin panel. The controller is a DaemonSet, so
+    # the pod that forwards a request may be on any node; selecting by label
+    # rather than address is what makes that irrelevant. Deliberately *not*
+    # widened to the whole ingress-nginx namespace: the controller is the only
+    # thing in it that should ever hold an admin session's headers.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: ingress-nginx
+            app.kubernetes.io/name: ingress-nginx
+            app.kubernetes.io/component: controller
+      toPorts:
+        - ports:
+            # Must match bot.adminPanel.port in deploy/values.yaml (issue #42).
+            - port: "9361"
+              protocol: TCP

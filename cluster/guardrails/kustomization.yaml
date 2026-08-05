@@ -11,3 +11,4 @@ resources:
   - bot-to-kv-cache-egress.yaml
   - bot-to-langfuse-egress.yaml
   - game-to-bot-agent-egress.yaml
+  - bot-ingress.yaml
