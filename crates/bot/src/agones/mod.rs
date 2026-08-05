@@ -4,6 +4,7 @@
 //! to the cluster; the Discord-facing layer in `crate::discord` composes these
 //! into commands and Gary's tools.
 
+mod capacity;
 mod catalog;
 mod client;
 mod control_client;

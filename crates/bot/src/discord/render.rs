@@ -8,7 +8,8 @@ use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
-use crate::limits::{LimitRefusal, format_cores};
+use crate::capacity::CapacityRefusal;
+use crate::limits::{LimitRefusal, format_cores, human_size};
 
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
@@ -139,6 +140,7 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
                 .to_owned(),
         },
         CreateOutcome::GuildLimitReached(refusal) => limit_refusal_spec(*refusal),
+        CreateOutcome::ClusterFull(refusal) => capacity_refusal_spec(*refusal),
     }
 }
 
@@ -146,6 +148,65 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
 /// outcome enums don't carry the refusal (the `/start` cold branch).
 pub(crate) fn limit_refusal_embed(refusal: LimitRefusal) -> CreateEmbed {
     limit_refusal_spec(refusal).into_embed()
+}
+
+/// "The hardware is full", said so that nobody retries into it.
+///
+/// Deliberately worded apart from the guild-cap refusal next door. A cap is the
+/// community's own allowance and somebody in the room can act on it; this is the
+/// whole service being out of room, which is mostly not theirs to fix. The one
+/// thing that *is* theirs — stopping a server they own — is named, and so is the
+/// fact that waiting won't help, because the message this replaced ("try again
+/// in a moment") had strangers retry-looping against a permanent wall.
+fn capacity_refusal_spec(refusal: CapacityRefusal) -> EmbedSpec {
+    let body = match refusal {
+        CapacityRefusal::Servers { current, ceiling } => format!(
+            "The service is at its ceiling of {ceiling} servers ({current} in use across every \
+             community), so there's no slot left to put a new one in. Destroying a server you no \
+             longer need frees one up — otherwise this needs the bot operator, not another try."
+        ),
+        CapacityRefusal::Storage {
+            free_bytes,
+            adding_bytes,
+        } => format!(
+            "There's {} of disk left across the whole service and this server needs {}. \
+             Destroying a server you no longer need frees its storage — otherwise this needs the \
+             bot operator, not another try.",
+            human_size(free_bytes.unsigned_abs()),
+            human_size(adding_bytes.unsigned_abs()),
+        ),
+        CapacityRefusal::Cpu {
+            free_millicores,
+            adding_millicores,
+            ..
+        } => format!(
+            "There's {} of processing power left across the whole service and this server needs \
+             {}. Stopping a server that isn't being played frees its share — otherwise this needs \
+             the bot operator, not another try.",
+            format_cores(free_millicores),
+            format_cores(adding_millicores),
+        ),
+        CapacityRefusal::Memory {
+            free_bytes,
+            adding_bytes,
+            ..
+        } => format!(
+            "There's {} of memory left across the whole service and this server needs {}. \
+             Stopping a server that isn't being played frees its share — otherwise this needs the \
+             bot operator, not another try.",
+            human_size(free_bytes.unsigned_abs()),
+            human_size(adding_bytes.unsigned_abs()),
+        ),
+        CapacityRefusal::Unspecified => "The service is out of room on the hardware right now. \
+             Stopping or destroying a server you're not using frees some up — otherwise this \
+             needs the bot operator, not another try."
+            .to_owned(),
+    };
+    EmbedSpec {
+        title: "The service is full".to_owned(),
+        colour: COLOUR_ERROR,
+        body,
+    }
 }
 
 /// A guild-cap refusal (ADR-022) as an embed, naming the figures and the way
@@ -214,6 +275,7 @@ fn start_spec(outcome: &StartOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_ERROR,
             body: format!("**{server}** runs '{game}', which is no longer in the catalog."),
         },
+        StartOutcome::ClusterFull(refusal) => capacity_refusal_spec(*refusal),
     }
 }
 
@@ -530,6 +592,7 @@ fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
             body: "All server slots are in use right now. Destroy or archive one first.".to_owned(),
         },
         RecoverOutcome::GuildLimitReached(refusal) => limit_refusal_spec(*refusal),
+        RecoverOutcome::ClusterFull(refusal) => capacity_refusal_spec(*refusal),
         RecoverOutcome::Failed(_) => EmbedSpec {
             title: "Recover failed".to_owned(),
             colour: COLOUR_ERROR,
@@ -584,31 +647,6 @@ fn backups_db_disabled_spec() -> EmbedSpec {
                Backups and restore still work; try archiving again later."
             .to_owned(),
     }
-}
-
-/// Format a byte count as a friendly size (`B`/`KiB`/`MiB`/`GiB`) using integer
-/// math — a fractional GiB is display-only, so no float cast is needed.
-pub(crate) fn human_size(bytes: u64) -> String {
-    const KIB: u64 = 1024;
-    const MIB: u64 = 1024 * KIB;
-    const GIB: u64 = 1024 * MIB;
-    if bytes >= GIB {
-        scaled_size(bytes, GIB, "GiB")
-    } else if bytes >= MIB {
-        scaled_size(bytes, MIB, "MiB")
-    } else if bytes >= KIB {
-        scaled_size(bytes, KIB, "KiB")
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-/// One-decimal size in the given unit, computed without floats: the tenths come
-/// from the remainder scaled by ten.
-fn scaled_size(bytes: u64, divisor: u64, unit: &str) -> String {
-    let whole = bytes / divisor;
-    let tenths = (bytes % divisor) * 10 / divisor;
-    format!("{whole}.{tenths} {unit}")
 }
 
 fn not_found_spec(server: &str) -> EmbedSpec {

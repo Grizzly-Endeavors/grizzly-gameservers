@@ -865,6 +865,7 @@ impl BackupService {
                 | RecoverOutcome::UnknownGame(_)
                 | RecoverOutcome::PortsExhausted
                 | RecoverOutcome::GuildLimitReached(_)
+                | RecoverOutcome::ClusterFull(_)
                 | RecoverOutcome::Failed(_),
             )
             | Err(_) => event,
@@ -925,6 +926,9 @@ impl BackupService {
             ProvisionOutcome::PortsExhausted => return Ok(RecoverOutcome::PortsExhausted),
             ProvisionOutcome::GuildLimitReached(refusal) => {
                 return Ok(RecoverOutcome::GuildLimitReached(refusal));
+            }
+            ProvisionOutcome::ClusterFull(refusal) => {
+                return Ok(RecoverOutcome::ClusterFull(refusal));
             }
         };
 
@@ -1245,6 +1249,12 @@ impl BackupService {
             StartBegin::UnknownGame(game) => {
                 return Ok(EnsurePod::Failed(format!(
                     "the server's game ({game}) is no longer in the catalog"
+                )));
+            }
+            StartBegin::ClusterFull(refusal) => {
+                return Ok(EnsurePod::Failed(format!(
+                    "there is no room on the hardware to start it ({})",
+                    refusal.summary()
                 )));
             }
         }

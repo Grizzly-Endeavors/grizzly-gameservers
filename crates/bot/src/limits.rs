@@ -218,6 +218,33 @@ pub(crate) fn format_cores(millicores: i64) -> String {
     }
 }
 
+/// Format a byte count as a friendly size (`B`/`KiB`/`MiB`/`GiB`) using integer
+/// math — a fractional GiB is display-only, so no float cast is needed. Lives
+/// beside [`format_cores`] for the same reason: one home, so every surface that
+/// quotes a memory figure quotes it identically.
+pub(crate) fn human_size(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        scaled_size(bytes, GIB, "GiB")
+    } else if bytes >= MIB {
+        scaled_size(bytes, MIB, "MiB")
+    } else if bytes >= KIB {
+        scaled_size(bytes, KIB, "KiB")
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// One-decimal size in the given unit, computed without floats: the tenths come
+/// from the remainder scaled by ten.
+fn scaled_size(bytes: u64, divisor: u64, unit: &str) -> String {
+    let whole = bytes / divisor;
+    let tenths = (bytes % divisor) * 10 / divisor;
+    format!("{whole}.{tenths} {unit}")
+}
+
 /// One `guild_limits` row as it comes off the wire: guild id, then the three
 /// nullable cap columns in schema order.
 type OverrideRow = (String, Option<i32>, Option<i64>, Option<i64>);

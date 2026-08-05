@@ -240,6 +240,9 @@ pub(crate) enum RecoverOutcome {
     /// The archive's owning guild is at one of its resource caps (ADR-022) —
     /// recreating the server would put it over.
     GuildLimitReached(crate::limits::LimitRefusal),
+    /// The namespace has no room to recreate the server, whatever the archive's
+    /// guild is using.
+    ClusterFull(crate::capacity::CapacityRefusal),
     Failed(String),
 }
 
@@ -254,7 +257,8 @@ impl RecoverOutcome {
             | Self::Unavailable
             | Self::UnknownGame(_)
             | Self::PortsExhausted
-            | Self::GuildLimitReached(_) => None,
+            | Self::GuildLimitReached(_)
+            | Self::ClusterFull(_) => None,
         }
     }
 }

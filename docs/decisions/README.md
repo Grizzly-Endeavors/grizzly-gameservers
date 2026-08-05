@@ -28,5 +28,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-024 — Runtime settings: database override > environment > compiled default](024-runtime-settings.md)
 - [ADR-025 — Backups are keyed by guild; the old ones were replaced, not moved](025-guild-scoped-backup-keys.md)
 - [ADR-026 — A super-admin panel, on its own port behind Authentik](026-super-admin-panel.md)
+- [ADR-027 — Price a create against the namespace quota before leasing anything](027-namespace-capacity-preflight.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

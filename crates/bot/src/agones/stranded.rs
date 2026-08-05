@@ -224,6 +224,16 @@ async fn recycle_instance(ctx: &StrandedCtx<'_>, instance: &str) -> Result<()> {
                 game, "stranded server's game left the catalog; left shut down"
             );
         }
+        // Left shut down on purpose rather than retried into a full namespace:
+        // the next reconcile pass tries again, and by then something may have
+        // freed room.
+        StartBegin::ClusterFull(refusal) => {
+            warn!(
+                instance,
+                refusal = %refusal.summary(),
+                "no room to recycle the stranded server; leaving it for the next pass"
+            );
+        }
     }
     Ok(())
 }

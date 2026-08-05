@@ -11,6 +11,7 @@ use kube::{Client, Error as KubeError};
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
+use super::capacity::{check_namespace_capacity, create_admission, start_admission};
 use super::catalog::{GameCatalog, GameCatalogEntry};
 use super::client::guild_usage;
 use super::instance::{
@@ -21,6 +22,7 @@ use super::naming::{pvc_name, select_free_ports};
 use super::ports::{assign, assignment_from_service, port_plan_from_service, ports_needed};
 use super::scope::ServerScope;
 use super::types::{GameServer, ServerState, server_address};
+use crate::capacity::CapacityRefusal;
 use crate::domain::{GameId, GuildId, InstanceName};
 use crate::limits::{GuildCaps, LimitRefusal, check_create};
 use crate::sizing::Sizing;
@@ -60,6 +62,8 @@ pub(crate) enum CreateOutcome {
     PortsExhausted,
     /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
+    /// The namespace itself has no room left, whatever this guild is using.
+    ClusterFull(CapacityRefusal),
 }
 
 pub(crate) enum ShutdownOutcome {
@@ -85,6 +89,8 @@ pub(crate) enum StartOutcome {
     NotFound,
     NotManaged,
     UnknownGame(String),
+    /// The namespace has no room for the pod this start would bring back.
+    ClusterFull(CapacityRefusal),
 }
 
 pub(crate) enum DestroyOutcome {
@@ -114,6 +120,8 @@ pub(crate) enum ProvisionOutcome {
     PortsExhausted,
     /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
+    /// The namespace itself has no room left, whatever this guild is using.
+    ClusterFull(CapacityRefusal),
 }
 
 /// What to provision: the catalog game, the instance name, the owning guild,
@@ -177,6 +185,7 @@ enum Provisioned {
     NameUnavailable,
     PortsExhausted,
     GuildLimitReached(LimitRefusal),
+    ClusterFull(CapacityRefusal),
 }
 
 impl Provisioned {
@@ -187,6 +196,7 @@ impl Provisioned {
             Self::NameUnavailable => ProvisionOutcome::NameUnavailable,
             Self::PortsExhausted => ProvisionOutcome::PortsExhausted,
             Self::GuildLimitReached(refusal) => ProvisionOutcome::GuildLimitReached(refusal),
+            Self::ClusterFull(refusal) => ProvisionOutcome::ClusterFull(refusal),
         }
     }
 }
@@ -219,6 +229,17 @@ async fn provision_under_lock(
         if let Err(refusal) = check_create(&usage, catalog_sizing(entry), caps) {
             return Ok(Provisioned::GuildLimitReached(refusal));
         }
+    }
+
+    // The namespace ceiling, priced before anything is leased. Kubernetes only
+    // enforces the quota when Agones creates the pod — minutes later, long after
+    // this call returned an address — so without this the friend gets a port, a
+    // PVC and a five-minute wait for a pod that was never going to be admitted.
+    // Checked under the same lock as the guild caps, for the same reason.
+    if let Err(refusal) =
+        check_namespace_capacity(client, namespace, create_admission(entry, None)).await?
+    {
+        return Ok(Provisioned::ClusterFull(refusal));
     }
 
     let used = used_ports(client, namespace).await?;
@@ -276,10 +297,28 @@ async fn provision_under_lock(
         }
 
         let address = server_address(instance, domain, identity.ports.friend_facing_port());
-        if let Err(err) = create_storage_and_server(client, namespace, entry, &identity).await {
-            error!(error = ?err, instance, "create failed after service; rolling back");
-            best_effort_remove(client, namespace, instance).await;
-            return Err(err);
+        match create_storage_and_server(client, namespace, entry, &identity).await {
+            Ok(()) => {}
+            // The pre-flight check above races the quota controller's own
+            // accounting, and it only models the dimensions a game pod is known
+            // to consume. A rejection here is therefore the authoritative answer,
+            // and it means the same thing: the namespace is full, not that
+            // something went wrong.
+            Err(err) if is_quota_exceeded(&err) => {
+                warn!(
+                    instance,
+                    "admission refused the create: namespace quota is exhausted"
+                );
+                best_effort_remove(client, namespace, instance).await;
+                return Ok(Provisioned::ClusterFull(
+                    quota_refusal(client, namespace, entry).await,
+                ));
+            }
+            Err(err) => {
+                error!(error = ?err, instance, "create failed after service; rolling back");
+                best_effort_remove(client, namespace, instance).await;
+                return Err(err);
+            }
         }
         return Ok(Provisioned::Created(address));
     }
@@ -346,11 +385,15 @@ pub(crate) async fn shutdown_instance(
 /// [`ProvisionOutcome`], the caller surfaces the address right away and then
 /// polls [`wait_for_instance_ready`].
 pub(crate) enum StartBegin {
-    Starting { address: String },
+    Starting {
+        address: String,
+    },
     AlreadyRunning,
     NotFound,
     NotManaged,
     UnknownGame(String),
+    /// The namespace has no room for the pod this start would bring back.
+    ClusterFull(CapacityRefusal),
 }
 
 /// Recreate a previously stopped instance's `GameServer`, bound to the existing
@@ -399,6 +442,15 @@ pub(crate) async fn begin_start(
     let guild = label_value(service.metadata.labels.as_ref(), GUILD_KEY)
         .unwrap_or_default()
         .to_owned();
+
+    // A cold start brings a pod back, so it faces the namespace ceiling just as a
+    // create does — the instance's port and PVC already exist, but its CPU and
+    // memory have to be found again.
+    if let Err(refusal) =
+        check_namespace_capacity(client, namespace, start_admission(entry, sizing)).await?
+    {
+        return Ok(StartBegin::ClusterFull(refusal));
+    }
 
     let identity = InstanceIdentity {
         name: InstanceName::new(instance),
@@ -769,6 +821,44 @@ fn is_already_exists(err: &KubeError) -> bool {
 
 fn is_port_conflict(err: &KubeError) -> bool {
     api_status_code(err) == Some(422)
+}
+
+/// Whether a failed create was refused by a `ResourceQuota` rather than having
+/// gone wrong. The Kubernetes error carries no machine-readable reason for this
+/// — the quota admission plugin returns a plain `403 Forbidden` — so the message
+/// prefix is what distinguishes it from the other things a 403 means (RBAC, a
+/// validating webhook). A misread in either direction is not dangerous: it only
+/// changes which honest message the friend gets.
+fn is_quota_exceeded(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<KubeError>()
+        .is_some_and(|err| api_status_code(err) == Some(403) && quota_message(err))
+}
+
+fn quota_message(err: &KubeError) -> bool {
+    if let KubeError::Api(response) = err {
+        response.message.contains("exceeded quota")
+    } else {
+        false
+    }
+}
+
+/// Which dimension the namespace ran out of, re-read after admission refused a
+/// create. Usually names the exact one; [`CapacityRefusal::Unspecified`] when
+/// the quota's own accounting has already moved on, which is the race that let
+/// the create through the pre-flight in the first place.
+async fn quota_refusal(
+    client: &Client,
+    namespace: &str,
+    entry: &GameCatalogEntry,
+) -> CapacityRefusal {
+    match check_namespace_capacity(client, namespace, create_admission(entry, None)).await {
+        Ok(Err(refusal)) => refusal,
+        Ok(Ok(())) => CapacityRefusal::Unspecified,
+        Err(err) => {
+            warn!(error = ?err, "could not re-read the quota after an admission refusal");
+            CapacityRefusal::Unspecified
+        }
+    }
 }
 
 #[cfg(test)]
