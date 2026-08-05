@@ -20,6 +20,7 @@ use crate::agones::{
 use crate::backup::{
     ArchiveOutcome, BackupOutcome, BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
+use crate::capacity::{CapacityRefusal, QuotaBasis};
 use crate::domain::{GuildId, InstanceName};
 use crate::limits::LimitRefusal;
 use crate::notify::{Escalation, EscalationContext};
@@ -216,6 +217,34 @@ pub(crate) fn provision(outcome: &ProvisionOutcome) -> &'static str {
         ProvisionOutcome::NameUnavailable => "name_held_by_another_guild",
         ProvisionOutcome::PortsExhausted => "ports_exhausted",
         ProvisionOutcome::GuildLimitReached(refusal) => limit_refusal(*refusal),
+        ProvisionOutcome::ClusterFull(refusal) => capacity_refusal(*refusal),
+    }
+}
+
+/// The outcome name for a namespace-ceiling refusal — split by dimension, and
+/// for CPU/memory by which side of the quota bound, because "raise the ceiling"
+/// is a different action for each and the counts are what say which to raise.
+pub(crate) fn capacity_refusal(refusal: CapacityRefusal) -> &'static str {
+    match refusal {
+        CapacityRefusal::Servers { .. } => "cluster_full_servers",
+        CapacityRefusal::Storage { .. } => "cluster_full_storage",
+        CapacityRefusal::Cpu {
+            basis: QuotaBasis::Requests,
+            ..
+        } => "cluster_full_cpu_requests",
+        CapacityRefusal::Cpu {
+            basis: QuotaBasis::Limits,
+            ..
+        } => "cluster_full_cpu_limits",
+        CapacityRefusal::Memory {
+            basis: QuotaBasis::Requests,
+            ..
+        } => "cluster_full_memory_requests",
+        CapacityRefusal::Memory {
+            basis: QuotaBasis::Limits,
+            ..
+        } => "cluster_full_memory_limits",
+        CapacityRefusal::Unspecified => "cluster_full",
     }
 }
 
@@ -239,6 +268,7 @@ pub(crate) fn start_begin(outcome: &StartBegin) -> &'static str {
         StartBegin::NotFound => "not_found",
         StartBegin::NotManaged => "not_managed",
         StartBegin::UnknownGame(_) => "unknown_game",
+        StartBegin::ClusterFull(refusal) => capacity_refusal(*refusal),
     }
 }
 
@@ -323,6 +353,7 @@ pub(crate) fn recover(outcome: &RecoverOutcome) -> &'static str {
         RecoverOutcome::UnknownGame(_) => "unknown_game",
         RecoverOutcome::PortsExhausted => "ports_exhausted",
         RecoverOutcome::GuildLimitReached(refusal) => limit_refusal(*refusal),
+        RecoverOutcome::ClusterFull(refusal) => capacity_refusal(*refusal),
         RecoverOutcome::Failed(_) => FAILED,
     }
 }

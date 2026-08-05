@@ -11,10 +11,9 @@ use super::render::{
     archive_confirm_embed, archive_result_embed, archives_list_embed, archives_unavailable_embed,
     backup_result_embed, backups_disabled_embed, backups_list_embed, create_result_embed,
     delete_archive_confirm_embed, delete_archive_result_embed, destroy_confirm_embed,
-    destroy_result_embed, error_embed, guild_required_embed, human_size, limit_refusal_embed,
-    neutral_embed, recover_result_embed, restore_confirm_embed, restore_result_embed,
-    server_list_embed, shutdown_result_embed, start_result_embed, supervisor_result_embed,
-    working_embed,
+    destroy_result_embed, error_embed, guild_required_embed, limit_refusal_embed, neutral_embed,
+    recover_result_embed, restore_confirm_embed, restore_result_embed, server_list_embed,
+    shutdown_result_embed, start_result_embed, supervisor_result_embed, working_embed,
 };
 use super::{COMPONENT_TIMEOUT, Context, Error, backup_ctx};
 use crate::agent::SessionKey;
@@ -28,7 +27,7 @@ use crate::agones::{
 use crate::backup::{ArchiveDeleteOutcome, ArtifactSummary, BackupService};
 use crate::domain::{GuildId, InstanceName};
 use crate::events::{Actor, Attribution, EventKind, ProductEvent, Surface, mapping};
-use crate::limits::{LimitChange, format_cores};
+use crate::limits::{LimitChange, format_cores, human_size};
 use crate::memory::{ForgetOutcome, Memory};
 use crate::store::{ConfigChange, HomeToggle};
 
@@ -266,7 +265,8 @@ async fn finish_create(
             refused @ (ProvisionOutcome::AlreadyExists
             | ProvisionOutcome::NameUnavailable
             | ProvisionOutcome::PortsExhausted
-            | ProvisionOutcome::GuildLimitReached(_)),
+            | ProvisionOutcome::GuildLimitReached(_)
+            | ProvisionOutcome::ClusterFull(_)),
         ) => {
             reply
                 .edit(
@@ -303,6 +303,7 @@ fn provision_to_create(outcome: ProvisionOutcome) -> CreateOutcome {
         ProvisionOutcome::NameUnavailable => CreateOutcome::NameUnavailable,
         ProvisionOutcome::PortsExhausted => CreateOutcome::PortsExhausted,
         ProvisionOutcome::GuildLimitReached(refusal) => CreateOutcome::GuildLimitReached(refusal),
+        ProvisionOutcome::ClusterFull(refusal) => CreateOutcome::ClusterFull(refusal),
     }
 }
 
@@ -320,7 +321,8 @@ async fn record_provision(
             rejected @ (ProvisionOutcome::AlreadyExists
             | ProvisionOutcome::NameUnavailable
             | ProvisionOutcome::PortsExhausted
-            | ProvisionOutcome::GuildLimitReached(_)),
+            | ProvisionOutcome::GuildLimitReached(_)
+            | ProvisionOutcome::ClusterFull(_)),
         ) => {
             record_action(
                 ctx,
@@ -745,6 +747,7 @@ fn begin_to_outcome(begin: StartBegin) -> StartOutcome {
         StartBegin::NotFound => StartOutcome::NotFound,
         StartBegin::NotManaged => StartOutcome::NotManaged,
         StartBegin::UnknownGame(game) => StartOutcome::UnknownGame(game),
+        StartBegin::ClusterFull(refusal) => StartOutcome::ClusterFull(refusal),
     }
 }
 

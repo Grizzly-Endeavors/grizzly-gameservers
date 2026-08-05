@@ -23,7 +23,7 @@ use super::super::auth::{AccessLevel, Speaker, access_level_for};
 use super::super::render::{
     archive_confirm_embed, archive_result_embed, delete_archive_confirm_embed,
     delete_archive_result_embed, destroy_confirm_embed, destroy_result_embed, error_embed,
-    human_size, neutral_embed, restore_confirm_embed, restore_result_embed,
+    neutral_embed, restore_confirm_embed, restore_result_embed,
 };
 use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
@@ -44,13 +44,14 @@ use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
 };
+use crate::capacity::CapacityRefusal;
 use crate::defer::{Condition, DeferredTask};
 use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::{
     Actor, Attribution, EventKind, ProductEvent, ResourceSample, Surface, mapping, parse_bytes,
     parse_cpu_millicores, sample_instance,
 };
-use crate::limits::{LimitRefusal, check_added_load, format_cores};
+use crate::limits::{LimitRefusal, check_added_load, format_cores, human_size};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
     Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
@@ -879,7 +880,8 @@ async fn create_reply(
             refused @ (ProvisionOutcome::AlreadyExists
             | ProvisionOutcome::NameUnavailable
             | ProvisionOutcome::PortsExhausted
-            | ProvisionOutcome::GuildLimitReached(_)),
+            | ProvisionOutcome::GuildLimitReached(_)
+            | ProvisionOutcome::ClusterFull(_)),
         ) => {
             let reply = refusal_reply(server, &refused).unwrap_or_else(|| {
                 error!(server, "agent: create refusal had no reply to render");
@@ -923,6 +925,10 @@ fn refusal_reply(server: &str, outcome: &ProvisionOutcome) -> Option<String> {
             refusal @ (LimitRefusal::AggregateCpu { .. } | LimitRefusal::AggregateMemory { .. }),
         ) => prompts::CreateGuildLimitResources {
             detail: &describe_limit_refusal(*refusal),
+        }
+        .render(),
+        ProvisionOutcome::ClusterFull(refusal) => prompts::CreateClusterFull {
+            detail: &describe_capacity_refusal(*refusal),
         }
         .render(),
     })
@@ -1273,6 +1279,46 @@ fn describe_limit_refusal(refusal: LimitRefusal) -> String {
             human_size(current_bytes.unsigned_abs()),
             human_size(cap_bytes.unsigned_abs()),
         ),
+    }
+}
+
+/// The namespace-ceiling refusal as one sentence for a tool result. Says "the
+/// service" rather than "the community", which is the whole distinction from
+/// [`describe_limit_refusal`]: this one isn't about the caller's allowance and
+/// the model must not offer to raise it.
+fn describe_capacity_refusal(refusal: CapacityRefusal) -> String {
+    match refusal {
+        CapacityRefusal::Servers { current, ceiling } => format!(
+            "the service is at its ceiling of {ceiling} servers ({current} in use across every \
+             community)"
+        ),
+        CapacityRefusal::Storage {
+            free_bytes,
+            adding_bytes,
+        } => format!(
+            "the service has {} of storage left and this needs {}",
+            human_size(free_bytes.unsigned_abs()),
+            human_size(adding_bytes.unsigned_abs()),
+        ),
+        CapacityRefusal::Cpu {
+            free_millicores,
+            adding_millicores,
+            ..
+        } => format!(
+            "the service has {} of CPU left and this needs {}",
+            format_cores(free_millicores),
+            format_cores(adding_millicores),
+        ),
+        CapacityRefusal::Memory {
+            free_bytes,
+            adding_bytes,
+            ..
+        } => format!(
+            "the service has {} of memory left and this needs {}",
+            human_size(free_bytes.unsigned_abs()),
+            human_size(adding_bytes.unsigned_abs()),
+        ),
+        CapacityRefusal::Unspecified => "the service is out of room on the hardware".to_owned(),
     }
 }
 
@@ -1728,6 +1774,11 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
         StartBegin::UnknownGame(game) => prompts::ColdStartUnknownGame {
             server,
             game: &game,
+        }
+        .render(),
+        StartBegin::ClusterFull(refusal) => prompts::ColdStartClusterFull {
+            server,
+            detail: &describe_capacity_refusal(refusal),
         }
         .render(),
     }
@@ -3033,6 +3084,11 @@ fn format_recover(name: &str, outcome: &RecoverOutcome) -> String {
         RecoverOutcome::PortsExhausted => prompts::RecoverPortsExhausted::render(),
         RecoverOutcome::GuildLimitReached(refusal) => prompts::RecoverGuildLimit {
             detail: &describe_limit_refusal(*refusal),
+        }
+        .render(),
+        RecoverOutcome::ClusterFull(refusal) => prompts::RecoverClusterFull {
+            name,
+            detail: &describe_capacity_refusal(*refusal),
         }
         .render(),
         RecoverOutcome::Failed(_) => prompts::RecoverFailed { name }.render(),

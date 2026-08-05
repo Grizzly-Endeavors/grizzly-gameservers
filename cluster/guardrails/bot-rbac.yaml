@@ -72,6 +72,14 @@ rules:
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # Read the namespace ceiling so a create can be refused honestly *before* it
+  # leases a port and a PVC (ADR-027). Read-only: the quota is the operator's
+  # lever and the bot only ever reports it. Without this the bot can't see the
+  # ceiling, which degrades to never refusing — admission still holds the line,
+  # the friend just gets the worse message.
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

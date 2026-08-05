@@ -8,6 +8,7 @@ mod admin;
 mod agent;
 mod agones;
 mod backup;
+mod capacity;
 mod config;
 mod cycles;
 mod defer;
