@@ -1,6 +1,6 @@
 # Prompt Library — Design
 
-> Systems level only. This document is the design of record for the `prompt-lib` workspace crate and the migration of the bot's model-visible text into it. It supersedes the draft spec at `docs/prompt-lib-spec.md`. Implementation happens in fresh sessions that have only this document, `phases.md`, and the codebase — it must stand on its own.
+> Systems level only. This document is the design of record for the `prompt-lib` workspace crate and for how the bot's model-visible text lives in it. Implementation happens in fresh sessions that have only this document, `phases.md`, and the codebase — it must stand on its own.
 
 ## Goal & context
 

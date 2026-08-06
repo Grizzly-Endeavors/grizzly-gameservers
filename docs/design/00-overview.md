@@ -4,47 +4,64 @@
 
 ## What this is
 
-A user-friendly service that lets non-technical friends spin up and manage game servers on Grizzly Endeavors hardware through a **Discord bot**. Game servers run as containers in the homelab Kubernetes cluster; the public edge is the Hetzner proxy VPS. The friend types a command (or, later, plain English) in Discord and gets back an address to connect to. When something breaks or needs tuning, they ping the bot instead of pinging Bear.
+**An LLM ops agent — Gary — that operates live production systems unattended, and the game-server platform that gives him something real to operate.** Gary is the product; `grizzly-gameservers` is the project that houses him ([ADR-028](../decisions/028-gary-is-the-product.md)).
 
-This is explicitly **not** a "let my technical friends touch my infra" tool. The audience is non-technical, so the bot owns the whole experience and the platform stays invisible.
+Gary reads a running server's actual config and logs, decides on a change, makes it, restarts, checks whether it worked, and puts it back if it didn't. Non-technical friends talk to him in plain English in the Discord channel they were already using — *"the server feels laggy," "can we add this mod," "turn the difficulty down," "something broke after the last change"* — or from inside the game itself. Slash commands sit alongside him for the mechanical lifecycle actions where a form is faster than a sentence.
+
+**Game servers are the domain, not the point.** They were chosen because they are an unusually good proving ground for safe autonomous mutation: every game stores its settings somewhere different and in a different format, so there is genuine irreducible variety to absorb; the users are non-technical and their requests arrive as arbitrary free text; the system is really in production with real people's worlds in it; and the blast radius of a mistake is a game world rather than a payments ledger. Servers run as containers in the homelab Kubernetes cluster; the public edge is the Hetzner proxy VPS.
+
+This is explicitly **not** a "let my technical friends touch my infra" tool, and it is not a control panel with an AI bolted on. A panel makes the friend the administrator and gives them nicer buttons for the job. Gary *is* the administrator — the machinery stays invisible because nobody in the group has to touch it.
 
 ## Why these pieces
 
-The shape fell out of a few hard constraints:
+The agent is the reason the rest of the shape exists, and four hard constraints fix that shape:
 
+- **Each game stores config completely differently** (gather rates, mods, mod configs, difficulty live in different files/folders/formats per game), and applying changes means restarting the server and sometimes fixing what broke. Hand-rolling a per-game config adapter for every game is exactly the maintenance pile worth avoiding. This is why the **ops agent** is the center of the design rather than a feature on it: it absorbs each game's idiosyncrasy generically instead of pre-encoding every game's layout. Every game added tests that claim again.
+- **An agent that mutates live state has to be boxed before it is useful.** Free-text requests from friends are a prompt-injection surface, and write access plus restart power is exactly the combination that can make a bad situation worse. So the guardrails below aren't a tax on the agent — they are what makes an unattended agent a real offer rather than a slogan, and they drive the choice of a typed in-pod control API over `kubectl exec`.
 - **Servers run on home hardware, not the VPS.** The VPS is a proxy/edge. So "open a port" is never enough on its own — traffic has to be *forwarded* from the public edge down to the cluster. That forwarding (DNAT over the existing WireGuard tunnel) has to happen on the VPS regardless of any cloud firewall, which is why a Hetzner Cloud Firewall was rejected: it can only filter, not route, so it would become a redundant second place to keep port state in sync. The edge is managed in one place — `grizzly-platform` ansible.
 - **Servers are Kubernetes containers.** That makes per-server port churn a cluster concern, not an edge concern. The edge forwards one bounded port range, set once; individual ports are handed out *inside* the cluster. The "don't leave a range open" instinct doesn't apply the way it first seems — an open port in the range with no allocated pod behind it has nothing listening, so it isn't meaningful attack surface. The real controls live in the control plane and in pod isolation, not in dynamic edge choreography.
-- **Each game stores config completely differently** (gather rates, mods, mod configs, difficulty live in different files/folders/formats per game), and applying changes means restarting the server and sometimes fixing what broke. Hand-rolling a per-game config adapter for every game is exactly the maintenance pile we want to avoid. This is the core reason an LLM **ops agent** is central rather than optional: it absorbs each game's idiosyncrasy generically instead of us pre-encoding every game's layout.
 
 ## Architecture
 
 ```
-Discord (friends)
-   │  slash commands / NL request
-   ▼
-Discord shim ──────────► Ops agent (LLM loop)
-   │  allocate/teardown        │  read config+logs, mutate, restart, verify, roll back
-   │                           │  (via the per-pod supervisor's HTTP control API)
-   ▼                           ▼
-Agones (lifecycle, ports, allocation API, health)
-   ▼
-GameServer pods (per-game image + per-instance config on a PVC)
-   ▲
-   │  static port range forwarded once
-Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
+Discord (mention / home channel / DM)     in-game chat (@Gary)
+   │  plain English, or a slash command       │
+   └──────────────────┬───────────────────────┘
+                      ▼
+        ┌───────────────────────────────┐
+        │   Ops agent — Gary (LLM loop) │   read config+logs → mutate
+        │   guardrails: snapshot,       │   → restart → verify
+        │   verify, auto-rollback,      │   → roll back if it didn't take
+        │   escalate                    │
+        └───────┬───────────────┬───────┘
+                │               │
+ allocate/teardown               typed HTTP control API (never exec)
+                │               │
+                ▼               │
+  Agones (lifecycle, ports,     │
+   allocation API, health)      │
+                │               │
+                ▼               ▼
+       GameServer pod ── supervisor (PID 1) ── game process
+                         + per-instance config on a PVC
+                ▲
+                │  static port range forwarded once
+   Hetzner VPS edge ──wg0 tunnel──► R730xd ──DNAT──► K8s node
 ```
 
 ### Components
 
-**Discord shim** — the only piece that is purely "our product." Thin: authenticate the friend, map a command to an Agones allocation/teardown, hand back `IP:port`. No billing; each guild carries generous resource caps (server count and aggregate CPU/memory, [ADR-022](../decisions/022-per-guild-resource-caps.md)) sized so no honest guild meets them — a blast-radius bound for the stranger beta, not metering.
-
-**Ops agent** ("Gary") — the center of gravity. An LLM loop (mentioned in Discord) that translates intent and operates running servers: read current config + logs, decide the change, mutate the right file, restart the GameServer, watch health, report back — all via the per-pod supervisor's HTTP control API (see below), never `kubectl exec` (see "Why not exec-as-tools" in [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md)). This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
+**Ops agent** ("Gary") — the product. An LLM loop that translates intent and operates running servers: read current config + logs, decide the change, mutate the right file, restart the GameServer, watch health, report back — all via the per-pod supervisor's HTTP control API (see below), never `kubectl exec` (see "Why not exec-as-tools" in [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md)). This is what replaces N hand-rolled per-game config managers. Two distinct uses, only one of which is autonomous:
 - *Apply a known change* (gather rate, difficulty, add a mod) — bounded and reliable. Shipped first.
 - *Diagnose an arbitrary failure and fix it* — open-ended; the agent will sometimes flail here. Scoped by the explicit escalation exit (see below), which lets it stop and hand off rather than guess.
 
-**Agones** — purpose-built CNCF project for running dedicated game servers on Kubernetes. Provides GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting.
+He is reached from three surfaces — a Discord mention or home channel, a DM, or `@Gary` in the game's own chat — and carries **memory across all of them**: operational facts he writes down about a game and re-reads on every later session, shared across every guild. That sharing is what makes the agent compound rather than merely work; see "Config: two tiers" below.
 
-**Per-pod supervisor** — a thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the bot/ops agent drive to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. `/stop` pauses the process (pod stays up); `/shutdown` is the heavier teardown that deletes the GameServer. This is also the substrate the ops agent's file tools (browse/read/write/restore) and RCON console bridge (`send_command`) dock into — all shipped. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md).
+**Per-pod supervisor** — Gary's hands inside a pod, and the contract everything else is built against. A thin Rust binary (`grizzly-supervisor`) baked into each game image as its entrypoint, launching the game server as a child process. It owns the Agones SDK heartbeat (so it replaces a readiness sidecar) and serves an in-pod HTTP control API the agent drives to stop/start/restart the game *process in place* — the pod, PVC and Agones allocation survive, so a restart is seconds rather than a reschedule. That speed is not a nicety: it is what makes the verify-and-roll-back window short enough for auto-rollback to be a real guarantee instead of a long outage. `/stop` pauses the process (pod stays up); `/shutdown` is the heavier teardown that deletes the GameServer. This is also where the agent's file tools (browse/read/write/restore) and RCON console bridge (`send_command`) dock in — all shipped. Because the agent depends on this typed contract rather than on Kubernetes, the substrate underneath is replaceable: pointing Gary at a different backend is a connector, not a rewrite. Design: [`01-sidecar-agent-interface.md`](01-sidecar-agent-interface.md).
+
+**Discord shim** — the surface Gary is reached through, and the deterministic path alongside him. Thin: authenticate the friend, map a slash command to an Agones allocation/teardown, hand back `IP:port`. It exists because some actions are mechanical enough that a form beats a sentence, not because the agent needs a fallback. No billing; each guild carries generous resource caps (server count and aggregate CPU/memory, [ADR-022](../decisions/022-per-guild-resource-caps.md)) sized so no honest guild meets them — a blast-radius bound for the stranger beta, not metering.
+
+**Agones** — the substrate. A purpose-built CNCF project for running dedicated game servers on Kubernetes, providing GameServer lifecycle (Scheduled→Ready→Allocated→Shutdown), dynamic port allocation from a configured range, health checking, fleet autoscaling, and a gRPC/REST allocation API. It sits *underneath* the agent and gives it clean primitives (state, health, a defined restart lifecycle) instead of sshing into a box. Adopt it rather than hand-rolling — port allocation, health, and lifecycle are the undifferentiated heavy lifting, and none of it is the differentiator.
 
 **Edge** — a static UDP+TCP port range (**7000–7099**) forwarded once from the VPS over the existing `wg0` tunnel to the cluster. Lives in `grizzly-platform`, not here. See "Edge forwarding" below.
 
@@ -55,7 +72,7 @@ Keep these separate — they have different authorities and different safety mod
 - **Per-game config** (Valheim vs. Minecraft): image, default env, port shape, resource sizing, persistence needs. This is the *catalog* — declarative templates in `games/`, version-controlled, gated, Flux-deployed. Rarely changes. An AI coding agent can author/maintain these at dev time via PR → gate → Flux; that's just normal IaC-with-an-agent. The catalog also declares **which environment keys an instance may override**, per game — the allowlist that bounds the per-instance env tier below.
 - **Per-instance config** (this friend's world seed, mods, difficulty, server name): lives on the server's **PVC**, mutated live by the ops agent. It is **not** in any git repo — it's ephemeral friend state, not infra, so it doesn't get PR/gate review. Different tier, different safety model. Two shapes: the game's own config files, and a reserved **env overlay** at `.grizzly/env` that the supervisor layers into the game process on every launch — the tier that makes per-instance Minecraft mods and datapacks possible (an env-driven install upstream already knows how to do), applied by a seconds-fast in-place restart and guarded by the same snapshot/rollback as any other file. Design: [`mod-management/design.md`](mod-management/design.md); rationale: [ADR-012](../decisions/012-per-instance-env-overlay.md). Because this tier is un-versioned and lost on `/destroy`, it's the tier the **backup/archive/restore** feature preserves: durable off-cluster snapshots to S3, an archive that frees the PVC while keeping the world recoverable, and restore/recover to bring it back. Design: [`02-backups-archive-restore.md`](02-backups-archive-restore.md).
 
-Distinct from both is **Gary's memory** — durable operational *knowledge* he learns while running a game (e.g. "Palworld must be soft-stopped before a config edit applies"), not config. A session's conversation is ephemeral, so without this Gary rediscovers each game's quirks every time. Facts are scoped to a catalog game id (or a `general` bucket), **shared across every guild** (a quirk learned on one community's server helps them all — the same "absorb each game's idiosyncrasy generically" reason the agent exists), and **self-authored at runtime**: Gary saves them via a manager-tier `remember` tool and they're injected back into his system prompt each session; `forget` (and an admin `/gary-memory` command) prunes them. They live on the foundation Postgres store, not git — the live tier, like per-instance config, since Gary has no repo access and the value is immediate. Same graceful degradation as the other Postgres-backed state: no DB, no memory, bot otherwise unaffected.
+Distinct from both is **Gary's memory** — durable operational *knowledge* he learns while running a game (e.g. "Palworld must be soft-stopped before a config edit applies"), not config. This is the one part of the system that compounds: a session's conversation is ephemeral, so without it Gary rediscovers each game's quirks every time, and with it every problem solved once is already solved for everyone after. Facts are scoped to a catalog game id (or a `general` bucket), **shared across every guild** (a quirk learned on one community's server helps them all — the same "absorb each game's idiosyncrasy generically" reason the agent exists), and **self-authored at runtime**: Gary saves them via a manager-tier `remember` tool and they're injected back into his system prompt each session; `forget` (and an admin `/gary-memory` command) prunes them. They live on the foundation Postgres store, not git — the live tier, like per-instance config, since Gary has no repo access and the value is immediate. Same graceful degradation as the other Postgres-backed state: no DB, no memory, bot otherwise unaffected.
 
 ## Tenancy: servers are scoped to a Discord guild
 
@@ -95,7 +112,7 @@ A resize lands on the **running** container through Kubernetes' `pods/resize` su
 
 ## Ops-agent guardrails (non-negotiable)
 
-"Ping me if it breaks, so I'm not fiddling" only holds if these are built in from the start. An unsupervised agent with write access to live game state and restart power can make things worse.
+**These are the product's central claim, not overhead on it.** Read-only "AI for ops" is everywhere; what is hard — and what this exists to prove — is an agent that *mutates* live production state and can be left unattended. That claim is only worth anything if the three guardrails below hold, because an unsupervised agent with write access to live game state and restart power can otherwise make things worse. "Ping the bot if it breaks, so I'm not fiddling" is a real offer exactly to the extent that these are built in from the start.
 
 1. **Blast radius.** The agent edits files and restarts pods driven by friends' arbitrary free text (prompt-injection surface). It must be boxed into the game-server namespace — scoped RBAC + NetworkPolicy so a confused or injected agent can't reach the rest of the platform. Given what else runs in this cluster, this is the one that matters most. These guardrails live in `cluster/guardrails/` **in this repo**, so the gate vets them before they deploy.
 2. **Snapshot → apply → verify → auto-rollback.** A bad value or mod conflict turns a restart into a crash loop. The agent must snapshot the config dir first, apply, restart, watch health for a bounded window, and revert itself if the server doesn't recover. Without this, "ping me when it breaks" degrades into "the agent broke it worse" — defeating the entire point.
