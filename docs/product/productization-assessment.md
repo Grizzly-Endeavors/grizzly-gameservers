@@ -1,33 +1,22 @@
-# Productization assessment — grizzly-gameservers
+# Productization assessment — Gary
 
-**Date:** August 2026. **Status:** research memo, not a decision.
-
-This is the cleaned-up version of a longer working document. Where the original recorded a position
-and later corrected it, only the corrected position appears here.
+**Status:** the market and economics analysis standing behind [ADR-027](../decisions/027-gary-is-the-product.md). Market figures are as of August 2026 and go stale; the structural reads do not.
 
 ---
 
 ## Verdict
 
-**Worth pursuing — as an instrumented experiment with defined kill criteria, not as a decision to
-become a hosting company.**
+**Pursue it as an instrumented experiment with defined kill criteria, not as a decision to become a hosting company.**
 
-The differentiator is real and unclaimed: nobody is shipping an agent that *operates* game servers.
-The market it sits in is structurally unattractive — commodity, price-driven, low ARPU — so even a
-strong outcome is a good small company rather than a large one. The single most likely failure mode
-was customer acquisition, which is substantially de-risked by the founder's 18 months of marketing
-inside a game server host.
+The differentiator is real and unclaimed: nobody is shipping an agent that *operates* game servers. The market it sits in is structurally unattractive — commodity, price-driven, low ARPU — so even a strong outcome is a good small company rather than a large one. The single most likely failure mode is customer acquisition, which is substantially de-risked by the founder's 18 months of marketing inside a game server host.
 
-The strongest reason to run it isn't the hosting business. It's that the thing being proven —
-**an LLM agent that safely mutates production state** — is worth considerably more than the market
-it's being proven in, and this is the cheapest available way to prove it.
+The reason to run it isn't the hosting business. It's that the thing being proven — **an LLM agent that safely mutates production state** — is worth considerably more than the market it's being proven in, and this is the cheapest available way to prove it. That is the reasoning the product framing rests on: the agent is the asset, the hosting is the proving ground.
 
 ---
 
 ## 1. What exists today
 
-A live, deployed Discord-driven game server service with an LLM ops agent, running real servers for
-real friend groups across six games.
+A live, deployed LLM ops agent running real game servers for real friend groups across six games, reached through Discord and from inside the games themselves.
 
 | Component | Productization read |
 |---|---|

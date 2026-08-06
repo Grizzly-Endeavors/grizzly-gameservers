@@ -1,6 +1,6 @@
 # Operations: data collection
 
-How to get numbers out of the two data planes this service records into. The *why* lives in [ADR-013](../decisions/013-langfuse-span-construction.md) (Langfuse span construction) and [ADR-014](../decisions/014-product-event-log.md) (the product event log); this document is the *how*.
+How to get numbers out of the two data planes Gary records into — his own turns, and the product usage around them. The *why* lives in [ADR-013](../decisions/013-langfuse-span-construction.md) (Langfuse span construction) and [ADR-014](../decisions/014-product-event-log.md) (the product event log); this document is the *how*.
 
 It exists so the productization experiment's metrics are reproducible by someone who has this page, Langfuse access, and database access — and nothing else.
 

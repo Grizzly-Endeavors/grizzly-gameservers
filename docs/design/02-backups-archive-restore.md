@@ -4,7 +4,7 @@ Durable, off-cluster preservation of per-instance world data, plus the commands 
 
 ## What problem this solves
 
-A server's world (seed, mods, `server.properties`, region data) lives only on its `iscsi-zfs` RWO PVC (`<instance>-data`, mounted at `/data`) — the *per-instance* config tier, deliberately not in git ([`00-overview.md`](00-overview.md)). Nothing preserved it off the PVC, and `/destroy` deleted it with the world. This adds:
+A server's world (seed, mods, `server.properties`, region data) lives on its `iscsi-zfs` RWO PVC (`<instance>-data`, mounted at `/data`) — the *per-instance* config tier, deliberately not in git ([`00-overview.md`](00-overview.md)). That PVC is the only copy, and `/destroy` takes it with the world, so preservation is off-cluster and comes in three shapes:
 
 - **Automatic backups** — periodic consistent snapshots of every running server (default every 24h, keep last 7), for point-in-time restore.
 - **Archive** — stop a server, save a durable backup, and release the whole trio (PVC included). Cold storage for a server you're done with but might want back.
