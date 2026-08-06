@@ -232,6 +232,12 @@ pub struct BotConfig {
     /// Gary's full admin tool surface and can pre-approve destructive actions.
     /// `None` leaves the routes unmounted entirely — fail-closed, never open.
     pub(crate) operator_token: Option<String>,
+    /// Bearer token the public landing page's signup intake requires. Distinct
+    /// from both tokens above: it is held by an internet-facing service, and its
+    /// entire capability is appending a row to the signup table. `None` leaves
+    /// the route unmounted — a route that writes on behalf of an unauthenticated
+    /// form must never run open.
+    pub(crate) signup_token: Option<String>,
     /// Which population this process's ordinary traffic belongs to. Operator-
     /// harness turns override it to [`Environment::Operator`] per turn; this is
     /// the baseline everything else inherits.
@@ -444,6 +450,8 @@ impl BotConfig {
             optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.trim().is_empty());
         let operator_token =
             optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.trim().is_empty());
+        let signup_token =
+            optional(lookup, "GAMESERVERS_SIGNUP_TOKEN").filter(|value| !value.trim().is_empty());
         let environment = environment_from_env(lookup);
         let langfuse = langfuse_config_from_env(lookup);
         let release =
@@ -477,6 +485,7 @@ impl BotConfig {
             agent_port,
             ingame_token,
             operator_token,
+            signup_token,
             environment,
             langfuse,
             release,

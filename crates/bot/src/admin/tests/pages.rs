@@ -128,3 +128,50 @@ fn human_bytes_reads_the_way_a_person_would_say_it() {
     assert_eq!(human_bytes(1536 * 1024 * 1024), "1.5 GiB");
     assert_eq!(human_bytes(900), "900 B");
 }
+
+/// The warning has to name the consequence, not just the state: "the allowlist
+/// is empty" means nothing to someone about to click approve.
+#[test]
+fn an_empty_allowlist_warns_that_approving_grants_access_immediately() {
+    let rendered = allowlist_open_notice(true).into_string();
+    assert!(
+        rendered.contains("every Discord server is served"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("invite link"), "{rendered}");
+}
+
+#[test]
+fn a_populated_allowlist_says_nothing() {
+    assert!(allowlist_open_notice(false).into_string().is_empty());
+}
+
+#[test]
+fn a_signup_that_asked_for_both_shows_both() {
+    let rendered = wants_badges(true, true).into_string();
+    assert!(rendered.contains("beta"), "{rendered}");
+    assert!(rendered.contains("updates"), "{rendered}");
+}
+
+#[test]
+fn an_absent_note_renders_as_a_dash_rather_than_an_empty_cell() {
+    assert!(note_preview(None).into_string().contains('—'));
+    assert!(
+        note_preview(Some(&String::new()))
+            .into_string()
+            .contains('—')
+    );
+}
+
+/// A note from a public form is untrusted length as well as untrusted content;
+/// maud handles the escaping, this handles the length.
+#[test]
+fn a_long_note_is_cut_for_the_table() {
+    let long = "x".repeat(NOTE_PREVIEW_CHARS * 2);
+    let rendered = note_preview(Some(&long)).into_string();
+    assert!(
+        rendered.chars().count() < long.chars().count(),
+        "{rendered}"
+    );
+    assert!(rendered.contains('…'), "{rendered}");
+}

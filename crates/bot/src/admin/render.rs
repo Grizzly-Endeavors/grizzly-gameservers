@@ -21,15 +21,19 @@ const STYLESHEET: &str = include_str!("panel.css");
 pub(crate) enum Nav {
     Dashboard,
     Settings,
+    Signups,
     Guilds,
     Instances,
     Events,
 }
 
 impl Nav {
+    /// Nav order, which is also the funnel's order: someone signs up, their
+    /// guild is admitted, then they run servers.
     const ALL: &'static [Self] = &[
         Self::Dashboard,
         Self::Settings,
+        Self::Signups,
         Self::Guilds,
         Self::Instances,
         Self::Events,
@@ -39,6 +43,7 @@ impl Nav {
         match self {
             Self::Dashboard => "/",
             Self::Settings => "/settings",
+            Self::Signups => "/signups",
             Self::Guilds => "/guilds",
             Self::Instances => "/instances",
             Self::Events => "/events",
@@ -49,6 +54,7 @@ impl Nav {
         match self {
             Self::Dashboard => "Overview",
             Self::Settings => "Settings",
+            Self::Signups => "Signups",
             Self::Guilds => "Guilds",
             Self::Instances => "Servers",
             Self::Events => "Events",

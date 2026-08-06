@@ -221,6 +221,19 @@ spec:
                   name: grizzly-gameservers-operator
                   key: operator_token
                   optional: true
+            # Signup intake (POST /signups): the gary-landing service forwards
+            # the public marketing page's form here, so the landing service holds
+            # no database credential and this pod keeps no public listener. A
+            # third distinct token — it is held by an internet-facing service, and
+            # its entire capability is appending a row to the signup table.
+            # Optional, but absent means the route doesn't mount rather than
+            # running open, matching the operator routes above.
+            - name: GAMESERVERS_SIGNUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-signup
+                  key: signup_token
+                  optional: true
             # Turn telemetry: every model-driven Gary turn exports to the
             # platform's Langfuse (grizzly-platform ADR-064) as a trace. Host is
             # plain config; only the key pair is secret, marked optional so a

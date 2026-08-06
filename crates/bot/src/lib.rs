@@ -24,6 +24,7 @@ mod modrinth;
 mod notify;
 mod prompts;
 mod settings;
+mod signups;
 mod sizing;
 mod store;
 mod telemetry;
@@ -62,7 +63,7 @@ const SHUTDOWN_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 ///
 /// Returns an error if the Kubernetes client cannot be initialized, the Discord
 /// client cannot be built, or the gateway loop terminates abnormally.
-pub async fn run(config: BotConfig) -> Result<()> {
+pub async fn run(mut config: BotConfig) -> Result<()> {
     let kube_client = kube::Client::try_default()
         .await
         .context("failed to initialize kubernetes client")?;
@@ -90,14 +91,11 @@ pub async fn run(config: BotConfig) -> Result<()> {
     let settings = connect_settings(&config).await;
     let effective = settings.snapshot();
 
+    let listeners = Listeners::take(&mut config);
     let namespace = config.namespace;
     let domain = config.domain;
     let control_port = config.control_port;
     let operator_ids: std::sync::Arc<[u64]> = config.operator_ids.into();
-    let agent_port = config.agent_port;
-    let ingame_token = config.ingame_token;
-    let operator_token = config.operator_token;
-    let admin_config = config.admin;
     let provision_lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let DurableState {
         home_channels,
@@ -106,6 +104,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         sizing,
         guild_limits,
         events,
+        signups,
     } = DurableState::connect(config.db.as_ref(), std::sync::Arc::clone(&settings)).await;
     // Gary's deferred-task queue on the foundation kv-cache (Valkey). Disabled
     // gracefully when REDIS_PASSWORD isn't set — run_when then reports it can't
@@ -184,6 +183,7 @@ pub async fn run(config: BotConfig) -> Result<()> {
         environment: config.environment,
         telemetry: std::sync::Arc::clone(&telemetry),
         events,
+        signups,
     };
 
     // The watchdog responder consumes fired incidents with the full `Data` in
@@ -191,26 +191,61 @@ pub async fn run(config: BotConfig) -> Result<()> {
     // incident is lost while Discord connects (it waits for a Context itself).
     watchdog::spawn_responder(data.clone(), watchdog_rx, &cycle_health);
 
-    // Start the inbound HTTP surface, whose in-game trigger route the game-pod
-    // supervisors POST `@Gary` chat triggers to. Its dependencies are cheap
-    // clones carved from the command `Data` (the same pattern as the backup
-    // cycle), so it must be built after `Data` — and before the gateway, so the
-    // k8s probes have a `/health` target while Discord is still connecting.
-    let deps = http::HttpDeps::from_data(
-        &data,
-        agent_port,
-        ingame_token,
-        operator_token,
-        cycle_health,
-    );
-    http::spawn(deps, &tasks, shutdown.clone());
-
-    // The super-admin panel, on its own port so a network policy can admit only
-    // the ingress controller to it — the agent port above must stay reachable by
-    // game pods, which run third-party server binaries.
-    admin::spawn(&data, admin_config, &tasks, shutdown.clone());
+    spawn_listeners(&data, listeners, cycle_health, &tasks, &shutdown);
 
     run_gateway(config.token, data, shutdown, tasks, telemetry).await
+}
+
+/// Where the process listens, beyond the Discord gateway, and the credentials
+/// each surface expects.
+struct Listeners {
+    agent_port: u16,
+    tokens: http::EndpointTokens,
+    admin: Option<config::AdminConfig>,
+}
+
+impl Listeners {
+    /// Take the listener settings out of the config, so `run` carries one value
+    /// rather than five loose fields it must not transpose.
+    fn take(config: &mut BotConfig) -> Self {
+        Self {
+            agent_port: config.agent_port,
+            tokens: http::EndpointTokens {
+                ingame: config.ingame_token.take(),
+                operator: config.operator_token.take(),
+                signup: config.signup_token.take(),
+            },
+            admin: config.admin.take(),
+        }
+    }
+}
+
+/// Bring up both inbound HTTP surfaces.
+///
+/// Both carve their dependencies out of the command `Data` (the same pattern as
+/// the backup cycle), so this must run after `Data` exists — and before the
+/// gateway, so the k8s probes have a `/health` target while Discord is still
+/// connecting.
+///
+/// They are separate listeners on purpose: the agent port has to stay reachable
+/// by game pods, which run third-party server binaries, while the panel trusts
+/// forward-auth headers and so must admit only the ingress controller. One port
+/// cannot carry both claims.
+fn spawn_listeners(
+    data: &Data,
+    listeners: Listeners,
+    cycle_health: std::sync::Arc<cycles::CycleHealth>,
+    tasks: &tokio_util::task::TaskTracker,
+    shutdown: &tokio_util::sync::CancellationToken,
+) {
+    let Listeners {
+        agent_port,
+        tokens,
+        admin,
+    } = listeners;
+    let deps = http::HttpDeps::from_data(data, agent_port, tokens, cycle_health);
+    http::spawn(deps, tasks, shutdown.clone());
+    admin::spawn(data, admin, tasks, shutdown.clone());
 }
 
 /// Resolve this boot's settings — stored overrides layered onto the environment
@@ -517,6 +552,9 @@ struct DurableState {
     /// The product plane. Every layer that executes a lifecycle, backup, or
     /// escalation action writes here.
     events: std::sync::Arc<events::EventLog>,
+    /// The beta signup queue the public landing page feeds and the admin panel
+    /// works through.
+    signups: std::sync::Arc<signups::Signups>,
 }
 
 impl DurableState {
@@ -531,6 +569,7 @@ impl DurableState {
             sizing: std::sync::Arc::new(sizing::InstanceSizing::connect(db).await),
             guild_limits: std::sync::Arc::new(limits::GuildLimits::connect(db, settings).await),
             events: std::sync::Arc::new(events::EventLog::connect(db).await),
+            signups: std::sync::Arc::new(signups::Signups::connect(db).await),
         }
     }
 }

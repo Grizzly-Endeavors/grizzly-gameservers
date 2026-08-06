@@ -35,11 +35,24 @@ use super::render::{
 /// view, and paging is cheap — but bounded so one query can't hold the pool.
 const EVENT_PAGE_SIZE: i64 = 100;
 
+/// Beta requests shown at once. The queue is worked front to back, so a bound
+/// here costs nothing: what falls off the end is what you get to next.
+const SIGNUP_QUEUE_SIZE: i64 = 50;
+
+/// Decided requests kept in view, as recent context rather than an archive —
+/// `/events` is where the full history lives.
+const SIGNUP_HISTORY_SIZE: i64 = 20;
+
+/// Note length shown in the queue table. The field is free text from a public
+/// form, so one pasted essay must not blow out the row.
+const NOTE_PREVIEW_CHARS: usize = 300;
+
 pub(crate) fn router(deps: AdminDeps) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/settings", get(settings))
         .route("/settings/{key}", post(actions::set_setting))
+        .route("/signups", get(signups))
         .route("/guilds", get(guilds))
         .route("/guilds/{guild}/limits", post(actions::set_guild_limit))
         .route("/guilds/{guild}/admission", post(actions::set_admission))
@@ -278,6 +291,120 @@ fn setting_row(
             }
         }
     }
+}
+
+// ----------------------------------------------------------------- signups
+
+/// Warn that admitting a guild isn't gating anything while the allowlist is
+/// empty.
+///
+/// This is the notice that matters most on this page. Approving a beta request
+/// mails out a bot-invite link, and `guild_is_admitted` treats an empty
+/// allowlist as admitting *every* guild — so with the list empty, clicking
+/// approve grants access the moment the person follows that link, and the
+/// deliberate second step on the Guilds page is decorative. Saying so here puts
+/// it in front of whoever is about to approve someone, rather than in a runbook.
+fn allowlist_open_notice(allowlist_empty: bool) -> Markup {
+    if !allowlist_empty {
+        return html! {};
+    }
+    notice(
+        Tone::Warn,
+        &html! {
+            strong { "The guild allowlist is empty, so every Discord server is served." }
+            " Approving someone mails them an invite link, and their server is served the moment \
+              they use it — the admission step on the Guilds page isn't gating anything yet. \
+              Admit the servers you mean to serve before approving anyone."
+        },
+    )
+}
+
+/// Note the person left, bounded for display.
+fn note_preview(note: Option<&String>) -> Markup {
+    let Some(note) = note.filter(|note| !note.is_empty()) else {
+        return html! { span .hint { "—" } };
+    };
+    html! { (crate::signups::truncate_chars(note, NOTE_PREVIEW_CHARS)) }
+}
+
+/// What a signup asked for. Both are independent opt-ins, so both can show.
+fn wants_badges(wants_beta: bool, wants_updates: bool) -> Markup {
+    html! {
+        @if wants_beta { (badge("beta", Tone::Accent)) }
+        @if wants_updates { (badge("updates", Tone::Ok)) }
+    }
+}
+
+fn pending_row(row: &crate::signups::SignupRow) -> Markup {
+    html! {
+        tr {
+            td .mono { (row.created_at) }
+            td { (row.display_email) }
+            td { (wants_badges(row.wants_beta, row.wants_updates)) }
+            td { (note_preview(row.note.as_ref())) }
+        }
+    }
+}
+
+fn decided_row(row: &crate::signups::SignupRow) -> Markup {
+    let outcome = row.status.as_deref().unwrap_or("—");
+    let tone = if outcome == "approved" {
+        Tone::Ok
+    } else {
+        Tone::Bad
+    };
+    html! {
+        tr {
+            td .mono { (row.decided_at.as_deref().unwrap_or("—")) }
+            td { (row.display_email) }
+            td { (badge(outcome, tone)) }
+            td { (row.decided_by.as_deref().unwrap_or("—")) }
+        }
+    }
+}
+
+async fn signups(
+    State(deps): State<AdminDeps>,
+    Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
+) -> Response {
+    let data = &deps.data;
+    let enabled = data.signups.is_enabled();
+    let pending = data.signups.pending_beta(SIGNUP_QUEUE_SIZE).await;
+    let decided = data.signups.recent_decisions(SIGNUP_HISTORY_SIZE).await;
+    let updates = data.signups.updates_count().await;
+    let last_day = data.signups.submissions_last_24h().await;
+    let allowlist_empty = data.settings.snapshot().guild_allowlist.is_empty();
+
+    let body = html! {
+        (flash.render())
+        @if !enabled {
+            (notice(Tone::Bad, &html! {
+                strong { "No signup queue." }
+                " There's no database connection, so the landing page can't record anyone and \
+                  there's nothing to show here."
+            }))
+        }
+        (allowlist_open_notice(allowlist_empty))
+        div .tiles {
+            (tile("Waiting on you", &pending.len().to_string()))
+            (tile("On the updates list", &updates.to_string()))
+            (tile("Signed up today", &last_day.to_string()))
+        }
+        h2 { "Waiting on you" }
+        (table(
+            &["Asked", "Email", "Wants", "Note"],
+            pending.iter().map(pending_row).collect(),
+            "Nobody is waiting for a decision.",
+        ))
+        h2 { "Recently decided" }
+        (table(
+            &["Decided", "Email", "Outcome", "By"],
+            decided.iter().map(decided_row).collect(),
+            "No decisions yet.",
+        ))
+    };
+    html_response(page("Signups", Nav::Signups, &identity, &body))
 }
 
 // ------------------------------------------------------------------ guilds
