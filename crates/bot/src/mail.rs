@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::{error, info, warn};
@@ -209,6 +210,12 @@ impl Mailer {
             .from(from.clone())
             .to(recipient)
             .subject(subject)
+            // Explicit charset. Without it the body goes out as bare `text/plain`,
+            // which readers decode as ASCII/latin-1 — the em dashes in the copy
+            // then arrive as mojibake in the first message an applicant ever
+            // gets. The subject header is encoded separately and looks fine, so
+            // this only shows up in the body.
+            .header(ContentType::TEXT_PLAIN)
             .body(body.to_owned())
         {
             Ok(message) => message,
