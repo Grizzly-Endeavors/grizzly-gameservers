@@ -539,3 +539,279 @@ async fn start(deps: &AdminDeps, name: &str) -> anyhow::Result<(&'static str, St
 #[cfg(test)]
 #[path = "tests/actions.rs"]
 mod tests;
+
+// ----------------------------------------------------------------- signups
+
+/// What an operator can do to a beta request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SignupAction {
+    Approve,
+    Deny,
+    /// Retry the approval email for someone already approved. Sends only — it
+    /// never re-decides, so it is safe to click twice.
+    Resend,
+}
+
+impl SignupAction {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "approve" => Some(Self::Approve),
+            "deny" => Some(Self::Deny),
+            "resend" => Some(Self::Resend),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Deny => "deny",
+            Self::Resend => "resend",
+        }
+    }
+
+    /// Whether the action needs a typed confirmation.
+    ///
+    /// Deny only. It is the irreversible one — a denied applicant is off the
+    /// queue, and in six months nobody will remember why. Approve is recoverable
+    /// (you can admit or refuse their guild afterwards) and Resend does nothing
+    /// a second click would worsen.
+    pub(crate) fn is_destructive(self) -> bool {
+        self == Self::Deny
+    }
+}
+
+/// A decision, with the address in the **body** rather than the URL.
+///
+/// Deliberate: query strings and path segments land in the ingress access log
+/// and in `Referer` headers, which is a different trust boundary from the page
+/// body. A signup address is a stranger's contact detail we solicited on a public
+/// form, so it stays out of anything a proxy writes down.
+#[derive(Debug, Deserialize)]
+pub(crate) struct SignupForm {
+    email: String,
+    confirm: Option<String>,
+}
+
+/// Approve, deny, or re-send — the panel's whole write surface for the queue.
+pub(crate) async fn run_signup_action(
+    State(deps): State<AdminDeps>,
+    Extension(identity): Extension<AdminIdentity>,
+    Path(action): Path<String>,
+    Form(form): Form<SignupForm>,
+) -> Response {
+    let Some(action) = SignupAction::parse(&action) else {
+        return redirect("/signups", &Flash::error("That isn't an action."));
+    };
+    let Some(email) = crate::signups::normalize_email(&form.email) else {
+        return redirect("/signups", &Flash::error("That isn't an email address."));
+    };
+
+    // Typing the address back is the confirmation, matching how destroying a
+    // server works. Compared normalized-to-normalized because the page shows the
+    // lowercased form but an operator may type what they remember.
+    if action.is_destructive() {
+        let typed = form
+            .confirm
+            .as_deref()
+            .and_then(crate::signups::normalize_email);
+        if typed.as_deref() != Some(email.as_str()) {
+            return redirect(
+                "/signups?confirm=deny",
+                &Flash::error("Type the address exactly to confirm."),
+            );
+        }
+    }
+
+    match action {
+        SignupAction::Approve => approve(&deps, &identity, &email, form.confirm.as_deref()).await,
+        SignupAction::Deny => deny(&deps, &identity, &email).await,
+        SignupAction::Resend => {
+            let outcome = send_approval(&deps, &identity, &email).await;
+            let flash = if outcome.is_sent() {
+                Flash::ok(&outcome.describe())
+            } else {
+                Flash::error(&outcome.describe())
+            };
+            redirect("/signups", &flash)
+        }
+    }
+}
+
+async fn deny(deps: &AdminDeps, identity: &AdminIdentity, email: &str) -> Response {
+    match deps
+        .data
+        .signups
+        .decide(
+            email,
+            crate::signups::SignupStatus::Denied,
+            &identity.username,
+        )
+        .await
+    {
+        crate::signups::SignupDecision::Recorded => {
+            record_signup(
+                deps,
+                identity,
+                EventKind::BetaDenied,
+                mapping::DENIED,
+                email,
+                false,
+            )
+            .await;
+            redirect("/signups", &Flash::ok("Turned down."))
+        }
+        crate::signups::SignupDecision::AlreadyDecided => redirect(
+            "/signups",
+            &Flash::error("Somebody already decided that one."),
+        ),
+        crate::signups::SignupDecision::Unavailable => redirect(
+            "/signups",
+            &Flash::error("There's no database, so nothing was recorded."),
+        ),
+    }
+}
+
+async fn approve(
+    deps: &AdminDeps,
+    identity: &AdminIdentity,
+    email: &str,
+    confirm: Option<&str>,
+) -> Response {
+    // Refuse before writing anything: an email pointing nowhere can't be
+    // unsent, so a missing invite link is worth a refusal rather than a guess.
+    if deps
+        .data
+        .settings
+        .snapshot()
+        .beta_invite_url
+        .trim()
+        .is_empty()
+    {
+        return redirect(
+            "/signups",
+            &Flash::error(
+                "Set the invite link under Settings → Beta signups first — the email would have \
+                 nowhere to point.",
+            ),
+        );
+    }
+    // With the allowlist empty every guild is already served, so approving hands
+    // out working access immediately and the Guilds page gates nothing. The
+    // checkbox lives in the form rather than a `?confirm=` bounce because the
+    // state that would have to survive the bounce is *which person*.
+    if deps.data.settings.snapshot().guild_allowlist.is_empty() && confirm.is_none() {
+        return redirect(
+            "/signups",
+            &Flash::error(
+                "The guild allowlist is empty, so approving grants access straight away. Tick the \
+                 box on the row to confirm you mean that.",
+            ),
+        );
+    }
+
+    // Decision first, delivery second: an approval that isn't recorded returns
+    // to the queue and gets approved twice, which means two emails to a stranger.
+    match deps
+        .data
+        .signups
+        .decide(
+            email,
+            crate::signups::SignupStatus::Approved,
+            &identity.username,
+        )
+        .await
+    {
+        crate::signups::SignupDecision::Recorded => {}
+        crate::signups::SignupDecision::AlreadyDecided => {
+            return redirect(
+                "/signups",
+                &Flash::error("Somebody already decided that one."),
+            );
+        }
+        crate::signups::SignupDecision::Unavailable => {
+            return redirect(
+                "/signups",
+                &Flash::error("There's no database, so nothing was recorded."),
+            );
+        }
+    }
+    record_signup(
+        deps,
+        identity,
+        EventKind::BetaApproved,
+        mapping::APPROVED,
+        email,
+        false,
+    )
+    .await;
+
+    let outcome = send_approval(deps, identity, email).await;
+    let flash = if outcome.is_sent() {
+        Flash::ok("Approved — the invite email is on its way.")
+    } else {
+        Flash::error(&format!("Approved, but {}", outcome.describe()))
+    };
+    redirect("/signups", &flash)
+}
+
+/// Send (or re-send) the approval email and record what happened, both in the
+/// row's own columns and in the product log.
+async fn send_approval(
+    deps: &AdminDeps,
+    identity: &AdminIdentity,
+    email: &str,
+) -> crate::mail::MailOutcome {
+    let snapshot = deps.data.settings.snapshot();
+    let community = Some(snapshot.community_url.as_str()).filter(|url| !url.trim().is_empty());
+    let body = crate::mail::approval_body(&snapshot.beta_invite_url, community);
+    let outcome = deps
+        .data
+        .mailer
+        .send(email, crate::mail::APPROVAL_SUBJECT, &body)
+        .await;
+
+    if outcome.is_sent() {
+        deps.data.signups.mark_emailed(email).await;
+    } else {
+        deps.data
+            .signups
+            .mark_email_failed(email, &outcome.describe())
+            .await;
+    }
+    record_signup(
+        deps,
+        identity,
+        EventKind::SignupEmailed,
+        mapping::mail(&outcome),
+        email,
+        true,
+    )
+    .await;
+    outcome
+}
+
+/// Record one signup event.
+///
+/// Carries the address's **domain**, never the address: `events` is browsed in
+/// this panel, exported to Metabase, and read through a SELECT-only analytics
+/// role, and solicited contact details are hard to un-spill once they are in the
+/// aggregate plane. The audit trail for who was approved and when lives in the
+/// `signups` row itself, behind Authentik.
+async fn record_signup(
+    deps: &AdminDeps,
+    identity: &AdminIdentity,
+    kind: EventKind,
+    outcome: &'static str,
+    email: &str,
+    resend: bool,
+) {
+    let domain = email.rsplit('@').next().unwrap_or("unknown");
+    deps.data
+        .events
+        .record(
+            ProductEvent::new(kind, &attribution(identity), outcome)
+                .details(serde_json::json!({ "domain": domain, "resend": resend })),
+        )
+        .await;
+}

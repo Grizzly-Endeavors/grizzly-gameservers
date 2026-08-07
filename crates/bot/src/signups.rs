@@ -54,6 +54,36 @@ const SIGNUPS_SCHEMA: &str = "\
         ON signups (created_at) WHERE wants_beta AND status IS NULL; \
     CREATE INDEX IF NOT EXISTS signups_created_at_idx ON signups (created_at)";
 
+/// What an operator decided about a beta request. Stored as the `as_str`
+/// rendering, so this is a closed vocabulary in the same sense as
+/// [`crate::events::EventKind`] — adding a variant is a schema change in
+/// everything but name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SignupStatus {
+    Approved,
+    Denied,
+}
+
+impl SignupStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+/// What became of one attempt to decide a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SignupDecision {
+    Recorded,
+    /// Somebody already decided this one — a second tab, or a double click.
+    /// Load-bearing: two approvals would mean two emails to a stranger.
+    AlreadyDecided,
+    /// No database. Nothing was written.
+    Unavailable,
+}
+
 /// The outcome of accepting one form submission.
 ///
 /// Deliberately says nothing about whether the address was already known: the
@@ -82,6 +112,8 @@ pub(crate) struct SignupRow {
     pub(crate) created_at: String,
     pub(crate) decided_at: Option<String>,
     pub(crate) decided_by: Option<String>,
+    pub(crate) emailed_at: Option<String>,
+    pub(crate) email_error: Option<String>,
 }
 
 /// Column order shared by every `SELECT` below, so one `From` impl serves them
@@ -95,6 +127,8 @@ type SignupRowColumns = (
     Option<String>,
     Option<String>,
     String,
+    Option<String>,
+    Option<String>,
     Option<String>,
     Option<String>,
 );
@@ -111,6 +145,8 @@ impl From<SignupRowColumns> for SignupRow {
             created_at,
             decided_at,
             decided_by,
+            emailed_at,
+            email_error,
         ) = columns;
         Self {
             email,
@@ -122,6 +158,8 @@ impl From<SignupRowColumns> for SignupRow {
             created_at,
             decided_at,
             decided_by,
+            emailed_at,
+            email_error,
         }
     }
 }
@@ -130,15 +168,36 @@ impl From<SignupRowColumns> for SignupRow {
 /// front to back. Column order must match [`SignupRowColumns`].
 const PENDING_BETA: &str = "\
     SELECT email, display_email, wants_beta, wants_updates, note, status, \
-           created_at::text, decided_at::text, decided_by \
+           created_at::text, decided_at::text, decided_by, emailed_at::text, email_error \
     FROM signups WHERE wants_beta AND status IS NULL ORDER BY created_at LIMIT $1";
 
 /// The most recently decided requests, newest first. Column order must match
 /// [`SignupRowColumns`].
 const RECENT_DECISIONS: &str = "\
     SELECT email, display_email, wants_beta, wants_updates, note, status, \
-           created_at::text, decided_at::text, decided_by \
+           created_at::text, decided_at::text, decided_by, emailed_at::text, email_error \
     FROM signups WHERE status IS NOT NULL ORDER BY decided_at DESC LIMIT $1";
+
+/// Approvals whose email hasn't landed — the Resend queue. Column order must
+/// match [`SignupRowColumns`].
+const APPROVED_NOT_EMAILED: &str = "\
+    SELECT email, display_email, wants_beta, wants_updates, note, status, \
+           created_at::text, decided_at::text, decided_by, emailed_at::text, email_error \
+    FROM signups WHERE status = 'approved' AND emailed_at IS NULL \
+    ORDER BY decided_at DESC LIMIT $1";
+
+/// Record a decision, but only on a request nobody has decided yet.
+///
+/// The row count *is* the answer — no read-then-write race, the same trick
+/// `CLAIM_GUILD` uses. Two tabs cannot produce two approval emails.
+const DECIDE_SIGNUP: &str = "\
+    UPDATE signups SET status = $2, decided_at = now(), decided_by = $3 \
+    WHERE email = $1 AND status IS NULL RETURNING email";
+
+const MARK_EMAILED: &str =
+    "UPDATE signups SET emailed_at = now(), email_error = NULL WHERE email = $1";
+
+const MARK_EMAIL_FAILED: &str = "UPDATE signups SET email_error = $2 WHERE email = $1";
 
 const UPDATES_COUNT: &str = "SELECT count(*) FROM signups WHERE wants_updates";
 
@@ -241,6 +300,36 @@ impl SignupStore {
         Ok(rows.into_iter().map(SignupRow::from).collect())
     }
 
+    /// Returns whether a row was actually decided — `false` means somebody got
+    /// there first.
+    async fn decide(&self, email: &str, status: SignupStatus, by: &str) -> Result<bool> {
+        let row: Option<(String,)> = sqlx::query_as(DECIDE_SIGNUP)
+            .bind(email)
+            .bind(status.as_str())
+            .bind(by)
+            .fetch_optional(&self.pool)
+            .await
+            .context("failed to record a signup decision")?;
+        Ok(row.is_some())
+    }
+
+    async fn set_email_result(&self, email: &str, error: Option<&str>) -> Result<()> {
+        let sql = if error.is_some() {
+            MARK_EMAIL_FAILED
+        } else {
+            MARK_EMAILED
+        };
+        let mut query = sqlx::query(sql).bind(email);
+        if let Some(error) = error {
+            query = query.bind(error);
+        }
+        query
+            .execute(&self.pool)
+            .await
+            .context("failed to record the approval email's result")?;
+        Ok(())
+    }
+
     async fn count(&self, sql: &'static str) -> Result<i64> {
         sqlx::query_scalar::<_, i64>(sql)
             .fetch_one(&self.pool)
@@ -305,6 +394,51 @@ impl Signups {
     /// The most recently decided requests, newest first.
     pub(crate) async fn recent_decisions(&self, limit: i64) -> Vec<SignupRow> {
         self.read(RECENT_DECISIONS, limit).await
+    }
+
+    /// Approvals whose email never landed — the Resend queue.
+    pub(crate) async fn approved_not_emailed(&self, limit: i64) -> Vec<SignupRow> {
+        self.read(APPROVED_NOT_EMAILED, limit).await
+    }
+
+    /// Record a decision on a request nobody has decided yet.
+    pub(crate) async fn decide(
+        &self,
+        email: &str,
+        status: SignupStatus,
+        by: &str,
+    ) -> SignupDecision {
+        let Some(store) = self.store.as_ref() else {
+            return SignupDecision::Unavailable;
+        };
+        match store.decide(email, status, by).await {
+            Ok(true) => SignupDecision::Recorded,
+            Ok(false) => SignupDecision::AlreadyDecided,
+            Err(err) => {
+                error!(error = ?err, "failed to record a signup decision");
+                SignupDecision::Unavailable
+            }
+        }
+    }
+
+    /// Note that the approval email landed.
+    pub(crate) async fn mark_emailed(&self, email: &str) {
+        self.record_email_result(email, None).await;
+    }
+
+    /// Note that the approval email didn't land, and why. The reason is shown in
+    /// the Resend queue, so it has to survive rather than only reach the log.
+    pub(crate) async fn mark_email_failed(&self, email: &str, reason: &str) {
+        self.record_email_result(email, Some(reason)).await;
+    }
+
+    async fn record_email_result(&self, email: &str, error: Option<&str>) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        if let Err(err) = store.set_email_result(email, error).await {
+            error!(error = ?err, "failed to record the approval email's result");
+        }
     }
 
     /// How many addresses asked to be kept posted.

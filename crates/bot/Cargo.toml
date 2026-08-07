@@ -114,6 +114,21 @@ serde_yaml_ng = "0.10.0"
 rusty-s3 = "0.10.0"
 url = "2.5.8"
 jiff = "0.2.31"
+# Transactional mail: the beta-approval message the signup queue sends. Defaults
+# off because they select lettre's *synchronous* transport plus connection
+# pooling — we want the tokio one, and no pool: the volume is a handful of
+# human-clicked sends, and a warm connection against a per-IP auto-banning
+# submission server is a liability rather than an optimization.
+# `tokio1-native-tls`, not `tokio1-rustls`, to unify with the backend serenity is
+# already pinned to above and reqwest already pulls; a fourth TLS configuration
+# would risk deny.toml's multiple-versions check for nothing.
+lettre = { version = "0.11.23", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-native-tls",
+    "hostname",
+] }
 
 [dev-dependencies]
 # Verify face: the conventional annotations test (tests/prompt_annotations.rs)

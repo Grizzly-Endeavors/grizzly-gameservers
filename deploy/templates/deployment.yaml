@@ -234,6 +234,29 @@ spec:
                   name: grizzly-gameservers-signup
                   key: signup_token
                   optional: true
+            # Approval mail for the beta signup queue, through the platform's
+            # Stalwart (grizzly-platform ADR-050). The host is the PUBLIC name on
+            # purpose even though this runs in-cluster: Stalwart's listeners trust
+            # PROXY-protocol from 10.0.0.0/8, which covers the pod network, so a
+            # direct in-cluster connection is read as a PROXY header and reset.
+            # No egress carve-out is needed — unlike Postgres/Valkey/S3/Langfuse,
+            # this destination is public, which the namespace leash already
+            # permits. Password optional: absent leaves approvals recordable but
+            # unmailed rather than crash-looping, same shape as DB/S3/Langfuse.
+            - name: GAMESERVERS_SMTP_HOST
+              value: {{ .Values.bot.mail.host | quote }}
+            - name: GAMESERVERS_SMTP_PORT
+              value: {{ .Values.bot.mail.port | quote }}
+            - name: GAMESERVERS_SMTP_USER
+              value: {{ .Values.bot.mail.user | quote }}
+            - name: GAMESERVERS_MAIL_FROM
+              value: {{ .Values.bot.mail.from | quote }}
+            - name: GAMESERVERS_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-mail
+                  key: smtp_password
+                  optional: true
             # Turn telemetry: every model-driven Gary turn exports to the
             # platform's Langfuse (grizzly-platform ADR-064) as a trace. Host is
             # plain config; only the key pair is secret, marked optional so a

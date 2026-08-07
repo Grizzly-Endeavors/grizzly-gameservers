@@ -19,6 +19,7 @@ mod http;
 mod ingame;
 mod kv;
 mod limits;
+mod mail;
 mod memory;
 mod modrinth;
 mod notify;
@@ -155,6 +156,10 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
     // below, before the gateway client exists — can carry it too.
     let notifier = build_notifier(&config.token, &operator_ids);
 
+    // Approval mail. Not part of DurableState: it is SMTP, not Postgres, and
+    // shares neither its credential nor its failure mode.
+    let mailer = std::sync::Arc::new(mail::Mailer::connect(config.mail.as_ref()));
+
     let data = Data {
         kube_client,
         http,
@@ -184,6 +189,7 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
         telemetry: std::sync::Arc::clone(&telemetry),
         events,
         signups,
+        mailer,
     };
 
     // The watchdog responder consumes fired incidents with the full `Data` in

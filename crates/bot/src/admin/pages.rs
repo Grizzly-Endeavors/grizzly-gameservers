@@ -25,7 +25,7 @@ use crate::limits::format_cores;
 use crate::settings::{Reload, Section, SettingKey, SettingsSnapshot, StoredOverride};
 
 use super::AdminDeps;
-use super::actions::{self, InstanceAction};
+use super::actions::{self, InstanceAction, SignupAction};
 use super::auth::AdminIdentity;
 use super::render::{
     Flash, Nav, Tone, availability, badge, html_response, notice, page, percent_encode, table, tile,
@@ -53,6 +53,7 @@ pub(crate) fn router(deps: AdminDeps) -> Router {
         .route("/settings", get(settings))
         .route("/settings/{key}", post(actions::set_setting))
         .route("/signups", get(signups))
+        .route("/signups/{action}", post(actions::run_signup_action))
         .route("/guilds", get(guilds))
         .route("/guilds/{guild}/limits", post(actions::set_guild_limit))
         .route("/guilds/{guild}/admission", post(actions::set_admission))
@@ -146,6 +147,8 @@ async fn dashboard(
                 "Turns aren't traced; nothing else changes."),
             subsystem_row("Settings overrides", data.settings.is_available(),
                 "This panel is read-only; the deployed configuration still applies."),
+            subsystem_row("Approval mail (SMTP)", data.mailer.is_enabled(),
+                "Approvals are still recorded, but nobody is told; mail them later with Resend."),
         ], "No subsystems."))
 
         h2 { "This build" }
@@ -335,13 +338,55 @@ fn wants_badges(wants_beta: bool, wants_updates: bool) -> Markup {
     }
 }
 
-fn pending_row(row: &crate::signups::SignupRow) -> Markup {
+fn pending_row(row: &crate::signups::SignupRow, allowlist_empty: bool, confirming: bool) -> Markup {
     html! {
         tr {
             td .mono { (row.created_at) }
             td { (row.display_email) }
             td { (wants_badges(row.wants_beta, row.wants_updates)) }
             td { (note_preview(row.note.as_ref())) }
+            td .actions {
+                form .inline method="post" action=(signup_path(SignupAction::Approve)) {
+                    input type="hidden" name="email" value=(row.email);
+                    @if allowlist_empty {
+                        label .hint {
+                            input type="checkbox" name="confirm" value="1" required;
+                            " serves everyone"
+                        }
+                    }
+                    button type="submit" { "Approve" }
+                }
+                form .inline method="post" action=(signup_path(SignupAction::Deny)) {
+                    input type="hidden" name="email" value=(row.email);
+                    @if confirming {
+                        input type="text" name="confirm" placeholder="type the address";
+                    }
+                    button .danger type="submit" { "Deny" }
+                }
+            }
+        }
+    }
+}
+
+/// Where a signup action posts. Built from the enum rather than a literal so the
+/// route, the handler's `parse`, and the form can't drift apart.
+fn signup_path(action: SignupAction) -> String {
+    format!("/signups/{}", action.as_str())
+}
+
+/// One approval whose email never landed, with the reason and a way to retry.
+fn unmailed_row(row: &crate::signups::SignupRow) -> Markup {
+    html! {
+        tr {
+            td .mono { (row.decided_at.as_deref().unwrap_or("—")) }
+            td { (row.display_email) }
+            td .hint { (row.email_error.as_deref().unwrap_or("never attempted")) }
+            td .actions {
+                form .inline method="post" action=(signup_path(SignupAction::Resend)) {
+                    input type="hidden" name="email" value=(row.email);
+                    button type="submit" { "Resend" }
+                }
+            }
         }
     }
 }
@@ -363,14 +408,29 @@ fn decided_row(row: &crate::signups::SignupRow) -> Markup {
     }
 }
 
+/// Whether the page is mid-confirmation for a deny, which is what makes the
+/// "type the address" box appear.
+#[derive(Debug, Default, Deserialize)]
+struct SignupConfirm {
+    confirm: Option<String>,
+}
+
+impl SignupConfirm {
+    fn is_denying(&self) -> bool {
+        self.confirm.as_deref() == Some("deny")
+    }
+}
+
 async fn signups(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
     Query(flash): Query<Flash>,
+    Query(confirm): Query<SignupConfirm>,
 ) -> Response {
     let data = &deps.data;
     let enabled = data.signups.is_enabled();
     let pending = data.signups.pending_beta(SIGNUP_QUEUE_SIZE).await;
+    let unmailed = data.signups.approved_not_emailed(SIGNUP_HISTORY_SIZE).await;
     let decided = data.signups.recent_decisions(SIGNUP_HISTORY_SIZE).await;
     let updates = data.signups.updates_count().await;
     let last_day = data.signups.submissions_last_24h().await;
@@ -391,12 +451,32 @@ async fn signups(
             (tile("On the updates list", &updates.to_string()))
             (tile("Signed up today", &last_day.to_string()))
         }
+        @if !data.mailer.is_enabled() {
+            (notice(Tone::Warn, &html! {
+                strong { "Approval mail is off." }
+                " Approving still records the decision, but nobody is told. Once mail is \
+                  configured, use Resend on the rows below."
+            }))
+        }
         h2 { "Waiting on you" }
         (table(
-            &["Asked", "Email", "Wants", "Note"],
-            pending.iter().map(pending_row).collect(),
+            &["Asked", "Email", "Wants", "Note", ""],
+            pending.iter()
+                .map(|row| pending_row(row, allowlist_empty, confirm.is_denying()))
+                .collect(),
             "Nobody is waiting for a decision.",
         ))
+        @if !unmailed.is_empty() {
+            h2 { "Approved, not emailed" }
+            (notice(Tone::Warn, &html! {
+                "These people were let in but never told. Resend once the problem is fixed."
+            }))
+            (table(
+                &["Decided", "Email", "What happened", ""],
+                unmailed.iter().map(unmailed_row).collect(),
+                "—",
+            ))
+        }
         h2 { "Recently decided" }
         (table(
             &["Decided", "Email", "Outcome", "By"],

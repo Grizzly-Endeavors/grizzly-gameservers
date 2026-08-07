@@ -63,6 +63,18 @@ const DEFAULT_REDIS_DB: u8 = 2;
 const DEFAULT_S3_ENDPOINT: &str = "http://10.0.0.200:7072";
 const DEFAULT_S3_BUCKET: &str = "grizzly-gameservers";
 const DEFAULT_S3_REGION: &str = "us-east-1";
+/// The platform's Stalwart submission endpoint. Deliberately the **public** host
+/// even though the bot runs in-cluster: the listeners trust PROXY-protocol from
+/// `10.0.0.0/8`, which covers the pod network, so a direct in-cluster connection
+/// is parsed as a PROXY header and reset (`errno 104`). The public path rides the
+/// VPS `HAProxy`, which prepends the header correctly. See grizzly-platform
+/// `docs/integration/mail.md`.
+const DEFAULT_SMTP_HOST: &str = "mail.grizzly-endeavors.com";
+const DEFAULT_SMTP_PORT: u16 = 587;
+/// The submission account provisioned for this app. Must stay on
+/// `grizzly-endeavors.com`: DMARC alignment is anchored there, and a `From:` on
+/// any other domain is filtered rather than delivered.
+const DEFAULT_SMTP_USER: &str = "gary@grizzly-endeavors.com";
 /// How often the scheduled cycle backs up every running server, in hours.
 const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
 /// How many backups to retain per server; older ones are pruned each cycle.
@@ -177,6 +189,12 @@ pub struct BotConfig {
     /// ([ADR-022](../../docs/decisions/022-per-guild-resource-caps.md)) has always
     /// claimed and nothing enforced.
     pub(crate) guild_allowlist: Vec<u64>,
+    /// Deploy-time default for the bot install link mailed on beta approval.
+    /// Empty unless set; the panel is the usual place this is configured.
+    pub(crate) beta_invite_url: String,
+    /// Deploy-time default for the community server link the approval email
+    /// offers. Empty omits that paragraph.
+    pub(crate) community_url: String,
     /// Admission control for paid model turns.
     pub(crate) throttle: crate::throttle::ThrottlePolicy,
     /// Ollama Cloud API key for the agent ("Gary"). Absent disables the agent —
@@ -203,6 +221,11 @@ pub struct BotConfig {
     /// secret keys aren't set — backups/archive/restore then report "not
     /// configured", the same graceful-degrade shape as `db`/`ollama`.
     pub(crate) s3: Option<S3Config>,
+    /// SMTP submission for transactional mail. `None` when
+    /// `GAMESERVERS_SMTP_PASSWORD` isn't set — approving a beta signup then
+    /// records the decision and reports that it couldn't mail them, the same
+    /// graceful-degrade shape as `db`/`s3`/`ollama`.
+    pub(crate) mail: Option<MailConfig>,
     /// How often the scheduled backup cycle runs.
     pub(crate) backup_interval: Duration,
     /// How many backups to keep per server before the cycle prunes older ones.
@@ -321,6 +344,26 @@ pub(crate) struct GuildLimitDefaults {
     pub(crate) mem_limit_bytes: i64,
 }
 
+/// SMTP submission settings for transactional mail. Only the password is secret
+/// (synced from the `platform-stalwart` 1Password item via ESO); the rest carry
+/// infra defaults.
+///
+/// The host is deliberately the **public** name even though the bot runs in the
+/// cluster: Stalwart's listeners trust PROXY-protocol from `10.0.0.0/8`, which
+/// covers the pod network, so a direct in-cluster connection is read as a PROXY
+/// header and reset. The public path rides the VPS `HAProxy`, which prepends the
+/// header correctly. See grizzly-platform `docs/integration/mail.md`.
+#[derive(Clone, Debug)]
+pub(crate) struct MailConfig {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) user: String,
+    pub(crate) password: String,
+    /// Must be `@grizzly-endeavors.com` or DMARC alignment fails and the mail is
+    /// filtered rather than bounced — a silent failure, hence the startup check.
+    pub(crate) from: String,
+}
+
 /// Connection settings for turn telemetry. Only the key pair is secret (synced
 /// from 1Password via ESO); the host carries an infra default.
 #[derive(Clone, Debug)]
@@ -402,6 +445,8 @@ impl BotConfig {
             "GAMESERVERS_GUILD_ALLOWLIST",
         )?;
         let throttle = throttle_policy_from_env(lookup)?;
+        let beta_invite_url = optional(lookup, "GAMESERVERS_BETA_INVITE_URL").unwrap_or_default();
+        let community_url = optional(lookup, "GAMESERVERS_COMMUNITY_URL").unwrap_or_default();
 
         let ollama_api_key = optional(lookup, "OLLAMA_API_KEY").filter(|key| !key.is_empty());
         let ollama_base_url = optional(lookup, "OLLAMA_BASE_URL")
@@ -414,44 +459,22 @@ impl BotConfig {
         let supervisor_token =
             optional(lookup, "SUPERVISOR_CONTROL_TOKEN").filter(|secret| !secret.trim().is_empty());
         let s3 = s3_config_from_env(lookup);
-        let backup_interval = Duration::from_secs(
-            optional_positive_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
-                .unwrap_or(DEFAULT_BACKUP_INTERVAL_HOURS)
-                .saturating_mul(3600),
-        );
-        let backup_retention = optional_positive_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
-            .unwrap_or(DEFAULT_BACKUP_RETENTION);
-        let archive_retention_days =
-            optional_positive_u64(lookup, "GAMESERVERS_ARCHIVE_RETENTION_DAYS")?
-                .unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS);
-        let archive_retention_days = i32::try_from(archive_retention_days).unwrap_or(i32::MAX);
-        let reconcile_interval = Duration::from_secs(
-            optional_positive_u64(lookup, "GAMESERVERS_RECONCILE_INTERVAL_MINUTES")?
-                .unwrap_or(DEFAULT_RECONCILE_INTERVAL_MINUTES)
-                .saturating_mul(60),
-        );
-        let stranded_dwell = Duration::from_secs(
-            optional_positive_u64(lookup, "GAMESERVERS_STRANDED_DWELL_MINUTES")?
-                .unwrap_or(DEFAULT_STRANDED_DWELL_MINUTES)
-                .saturating_mul(60),
-        );
-        let sample_interval = Duration::from_secs(
-            optional_positive_u64(lookup, "GAMESERVERS_SAMPLE_INTERVAL_MINUTES")?
-                .unwrap_or(DEFAULT_SAMPLE_INTERVAL_MINUTES)
-                .saturating_mul(60),
-        );
+        let mail = mail_config_from_env(lookup)?;
+        let CycleCadences {
+            backup_interval,
+            backup_retention,
+            archive_retention_days,
+            reconcile_interval,
+            stranded_dwell,
+            sample_interval,
+        } = cycle_cadences_from_env(lookup)?;
         let agent_port =
             optional_port(lookup, "GAMESERVERS_AGENT_PORT")?.unwrap_or(DEFAULT_AGENT_PORT);
-        // Trimmed, like `supervisor_token` above: a secret that syncs as a blank
-        // line would otherwise mount these routes behind a credential nobody
-        // holds — the in-game trigger runs *open* without a token, so reading
-        // whitespace as "a token" is the difference between guarded and not.
-        let ingame_token =
-            optional(lookup, "GAMESERVERS_INGAME_TOKEN").filter(|value| !value.trim().is_empty());
-        let operator_token =
-            optional(lookup, "GAMESERVERS_OPERATOR_TOKEN").filter(|value| !value.trim().is_empty());
-        let signup_token =
-            optional(lookup, "GAMESERVERS_SIGNUP_TOKEN").filter(|value| !value.trim().is_empty());
+        let EndpointCredentials {
+            ingame: ingame_token,
+            operator: operator_token,
+            signup: signup_token,
+        } = endpoint_credentials_from_env(lookup);
         let environment = environment_from_env(lookup);
         let langfuse = langfuse_config_from_env(lookup);
         let release =
@@ -468,6 +491,8 @@ impl BotConfig {
             control_port,
             operator_ids,
             guild_allowlist,
+            beta_invite_url,
+            community_url,
             throttle,
             ollama_api_key,
             ollama_base_url,
@@ -476,6 +501,7 @@ impl BotConfig {
             valkey,
             supervisor_token,
             s3,
+            mail,
             backup_interval,
             backup_retention,
             archive_retention_days,
@@ -604,6 +630,115 @@ fn s3_config_from_env(lookup: EnvLookup) -> Option<S3Config> {
         access_key,
         secret_key,
     })
+}
+
+/// The background cycles' periods and retention windows.
+///
+/// Grouped because they are read together, tuned together, and share one
+/// property that nothing else in the config has: each is baked into a ticker
+/// when its task spawns, so an override is recorded now and in force after the
+/// next restart (`settings::Reload::Restart`).
+struct CycleCadences {
+    backup_interval: Duration,
+    backup_retention: usize,
+    archive_retention_days: i32,
+    reconcile_interval: Duration,
+    stranded_dwell: Duration,
+    sample_interval: Duration,
+}
+
+/// Read the background cycles' cadences, each falling back to its compiled
+/// default.
+///
+/// # Errors
+///
+/// Returns an error if any of the interval or retention variables is set but
+/// isn't a positive integer.
+fn cycle_cadences_from_env(lookup: EnvLookup) -> Result<CycleCadences> {
+    let minutes = |key: &str, fallback: u64| -> Result<Duration> {
+        Ok(Duration::from_secs(
+            optional_positive_u64(lookup, key)?
+                .unwrap_or(fallback)
+                .saturating_mul(60),
+        ))
+    };
+    let archive_retention_days =
+        optional_positive_u64(lookup, "GAMESERVERS_ARCHIVE_RETENTION_DAYS")?
+            .unwrap_or(DEFAULT_ARCHIVE_RETENTION_DAYS);
+    Ok(CycleCadences {
+        backup_interval: Duration::from_secs(
+            optional_positive_u64(lookup, "GAMESERVERS_BACKUP_INTERVAL_HOURS")?
+                .unwrap_or(DEFAULT_BACKUP_INTERVAL_HOURS)
+                .saturating_mul(3600),
+        ),
+        backup_retention: optional_positive_usize(lookup, "GAMESERVERS_BACKUP_RETENTION")?
+            .unwrap_or(DEFAULT_BACKUP_RETENTION),
+        archive_retention_days: i32::try_from(archive_retention_days).unwrap_or(i32::MAX),
+        reconcile_interval: minutes(
+            "GAMESERVERS_RECONCILE_INTERVAL_MINUTES",
+            DEFAULT_RECONCILE_INTERVAL_MINUTES,
+        )?,
+        stranded_dwell: minutes(
+            "GAMESERVERS_STRANDED_DWELL_MINUTES",
+            DEFAULT_STRANDED_DWELL_MINUTES,
+        )?,
+        sample_interval: minutes(
+            "GAMESERVERS_SAMPLE_INTERVAL_MINUTES",
+            DEFAULT_SAMPLE_INTERVAL_MINUTES,
+        )?,
+    })
+}
+
+/// The three bearer credentials the agent endpoint's routers expect, grouped so
+/// they are read in one place and can't be transposed at the call site.
+struct EndpointCredentials {
+    ingame: Option<String>,
+    operator: Option<String>,
+    signup: Option<String>,
+}
+
+/// Read the endpoint bearer tokens, treating a blank value as absent.
+///
+/// Trimmed, like `supervisor_token`: a secret that syncs as a blank line would
+/// otherwise mount a route behind a credential nobody holds. It matters most for
+/// the in-game trigger, which runs *open* without a token — there, reading
+/// whitespace as "a token" is the difference between guarded and not.
+fn endpoint_credentials_from_env(lookup: EnvLookup) -> EndpointCredentials {
+    let read = |key: &str| optional(lookup, key).filter(|value| !value.trim().is_empty());
+    EndpointCredentials {
+        ingame: read("GAMESERVERS_INGAME_TOKEN"),
+        operator: read("GAMESERVERS_OPERATOR_TOKEN"),
+        signup: read("GAMESERVERS_SIGNUP_TOKEN"),
+    }
+}
+
+/// Build the SMTP submission settings from the environment, or `None` when
+/// `GAMESERVERS_SMTP_PASSWORD` is unset/empty — the password is the one part
+/// sourced from 1Password, so its absence is the signal that mail isn't wired
+/// and the feature should degrade rather than fail.
+///
+/// # Errors
+///
+/// Returns an error if `GAMESERVERS_SMTP_PORT` is set but not a valid port.
+fn mail_config_from_env(lookup: EnvLookup) -> Result<Option<MailConfig>> {
+    let Some(password) =
+        optional(lookup, "GAMESERVERS_SMTP_PASSWORD").filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let user =
+        optional(lookup, "GAMESERVERS_SMTP_USER").unwrap_or_else(|| DEFAULT_SMTP_USER.to_owned());
+    Ok(Some(MailConfig {
+        host: optional(lookup, "GAMESERVERS_SMTP_HOST")
+            .unwrap_or_else(|| DEFAULT_SMTP_HOST.to_owned()),
+        port: optional_port(lookup, "GAMESERVERS_SMTP_PORT")?.unwrap_or(DEFAULT_SMTP_PORT),
+        // The sender defaults to the account, which is the aligned answer: a
+        // `From:` that isn't the authenticated mailbox is the usual way DMARC
+        // alignment gets broken by accident.
+        from: optional(lookup, "GAMESERVERS_MAIL_FROM").unwrap_or_else(|| user.clone()),
+        user,
+        password,
+    }))
 }
 
 /// Build the Postgres connection settings from the environment, or `None` when

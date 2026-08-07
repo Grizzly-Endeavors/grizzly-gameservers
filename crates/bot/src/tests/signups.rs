@@ -93,3 +93,21 @@ fn a_multi_byte_character_at_the_boundary_does_not_split() {
     assert_eq!(truncate_chars("aaaa🐻bbbb", 5), "aaaa🐻…");
     assert_eq!(truncate_chars("héllo wörld", 7), "héllo w…");
 }
+
+#[tokio::test]
+async fn a_disabled_queue_cannot_decide_anything() {
+    let signups = Signups::connect(None).await;
+    assert_eq!(
+        signups
+            .decide("friend@example.com", SignupStatus::Approved, "bear")
+            .await,
+        SignupDecision::Unavailable
+    );
+    assert!(signups.approved_not_emailed(10).await.is_empty());
+}
+
+#[test]
+fn signup_statuses_render_as_the_stored_vocabulary() {
+    assert_eq!(SignupStatus::Approved.as_str(), "approved");
+    assert_eq!(SignupStatus::Denied.as_str(), "denied");
+}

@@ -180,6 +180,9 @@ pub(crate) struct Data {
     /// route, worked through in the admin panel. Disabled without a database,
     /// which the panel renders as a notice rather than an error.
     pub(crate) signups: Arc<crate::signups::Signups>,
+    /// Sends the beta-approval email. Disabled without an SMTP password, in
+    /// which case an approval is still recorded and can be mailed later.
+    pub(crate) mailer: Arc<crate::mail::Mailer>,
 }
 
 impl Data {
