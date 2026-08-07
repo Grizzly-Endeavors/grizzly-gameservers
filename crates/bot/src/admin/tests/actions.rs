@@ -87,3 +87,29 @@ fn an_unknown_cap_field_is_refused_rather_than_guessed_at() {
     let err = parse_limit_change("disk", "10Gi", false).expect_err("refused");
     assert!(err.contains("disk"), "{err}");
 }
+
+#[test]
+fn signup_actions_round_trip_through_their_path_segment() {
+    for action in [
+        SignupAction::Approve,
+        SignupAction::Deny,
+        SignupAction::Resend,
+    ] {
+        assert_eq!(SignupAction::parse(action.as_str()), Some(action));
+    }
+}
+
+#[test]
+fn an_unknown_signup_verb_is_refused() {
+    assert_eq!(SignupAction::parse("delete"), None);
+    assert_eq!(SignupAction::parse(""), None);
+}
+
+/// Only deny is irreversible. Widening this set would train the operator to
+/// click through confirmations, which is how the one that matters stops working.
+#[test]
+fn only_deny_demands_a_typed_confirmation() {
+    assert!(SignupAction::Deny.is_destructive());
+    assert!(!SignupAction::Approve.is_destructive());
+    assert!(!SignupAction::Resend.is_destructive());
+}

@@ -315,3 +315,37 @@ fn cpu_renders_with_an_explicit_millicore_suffix() {
     assert_eq!(exact_cpu(250), "250m");
     assert_eq!(parse_cpu_millicores(&exact_cpu(250)), Some(250));
 }
+
+/// A URL with no trailing slash must come back exactly as typed. Normalizing
+/// through `Url::to_string()` would append one, silently rewriting a setting the
+/// operator only opened to look at.
+#[test]
+fn a_url_setting_round_trips_without_gaining_a_trailing_slash() {
+    let mut snapshot = baseline();
+    let typed = "https://discord.com/oauth2/authorize?client_id=1&scope=bot";
+    SettingKey::BetaInviteUrl
+        .assign(&mut snapshot, typed)
+        .expect("a valid https url is accepted");
+    assert_eq!(SettingKey::BetaInviteUrl.render(&snapshot), typed);
+
+    let bare = "https://discord.gg";
+    SettingKey::CommunityUrl
+        .assign(&mut snapshot, bare)
+        .expect("a bare authority is accepted");
+    assert_eq!(SettingKey::CommunityUrl.render(&snapshot), bare);
+}
+
+#[test]
+fn a_url_setting_refuses_a_non_https_scheme() {
+    let mut snapshot = baseline();
+    assert!(
+        SettingKey::BetaInviteUrl
+            .assign(&mut snapshot, "http://example.com")
+            .is_err()
+    );
+    assert!(
+        SettingKey::BetaInviteUrl
+            .assign(&mut snapshot, "not a url")
+            .is_err()
+    );
+}

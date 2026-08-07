@@ -176,6 +176,13 @@ pub(crate) struct Data {
     /// from which surface. Backed by Postgres; a disabled log accepts and
     /// discards, so emission sites never branch on it.
     pub(crate) events: Arc<crate::events::EventLog>,
+    /// The beta signup queue: fed by the public landing page through the intake
+    /// route, worked through in the admin panel. Disabled without a database,
+    /// which the panel renders as a notice rather than an error.
+    pub(crate) signups: Arc<crate::signups::Signups>,
+    /// Sends the beta-approval email. Disabled without an SMTP password, in
+    /// which case an approval is still recorded and can be mailed later.
+    pub(crate) mailer: Arc<crate::mail::Mailer>,
 }
 
 impl Data {

@@ -12,9 +12,13 @@
 //! route runs **open** (NetworkPolicy-only) when its secret isn't provisioned, so
 //! an unprovisioned key doesn't quietly break the reverse loop. The operator
 //! routes instead go **unmounted**: they reach Gary's full admin surface, so
-//! running them open is never the safer failure.
+//! running them open is never the safer failure. The signup intake follows the
+//! operator posture for the same reason inverted: it writes on behalf of an
+//! unauthenticated public form, so an ungated version of it is a stranger with a
+//! pen on the database.
 
 pub(crate) mod operator;
+pub(crate) mod signup;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -37,16 +41,28 @@ use crate::ingame::IngameDeps;
 /// control-api wire contract and stays local to this module.
 const HEALTH_PATH: &str = "/health";
 
+/// The endpoint's three bearer credentials, grouped so they travel as one named
+/// thing rather than as a row of interchangeable `Option<String>` positions —
+/// which is exactly the shape a caller silently transposes.
+pub(crate) struct EndpointTokens {
+    pub(crate) ingame: Option<String>,
+    pub(crate) operator: Option<String>,
+    pub(crate) signup: Option<String>,
+}
+
 /// Everything the HTTP server needs to mount its routers.
 pub(crate) struct HttpDeps {
     pub(crate) ingame: IngameDeps,
     pub(crate) operator: operator::OperatorDeps,
+    pub(crate) signup: signup::SignupDeps,
     pub(crate) port: u16,
     /// Shared bearer token for the in-game trigger route. `None` runs that route
     /// open, protected by `NetworkPolicy` alone.
     pub(crate) ingame_token: Option<String>,
     /// Bearer token for the operator routes. `None` leaves them unmounted.
     pub(crate) operator_token: Option<String>,
+    /// Bearer token for the signup intake route. `None` leaves it unmounted.
+    pub(crate) signup_token: Option<String>,
     /// Panic counts for the supervised background cycles, so a subsystem that
     /// keeps dying can reach the k8s probes.
     pub(crate) cycle_health: Arc<crate::cycles::CycleHealth>,
@@ -54,21 +70,27 @@ pub(crate) struct HttpDeps {
 
 impl HttpDeps {
     /// Carve the endpoint's dependencies out of the command `Data`, taking the
-    /// two bearer tokens by value — this is their only consumer, and a credential
+    /// bearer tokens by value — this is their only consumer, and a credential
     /// copied is a credential that can be logged somewhere else.
     pub(crate) fn from_data(
         data: &crate::discord::Data,
         port: u16,
-        ingame_token: Option<String>,
-        operator_token: Option<String>,
+        tokens: EndpointTokens,
         cycle_health: Arc<crate::cycles::CycleHealth>,
     ) -> Self {
+        let EndpointTokens {
+            ingame,
+            operator,
+            signup,
+        } = tokens;
         Self {
             ingame: IngameDeps::from_data(data),
             operator: operator::OperatorDeps::from_data(data),
+            signup: signup::SignupDeps::from_data(data),
             port,
-            ingame_token,
-            operator_token,
+            ingame_token: ingame,
+            operator_token: operator,
+            signup_token: signup,
             cycle_health,
         }
     }
@@ -103,9 +125,11 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
     let HttpDeps {
         ingame,
         operator,
+        signup,
         port,
         ingame_token,
         operator_token,
+        signup_token,
         cycle_health,
     } = deps;
 
@@ -144,13 +168,34 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
         info!("operator routes disabled (GAMESERVERS_OPERATOR_TOKEN unset)");
     }
 
+    // Mounted only with both a token and somewhere to write. A token set with no
+    // database is a misconfiguration rather than a posture, so it warns: the
+    // landing page would be live and every person signing up would vanish.
+    let signup_route = match signup_token {
+        Some(token) if signup.is_enabled() => {
+            app = app.merge(signup::router(signup, token));
+            true
+        }
+        Some(_) => {
+            warn!(
+                "signup intake route disabled: a token is set but there is no database to record \
+                 submissions into"
+            );
+            false
+        }
+        None => {
+            info!("signup intake route disabled (GAMESERVERS_SIGNUP_TOKEN unset)");
+            false
+        }
+    };
+
     let addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind agent http endpoint on {addr}"))?;
     info!(
         port,
-        ingame_route, operator_routes, "agent http endpoint listening"
+        ingame_route, operator_routes, signup_route, "agent http endpoint listening"
     );
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { shutdown.cancelled().await })

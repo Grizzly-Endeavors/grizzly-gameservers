@@ -38,6 +38,13 @@ pub(crate) enum EventKind {
     /// First-ever sighting of a guild, backed by the known-guilds table so a
     /// gateway reconnect can't re-fire it.
     GuildJoined,
+    /// An operator let a beta applicant in.
+    BetaApproved,
+    /// An operator turned a beta applicant down.
+    BetaDenied,
+    /// The approval email was sent — separate from the approval itself so a
+    /// Resend produces an event, and "approved but never told" stays visible.
+    SignupEmailed,
     /// The proactive watchdog detected a problem on a running server. One row
     /// per fired incident whatever its disposition (shadow, responded,
     /// suppressed), so detection is auditable even when nothing acted.
@@ -71,6 +78,9 @@ impl EventKind {
             Self::BackupCycle => "backup_cycle",
             Self::Escalation => "escalation",
             Self::GuildJoined => "guild_joined",
+            Self::BetaApproved => "beta_approved",
+            Self::BetaDenied => "beta_denied",
+            Self::SignupEmailed => "signup_emailed",
             Self::Incident => "incident",
             Self::ResourcesChanged => "resources_changed",
             Self::SettingChanged => "setting_changed",

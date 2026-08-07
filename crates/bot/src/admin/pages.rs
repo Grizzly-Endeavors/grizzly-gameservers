@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use axum::Router;
 use axum::extract::{Extension, Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -25,7 +25,7 @@ use crate::limits::format_cores;
 use crate::settings::{Reload, Section, SettingKey, SettingsSnapshot, StoredOverride};
 
 use super::AdminDeps;
-use super::actions::{self, InstanceAction};
+use super::actions::{self, InstanceAction, SignupAction};
 use super::auth::AdminIdentity;
 use super::render::{
     Flash, Nav, Tone, availability, badge, html_response, notice, page, percent_encode, table, tile,
@@ -35,11 +35,33 @@ use super::render::{
 /// view, and paging is cheap — but bounded so one query can't hold the pool.
 const EVENT_PAGE_SIZE: i64 = 100;
 
+/// Beta requests shown at once. The queue is worked front to back, so a bound
+/// here costs nothing: what falls off the end is what you get to next.
+const SIGNUP_QUEUE_SIZE: i64 = 50;
+
+/// Decided requests kept in view, as recent context rather than an archive —
+/// `/events` is where the full history lives.
+const SIGNUP_HISTORY_SIZE: i64 = 20;
+
+/// Note length shown in the queue table. The field is free text from a public
+/// form, so one pasted essay must not blow out the row.
+const NOTE_PREVIEW_CHARS: usize = 300;
+
+/// Cap on the updates-list export. Generous, and the page says so when it bites —
+/// a mailing list that quietly stops halfway is worse than one that says it did.
+const UPDATES_EXPORT_LIMIT: i64 = 10_000;
+
 pub(crate) fn router(deps: AdminDeps) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/settings", get(settings))
         .route("/settings/{key}", post(actions::set_setting))
+        .route("/signups", get(signups))
+        // Top level, not under /signups/: axum matches the path first, so a
+        // GET at /signups/export.csv would collide with the action route
+        // below and 405.
+        .route("/signups.csv", get(signups_csv))
+        .route("/signups/{action}", post(actions::run_signup_action))
         .route("/guilds", get(guilds))
         .route("/guilds/{guild}/limits", post(actions::set_guild_limit))
         .route("/guilds/{guild}/admission", post(actions::set_admission))
@@ -133,6 +155,8 @@ async fn dashboard(
                 "Turns aren't traced; nothing else changes."),
             subsystem_row("Settings overrides", data.settings.is_available(),
                 "This panel is read-only; the deployed configuration still applies."),
+            subsystem_row("Approval mail (SMTP)", data.mailer.is_enabled(),
+                "Approvals are still recorded, but nobody is told; mail them later with Resend."),
         ], "No subsystems."))
 
         h2 { "This build" }
@@ -278,6 +302,254 @@ fn setting_row(
             }
         }
     }
+}
+
+// ----------------------------------------------------------------- signups
+
+/// Warn that admitting a guild isn't gating anything while the allowlist is
+/// empty.
+///
+/// This is the notice that matters most on this page. Approving a beta request
+/// mails out a bot-invite link, and `guild_is_admitted` treats an empty
+/// allowlist as admitting *every* guild — so with the list empty, clicking
+/// approve grants access the moment the person follows that link, and the
+/// deliberate second step on the Guilds page is decorative. Saying so here puts
+/// it in front of whoever is about to approve someone, rather than in a runbook.
+fn allowlist_open_notice(allowlist_empty: bool) -> Markup {
+    if !allowlist_empty {
+        return html! {};
+    }
+    notice(
+        Tone::Warn,
+        &html! {
+            strong { "The guild allowlist is empty, so every Discord server is served." }
+            " Approving someone mails them an invite link, and their server is served the moment \
+              they use it — the admission step on the Guilds page isn't gating anything yet. \
+              Admit the servers you mean to serve before approving anyone."
+        },
+    )
+}
+
+/// Note the person left, bounded for display.
+fn note_preview(note: Option<&String>) -> Markup {
+    let Some(note) = note.filter(|note| !note.is_empty()) else {
+        return html! { span .hint { "—" } };
+    };
+    html! { (crate::signups::truncate_chars(note, NOTE_PREVIEW_CHARS)) }
+}
+
+/// What a signup asked for. Both are independent opt-ins, so both can show.
+fn wants_badges(wants_beta: bool, wants_updates: bool) -> Markup {
+    html! {
+        @if wants_beta { (badge("beta", Tone::Accent)) }
+        @if wants_updates { (badge("updates", Tone::Ok)) }
+    }
+}
+
+fn pending_row(row: &crate::signups::SignupRow, allowlist_empty: bool, confirming: bool) -> Markup {
+    html! {
+        tr {
+            td .mono { (row.created_at) }
+            td { (row.display_email) }
+            td { (wants_badges(row.wants_beta, row.wants_updates)) }
+            td { (note_preview(row.note.as_ref())) }
+            td .actions {
+                form .inline method="post" action=(signup_path(SignupAction::Approve)) {
+                    input type="hidden" name="email" value=(row.email);
+                    @if allowlist_empty {
+                        label .hint {
+                            input type="checkbox" name="confirm" value="1" required;
+                            " serves everyone"
+                        }
+                    }
+                    button type="submit" { "Approve" }
+                }
+                form .inline method="post" action=(signup_path(SignupAction::Deny)) {
+                    input type="hidden" name="email" value=(row.email);
+                    @if confirming {
+                        input type="text" name="confirm" placeholder="type the address";
+                    }
+                    button .danger type="submit" { "Deny" }
+                }
+            }
+        }
+    }
+}
+
+/// One CSV record, RFC 4180 quoted.
+///
+/// Every field is quoted rather than only those that need it: the rule is then
+/// one line rather than a predicate somebody later gets wrong. Control
+/// characters are dropped — a newline inside a quoted field is legal but breaks
+/// naive readers, and nothing in this export legitimately contains one.
+fn csv_row(fields: &[&str]) -> String {
+    let mut out = String::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        for ch in field.chars().filter(|ch| !ch.is_control()) {
+            if ch == '"' {
+                out.push('"');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    }
+    out.push('\n');
+    out
+}
+
+/// The updates list as a CSV download.
+///
+/// Inside `pages::router`, so `require_admin` covers it with no per-route check.
+async fn signups_csv(State(deps): State<AdminDeps>) -> Response {
+    let rows = deps.data.signups.updates_export(UPDATES_EXPORT_LIMIT).await;
+    let mut body = csv_row(&["email", "first_asked_at", "wants_beta"]);
+    for row in &rows {
+        body.push_str(&csv_row(&[
+            &row.email,
+            &row.first_asked_at,
+            if row.wants_beta { "true" } else { "false" },
+        ]));
+    }
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"gary-updates.csv\"",
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Where a signup action posts. Built from the enum rather than a literal so the
+/// route, the handler's `parse`, and the form can't drift apart.
+fn signup_path(action: SignupAction) -> String {
+    format!("/signups/{}", action.as_str())
+}
+
+/// One approval whose email never landed, with the reason and a way to retry.
+fn unmailed_row(row: &crate::signups::SignupRow) -> Markup {
+    html! {
+        tr {
+            td .mono { (row.decided_at.as_deref().unwrap_or("—")) }
+            td { (row.display_email) }
+            td .hint { (row.email_error.as_deref().unwrap_or("never attempted")) }
+            td .actions {
+                form .inline method="post" action=(signup_path(SignupAction::Resend)) {
+                    input type="hidden" name="email" value=(row.email);
+                    button type="submit" { "Resend" }
+                }
+            }
+        }
+    }
+}
+
+fn decided_row(row: &crate::signups::SignupRow) -> Markup {
+    let outcome = row.status.as_deref().unwrap_or("—");
+    let tone = if outcome == "approved" {
+        Tone::Ok
+    } else {
+        Tone::Bad
+    };
+    html! {
+        tr {
+            td .mono { (row.decided_at.as_deref().unwrap_or("—")) }
+            td { (row.display_email) }
+            td { (badge(outcome, tone)) }
+            td { (row.decided_by.as_deref().unwrap_or("—")) }
+        }
+    }
+}
+
+/// Whether the page is mid-confirmation for a deny, which is what makes the
+/// "type the address" box appear.
+#[derive(Debug, Default, Deserialize)]
+struct SignupConfirm {
+    confirm: Option<String>,
+}
+
+impl SignupConfirm {
+    fn is_denying(&self) -> bool {
+        self.confirm.as_deref() == Some("deny")
+    }
+}
+
+async fn signups(
+    State(deps): State<AdminDeps>,
+    Extension(identity): Extension<AdminIdentity>,
+    Query(flash): Query<Flash>,
+    Query(confirm): Query<SignupConfirm>,
+) -> Response {
+    let data = &deps.data;
+    let enabled = data.signups.is_enabled();
+    let pending = data.signups.pending_beta(SIGNUP_QUEUE_SIZE).await;
+    let unmailed = data.signups.approved_not_emailed(SIGNUP_HISTORY_SIZE).await;
+    let decided = data.signups.recent_decisions(SIGNUP_HISTORY_SIZE).await;
+    let updates = data.signups.updates_count().await;
+    let last_day = data.signups.submissions_last_24h().await;
+    let allowlist_empty = data.settings.snapshot().guild_allowlist.is_empty();
+
+    let body = html! {
+        (flash.render())
+        @if !enabled {
+            (notice(Tone::Bad, &html! {
+                strong { "No signup queue." }
+                " There's no database connection, so the landing page can't record anyone and \
+                  there's nothing to show here."
+            }))
+        }
+        (allowlist_open_notice(allowlist_empty))
+        div .tiles {
+            (tile("Waiting on you", &pending.len().to_string()))
+            (tile("On the updates list", &updates.to_string()))
+            (tile("Signed up today", &last_day.to_string()))
+        }
+        p .hint {
+            a href="/signups.csv" { "Download the updates list (CSV)" }
+            @if updates >= UPDATES_EXPORT_LIMIT {
+                " — capped at " (UPDATES_EXPORT_LIMIT) " rows."
+            }
+        }
+        @if !data.mailer.is_enabled() {
+            (notice(Tone::Warn, &html! {
+                strong { "Approval mail is off." }
+                " Approving still records the decision, but nobody is told. Once mail is \
+                  configured, use Resend on the rows below."
+            }))
+        }
+        h2 { "Waiting on you" }
+        (table(
+            &["Asked", "Email", "Wants", "Note", ""],
+            pending.iter()
+                .map(|row| pending_row(row, allowlist_empty, confirm.is_denying()))
+                .collect(),
+            "Nobody is waiting for a decision.",
+        ))
+        @if !unmailed.is_empty() {
+            h2 { "Approved, not emailed" }
+            (notice(Tone::Warn, &html! {
+                "These people were let in but never told. Resend once the problem is fixed."
+            }))
+            (table(
+                &["Decided", "Email", "What happened", ""],
+                unmailed.iter().map(unmailed_row).collect(),
+                "—",
+            ))
+        }
+        h2 { "Recently decided" }
+        (table(
+            &["Decided", "Email", "Outcome", "By"],
+            decided.iter().map(decided_row).collect(),
+            "No decisions yet.",
+        ))
+    };
+    html_response(page("Signups", Nav::Signups, &identity, &body))
 }
 
 // ------------------------------------------------------------------ guilds

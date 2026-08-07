@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use arc_swap::ArcSwap;
 use sqlx::postgres::PgPool;
 use tokio::sync::RwLock;
@@ -79,6 +79,7 @@ pub(crate) enum Section {
     Agent,
     Throttle,
     Guilds,
+    Signups,
     Limits,
     Sizing,
     Watchdog,
@@ -91,6 +92,7 @@ impl Section {
         Self::Agent,
         Self::Throttle,
         Self::Guilds,
+        Self::Signups,
         Self::Limits,
         Self::Sizing,
         Self::Watchdog,
@@ -102,6 +104,7 @@ impl Section {
             Self::Agent => "Gary",
             Self::Throttle => "Turn admission",
             Self::Guilds => "Guild admission",
+            Self::Signups => "Beta signups",
             Self::Limits => "Per-guild caps",
             Self::Sizing => "Per-server bounds",
             Self::Watchdog => "Watchdog",
@@ -134,6 +137,10 @@ pub(crate) enum SettingKey {
     ThrottleRefillSeconds,
     ThrottleMaxConcurrent,
     GuildAllowlist,
+    /// Where an approved applicant is sent to install the bot.
+    BetaInviteUrl,
+    /// Optional community server link the approval email offers.
+    CommunityUrl,
     GuildMaxServers,
     GuildMaxCpu,
     GuildMaxMemory,
@@ -160,6 +167,8 @@ impl SettingKey {
         Self::ThrottleRefillSeconds,
         Self::ThrottleMaxConcurrent,
         Self::GuildAllowlist,
+        Self::BetaInviteUrl,
+        Self::CommunityUrl,
         Self::GuildMaxServers,
         Self::GuildMaxCpu,
         Self::GuildMaxMemory,
@@ -187,6 +196,8 @@ impl SettingKey {
             Self::ThrottleRefillSeconds => "throttle.refill_seconds",
             Self::ThrottleMaxConcurrent => "throttle.max_concurrent",
             Self::GuildAllowlist => "guilds.allowlist",
+            Self::BetaInviteUrl => "signups.invite_url",
+            Self::CommunityUrl => "signups.community_url",
             Self::GuildMaxServers => "limits.guild_max_servers",
             Self::GuildMaxCpu => "limits.guild_max_cpu",
             Self::GuildMaxMemory => "limits.guild_max_memory",
@@ -220,6 +231,7 @@ impl SettingKey {
                 Section::Throttle
             }
             Self::GuildAllowlist => Section::Guilds,
+            Self::BetaInviteUrl | Self::CommunityUrl => Section::Signups,
             Self::GuildMaxServers | Self::GuildMaxCpu | Self::GuildMaxMemory => Section::Limits,
             Self::SizingMinCpu
             | Self::SizingMinMemory
@@ -254,6 +266,8 @@ impl SettingKey {
             | Self::ThrottleRefillSeconds
             | Self::ThrottleMaxConcurrent
             | Self::GuildAllowlist
+            | Self::BetaInviteUrl
+            | Self::CommunityUrl
             | Self::GuildMaxServers
             | Self::GuildMaxCpu
             | Self::GuildMaxMemory
@@ -277,6 +291,14 @@ impl SettingKey {
             Self::GuildAllowlist => {
                 "Discord servers admitted, comma-separated. Empty serves every server the bot is \
                  invited to."
+            }
+            Self::BetaInviteUrl => {
+                "Where an approved applicant is sent to add the bot. Carries the client id and \
+                 permissions, so it changes whenever the bot needs a new scope."
+            }
+            Self::CommunityUrl => {
+                "Community server link offered in the approval email. Leave it unset to omit \
+                 that paragraph entirely."
             }
             Self::GuildMaxServers => "Game servers one Discord server may hold at once.",
             Self::GuildMaxCpu => "Total CPU one Discord server's live game servers may declare.",
@@ -319,6 +341,8 @@ impl SettingKey {
                 .map(u64::to_string)
                 .collect::<Vec<_>>()
                 .join(","),
+            Self::BetaInviteUrl => snapshot.beta_invite_url.clone(),
+            Self::CommunityUrl => snapshot.community_url.clone(),
             Self::GuildMaxServers => snapshot.guild_limits.servers.to_string(),
             Self::GuildMaxCpu => exact_cpu(snapshot.guild_limits.cpu_limit_millicores),
             Self::GuildMaxMemory => exact_bytes(snapshot.guild_limits.mem_limit_bytes),
@@ -356,6 +380,7 @@ impl SettingKey {
             | Self::StrandedDwellMinutes
             | Self::SampleIntervalMinutes => "a whole number of 1 or more",
             Self::GuildAllowlist => "comma-separated Discord server ids, or nothing at all",
+            Self::BetaInviteUrl | Self::CommunityUrl => "an https:// URL",
             Self::GuildMaxCpu | Self::SizingMinCpu | Self::SizingMaxCpu => {
                 "a CPU amount like \"24\" or \"24000m\""
             }
@@ -388,6 +413,10 @@ impl SettingKey {
             Self::ThrottleMaxConcurrent => snapshot.throttle.max_concurrent = count(raw, expected)?,
             Self::GuildAllowlist => {
                 snapshot.guild_allowlist = parse_snowflake_list(raw, "the allowlist")?.into();
+            }
+            Self::BetaInviteUrl => snapshot.beta_invite_url = parse_https_url(raw, "the invite")?,
+            Self::CommunityUrl => {
+                snapshot.community_url = parse_https_url(raw, "the community link")?;
             }
             Self::GuildMaxServers => {
                 snapshot.guild_limits.servers =
@@ -482,6 +511,11 @@ pub(crate) struct SettingsSnapshot {
     /// Guilds admitted. Empty admits every guild — see
     /// [`BotConfig::guild_allowlist`](crate::config::BotConfig::guild_allowlist).
     pub(crate) guild_allowlist: Arc<[u64]>,
+    /// Install link mailed to an approved applicant. Empty means approving is
+    /// refused rather than sending mail with nowhere to point.
+    pub(crate) beta_invite_url: String,
+    /// Community server link the approval email offers. Empty omits it.
+    pub(crate) community_url: String,
     pub(crate) guild_limits: GuildLimitDefaults,
     pub(crate) sizing_bounds: SizingBounds,
     pub(crate) watchdog: WatchdogMode,
@@ -491,6 +525,37 @@ pub(crate) struct SettingsSnapshot {
     pub(crate) reconcile_interval: Duration,
     pub(crate) stranded_dwell: Duration,
     pub(crate) sample_interval: Duration,
+}
+
+/// Parse an `https://` URL, returning it **exactly as typed** after trimming.
+///
+/// Deliberately does not return `Url::to_string()`: that normalizes a bare
+/// authority by appending a trailing slash, so the panel would rewrite a setting
+/// the operator only opened to look at. [`SettingKey::render`] has to round-trip
+/// losslessly through [`SettingKey::assign`], so the parse is validation only and
+/// the parsed value is discarded.
+///
+/// Empty is accepted and means "not set", the same way an empty guild allowlist
+/// is meaningful rather than invalid — a fresh deploy has no invite link, and its
+/// baseline has to survive the round trip. Refusing to *act* on an unset link is
+/// the approve handler's job, where the consequence (mail pointing nowhere) is
+/// actually visible.
+///
+/// # Errors
+///
+/// Returns an error naming `subject` if a non-empty value isn't a valid `https`
+/// URL.
+fn parse_https_url(raw: &str, subject: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let parsed = url::Url::parse(trimmed)
+        .with_context(|| format!("the {subject} link isn't a URL: {trimmed}"))?;
+    if parsed.scheme() != "https" {
+        return Err(anyhow!("the {subject} link must start with https://"));
+    }
+    Ok(trimmed.to_owned())
 }
 
 impl SettingsSnapshot {
@@ -505,6 +570,8 @@ impl SettingsSnapshot {
             gary_max_rounds: crate::agent::DEFAULT_MAX_ROUNDS,
             throttle: config.throttle,
             guild_allowlist: config.guild_allowlist.clone().into(),
+            beta_invite_url: config.beta_invite_url.clone(),
+            community_url: config.community_url.clone(),
             guild_limits: config.guild_limits,
             sizing_bounds: SizingBounds::default(),
             watchdog: config.watchdog,
@@ -552,6 +619,8 @@ impl SettingsSnapshot {
             gary_max_rounds: crate::agent::DEFAULT_MAX_ROUNDS,
             throttle: ThrottlePolicy::default(),
             guild_allowlist: Vec::new().into(),
+            beta_invite_url: String::new(),
+            community_url: String::new(),
             guild_limits: GuildLimitDefaults {
                 servers: 5,
                 cpu_limit_millicores: 24_000,

@@ -24,6 +24,7 @@
 #   - kubelet liveness/readiness probes on 9360
 #   - `kubectl port-forward` for the operator harness (ADR-011), also 9360
 #   - game-server pods POSTing in-game `@Gary` triggers to 9360
+#   - the gary-landing service forwarding signup submissions to 9360
 #   - ingress-nginx forwarding admin panel requests to 9361
 #
 # Residual, and accepted: the host entity reaches the pod on any port, so anyone
@@ -56,6 +57,22 @@ spec:
     - fromEndpoints:
         - matchLabels:
             agones.dev/role: gameserver
+      toPorts:
+        - ports:
+            # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs (issue
+            # #42 — YAML can't import a Rust const, and a mismatch is a silent
+            # drop rather than an error).
+            - port: "9360"
+              protocol: TCP
+    # gary-landing → the signup intake route. The landing service is the public
+    # face of the marketing page; it holds a bearer token whose only capability is
+    # appending a signup, and no database credential at all. Selecting it by label
+    # rather than admitting the whole namespace keeps "may write a signup" from
+    # widening to anything else that lands beside it.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: gary-landing
+            app.kubernetes.io/name: gary-landing
       toPorts:
         - ports:
             # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs (issue

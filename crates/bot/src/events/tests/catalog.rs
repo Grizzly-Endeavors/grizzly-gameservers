@@ -39,6 +39,9 @@ fn event_kind_names_match_the_design_catalog() {
         (EventKind::BackupCycle, "backup_cycle"),
         (EventKind::Escalation, "escalation"),
         (EventKind::GuildJoined, "guild_joined"),
+        (EventKind::BetaApproved, "beta_approved"),
+        (EventKind::BetaDenied, "beta_denied"),
+        (EventKind::SignupEmailed, "signup_emailed"),
     ];
     for (kind, name) in expected {
         assert_eq!(kind.as_str(), name);

@@ -421,3 +421,37 @@ pub(crate) fn escalation_details(server: Option<&str>, path: Option<&str>) -> Va
 #[cfg(test)]
 #[path = "tests/mapping.rs"]
 mod tests;
+
+/// A beta applicant was let in.
+pub(crate) const APPROVED: &str = "approved";
+
+/// A beta applicant was turned down.
+pub(crate) const DENIED: &str = "denied";
+
+/// The approval email left the process for the mail server.
+pub(crate) const SENT: &str = "sent";
+
+/// Mail isn't configured, or the credential latch has tripped — nothing was
+/// dialed, and the approval is waiting for a Resend.
+pub(crate) const MAIL_UNAVAILABLE: &str = "mail_unavailable";
+
+/// The mail server refused the credential. Sending is off until the bot
+/// restarts; see `crate::mail::SendGate`.
+pub(crate) const AUTH_REFUSED: &str = "auth_refused";
+
+/// How one attempt to send the approval email came out.
+///
+/// Exhaustive on purpose: `wildcard_enum_match_arm` is denied, so a new
+/// [`MailOutcome`](crate::mail::MailOutcome) variant is a compile error here
+/// rather than an unmapped string landing in the events table.
+pub(crate) fn mail(outcome: &crate::mail::MailOutcome) -> &'static str {
+    match outcome {
+        crate::mail::MailOutcome::Sent => SENT,
+        crate::mail::MailOutcome::Unavailable => MAIL_UNAVAILABLE,
+        crate::mail::MailOutcome::AuthRefused => AUTH_REFUSED,
+        // A permanent rejection is the address being undeliverable, which is
+        // exactly what this outcome already means elsewhere.
+        crate::mail::MailOutcome::Rejected { .. } => UNDELIVERABLE,
+        crate::mail::MailOutcome::Failed { .. } => FAILED,
+    }
+}

@@ -81,6 +81,18 @@ bot:
     endpoint: http://10.0.0.200:7072
     bucket: grizzly-gameservers
     region: us-east-1
+  # Approval mail for the beta signup queue, via the platform's Stalwart.
+  # The PUBLIC host on purpose even in-cluster: Stalwart trusts PROXY-protocol
+  # from 10.0.0.0/8 (which covers the pod network), so a direct in-cluster
+  # connection is parsed as a PROXY header and reset. The password is an
+  # ExternalSecret (cross-read from platform-stalwart); everything here is plain
+  # config. `from` must stay on grizzly-endeavors.com or DMARC alignment fails
+  # and the mail is filtered rather than bounced.
+  mail:
+    host: mail.grizzly-endeavors.com
+    port: 587
+    user: gary@grizzly-endeavors.com
+    from: gary@grizzly-endeavors.com
   # Turn telemetry to the platform's Langfuse. The key pair comes from the
   # grizzly-gameservers-langfuse Secret (ESO); absent keys leave telemetry off.
   # In-cluster and plain HTTP — TLS terminates at the VPS edge, and reaching the

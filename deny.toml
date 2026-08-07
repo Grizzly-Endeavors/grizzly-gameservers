@@ -19,6 +19,12 @@ ignore = [
 unused-allowed-license = "allow"
 allow = [
     "MIT",
+    # BSD Zero Clause: BSD-2-Clause below without the attribution requirement, so
+    # allowing it adds no obligation this list doesn't already accept. Present in
+    # the gate's own allow-list (grizzly-gate ADR-037), which is what CI actually
+    # enforces — this entry keeps the pre-commit hook from being stricter than the
+    # gate it exists to predict.
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
