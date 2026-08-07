@@ -627,7 +627,7 @@ pub(crate) async fn run_signup_action(
         SignupAction::Approve => approve(&deps, &identity, &email, form.confirm.as_deref()).await,
         SignupAction::Deny => deny(&deps, &identity, &email).await,
         SignupAction::Resend => {
-            let outcome = send_approval(&deps, &identity, &email).await;
+            let outcome = send_approval(&deps, &identity, &email, true).await;
             let flash = if outcome.is_sent() {
                 Flash::ok(&outcome.describe())
             } else {
@@ -746,7 +746,7 @@ async fn approve(
     )
     .await;
 
-    let outcome = send_approval(deps, identity, email).await;
+    let outcome = send_approval(deps, identity, email, false).await;
     let flash = if outcome.is_sent() {
         Flash::ok("Approved — the invite email is on its way.")
     } else {
@@ -757,10 +757,16 @@ async fn approve(
 
 /// Send (or re-send) the approval email and record what happened, both in the
 /// row's own columns and in the product log.
+///
+/// `resend` rides into the event rather than being inferred, because the two
+/// callers are the only thing that knows which this is — and without it a first
+/// send and a retry are indistinguishable in the log, which is exactly the
+/// distinction "approved but never told" is measured on.
 async fn send_approval(
     deps: &AdminDeps,
     identity: &AdminIdentity,
     email: &str,
+    resend: bool,
 ) -> crate::mail::MailOutcome {
     let snapshot = deps.data.settings.snapshot();
     let community = Some(snapshot.community_url.as_str()).filter(|url| !url.trim().is_empty());
@@ -785,7 +791,7 @@ async fn send_approval(
         EventKind::SignupEmailed,
         mapping::mail(&outcome),
         email,
-        true,
+        resend,
     )
     .await;
     outcome

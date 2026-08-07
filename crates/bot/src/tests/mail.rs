@@ -126,3 +126,19 @@ fn every_mail_outcome_maps_to_an_event_outcome() {
         mapping::AUTH_REFUSED
     );
 }
+
+/// The copy contains em dashes, so the body has to declare UTF-8. Without the
+/// explicit content type they arrive as mojibake in the first message an
+/// applicant ever receives — and the subject header, which is encoded
+/// separately, looks fine while the body doesn't.
+#[test]
+fn the_approval_body_is_utf8_and_says_so() {
+    let body = approval_body(INVITE, Some(COMMUNITY));
+    assert!(body.contains('—'), "the copy still uses em dashes");
+    // lettre's ContentType has no Display; the parse round-trip is what proves
+    // the constant is the utf-8 one rather than bare text/plain.
+    assert_eq!(
+        ContentType::TEXT_PLAIN,
+        ContentType::parse("text/plain; charset=utf-8").expect("a valid content type")
+    );
+}
