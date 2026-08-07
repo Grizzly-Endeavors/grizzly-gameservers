@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use axum::Router;
 use axum::extract::{Extension, Path, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use maud::{Markup, html};
 use serde::Deserialize;
@@ -47,12 +47,20 @@ const SIGNUP_HISTORY_SIZE: i64 = 20;
 /// form, so one pasted essay must not blow out the row.
 const NOTE_PREVIEW_CHARS: usize = 300;
 
+/// Cap on the updates-list export. Generous, and the page says so when it bites —
+/// a mailing list that quietly stops halfway is worse than one that says it did.
+const UPDATES_EXPORT_LIMIT: i64 = 10_000;
+
 pub(crate) fn router(deps: AdminDeps) -> Router {
     Router::new()
         .route("/", get(dashboard))
         .route("/settings", get(settings))
         .route("/settings/{key}", post(actions::set_setting))
         .route("/signups", get(signups))
+        // Top level, not under /signups/: axum matches the path first, so a
+        // GET at /signups/export.csv would collide with the action route
+        // below and 405.
+        .route("/signups.csv", get(signups_csv))
         .route("/signups/{action}", post(actions::run_signup_action))
         .route("/guilds", get(guilds))
         .route("/guilds/{guild}/limits", post(actions::set_guild_limit))
@@ -368,6 +376,57 @@ fn pending_row(row: &crate::signups::SignupRow, allowlist_empty: bool, confirmin
     }
 }
 
+/// One CSV record, RFC 4180 quoted.
+///
+/// Every field is quoted rather than only those that need it: the rule is then
+/// one line rather than a predicate somebody later gets wrong. Control
+/// characters are dropped — a newline inside a quoted field is legal but breaks
+/// naive readers, and nothing in this export legitimately contains one.
+fn csv_row(fields: &[&str]) -> String {
+    let mut out = String::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        for ch in field.chars().filter(|ch| !ch.is_control()) {
+            if ch == '"' {
+                out.push('"');
+            }
+            out.push(ch);
+        }
+        out.push('"');
+    }
+    out.push('\n');
+    out
+}
+
+/// The updates list as a CSV download.
+///
+/// Inside `pages::router`, so `require_admin` covers it with no per-route check.
+async fn signups_csv(State(deps): State<AdminDeps>) -> Response {
+    let rows = deps.data.signups.updates_export(UPDATES_EXPORT_LIMIT).await;
+    let mut body = csv_row(&["email", "first_asked_at", "wants_beta"]);
+    for row in &rows {
+        body.push_str(&csv_row(&[
+            &row.email,
+            &row.first_asked_at,
+            if row.wants_beta { "true" } else { "false" },
+        ]));
+    }
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"gary-updates.csv\"",
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Where a signup action posts. Built from the enum rather than a literal so the
 /// route, the handler's `parse`, and the form can't drift apart.
 fn signup_path(action: SignupAction) -> String {
@@ -450,6 +509,12 @@ async fn signups(
             (tile("Waiting on you", &pending.len().to_string()))
             (tile("On the updates list", &updates.to_string()))
             (tile("Signed up today", &last_day.to_string()))
+        }
+        p .hint {
+            a href="/signups.csv" { "Download the updates list (CSV)" }
+            @if updates >= UPDATES_EXPORT_LIMIT {
+                " — capped at " (UPDATES_EXPORT_LIMIT) " rows."
+            }
         }
         @if !data.mailer.is_enabled() {
             (notice(Tone::Warn, &html! {

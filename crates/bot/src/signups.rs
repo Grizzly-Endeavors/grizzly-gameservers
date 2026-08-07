@@ -97,6 +97,14 @@ pub(crate) enum SubmitOutcome {
     Unavailable,
 }
 
+/// One row of the updates-list export.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UpdatesRow {
+    pub(crate) email: String,
+    pub(crate) first_asked_at: String,
+    pub(crate) wants_beta: bool,
+}
+
 /// One signup, as the panel shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SignupRow {
@@ -198,6 +206,16 @@ const MARK_EMAILED: &str =
     "UPDATE signups SET emailed_at = now(), email_error = NULL WHERE email = $1";
 
 const MARK_EMAIL_FAILED: &str = "UPDATE signups SET email_error = $2 WHERE email = $1";
+
+/// The updates list, one row per address, oldest first.
+///
+/// Deliberately does **not** select `note`: it is free text from a public form,
+/// and a CSV field starting `=`, `+`, `-`, or `@` is a formula in Excel — aimed
+/// at the one person who opens this file. Not exporting free text sidesteps the
+/// whole class rather than escaping it.
+const UPDATES_EXPORT: &str = "\
+    SELECT display_email, created_at::text, wants_beta FROM signups \
+    WHERE wants_updates ORDER BY created_at LIMIT $1";
 
 const UPDATES_COUNT: &str = "SELECT count(*) FROM signups WHERE wants_updates";
 
@@ -330,6 +348,22 @@ impl SignupStore {
         Ok(())
     }
 
+    async fn updates_export(&self, limit: i64) -> Result<Vec<UpdatesRow>> {
+        let rows: Vec<(String, String, bool)> = sqlx::query_as(UPDATES_EXPORT)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to export the updates list")?;
+        Ok(rows
+            .into_iter()
+            .map(|(email, first_asked_at, wants_beta)| UpdatesRow {
+                email,
+                first_asked_at,
+                wants_beta,
+            })
+            .collect())
+    }
+
     async fn count(&self, sql: &'static str) -> Result<i64> {
         sqlx::query_scalar::<_, i64>(sql)
             .fetch_one(&self.pool)
@@ -438,6 +472,22 @@ impl Signups {
         };
         if let Err(err) = store.set_email_result(email, error).await {
             error!(error = ?err, "failed to record the approval email's result");
+        }
+    }
+
+    /// The updates list, for export. Bounded — a silently truncated mailing list
+    /// is the kind of thing discovered a year later, so the caller is told when
+    /// the cap was hit.
+    pub(crate) async fn updates_export(&self, limit: i64) -> Vec<UpdatesRow> {
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        match store.updates_export(limit).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                error!(error = ?err, "failed to export the updates list");
+                Vec::new()
+            }
         }
     }
 

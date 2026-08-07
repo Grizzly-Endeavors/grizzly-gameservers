@@ -175,3 +175,29 @@ fn a_long_note_is_cut_for_the_table() {
     );
     assert!(rendered.contains('…'), "{rendered}");
 }
+
+/// CSV injection is the risk this export is shaped around: a field starting `=`
+/// is a formula in Excel, aimed at the one person who opens the file. Quoting
+/// every field and dropping control characters is the whole defence.
+#[test]
+fn csv_fields_are_quoted_and_escaped() {
+    assert_eq!(csv_row(&["plain"]), "\"plain\"\n");
+    assert_eq!(csv_row(&["a,b"]), "\"a,b\"\n");
+    assert_eq!(csv_row(&["say \"hi\""]), "\"say \"\"hi\"\"\"\n");
+    assert_eq!(csv_row(&["a", "b", "c"]), "\"a\",\"b\",\"c\"\n");
+    assert_eq!(csv_row(&[""]), "\"\"\n");
+}
+
+#[test]
+fn csv_fields_drop_control_characters() {
+    assert_eq!(csv_row(&["line\nbreak"]), "\"linebreak\"\n");
+    assert_eq!(csv_row(&["tab\there"]), "\"tabhere\"\n");
+}
+
+/// A leading `=` survives as text because the field is quoted — the point is
+/// that it can't escape the field and become a formula's argument.
+#[test]
+fn a_formula_looking_field_stays_inside_its_quotes() {
+    assert_eq!(csv_row(&["=1+1"]), "\"=1+1\"\n");
+    assert_eq!(csv_row(&["@SUM(A1)"]), "\"@SUM(A1)\"\n");
+}
