@@ -6,7 +6,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-HOOK_DIR="$REPO_ROOT/.git/hooks"
+# Ask git for the hooks directory rather than assuming `$REPO_ROOT/.git` is one.
+# Inside a linked worktree `.git` is a *file* pointing at the real gitdir, so the
+# assumption fails outright — and hooks live in the common dir shared by every
+# worktree regardless.
+GIT_COMMON_DIR="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+HOOK_DIR="$GIT_COMMON_DIR/hooks"
 
 mkdir -p "$HOOK_DIR"
 

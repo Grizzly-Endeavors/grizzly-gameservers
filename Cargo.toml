@@ -32,6 +32,9 @@ expect_used = "deny"
 panic = "deny"
 get_unwrap = "deny"
 map_err_ignore = "deny"
+# Domain errors are named for what failed, not `Error`. A type literally called
+# `Error` collides with every other crate's and reads as "the" error type.
+error_impl_error = "deny"
 let_underscore_must_use = "deny"
 
 # --- Panic prevention beyond unwrap/expect ---

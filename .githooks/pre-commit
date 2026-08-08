@@ -32,7 +32,12 @@ fi
 STEP=$((STEP + 1))
 echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Auto-formatting Rust code...${NC}"
 cargo fmt > /dev/null 2>&1
-git add -u > /dev/null 2>&1
+# `git add -u` would also sweep unrelated working-tree edits the author
+# deliberately left out of this commit — the formatter rewrites the whole
+# tree, not just the staged paths. Re-stage only what was actually staged.
+while IFS= read -r _staged; do
+    [ -n "$_staged" ] && git add -- "$_staged"
+done <<< "$STAGED_RS_FILES"
 echo -e "${GREEN}✓ Formatting applied${NC}"
 
 STEP=$((STEP + 1))
