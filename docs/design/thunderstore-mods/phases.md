@@ -1,0 +1,72 @@
+# Thunderstore Mods — Implementation Phases
+
+> Each phase is self-contained, depends only on the phases named in its preconditions, and is verifiable on its own. Read `design.md` (same directory) first; it defines every contract referenced here. Paths are module-level starting points, not a change list — map the exact edits in each phase's own session. Record what each phase found under its "findings" heading, as `../mod-management/phases.md` does.
+
+Phases 1 and 2 are independent; 3 needs 2; 4 needs 1; 5 needs all. Each ships as its own PR (`just ship` / `just merge`). Bot phases deploy through the normal CI build; image phases through `just game-push valheim dev`. The `drive-the-bot` skill (`just operator tool …`, `just operator gary …`) exercises tools and Gary against the deployed bot without a Discord client.
+
+## Phase 1 — Registry-aware discovery (bot)
+
+- **Modules:** `crates/bot/src/agones/catalog.rs` and a new `agones/mod_registry.rs` (annotation constants, `ModRegistry`, strict parser, lenient template wrapper); a new `registry/` module (`text.rs` with the truncation helpers and limits hoisted out of `modrinth/types.rs`, `side.rs` with `Side` and `SideSupport`); a new `thunderstore/` module mirroring `modrinth/` (`client`, `query`, `types`, `live`); `modrinth/query.rs` (side facets); `discord/gary/tools.rs` (`registry_for_game` lookup, dispatch by registry, Thunderstore formatters); prompt files: `tools/discord/SearchMods.md` and `ModInfo.md` (add `game`, add `side`, rewrite the bodies registry-neutral as the design approves), new results `results/search_mods/{ThunderstoreSearchHeader,ThunderstoreSearchEmpty,ModrinthFiltersIgnored,SideFilterNotApplicable}.md`, `results/mod_info/{ThunderstorePackageDetail,ThunderstoreNotFound}.md`, `results/shared/{ThunderstoreSummaryLine,ThunderstoreUnavailable,ModGameUnknown,ModsNotSupported}.md`; the `mod-registry` annotations on `games/minecraft/gameserver.yaml` and `games/valheim/gameserver.yaml`.
+- **Preconditions:** none.
+- **Shape when done:** `search_mods` and `mod_info` require `game`; a Valheim search hits Thunderstore and renders `Namespace-Name`, version, downloads, side support, deprecation, dependencies; a Minecraft search behaves exactly as before plus the `side` filter; a game with no registry gets the not-supported result; an unknown game gets the catalog list. Every registry-specific formatter is private and single-format (ADR-008). Existing Modrinth result files are untouched.
+- **Tests:** parser branches in `agones/tests/mod_registry.rs`; a catalog drift guard that loads the real `games/` and asserts minecraft → Modrinth, valheim → Thunderstore{valheim}, every other game none, and that no game hit the lenient warn path; `thunderstore` query/type tests; formatter tests; the `SearchMods` schema test extended for the closed `side` enum; the prompt-annotations test.
+- **Verification:** `cargo test --quiet`; run the `#[ignore]` Thunderstore live tests once by hand. After the CI deploy: `just operator tools --access manager` shows the new parameters; `just operator tool search_mods '{"game":"valheim","query":"map","side":"server"}'`; `mod_info '{"game":"valheim","slug":"ValheimModding-Jotunn"}'` and a nonexistent package; a Minecraft datapack search unchanged; `game: factorio` → not-supported; unknown game names the catalog.
+
+### Phase 1 findings
+
+(none yet)
+
+## Phase 2 — Supervisor reconciler (generic, inert until configured)
+
+- **Modules:** `crates/supervisor/Cargo.toml` (add `zip` — current stable 8.6.0 from zip-rs/zip2, released 2026-08; re-verify at pin time; default features off, pure-Rust deflate only so the musl static build links; `semver` and `tempfile` are already in the lockfile); `config.rs` (`ThunderstoreMods`, `PackageLayout`, `parse_thunderstore`, half-configured warning); `fs.rs` (`seed_empty_file` hoisted from `child_env::seed`); `state.rs` (`on_launch_failed`); `runner.rs` (a separate reqwest client for Thunderstore, the launch ordering, `LaunchError { Prepare, Spawn }` mapping in `do_start`/`do_restart`, recoverable initial spawn); `lib.rs`; a new `thunderstore/` module: `mod.rs` (orchestration `prepare`), `types.rs` (`PackageRef`, `PackageVersion`, `PackageId`, dependency-string parsing, zip `manifest.json` type), `mods_file.rs` (list parser), `resolve.rs` (pure over the `PackageSource` trait), `archive.rs` (zip validation, `plan_layout`, extraction, pure over `Read + Seek`), `api.rs` (Thunderstore client and the layered API-then-cache source), `cache.rs`, `stage.rs`.
+- **Preconditions:** none.
+- **Shape when done:** the full supervisor contract from `design.md` §2 — configuration, mods-file grammar, resolution with pins/floors/provided/cycles/caps, download caps, zip validation, rebuild-and-swap staging, `resolved`, cache GC, `[mods]` log-buffer lines, offline fallback, and `Crashed`-on-failure signalling including the recoverable initial spawn. Images that set none of the variables behave byte-for-byte as before.
+- **Tests:** fixture zips built in-test with `zip::ZipWriter` (no committed binaries) covering a root-level DLL package, `plugins/`, `BepInEx/plugins/`, `patchers/`, `config/`, `core/` (skipped), `../evil.dll` (rejected), a symlink entry (rejected), an oversize entry (rejected), and a manifest mismatch (rejected); `resolve` against a fake source: unpinned latest, pinned exact, dependency floors, highest wins, provided skipped, a cycle, the count and depth caps, an unknown package naming the requesting line, and the offline fallback order; state tests for `on_launch_failed`; config tests for assembly, both half-configured states, a bad layout value, and provided-list parsing.
+- **Verification:** `cargo test --quiet`; clippy clean under the workspace lints (keep `prepare` a sequence of small steps — `too_many_lines` is denied); `just game-push valheim dev` with the reconciler still unset and a scratch server that behaves exactly as today.
+
+### Phase 2 findings
+
+(none yet)
+
+## Phase 3 — Valheim enablement and live validation
+
+- **Modules:** `games/valheim/Dockerfile` (the three `SUPERVISOR_THUNDERSTORE_*` variables with a comment on the staged→live mirror and why the loader pack is provided; hook renamed); the hook itself (mirror step per `design.md` §3, RCON steps unchanged, `chown` to the game user if verification shows root-owned DLLs are unreadable); `games/valheim/gameserver.yaml` (`SUPERVISOR_MODS_FILE` with the policy-lives-in-the-manifest comment, `failureThreshold` 10); the new drift guard in `crates/bot/src/tests/config.rs`; `games/README.md` (the Valheim bullet — it currently also says Valheim has no console protocol, which stopped being true when ValheimRcon was baked in).
+- **Preconditions:** Phase 2 live in the Valheim image.
+- **Shape when done:** a Valheim server takes mods through `.grizzly/mods`, the mirror puts them under the live `BepInEx/plugins/<Namespace-Name>/`, the RCON plugin keeps working, and every failure mode below is rolled back or reported.
+- **Verification (scratch Valheim server, `just game-push valheim dev`):**
+  1. Fresh create: `.grizzly/mods` exists and is empty; `read_logs` shows no install lines.
+  2. `write_file` one unpinned server-side mod that has a non-loader dependency → `restart_server` → `[mods] installed` names both; `resolved` lists them; the live plugins dir holds `<Namespace-Name>/…` beside `ValheimRcon.dll`; the BepInEx log shows the plugin loaded; `send_command players` still answers. Record the first-install wall time against the bot's five-minute readiness ceiling.
+  3. Pin an older version → restart → `resolved` shows it.
+  4. Remove the line → restart → the DLL is gone from the live dir and the cache zip was collected.
+  5. `Nobody-DoesNotExist` via `edit_file` → `restart_server` → `/status` reports `Crashed`, the bot restores the snapshot and restarts, the server is healthy, and Gary's result says rollback; the `GameServer` never leaves `Ready`; the pod restart count stays 0.
+  6. A malformed line → the same path; the log names the line number.
+  7. Offline: a fully cached pinned set restarts with no network and a warning; an unpinned entry warns and uses the highest cached version.
+  8. Pod recreation → the mirror re-applies after lloesche's first-boot merge; a bad file on the PVC yields a reachable supervisor reporting `Crashed`, not a container crash loop.
+  9. Archive → recover keeps `.grizzly/mods`, its `.grizzly.bak`, and the cache; the recovered boot resolves offline.
+  10. A half-configured image (one variable unset in a throwaway push) → startup warning, reconciler inert.
+
+### Phase 3 findings
+
+(none yet)
+
+## Phase 4 — `game_guide` and prompt relocation (closes issue #61)
+
+- **Modules:** a new pure `discord/gary/guide.rs` (`render_guide` composing the intro plus the registry's blocks, or the no-mods / unknown-game results; sections joined in code so later per-game quirks slot in); `discord/gary/tools.rs` (tool table entry at manager tier, dispatch before the scope gate since it targets no server); `discord/gary/mod.rs` (`append_manager_guidance` drops the two Minecraft blocks and pushes the pointer block after the tuning block); prompt files: new `tools/discord/GameGuide.md`, new `discord/DiscordManagerGameGuide.md`, `discord/DiscordManagerModChoice.md` moved to `results/game_guide/GameGuideModrinthChoice.md` and `DiscordManagerModInstall.md` to `GameGuideModrinthInstall.md` (bodies verbatim; annotations re-pointed at `guide.rs` / `render_guide` with a reasoning bullet on the move), new `GameGuideIntro.md`, `GameGuideNoMods.md`, `GameGuideUnknownGame.md`, `GameGuideThunderstoreChoice.md`, `GameGuideThunderstoreInstall.md` (content per `design.md` §5; the user authors the model-visible text); `docs/decisions/032-game-guidance-loads-on-demand.md`.
+- **Preconditions:** Phase 1 (the registry lookup the guide dispatches on).
+- **Shape when done:** manager turns no longer carry game-specific prose; `game_guide` returns the right guide per game; the Minecraft workflow is byte-identical in content, just loaded on demand; the Thunderstore guide teaches pinning and delete-the-line removal.
+- **Tests:** guide rendering per registry, no-mods, and unknown game; the manager prompt points at `game_guide` and no longer contains `.grizzly/env`; the read-only prompt omits it; the read-only tier cannot call the tool; the prompt-annotations test (orphaned ids fail the build if the old files linger).
+- **Verification:** `just operator tool game_guide` for minecraft, valheim, factorio, and an unknown game; `just operator tools --access read-only` omits it; `just operator gary "add a minimap mod to <valheim server>"` shows `game_guide` → `search_mods` for valheim → `mod_info` → a both-sided warning → a question; the Minecraft datapack flow from `../mod-management/phases.md` §Phase 4 still passes on a scratch server; measured manager-turn input tokens drop against the ~6,800-token baseline recorded on issue #61.
+
+### Phase 4 findings
+
+(none yet)
+
+## Phase 5 — Docs of record and end-to-end
+
+- **Modules:** `docs/decisions/031-supervisor-reconciles-thunderstore-mods.md` (the declarative file reconciled pre-launch in the supervisor; the staged-then-mirrored split that keeps the supervisor game-agnostic; failure reported as `Crashed`; the rejected alternatives from `design.md`); `docs/decisions/README.md` (the index stops at 028 although 029 and 030 exist — add 029–032); this design's status line and findings; `../mod-management/design.md` §Integration "Other games" and `../mod-management/phases.md`'s issue #61 paragraph, rewritten to current state; `docs/design/00-overview.md` (the per-instance tier gains `.grizzly/mods`); the root `CLAUDE.md` (the config-tier sentence, and the sentence listing what the bot's general HTTP client reaches); `games/_template/README.md` (a Thunderstore note beside the env-overlay note, and the registry annotation in the onboarding steps).
+- **Preconditions:** Phases 1–4 live.
+- **Verification:** with `drive-the-bot`, one conversation per flow on a scratch Valheim server — install, both-sided warning, removal, bad-entry rollback — and the Minecraft datapack regression; findings recorded above; issue #61 closed in the merge commit.
+
+### Phase 5 findings
+
+(none yet)
