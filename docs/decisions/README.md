@@ -30,5 +30,8 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-026 — A super-admin panel, on its own port behind Authentik](026-super-admin-panel.md)
 - [ADR-027 — Price a create against the namespace quota before leasing anything](027-namespace-capacity-preflight.md)
 - [ADR-028 — Gary is the product; the game-server platform is his substrate](028-gary-is-the-product.md)
+- [ADR-029 — Signup intake goes through the bot, not a second database writer](029-signup-intake-through-the-bot.md)
+- [ADR-030 — Transactional mail fails closed on a refused credential, and never retries](030-transactional-mail-fails-closed.md)
+- [ADR-032 — Per-game guidance loads on demand through a tool, not on every turn](032-game-guidance-loads-on-demand.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

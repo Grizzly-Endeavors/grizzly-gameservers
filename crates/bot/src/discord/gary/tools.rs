@@ -17,6 +17,7 @@ use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
 };
 
+use super::guide::{GuideSubject, render_guide};
 use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::{AccessLevel, Speaker, access_level_for};
@@ -62,11 +63,12 @@ use crate::prompts::{
     self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DeleteArchive, DeleteArchiveDone, DeleteArchiveFailed, DeleteArchiveNotFound,
     DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Escalate, EscalateParams,
-    Forget, ForgetParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
-    NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
-    RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods,
-    SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
-    SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
+    Forget, ForgetParams, GameGuide, GameGuideParams, ListArchives, ListBackups, ListServers,
+    ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams,
+    RecoverServer, Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen,
+    RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams, ServerResources,
+    SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile,
+    WriteFileParams,
 };
 use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
@@ -302,6 +304,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, RestoreFile::spec().into()),
         (AccessLevel::Manager, RunWhen::spec().into()),
         (AccessLevel::Manager, BackupServer::spec().into()),
+        (AccessLevel::Manager, GameGuide::spec().into()),
         (AccessLevel::Manager, SearchMods::spec().into()),
         (AccessLevel::Manager, ModInfo::spec().into()),
         (AccessLevel::Manager, Remember::spec().into()),
@@ -394,8 +397,13 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_server_resources(ctx, &params.name).await,
             Err(message) => message,
         },
-        // Registry lookups target no server at all — they read Modrinth, not the
-        // cluster — so they take neither the scope gate nor a server argument.
+        // The mod tools target no server at all — a guide is text and a registry
+        // lookup reads a public catalog, not the cluster — so they take neither
+        // the scope gate nor a server argument.
+        GameGuide::NAME => match parse::<GameGuideParams>(args) {
+            Ok(params) => exec_game_guide(ctx, &params.game),
+            Err(message) => message,
+        },
         SearchMods::NAME => match parse::<SearchModsParams>(args) {
             Ok(params) => exec_search_mods(ctx, params).await,
             Err(message) => message,
@@ -585,7 +593,8 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
 /// the archive within the caller's scope). Also excluded because they reach no
 /// server at all: `remember`/`forget` (memory is cross-guild) and
 /// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
-/// there is no tenant to confine). Keep this in sync with those tools.
+/// there is no tenant to confine) and `game_guide` (it returns text). Keep this
+/// in sync with those tools.
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
@@ -2400,6 +2409,21 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
             cluster_error()
         }
     }
+}
+
+/// Load one game's mod workflow. Reaches nothing at all — the catalog is
+/// already in memory — so this dispatches ahead of the scope gate and costs
+/// nothing when the answer is "this game takes no mods".
+fn exec_game_guide(ctx: &ToolCtx<'_>, game: &str) -> String {
+    let subject = match ctx.data.catalog.get(game) {
+        None => GuideSubject::UnknownGame,
+        Some(entry) => match entry.mod_registry.as_ref() {
+            Some(registry) => GuideSubject::Registry(registry),
+            None => GuideSubject::NoRegistry,
+        },
+    };
+    let ids = game_ids(ctx);
+    render_guide(game, &subject, if ids.is_empty() { "(none)" } else { &ids })
 }
 
 /// The registry a catalog game declares, or the text to hand back instead of

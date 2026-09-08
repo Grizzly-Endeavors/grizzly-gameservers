@@ -67,19 +67,15 @@ fn manager_prompt_grants_lifecycle_and_files_but_reserves_destruction() {
 }
 
 #[test]
-fn manager_prompt_carries_the_mod_workflow() {
+fn manager_prompt_names_mods_as_a_thing_with_a_first_step() {
+    // What has to survive in the system prompt is only that mod management
+    // exists and does not start with improvising — the per-game workflow itself
+    // is loaded by that first step, so it isn't paid for on every turn.
     let prompt = build_system_prompt(AccessLevel::Manager, "minecraft", "");
+    assert!(prompt.contains("mod"), "{prompt}");
     assert!(
-        prompt.contains("search_mods") && prompt.contains("mod_info"),
-        "manager is told to ground a mod choice in the registry"
-    );
-    assert!(
-        prompt.contains(".grizzly/env"),
-        "manager is told which file an install actually touches"
-    );
-    assert!(
-        prompt.contains("never delete the line"),
-        "the removal rule has no mechanical guard, so it must be stated"
+        prompt.contains("game_guide"),
+        "manager is told where the workflow comes from"
     );
 }
 
@@ -274,4 +270,30 @@ fn auto_listen_ignores_blank_and_slash_command_lines() {
     // A typed slash-command-style line — Gary must not answer it in a home channel.
     assert!(!is_auto_listen_prompt("/servers"));
     assert!(!is_auto_listen_prompt("  /gary-home"));
+}
+
+#[test]
+fn the_manager_prompt_points_at_the_guide_instead_of_carrying_it() {
+    // The whole point of the move: no game's install details ride every manager
+    // turn any more, in any guild, whether or not it runs that game.
+    let prompt = build_system_prompt(AccessLevel::Manager, "minecraft, valheim", "");
+    assert!(prompt.contains("game_guide"), "{prompt}");
+    assert!(
+        !prompt.contains(".grizzly/env"),
+        "the Minecraft install file must no longer be in the system prompt"
+    );
+    assert!(
+        !prompt.contains("MODRINTH_PROJECTS"),
+        "the Minecraft install keys must no longer be in the system prompt"
+    );
+    assert!(
+        !prompt.contains(".grizzly/mods"),
+        "and the Thunderstore one must never arrive there either"
+    );
+}
+
+#[test]
+fn a_read_only_caller_is_not_told_about_a_tool_they_cannot_call() {
+    let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft, valheim", "");
+    assert!(!prompt.contains("game_guide"), "{prompt}");
 }
