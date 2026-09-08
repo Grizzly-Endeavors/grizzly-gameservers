@@ -51,6 +51,14 @@ getrandom = "0.4.3"
 # tokio-stream drives the request body into `tar`'s stdin chunk by chunk.
 tokio-util = { version = "0.7.18", features = ["io"] }
 tokio-stream = "0.1.18"
+# Reads Thunderstore package zips before a launch. Default features off and a
+# pure-Rust deflate backend (zlib-rs) on purpose: the supervisor links statically
+# against musl, which the C-backed compressors can't satisfy. Deflate is the only
+# method Thunderstore packages use, so the rest of the vocabulary (bzip2, lzma,
+# zstd, AES) is dropped rather than carried along unused.
+zip = { version = "8.6", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
 
 [dev-dependencies]
 # Scratch directories for the path-scoped filesystem tests (fs.rs).

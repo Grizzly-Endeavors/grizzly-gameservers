@@ -152,6 +152,23 @@ impl SupervisorState {
         }
     }
 
+    /// A launch was refused before the child process ever started — the
+    /// per-launch preparation (today, the mod reconcile) rejected what the
+    /// instance's own files ask for.
+    ///
+    /// Reported as `Crashed` rather than as a new phase, because that is the
+    /// word the whole recovery chain already understands: the bot's verify loop
+    /// watches for exactly this after a config change and restores the file's
+    /// snapshot, and the watchdog reads it as a crash signal. The restart
+    /// counter deliberately does *not* move — nothing restarted, and counting a
+    /// refused launch as a crash would spend the budget that exists to catch a
+    /// genuinely unstable game.
+    pub fn on_launch_failed(&mut self) {
+        self.phase = ProcessPhase::Crashed;
+        self.pid = None;
+        self.started_at = None;
+    }
+
     /// Forget the crashes counted so far, giving the process a full crash budget
     /// again.
     ///

@@ -32,7 +32,14 @@ Phases 1 and 2 are independent; 3 needs 2; 4 needs 1; 5 needs all. Each ships as
 
 ### Phase 2 findings
 
-(none yet)
+- **`zip` is pinned at 8.6.0**, not the 9.0.0 line: 9.0.0 is still pre-release (`9.0.0-pre3`, Aug 2026). zip-rs/zip2 is actively maintained — twelve releases across 2026 — so the pin is to a live project, not a stale one. Features: `default-features = false` plus `deflate-flate2-zlib-rs`, which is the pure-Rust deflate backend; the whole rest of the compression vocabulary (bzip2, lzma, zstd, xz, AES) is dropped rather than carried unlinked.
+- **The musl static link was verified end to end**, both as `cargo build --release --target x86_64-unknown-linux-musl -p grizzly-supervisor` (`static-pie linked`) and as a full `docker build -f games/valheim/Dockerfile`. Note for anyone repeating it locally: the musl build needs `musl-tools` on the host because `ring` (via rustls) shells out to a C compiler — that requirement predates this phase and is why the Dockerfile installs it.
+- **`semver` was not used.** Thunderstore versions are exactly three numeric parts, and `semver::Version` would also accept `1.2.3-alpha` and friends — so a malformed mod-list entry would parse here and become a 404 at launch instead of a named error against the line that wrote it. `PackageVersion` is a three-field struct whose derived `Ord` gives the numeric comparison "the highest version wins" depends on (a string comparison would put `1.10.0` below `1.9.0`).
+- **`enclosed_name()` cannot be the path that gets validated.** It *sanitises* — an entry declaring `/etc/passwd` arrives already rewritten to `etc/passwd` — so the absolute-path check silently passed until a fixture caught it. `extract` now judges `entry.name()`, the archive's own claim, and only then uses it.
+- **Explicit mod-list entries are resolved before any dependency is followed.** Depth-first from the first line would reach a pinned package as somebody else's dependency, record it at the dependency's version, and discard the pin — silently. Two tests pin the ordering.
+- **A provided package is skipped whole, dependencies included.** The image ships the loader pack as a unit; re-deriving its tree would install pieces of a second copy over the one that works.
+- **The extraction step is synchronous inside the async reconcile.** It is milliseconds for a handful of DLLs, and the 180-second deadline covers the part that actually takes time (the downloads, which do await). If live verification in Phase 3 shows control requests starving during a first install, the follow-up the design already names — moving the reconcile to a spawned task with its own select arm — applies to the extraction as much as the download.
+- **`do_start` and `do_restart` answer "acted" on a refused launch.** Not cosmetic: the bot only runs its verify-and-roll-back loop when the supervisor says it acted, so answering "failed" would skip the loop that reads `/status`, sees `Crashed`, and puts the file back.
 
 ## Phase 3 — Valheim enablement and live validation
 

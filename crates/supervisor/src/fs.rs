@@ -133,6 +133,40 @@ fn reject_escaping_symlink(root: &Path, path: &Path) -> Result<(), FsError> {
     }
 }
 
+/// Create an empty file at `rel` under `root`, and its parent directory, if it
+/// isn't there already. Returns the resolved absolute path, so a caller that
+/// goes on to read the file uses the same root-confined resolution rather than
+/// re-joining `rel` itself (a plain `join` on an absolute `rel` would silently
+/// discard the root).
+///
+/// The point is not the file, it is that it *exists before anyone edits it*:
+/// [`write_file`] only snapshots a file that already existed, and the bot's
+/// auto-rollback only arms for writes that took a snapshot. A reserved file that
+/// is seeded empty is therefore rollback-eligible from its very first edit,
+/// which is what makes a bad first mod list recoverable. Idempotent, and safe to
+/// call before every launch: `create_new` means it can never truncate a file
+/// somebody authored.
+///
+/// # Errors
+///
+/// Returns [`FsError::OutsideRoot`] if `rel` escapes the data root, or
+/// [`FsError::Io`] if the directory or file can't be created.
+pub fn seed_empty_file(root: &Path, rel: &str) -> Result<PathBuf, FsError> {
+    let path = resolve_in_root(root, rel)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| io(&err))?;
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(_) => Ok(path),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(path),
+        Err(err) => Err(io(&err)),
+    }
+}
+
 /// List the entries of a directory under `root`, sorted by name.
 ///
 /// # Errors

@@ -342,3 +342,116 @@ fn rejects_out_of_range_port() {
         "u16 overflow should be reported against the key, got: {err}"
     );
 }
+
+// ---- thunderstore mod reconciler ----
+
+#[test]
+fn thunderstore_assembles_when_the_manifest_and_the_image_agree() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        ("SUPERVISOR_THUNDERSTORE_LAYOUT", "bepinex"),
+        (
+            "SUPERVISOR_THUNDERSTORE_PROVIDED",
+            "denikson-BepInExPack_Valheim",
+        ),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    let mods = config.thunderstore.expect("the reconciler is configured");
+    assert_eq!(mods.file, ".grizzly/mods");
+    assert_eq!(mods.community, "valheim");
+    assert_eq!(mods.layout, PackageLayout::BepInEx);
+    assert_eq!(
+        mods.provided
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec!["denikson-BepInExPack_Valheim"]
+    );
+    assert_eq!(mods.work_dir, ".grizzly/thunderstore");
+}
+
+#[test]
+fn thunderstore_is_off_for_a_game_that_declares_nothing() {
+    // Every existing image sets none of these and must behave exactly as before.
+    let config = SupervisorConfig::from_env_with(&lookup_from(&[])).unwrap();
+    assert_eq!(config.thunderstore, None);
+}
+
+#[test]
+fn a_mod_list_without_a_community_disables_the_reconciler() {
+    // The two halves come from different places — the manifest and the image —
+    // so a half-rolled deploy is a real state. It warns and stays off rather
+    // than refusing to start a live server on its next restart.
+    let env = lookup_from(&[("SUPERVISOR_MODS_FILE", ".grizzly/mods")]);
+    assert_eq!(
+        SupervisorConfig::from_env_with(&env).unwrap().thunderstore,
+        None
+    );
+}
+
+#[test]
+fn a_community_without_a_mod_list_disables_the_reconciler() {
+    let env = lookup_from(&[("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim")]);
+    assert_eq!(
+        SupervisorConfig::from_env_with(&env).unwrap().thunderstore,
+        None
+    );
+}
+
+#[test]
+fn an_unknown_layout_is_a_hard_error() {
+    // Unlike a missing half, a wrong value would install every mod into the
+    // wrong place — a failure that looks like the game being broken.
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        ("SUPERVISOR_THUNDERSTORE_LAYOUT", "ue4ss"),
+    ]);
+    let err = SupervisorConfig::from_env_with(&env).unwrap_err();
+    assert!(err.to_string().contains("bepinex"), "got: {err}");
+}
+
+#[test]
+fn an_unparseable_provided_package_is_a_hard_error() {
+    // Silently dropping it would install a second loader pack over the image's,
+    // which is how a working loader stops loading.
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        ("SUPERVISOR_THUNDERSTORE_PROVIDED", "BepInExPack"),
+    ]);
+    let err = SupervisorConfig::from_env_with(&env).unwrap_err();
+    assert!(err.to_string().contains("BepInExPack"), "got: {err}");
+}
+
+#[test]
+fn the_provided_list_tolerates_spacing_and_stray_commas() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        (
+            "SUPERVISOR_THUNDERSTORE_PROVIDED",
+            " denikson-BepInExPack_Valheim , ,Other-Pack ,",
+        ),
+    ]);
+    let mods = SupervisorConfig::from_env_with(&env)
+        .unwrap()
+        .thunderstore
+        .expect("the reconciler is configured");
+    assert_eq!(mods.provided.len(), 2);
+}
+
+#[test]
+fn the_working_directory_can_be_moved_off_its_default() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        ("SUPERVISOR_THUNDERSTORE_DIR", ".grizzly/ts"),
+    ]);
+    let mods = SupervisorConfig::from_env_with(&env)
+        .unwrap()
+        .thunderstore
+        .expect("the reconciler is configured");
+    assert_eq!(mods.work_dir, ".grizzly/ts");
+}
