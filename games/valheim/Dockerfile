@@ -76,12 +76,14 @@ RUN apt-get update \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-supervisor \
      /usr/local/bin/grizzly-supervisor
-# Baked ValheimRcon plugin + the hook that installs it. The hook (a lloesche
+# Baked ValheimRcon plugin + the pre-server hook. The hook (a lloesche
 # PRE_SERVER_RUN_HOOK) runs after BepInEx is set up on the PVC and before each
-# server start, dropping the DLL into the plugins dir and seeding its RCON config.
+# server start: it mirrors the supervisor's staged mod tree into BepInEx's real
+# directories, drops the baked RCON DLL into the plugins dir, and seeds its RCON
+# config. See valheim-pre-server.sh for why each of the three has to happen here.
 COPY --from=modfetch /out/ValheimRcon.dll /opt/valheim-plugins/ValheimRcon.dll
-COPY games/valheim/valheim-seed-rcon.sh /usr/local/bin/valheim-seed-rcon
-RUN chmod +x /usr/local/bin/valheim-seed-rcon
+COPY games/valheim/valheim-pre-server.sh /usr/local/bin/valheim-pre-server
+RUN chmod +x /usr/local/bin/valheim-pre-server
 # The supervisor launches lloesche's bootstrap (which execs supervisord).
 ENV SUPERVISOR_CHILD_CMD=/usr/local/sbin/bootstrap
 # Valheim's worlds and config live under /config; scope Gary's file tools there.
@@ -92,9 +94,30 @@ ENV SUPERVISOR_DATA_DIR=/config
 # plugins dir (/opt/valheim/bepinex/BepInEx/plugins) each boot. Cannot be combined
 # with VALHEIM_PLUS.
 ENV BEPINEX=true
-# Install + configure the RCON plugin at the correct point in lloesche's start
-# sequence (after BepInEx, before the server). See valheim-seed-rcon.sh.
-ENV PRE_SERVER_RUN_HOOK=/usr/local/bin/valheim-seed-rcon
+# Install mods and configure the RCON plugin at the correct point in lloesche's
+# start sequence (after BepInEx, before the server). See valheim-pre-server.sh.
+ENV PRE_SERVER_RUN_HOOK=/usr/local/bin/valheim-pre-server
+
+# Mod management. These three are facts about *this image*, which is why they
+# live here rather than in the catalog manifest — the manifest declares the
+# policy (which file an instance may list mods in), the image declares what it
+# can actually do with that list. The reconciler only assembles when both halves
+# are present, so a rolled-back manifest leaves this inert rather than broken.
+#
+# The community is Valheim's Thunderstore catalog; packages never cross between
+# communities, so this also has to match the `thunderstore-community` annotation
+# the bot reads off gameserver.yaml (guarded in crates/bot/src/tests/config.rs).
+ENV SUPERVISOR_THUNDERSTORE_COMMUNITY=valheim
+# r2modman's BepInEx placement rule: plugins/patchers/monomod get a per-package
+# subdirectory, config lands flat, core is never written. The supervisor stages
+# that tree; valheim-pre-server.sh mirrors it into the live loader dirs.
+ENV SUPERVISOR_THUNDERSTORE_LAYOUT=bepinex
+# BEPINEX=true above makes lloesche's own updater fetch and install this pack, so
+# the reconciler must never install a second copy over it — a package that
+# overwrote the live loader would take down every mod including the RCON plugin.
+# Skipped by Namespace-Name, so whichever version lloesche pulls is the one that
+# stands.
+ENV SUPERVISOR_THUNDERSTORE_PROVIDED=denikson-BepInExPack_Valheim
 # RCON via the ValheimRcon mod: the supervisor speaks the `valheim` dialect (Source
 # framing, single-packet replies, `say` broadcasts, `players` for the online count)
 # to the mod's loopback port. The seed hook writes this port + the minted password

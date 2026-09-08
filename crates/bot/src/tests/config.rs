@@ -740,8 +740,18 @@ struct ManifestContainer {
     name: String,
     #[serde(default)]
     ports: Vec<ManifestPort>,
+    #[serde(default)]
+    env: Vec<ManifestEnv>,
     #[serde(rename = "securityContext")]
     security_context: Option<ManifestContainerSecurityContext>,
+}
+
+/// One container env entry. `value` is optional because several of these are
+/// `valueFrom` secret references, which carry no literal.
+#[derive(serde::Deserialize)]
+struct ManifestEnv {
+    name: String,
+    value: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -767,6 +777,16 @@ struct ManifestPort {
 }
 
 impl ManifestPodSpec {
+    /// The literal value of a container env var declared anywhere in this pod,
+    /// or `None` when no container sets it (or sets it from a secret).
+    fn env(&self, key: &str) -> Option<&str> {
+        self.containers
+            .iter()
+            .flat_map(|container| container.env.iter())
+            .find(|entry| entry.name == key)
+            .and_then(|entry| entry.value.as_deref())
+    }
+
     /// The single `control` containerPort across the pod's containers. Panics
     /// unless exactly one is declared — a missing or duplicated control port is a
     /// drift the guard should catch, not skip over.
@@ -1163,4 +1183,141 @@ fn the_moddable_games_declare_the_registries_they_are_built_against() {
         unexpected.is_empty(),
         "these games declare a mod registry with no install path behind it: {unexpected:?}"
     );
+}
+
+// ---- mod-management wiring drift guard ----
+//
+// Mod support for one game is spread across three files that no single tool
+// checks against each other: the catalog manifest declares the per-instance file
+// (policy), the game's Dockerfile declares what the image can do with it (an
+// image fact), and the manifest's annotations tell the *bot* which registry to
+// search. Each half is individually valid with the others missing, and every
+// mismatch degrades quietly:
+//
+//   * a mod list with no community in the image → the supervisor warns once at
+//     startup and installs nothing, so Gary writes entries that never take
+//   * a community with no mod list → the same, from the other side
+//   * an image community that disagrees with the annotation → Gary searches one
+//     Thunderstore catalog and the supervisor installs from another, so every
+//     package he recommends resolves as missing
+//   * a `modrinth` game with no env overlay → the install path Minecraft's mod
+//     management actually uses isn't there at all
+//
+// None of these produce an error anywhere. They produce a friend being told
+// their mod is installed when it isn't.
+
+/// The literal value of an `ENV KEY=value` line in a game's Dockerfile. The last
+/// occurrence wins, matching how Docker itself resolves a repeated key, and
+/// surrounding quotes are stripped.
+fn dockerfile_env(game: &str, key: &str) -> Option<String> {
+    let dockerfile = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+        .join(game)
+        .join("Dockerfile");
+    let contents = std::fs::read_to_string(&dockerfile).ok()?;
+    contents
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(&format!("ENV {key}=")))
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .next_back()
+}
+
+#[test]
+fn a_dockerfile_env_value_is_read_and_unquoted() {
+    assert_eq!(
+        dockerfile_env("valheim", "SUPERVISOR_THUNDERSTORE_COMMUNITY").as_deref(),
+        Some("valheim")
+    );
+    assert_eq!(dockerfile_env("valheim", "SUPERVISOR_NOT_A_THING"), None);
+}
+
+#[test]
+fn a_thunderstore_game_is_wired_end_to_end() {
+    use crate::agones::ModRegistry;
+
+    for (game, manifest) in load_game_manifests() {
+        let Some(file) = manifest.spec.template.spec.env("SUPERVISOR_MODS_FILE") else {
+            continue;
+        };
+        let community =
+            dockerfile_env(&game, "SUPERVISOR_THUNDERSTORE_COMMUNITY").unwrap_or_else(|| {
+                panic!(
+                    "games/{game}/gameserver.yaml sets SUPERVISOR_MODS_FILE={file} but \
+                     games/{game}/Dockerfile declares no SUPERVISOR_THUNDERSTORE_COMMUNITY; \
+                     the supervisor warns once at startup and installs nothing"
+                )
+            });
+
+        let yaml = std::fs::read_to_string(
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+                .join(&game)
+                .join("gameserver.yaml"),
+        )
+        .unwrap_or_else(|err| panic!("reading games/{game}/gameserver.yaml: {err}"));
+        let registry = parse_mod_registry_from_template(&yaml)
+            .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
+
+        assert_eq!(
+            registry,
+            Some(ModRegistry::Thunderstore {
+                community: community.clone()
+            }),
+            "games/{game} installs from the {community} Thunderstore community, so its \
+             mod-registry annotations must send Gary's search to the same one — otherwise \
+             every package he finds resolves as missing at install time"
+        );
+    }
+}
+
+#[test]
+fn a_modrinth_game_declares_the_overlay_its_installs_go_through() {
+    use crate::agones::ModRegistry;
+
+    for (game, manifest) in load_game_manifests() {
+        let yaml = std::fs::read_to_string(
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+                .join(&game)
+                .join("gameserver.yaml"),
+        )
+        .unwrap_or_else(|err| panic!("reading games/{game}/gameserver.yaml: {err}"));
+        if parse_mod_registry_from_template(&yaml)
+            .unwrap_or_else(|err| panic!("games/{game}: {err:#}"))
+            != Some(ModRegistry::Modrinth)
+        {
+            continue;
+        }
+        assert!(
+            manifest
+                .spec
+                .template
+                .spec
+                .env("SUPERVISOR_CHILD_ENV_FILE")
+                .is_some(),
+            "games/{game} declares the Modrinth registry, but Modrinth installs land through \
+             the per-instance env overlay — without SUPERVISOR_CHILD_ENV_FILE there is \
+             nowhere for Gary to write one"
+        );
+    }
+}
+
+#[test]
+fn a_game_with_no_mod_list_declares_no_thunderstore_settings() {
+    // The other direction: image settings with no mod list are inert, and inert
+    // settings read as working ones to anyone skimming the Dockerfile.
+    for (game, manifest) in load_game_manifests() {
+        if manifest
+            .spec
+            .template
+            .spec
+            .env("SUPERVISOR_MODS_FILE")
+            .is_some()
+        {
+            continue;
+        }
+        assert_eq!(
+            dockerfile_env(&game, "SUPERVISOR_THUNDERSTORE_COMMUNITY"),
+            None,
+            "games/{game}/Dockerfile configures Thunderstore but its manifest declares no \
+             SUPERVISOR_MODS_FILE, so the reconciler never runs"
+        );
+    }
 }
