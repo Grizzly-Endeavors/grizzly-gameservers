@@ -298,3 +298,70 @@ fn the_loader_core_is_skipped_during_extraction_rather_than_failing() {
     assert_eq!(installed, 1);
     assert!(!dir.path().join("BepInEx/core").exists());
 }
+
+#[test]
+fn an_oversized_entry_is_refused_before_it_lands() {
+    // Exercised against small caps rather than the production 256 MiB, which no
+    // fixture can honestly reach — the guard is the same code either way.
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = zip_with(&[
+        ("manifest.json", &manifest("Mod", "1.0.0")),
+        ("plugins/Huge.dll", &vec![0_u8; 4096]),
+    ]);
+    let caps = Caps {
+        entry_bytes: 1024,
+        ..Caps::DEFAULT
+    };
+    let err = extract_within(
+        Cursor::new(bytes),
+        &release("Author-Mod-1.0.0"),
+        PackageLayout::BepInEx,
+        dir.path(),
+        caps,
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("larger than 1024"), "{err:#}");
+}
+
+#[test]
+fn an_archive_that_expands_past_the_total_is_refused_part_way() {
+    // The zip-bomb guard: no single entry is over the per-entry cap, but their
+    // sum is, and the check has to fire while streaming rather than after the
+    // whole thing has landed on disk.
+    let dir = tempfile::tempdir().unwrap();
+    let chunk = vec![0_u8; 1024];
+    let bytes = zip_with(&[
+        ("manifest.json", &manifest("Mod", "1.0.0")),
+        ("plugins/One.dll", &chunk),
+        ("plugins/Two.dll", &chunk),
+        ("plugins/Three.dll", &chunk),
+    ]);
+    let caps = Caps {
+        entry_bytes: 2048,
+        total_bytes: 2048,
+        ..Caps::DEFAULT
+    };
+    let err = extract_within(
+        Cursor::new(bytes),
+        &release("Author-Mod-1.0.0"),
+        PackageLayout::BepInEx,
+        dir.path(),
+        caps,
+    )
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("expands past 2048"), "{err:#}");
+}
+
+#[test]
+fn the_production_caps_are_the_ones_a_real_launch_enforces() {
+    // The parameterised form exists for the tests above; a drift between it and
+    // the consts would make those tests prove nothing about production.
+    assert_eq!(
+        Caps::DEFAULT,
+        Caps {
+            entries: MAX_ENTRIES,
+            entry_bytes: MAX_ENTRY_BYTES,
+            total_bytes: MAX_TOTAL_BYTES,
+        }
+    );
+}

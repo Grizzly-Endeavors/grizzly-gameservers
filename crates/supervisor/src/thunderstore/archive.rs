@@ -30,6 +30,28 @@ pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 /// Most files one package may contain.
 pub const MAX_ENTRIES: usize = 20_000;
 
+/// The caps [`extract`] enforces while streaming an archive.
+///
+/// Carried as a value rather than read from the consts at each check so the
+/// enforcement itself is testable: a fixture proving a 256 MiB entry is refused
+/// would have to *be* 256 MiB, which is not a test anyone will run. The
+/// production caps are [`Caps::DEFAULT`], and `extract` uses them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    pub entries: usize,
+    pub entry_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl Caps {
+    /// What a real launch enforces.
+    pub const DEFAULT: Self = Self {
+        entries: MAX_ENTRIES,
+        entry_bytes: MAX_ENTRY_BYTES,
+        total_bytes: MAX_TOTAL_BYTES,
+    };
+}
+
 /// Root files that describe the package rather than belonging to the game.
 const METADATA_FILES: [&str; 4] = ["manifest.json", "readme.md", "changelog.md", "icon.png"];
 
@@ -214,11 +236,28 @@ pub fn extract<R: Read + Seek>(
     layout: PackageLayout,
     dest: &Path,
 ) -> Result<usize> {
+    extract_within(reader, release, layout, dest, Caps::DEFAULT)
+}
+
+/// [`extract`] with the caps supplied, so the size guards can be exercised
+/// against fixtures of a sane size. Production always passes [`Caps::DEFAULT`].
+///
+/// # Errors
+///
+/// As [`extract`].
+pub fn extract_within<R: Read + Seek>(
+    reader: R,
+    release: &PackageRelease,
+    layout: PackageLayout,
+    dest: &Path,
+    caps: Caps,
+) -> Result<usize> {
     let mut zip = zip::ZipArchive::new(reader).context("failed to open the package archive")?;
-    if zip.len() > MAX_ENTRIES {
+    if zip.len() > caps.entries {
         bail!(
-            "package archive for {release} holds {} files, over the {MAX_ENTRIES} limit",
-            zip.len()
+            "package archive for {release} holds {} files, over the {} limit",
+            zip.len(),
+            caps.entries
         );
     }
     let mut total: u64 = 0;
@@ -239,12 +278,18 @@ pub fn extract<R: Read + Seek>(
         if entry.is_dir() {
             continue;
         }
-        if entry.size() > MAX_ENTRY_BYTES {
-            bail!("archive entry {name:?} in {release} is larger than {MAX_ENTRY_BYTES} bytes");
+        if entry.size() > caps.entry_bytes {
+            bail!(
+                "archive entry {name:?} in {release} is larger than {} bytes",
+                caps.entry_bytes
+            );
         }
         total = total.saturating_add(entry.size());
-        if total > MAX_TOTAL_BYTES {
-            bail!("the archive for {release} expands past {MAX_TOTAL_BYTES} bytes");
+        if total > caps.total_bytes {
+            bail!(
+                "the archive for {release} expands past {} bytes",
+                caps.total_bytes
+            );
         }
         let Some(relative) = plan_layout(layout, &release.id, Path::new(&name)) else {
             continue;

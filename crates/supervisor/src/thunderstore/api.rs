@@ -154,21 +154,51 @@ impl ThunderstoreApi {
     }
 }
 
-/// The [`PackageSource`] the reconciler resolves through: the API layered over
-/// the cache, per the module docs.
-pub struct LayeredSource<'a> {
-    api: &'a ThunderstoreApi,
+/// The registry answering for itself, with no cache in front of it. Wrapped by
+/// [`LayeredSource`] in production; implemented here so the caching layer can be
+/// tested over a fake registry instead of the real one.
+impl PackageSource for ThunderstoreApi {
+    async fn latest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
+        let url = format!("{API_BASE}/{}/{}/", id.namespace, id.name);
+        let body = self.get_version_of_package(&url).await?;
+        let version = body
+            .version_number
+            .parse::<PackageVersion>()
+            .map_err(|err| SourceError::Unavailable(format!("bad version: {err}")))?;
+        Ok(SourceVersion {
+            version,
+            dependencies: parse_dependencies(&body.dependencies),
+        })
+    }
+
+    async fn exact(&self, release: &PackageRelease) -> Result<SourceVersion, SourceError> {
+        let url = format!(
+            "{API_BASE}/{}/{}/{}/",
+            release.id.namespace, release.id.name, release.version
+        );
+        let body = self.get_version(&url).await?;
+        Ok(SourceVersion {
+            version: release.version,
+            dependencies: parse_dependencies(&body.dependencies),
+        })
+    }
+}
+
+/// The [`PackageSource`] the reconciler resolves through: a registry layered
+/// over the on-disk cache, per the module docs.
+pub struct LayeredSource<'a, S: PackageSource + Sync> {
+    registry: &'a S,
     work_dir: PathBuf,
     /// Degradations worth reporting, collected because the trait's methods take
     /// `&self` and the caller wants them once resolution is over.
     notes: Mutex<Vec<String>>,
 }
 
-impl<'a> LayeredSource<'a> {
+impl<'a, S: PackageSource + Sync> LayeredSource<'a, S> {
     #[must_use]
-    pub fn new(api: &'a ThunderstoreApi, work_dir: &Path) -> Self {
+    pub fn new(registry: &'a S, work_dir: &Path) -> Self {
         Self {
-            api,
+            registry,
             work_dir: work_dir.to_owned(),
             notes: Mutex::new(Vec::new()),
         }
@@ -226,20 +256,13 @@ fn parse_dependencies(raw: &[String]) -> Vec<PackageRelease> {
         .collect()
 }
 
-impl PackageSource for LayeredSource<'_> {
+impl<S: PackageSource + Sync> PackageSource for LayeredSource<'_, S> {
     async fn latest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
-        let url = format!("{API_BASE}/{}/{}/", id.namespace, id.name);
-        match self.api.get_version_of_package(&url).await {
-            Ok(body) => {
-                let version = body
-                    .version_number
-                    .parse::<PackageVersion>()
-                    .map_err(|err| SourceError::Unavailable(format!("bad version: {err}")))?;
-                Ok(SourceVersion {
-                    version,
-                    dependencies: parse_dependencies(&body.dependencies),
-                })
-            }
+        match self.registry.latest(id).await {
+            Ok(found) => Ok(found),
+            // A package the registry says doesn't exist is a mistake in the mod
+            // list, not an outage — falling back to a cached copy would install
+            // something nobody can look up.
             Err(SourceError::NotFound) => Err(SourceError::NotFound),
             Err(SourceError::Unavailable(detail)) => {
                 let Some(version) = self.highest_cached(id) else {
@@ -264,15 +287,7 @@ impl PackageSource for LayeredSource<'_> {
         if let Some(found) = self.cached(release) {
             return Ok(found);
         }
-        let url = format!(
-            "{API_BASE}/{}/{}/{}/",
-            release.id.namespace, release.id.name, release.version
-        );
-        let body = self.api.get_version(&url).await?;
-        Ok(SourceVersion {
-            version: release.version,
-            dependencies: parse_dependencies(&body.dependencies),
-        })
+        self.registry.exact(release).await
     }
 }
 
