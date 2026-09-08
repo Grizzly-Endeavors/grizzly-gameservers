@@ -12,6 +12,10 @@
 //! and the image's own pre-launch hook mirrors the staged tree across. That split
 //! is what keeps this module free of any knowledge about where a given game
 //! keeps `BepInEx`.
+//!
+//! Because the image treats this tree as the *complete* desired state, it is
+//! always built with the layout's full directory skeleton — an empty mod list
+//! stages an empty tree, never an absent one.
 
 use std::path::{Path, PathBuf};
 
@@ -48,8 +52,15 @@ pub fn rebuild(
     let next = work_dir.join(NEXT_DIR);
     let staged = staged_path(work_dir);
     remove_tree(&next)?;
-    std::fs::create_dir_all(&next)
-        .with_context(|| format!("failed to create {}", next.display()))?;
+    // The skeleton is created before anything is extracted, so an empty mod list
+    // produces an empty tree rather than an absent one — see
+    // [`PackageLayout::skeleton`] for why the difference decides whether
+    // removing the last mod actually removes it.
+    for dir in layout.skeleton() {
+        let path = next.join(dir);
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create {}", path.display()))?;
+    }
 
     let mut installed = 0;
     for package in packages {

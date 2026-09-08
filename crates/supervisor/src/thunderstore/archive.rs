@@ -74,6 +74,27 @@ impl PackageLayout {
             _ => None,
         }
     }
+
+    /// The directories a staged tree always contains, whether or not any package
+    /// puts anything in them.
+    ///
+    /// Load-bearing: the image's mirror step reads this tree as the *complete*
+    /// desired state and deletes anything in the live loader that isn't in it.
+    /// A tree that simply omitted the directories nobody installed into would
+    /// make "no mods" indistinguishable from "no mod list at all" — and the
+    /// mirror would skip, leaving the previous set installed. Removing the last
+    /// mod has to leave an empty tree, not an absent one.
+    #[must_use]
+    pub fn skeleton(self) -> &'static [&'static str] {
+        match self {
+            Self::BepInEx => &[
+                "BepInEx/plugins",
+                "BepInEx/patchers",
+                "BepInEx/monomod",
+                "BepInEx/config",
+            ],
+        }
+    }
 }
 
 /// The directories a `BepInEx` package may address by name, each of which gets a
