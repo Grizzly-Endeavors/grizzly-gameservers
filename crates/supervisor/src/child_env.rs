@@ -29,7 +29,6 @@ use anyhow::{Context, Result};
 use tracing::{info, warn};
 
 use crate::config::SupervisorConfig;
-use crate::fs::resolve_in_root;
 
 /// Key prefix the supervisor reserves for its own configuration. An overlay may
 /// never set one: those vars are read from the pod template at supervisor
@@ -178,40 +177,17 @@ pub fn resolve(text: &str, allowlist: &[String], rcon_password_env: &str) -> Res
 
 /// Create the overlay file and its parent directory if absent, so the file
 /// always exists before anyone edits it (see the module docs for why that is
-/// load-bearing). Idempotent: an existing file is left exactly as it is.
-///
-/// Returns the resolved absolute path, so a caller that goes on to read the file
-/// uses the same root-confined resolution rather than re-joining `rel` itself
-/// (a plain `join` on an absolute `rel` would silently discard the root).
+/// load-bearing). Delegates to [`fs::seed_empty_file`](crate::fs::seed_empty_file),
+/// which the mod list next door uses for the same reason.
 ///
 /// # Errors
 ///
 /// Returns an error if `rel` escapes the data root, the parent directory can't
 /// be created, or the file can't be created.
 pub fn seed(root: &Path, rel: &str) -> Result<PathBuf> {
-    let path = resolve_in_root(root, rel)
+    crate::fs::seed_empty_file(root, rel)
         .map_err(|err| anyhow::anyhow!("{err}"))
-        .with_context(|| format!("child env overlay path {rel} is not inside the data root"))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create child env overlay dir {}",
-                parent.display()
-            )
-        })?;
-    }
-    // create_new so a re-seed can never truncate an overlay someone already
-    // authored — this runs before every launch, not just the first.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(_) => Ok(path),
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => Ok(path),
-        Err(err) => Err(err)
-            .with_context(|| format!("failed to create child env overlay {}", path.display())),
-    }
+        .with_context(|| format!("failed to seed the child env overlay {rel}"))
 }
 
 /// Seed the overlay file if the game opted in, then read and filter it into the

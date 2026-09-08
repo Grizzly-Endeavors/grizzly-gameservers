@@ -209,3 +209,46 @@ fn status_zeroes_uptime_while_stopped() {
     assert_eq!(status.pid, None, "no pid while stopped");
     assert_eq!(status.process, ProcessPhase::Stopped, "stopped phase");
 }
+
+#[test]
+fn a_refused_launch_reports_as_crashed_without_spending_the_crash_budget() {
+    // `Crashed` because that is the word the whole recovery chain understands —
+    // the bot's verify loop restores the file's snapshot on the strength of it.
+    // The restart counter stays put because nothing restarted, and spending the
+    // budget here would blind the escalation that exists for an unstable game.
+    let mut state = SupervisorState::new();
+    state.on_started(42, Instant::now());
+    let before = state.status(Instant::now()).restarts;
+
+    state.on_launch_failed();
+
+    let status = state.status(Instant::now());
+    assert_eq!(status.process, ProcessPhase::Crashed);
+    assert_eq!(status.restarts, before);
+    assert_eq!(status.pid, None);
+    assert_eq!(status.uptime_seconds, 0);
+}
+
+#[test]
+fn a_refused_launch_leaves_the_ready_flag_alone() {
+    // The pod is still Ready to Agones and the control API is still up; only the
+    // game process is missing. Clearing readiness here would make the bot's own
+    // one-shot `/ready` fire again on the repair.
+    let mut state = SupervisorState::new();
+    state.on_ready();
+    state.on_launch_failed();
+    assert!(state.is_ready());
+}
+
+#[test]
+fn a_repair_after_a_refused_launch_settles_back_to_running() {
+    let mut state = SupervisorState::new();
+    state.on_launch_failed();
+    state.on_started(7, Instant::now());
+    state.on_ready();
+    assert_eq!(
+        state.status(Instant::now()).process,
+        ProcessPhase::Running,
+        "a fixed mod list must leave no trace of the refusal"
+    );
+}

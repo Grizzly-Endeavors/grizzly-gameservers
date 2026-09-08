@@ -253,3 +253,49 @@ fn client_errors_classify_as_4xx_and_io_as_5xx() {
     assert!(FsError::NotFound.is_client_error());
     assert!(!FsError::Io("disk".to_owned()).is_client_error());
 }
+
+#[test]
+fn seeding_creates_the_file_and_its_parent_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed_empty_file(dir.path(), "nested/dir/reserved").unwrap();
+    assert!(path.is_file());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+}
+
+#[test]
+fn seeding_an_existing_file_never_truncates_it() {
+    // This runs before every launch, not just the first: truncating would erase
+    // a file the friend authored on the next restart.
+    let dir = tempfile::tempdir().unwrap();
+    let path = seed_empty_file(dir.path(), "reserved").unwrap();
+    std::fs::write(&path, "authored content").unwrap();
+    seed_empty_file(dir.path(), "reserved").unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "authored content");
+}
+
+#[test]
+fn seeding_refuses_a_path_outside_the_data_root() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        seed_empty_file(dir.path(), "../escape"),
+        Err(FsError::OutsideRoot)
+    );
+    assert_eq!(
+        seed_empty_file(dir.path(), "/etc/passwd"),
+        Err(FsError::OutsideRoot)
+    );
+}
+
+#[test]
+fn a_seeded_file_is_snapshotted_on_its_very_first_edit() {
+    // The whole point of seeding: write_file only snapshots a file that already
+    // existed, and the bot's auto-rollback only arms for writes that took a
+    // snapshot. Without the seed the first mod list would be unrecoverable.
+    let dir = tempfile::tempdir().unwrap();
+    seed_empty_file(dir.path(), "reserved").unwrap();
+    let backed_up = write_file(dir.path(), "reserved", "ValheimModding-Jotunn\n").unwrap();
+    assert!(
+        backed_up,
+        "the first edit of a seeded file must be rollback-eligible"
+    );
+}

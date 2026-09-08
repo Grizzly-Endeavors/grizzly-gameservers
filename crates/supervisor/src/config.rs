@@ -9,6 +9,8 @@ use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
 use crate::occupancy::OccupancyApi;
 use crate::rcon::RconDialect;
+use crate::thunderstore::archive::PackageLayout;
+use crate::thunderstore::types::PackageId;
 
 /// Default trigger a player types in chat to address the ops agent. Overridable
 /// per game via `SUPERVISOR_CHAT_TRIGGER` if it collides with a game command.
@@ -63,6 +65,11 @@ const DEFAULT_AUTO_UPDATE_EMPTY_GRACE_SECS: u64 = 300;
 const DEFAULT_AUTO_UPDATE_INTERVAL_SECS: u64 = 86_400;
 /// Hard cap on build age: past this, relaunch even while occupied (3 days).
 const DEFAULT_AUTO_UPDATE_MAX_UPTIME_SECS: u64 = 259_200;
+/// Where the mod reconciler keeps its cache, staged tree, and `resolved` file,
+/// relative to the data root. Under the same reserved `.grizzly/` directory as
+/// the env overlay, so everything the platform owns on an instance's volume sits
+/// in one place a friend can recognise as not-theirs.
+const DEFAULT_THUNDERSTORE_DIR: &str = ".grizzly/thunderstore";
 
 /// Runtime configuration for the supervisor, sourced from the process
 /// environment. Every knob has a default so the container can run with no env.
@@ -146,6 +153,10 @@ pub struct SupervisorConfig {
     /// Per-instance child-environment overlay, or `None` when the game's catalog
     /// entry doesn't opt in (no `SUPERVISOR_CHILD_ENV_FILE`).
     pub child_env: Option<ChildEnvOverlay>,
+    /// Pre-launch Thunderstore mod reconciliation, or `None` when this game
+    /// isn't one of the r2modman-shaped games (no `SUPERVISOR_MODS_FILE`, or no
+    /// `SUPERVISOR_THUNDERSTORE_COMMUNITY` in the image).
+    pub thunderstore: Option<ThunderstoreMods>,
     /// Whether the update-on-empty auto-updater runs. On by default; it only has
     /// any effect when the game has an occupancy source (RCON, or the Satisfactory
     /// API via `occupancy_api_url`), since the loop needs a player count to prove a
@@ -170,6 +181,35 @@ pub struct ChildEnvOverlay {
     /// Keys the overlay may set, matched case-sensitively and exactly. Empty
     /// means nothing is injected — the mechanism fails closed rather than open.
     pub allowlist: Vec<String>,
+}
+
+/// The game's opt-in to pre-launch Thunderstore mod reconciliation. Built as a
+/// unit for the same reason as [`ChildEnvOverlay`]: the reconciler can't be
+/// handed a mod list without the community it is written against or the rule for
+/// where a package's files go.
+///
+/// The split across two config sources is deliberate and mirrors the env
+/// overlay's: the *file* is per-game policy and lives in the catalog manifest,
+/// where changing it is a reviewable edit that lands on the next `/create`;
+/// everything else is a fact about the image and lives in its Dockerfile.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThunderstoreMods {
+    /// Mod-list path, relative to [`SupervisorConfig::data_dir`].
+    pub file: String,
+    /// The Thunderstore community this game's mods come from. Packages never
+    /// cross between communities, so this names which catalog the mod list is
+    /// written against; it is logged at startup so a mismatch between the image
+    /// and the bot's catalog annotation is visible in one place.
+    pub community: String,
+    /// Which per-game rule maps a package's files onto the loader's directories.
+    pub layout: PackageLayout,
+    /// Packages the image already supplies (the loader pack), skipped rather
+    /// than installed. Matched by `Namespace-Name`, ignoring version: the image
+    /// owns whichever version it shipped.
+    pub provided: Vec<PackageId>,
+    /// Working directory for the cache, staged tree, and `resolved` file,
+    /// relative to [`SupervisorConfig::data_dir`].
+    pub work_dir: String,
 }
 
 /// Configuration for the in-game chat watcher, present only when the game enables
@@ -257,6 +297,7 @@ impl SupervisorConfig {
         let start_paused = optional_flag(lookup, "SUPERVISOR_START_PAUSED");
         let chat_watch = parse_chat_watch(lookup)?;
         let child_env = parse_child_env(lookup);
+        let thunderstore = parse_thunderstore(lookup)?;
         let auto_update_enabled = optional_flag_or(lookup, "SUPERVISOR_AUTO_UPDATE", true);
         let auto_update_poll_interval = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_AUTO_UPDATE_POLL_SECS")?
@@ -303,6 +344,7 @@ impl SupervisorConfig {
             start_paused,
             chat_watch,
             child_env,
+            thunderstore,
             auto_update_enabled,
             auto_update_poll_interval,
             auto_update_policy,
@@ -373,6 +415,71 @@ fn parse_child_env(lookup: EnvLookup) -> Option<ChildEnvOverlay> {
         })
         .unwrap_or_default();
     Some(ChildEnvOverlay { file, allowlist })
+}
+
+/// Assemble the Thunderstore mod-reconciler config, or `None` when the game
+/// doesn't opt in. Both halves are required together, and they come from
+/// different places on purpose (see [`ThunderstoreMods`]): the mod list is
+/// declared in the catalog manifest, the community in the image. Either alone
+/// warns and disables the reconciler — the same posture as the env overlay,
+/// and for the same reason: refusing to start would take down a live server on
+/// its next restart over a config mistake that only costs it mod support.
+///
+/// A *bad* value, by contrast, is a hard error. An unknown layout or an
+/// unparseable provided-package name would each silently install mods into the
+/// wrong place or install a second loader pack over the image's — failures that
+/// look like the game being broken rather than like a typo.
+fn parse_thunderstore(lookup: EnvLookup) -> Result<Option<ThunderstoreMods>> {
+    let file = optional(lookup, "SUPERVISOR_MODS_FILE");
+    let community = optional(lookup, "SUPERVISOR_THUNDERSTORE_COMMUNITY");
+    let (file, community) = match (file, community) {
+        (Some(file), Some(community)) => (file, community),
+        (None, None) => return Ok(None),
+        (Some(file), None) => {
+            warn!(
+                file = %file,
+                "SUPERVISOR_MODS_FILE is set but SUPERVISOR_THUNDERSTORE_COMMUNITY is not; \
+                 mod installs are off for this game"
+            );
+            return Ok(None);
+        }
+        (None, Some(community)) => {
+            warn!(
+                community = %community,
+                "SUPERVISOR_THUNDERSTORE_COMMUNITY is set but SUPERVISOR_MODS_FILE is not; \
+                 mod installs are off for this game"
+            );
+            return Ok(None);
+        }
+    };
+    let layout = match optional(lookup, "SUPERVISOR_THUNDERSTORE_LAYOUT") {
+        Some(raw) => PackageLayout::parse(&raw).ok_or_else(|| {
+            anyhow!("SUPERVISOR_THUNDERSTORE_LAYOUT must be 'bepinex', got {raw:?}")
+        })?,
+        None => PackageLayout::BepInEx,
+    };
+    let provided = match optional(lookup, "SUPERVISOR_THUNDERSTORE_PROVIDED") {
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                entry.parse::<PackageId>().map_err(|err| {
+                    anyhow!("SUPERVISOR_THUNDERSTORE_PROVIDED entry {entry:?} is invalid: {err}")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    let work_dir = optional(lookup, "SUPERVISOR_THUNDERSTORE_DIR")
+        .unwrap_or_else(|| DEFAULT_THUNDERSTORE_DIR.to_owned());
+    Ok(Some(ThunderstoreMods {
+        file,
+        community,
+        layout,
+        provided,
+        work_dir,
+    }))
 }
 
 /// Warn on either half-configured state of the overlay pair: a file with no

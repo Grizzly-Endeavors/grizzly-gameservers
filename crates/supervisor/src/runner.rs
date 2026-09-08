@@ -23,7 +23,7 @@ use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
-use crate::{chat_watcher, child_env, palworld, process, readiness};
+use crate::{chat_watcher, child_env, palworld, process, readiness, thunderstore};
 
 /// Brief pause before relaunching a crashed child, so a hard crash-loop backs
 /// off rather than spinning the CPU until escalation.
@@ -229,12 +229,36 @@ async fn supervise(
         publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
         None
     } else {
-        let mut spawned = spawn_child(&cfg, rcon).context("failed to spawn initial child")?;
-        let ready_watch = start_readiness(&cfg, &ready_tx);
-        process::capture_output(&mut spawned, &logs, chat_tx.as_ref(), ready_watch.as_ref());
-        let running = Some(spawned);
-        note_started(&mut state, running.as_ref())?;
-        running
+        match spawn_child(&cfg, rcon, &logs).await {
+            Ok(mut spawned) => {
+                let ready_watch = start_readiness(&cfg, &ready_tx);
+                process::capture_output(
+                    &mut spawned,
+                    &logs,
+                    chat_tx.as_ref(),
+                    ready_watch.as_ref(),
+                );
+                let running = Some(spawned);
+                note_started(&mut state, running.as_ref())?;
+                running
+            }
+            // A refused launch must not take the container down with it. A pod
+            // recreated onto a volume whose mod list is bad would otherwise
+            // crash-loop the container, and the control API — the only way to
+            // read or repair that file — would never come up. Instead the loop
+            // runs with no child, `/status` says `Crashed`, and the bot's
+            // rollback has something to talk to.
+            Err(LaunchError::Prepare(err)) => {
+                note_launch_failure(&mut state, &logs, &err);
+                publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
+                None
+            }
+            // A container that can't run its own entrypoint is not repairable
+            // from inside the pod, so this stays fatal as it has always been.
+            Err(LaunchError::Spawn(err)) => {
+                return Err(err).context("failed to spawn initial child");
+            }
+        }
     };
 
     let mut sigterm =
@@ -442,11 +466,14 @@ async fn do_start(
         return ControlReply::Acted(ResultKind::AlreadyRunning);
     }
     state.on_start_requested();
-    relaunch(deps, state, child, "start").await;
-    if child.is_some() {
-        ControlReply::Acted(ResultKind::Starting)
-    } else {
-        ControlReply::Failed("failed to start the server".to_owned())
+    // A refused launch reports as acted, not failed, and deliberately: the bot
+    // only runs its verify-and-roll-back loop when the supervisor says it acted.
+    // Answering "failed" would skip the loop that reads `/status`, sees
+    // `Crashed`, and puts the instance's file back — the whole recovery for a
+    // bad edit.
+    match relaunch(deps, state, child, "start").await {
+        Launched::Running | Launched::Refused => ControlReply::Acted(ResultKind::Starting),
+        Launched::Failed => ControlReply::Failed("failed to start the server".to_owned()),
     }
 }
 
@@ -461,49 +488,81 @@ async fn do_restart(
     {
         error!(error = ?err, "failed to stop child during restart");
     }
-    relaunch(deps, state, child, "restart").await;
-    if child.is_some() {
-        ControlReply::Acted(ResultKind::Restarting)
-    } else {
-        ControlReply::Failed("failed to restart the server".to_owned())
+    // Refused reports as acted for the same reason as `do_start`.
+    match relaunch(deps, state, child, "restart").await {
+        Launched::Running | Launched::Refused => ControlReply::Acted(ResultKind::Restarting),
+        Launched::Failed => ControlReply::Failed("failed to restart the server".to_owned()),
     }
 }
 
+/// Why a launch didn't happen. The two halves are handled differently all the
+/// way up: a preparation failure is something on the instance's own volume that
+/// a human (or Gary) can fix, so it is reported as a crash and the control API
+/// stays up to be fixed through; a spawn failure is the container being unable
+/// to run its own entrypoint, which nothing in the pod can repair.
+enum LaunchError {
+    Prepare(anyhow::Error),
+    Spawn(anyhow::Error),
+}
+
 /// Seed any config the supervisor owns into place, then launch the game child.
-/// Runs before each launch so a fresh PVC, a per-pod-rotated password, and an
-/// edited overlay all converge before the child starts. Two seed steps today:
+/// Runs before each launch so a fresh PVC, a per-pod-rotated password, an edited
+/// overlay, and an edited mod list all converge before the child starts. Three
+/// preparation steps today, in this order:
 ///
 /// - Palworld's RCON keys, written into the on-PVC ini before the game reads it,
 ///   since the image disables the upstream's destructive env-driven regeneration
 ///   (see [`palworld`]). Skipped for every other game.
+/// - The Thunderstore mod reconcile for the r2modman-shaped games (see
+///   [`thunderstore`]), which stages the packages the instance's mod list asks
+///   for. Ahead of the overlay because it is the step that can take a minute and
+///   the one most likely to refuse the launch — no reason to resolve the env
+///   first only to throw it away.
 /// - The per-instance env overlay for games whose catalog entry opts in (see
 ///   [`child_env`]), which seeds the file and resolves it into the child's env.
 ///   Never fails: an unusable overlay yields no overrides, not a dead server.
-///
-/// # Errors
-///
-/// Returns an error if the config seed or the child spawn fails.
-fn spawn_child(cfg: &SupervisorConfig, rcon: Option<&RconRuntime>) -> Result<Child> {
+async fn spawn_child(
+    cfg: &SupervisorConfig,
+    rcon: Option<&RconRuntime>,
+    logs: &LogBuffer,
+) -> Result<Child, LaunchError> {
     if let (Some(rcon), Some(port), Some(ini)) =
         (rcon, cfg.rcon_port, cfg.palworld_ini_path.as_deref())
     {
         palworld::seed_rcon(ini, port, rcon.password())
-            .context("failed to seed palworld rcon settings")?;
+            .context("failed to seed palworld rcon settings")
+            .map_err(LaunchError::Prepare)?;
     }
+    thunderstore::prepare(cfg, logs)
+        .await
+        .map_err(LaunchError::Prepare)?;
     let overlay = child_env::prepare(cfg);
-    process::spawn(cfg, rcon, &overlay)
+    process::spawn(cfg, rcon, &overlay).map_err(LaunchError::Spawn)
+}
+
+/// Record a refused launch and put the reason where the agent will find it.
+///
+/// The log buffer, not just the supervisor's tracing output: `read_logs` serves
+/// the child-output buffer, so a reason that only reached `tracing` would be
+/// invisible to the one tool Gary reaches for after a restart didn't take.
+fn note_launch_failure(state: &mut SupervisorState, logs: &LogBuffer, err: &anyhow::Error) {
+    error!(error = ?err, "launch preparation failed; reporting the server as crashed");
+    logs.push(format!("[mods] failed: {err:#}"));
+    state.on_launch_failed();
 }
 
 /// Spawn a fresh child, record it, kick off a readiness probe, and assert the
-/// running label. `action` names the operation in logs. On spawn failure `child`
-/// is left empty so the caller reports the failure.
+/// running label. `action` names the operation in logs. On failure `child` is
+/// left empty; the returned outcome tells the caller which kind of failure it
+/// was, since only a preparation failure is something the instance can be
+/// repaired out of.
 async fn relaunch(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,
     child: &mut Option<Child>,
     action: &str,
-) {
-    match spawn_child(deps.cfg, deps.rcon) {
+) -> Launched {
+    match spawn_child(deps.cfg, deps.rcon, deps.logs).await {
         Ok(spawned) => {
             *child = Some(spawned);
             let ready_watch = start_readiness(deps.cfg, deps.ready_tx);
@@ -514,12 +573,33 @@ async fn relaunch(
                 error!(error = ?err, action, "failed to record (re)launch");
             }
             publish_label(deps.sdk, PROCESS_LABEL_RUNNING).await;
+            Launched::Running
         }
-        Err(err) => {
+        Err(LaunchError::Prepare(err)) => {
+            *child = None;
+            note_launch_failure(state, deps.logs, &err);
+            publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
+            Launched::Refused
+        }
+        Err(LaunchError::Spawn(err)) => {
             error!(error = ?err, action, "failed to (re)launch child");
             *child = None;
+            Launched::Failed
         }
     }
+}
+
+/// What a [`relaunch`] attempt did.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Launched {
+    /// The child is up.
+    Running,
+    /// Preparation refused the launch. The instance's own files are wrong, the
+    /// control API is still up, and `/status` now says `Crashed` — which is what
+    /// arms the bot's snapshot-restore-and-restart.
+    Refused,
+    /// The child could not be spawned at all.
+    Failed,
 }
 
 async fn handle_unexpected_exit(
@@ -544,7 +624,11 @@ async fn handle_unexpected_exit(
         ExitDisposition::Relaunch => {
             warn!("relaunching crashed game process after backoff");
             sleep(RELAUNCH_BACKOFF).await;
-            relaunch(deps, state, child, "crash-relaunch").await;
+            // The outcome needs no branch here: every failure mode already
+            // leaves the phase where the next observer should find it — a
+            // refused launch as `Crashed`, a spawn failure as the crash the
+            // exit was.
+            let _outcome = relaunch(deps, state, child, "crash-relaunch").await;
         }
         ExitDisposition::Escalate => {
             error!(
@@ -622,6 +706,6 @@ async fn maybe_auto_update(
     {
         error!(error = ?err, "failed to stop child during auto-update relaunch");
     }
-    relaunch(deps, state, child, "auto-update").await;
+    let _outcome = relaunch(deps, state, child, "auto-update").await;
     updater.note_relaunched();
 }
