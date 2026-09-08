@@ -1,12 +1,17 @@
 ---
-id: DiscordManagerModInstall
+id: GameGuideModrinthInstall
 type: prompt
 annotations:
-  sent_when: appended to the Discord system prompt for managers and admins (access >= Manager)
+  sent_when: >-
+    the second half of the game_guide result for a game whose mods come from
+    Modrinth
   used_by:
-    - file: discord/gary/mod.rs
-      function: append_manager_guidance
+    - file: discord/gary/guide.rs
+      function: render_guide
   reasoning:
+    - >-
+      Loaded on demand rather than appended to every manager turn; the text is
+      unchanged from when it rode the system prompt.
     - >-
       Names the one file an install actually touches and the only five keys that
       do anything in it. Without this Gary would explore for a mods directory

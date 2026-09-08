@@ -72,7 +72,12 @@ Phases 1 and 2 are independent; 3 needs 2; 4 needs 1; 5 needs all. Each ships as
 
 ### Phase 4 findings
 
-(none yet)
+- **The two Minecraft blocks moved verbatim.** Only their ids, `sent_when`, and `used_by` changed (`DiscordManagerModChoice` → `GameGuideModrinthChoice`, `DiscordManagerModInstall` → `GameGuideModrinthInstall`), plus one reasoning bullet on each recording that they are now loaded on demand. No model-visible text was rewritten.
+- **`SideFilterNotApplicable` stays uncreated** for the reason recorded in Phase 1; nothing in this phase needed it.
+- **The guide dispatches ahead of the scope gate** and is spared `targets_existing_server`, alongside the registry lookups and the memory tools — it names no server and reaches nothing but the in-memory catalog.
+- **Tier counts moved**: managers now see 25 tools, admins 31. The two count assertions in `discord/gary/tests/tools.rs` are the guard that a tool can't be added at the wrong tier unnoticed, so they are updated rather than loosened.
+- **The system-prompt test inverted.** `manager_prompt_carries_the_mod_workflow` asserted the install file was *in* the prompt; it is now `manager_prompt_names_mods_as_a_thing_with_a_first_step`, and a companion assertion checks that neither game's install file (`.grizzly/env`, `.grizzly/mods`) can reach the system prompt again.
+- **The ADR is 032, and the index needed 029–030 as well.** `docs/decisions/README.md` had stopped at 028 although 029 and 030 existed; 031 lands with Phase 5.
 
 ## Phase 5 — Docs of record and end-to-end
 

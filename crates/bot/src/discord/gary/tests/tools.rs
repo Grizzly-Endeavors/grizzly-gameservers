@@ -23,7 +23,7 @@ const ADMIN_ONLY: [&str; 6] = [
 
 /// The lifecycle, file, discovery, and memory tools a manager gets on top of the
 /// read-only set.
-const MANAGER_ADDED: [&str; 18] = [
+const MANAGER_ADDED: [&str; 19] = [
     CreateServer::NAME,
     StopServer::NAME,
     StartServer::NAME,
@@ -37,6 +37,7 @@ const MANAGER_ADDED: [&str; 18] = [
     RestoreFile::NAME,
     RunWhen::NAME,
     BackupServer::NAME,
+    GameGuide::NAME,
     SearchMods::NAME,
     ModInfo::NAME,
     Remember::NAME,
@@ -83,8 +84,8 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        24,
-        "six read tools (five lookups plus escalate) and eighteen manager \
+        25,
+        "six read tools (five lookups plus escalate) and nineteen manager \
          lifecycle/file/discovery/memory/resize tools"
     );
 }
@@ -100,8 +101,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        30,
-        "the six read tools, eighteen manager tools, and six admin-only tools"
+        31,
+        "the six read tools, nineteen manager tools, and six admin-only tools"
     );
 }
 
@@ -167,14 +168,16 @@ fn scope_gate_covers_every_targeted_tool_and_spares_list_and_create() {
     // gate without this failing.
     for name in tool_names(AccessLevel::Admin) {
         // remember/forget carry no server name (memory is cross-guild), the
-        // Modrinth lookups read a public registry rather than the cluster, and
-        // escalate must reach an operator even about a server this caller can't
-        // see — so all of them are spared the gate alongside listing/create.
+        // registry lookups read a public catalog rather than the cluster,
+        // game_guide returns text, and escalate must reach an operator even
+        // about a server this caller can't see — so all of them are spared the
+        // gate alongside listing/create.
         let should_gate = name != ListServers::NAME
             && name != CreateServer::NAME
             && name != ListArchives::NAME
             && name != RecoverServer::NAME
             && name != DeleteArchive::NAME
+            && name != GameGuide::NAME
             && name != SearchMods::NAME
             && name != ModInfo::NAME
             && name != Remember::NAME
@@ -612,7 +615,7 @@ fn a_lookup_names_its_game_alongside_the_identifier() {
 fn discovery_tools_are_manager_and_up() {
     let read_only = tool_names(AccessLevel::ReadOnly);
     let managers = tool_names(AccessLevel::Manager);
-    for tool in [SearchMods::NAME, ModInfo::NAME] {
+    for tool in [GameGuide::NAME, SearchMods::NAME, ModInfo::NAME] {
         assert!(
             !read_only.iter().any(|name| name == tool),
             "{tool} must not be offered to read-only callers"

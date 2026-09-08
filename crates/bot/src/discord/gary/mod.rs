@@ -8,6 +8,7 @@
 //! the Discord shell — the model client and loop live in `crate::agent`, the
 //! tool executors in [`tools`].
 
+mod guide;
 mod recovery;
 pub(crate) mod tools;
 
@@ -618,16 +619,18 @@ fn push_block(prompt: &mut String, block: &str) {
 
 /// Append the manager-and-above guidance to `prompt`: the lifecycle grant, the
 /// inspect/tune-and-restart workflow (including that a restart self-guards a config
-/// change it applies), the Minecraft mod-and-datapack workflow (choosing one, then
-/// installing it through the per-instance env overlay), resource sizing and the
-/// diagnose-before-growing rule, the occupancy check before a restart, and the
-/// durable-memory habit, plus any saved notes. Split out of
-/// [`build_system_prompt`] to keep the tier gating readable.
+/// change it applies), the pointer at `game_guide` for anything mod-related,
+/// resource sizing and the diagnose-before-growing rule, the occupancy check
+/// before a restart, and the durable-memory habit, plus any saved notes. Split
+/// out of [`build_system_prompt`] to keep the tier gating readable.
+///
+/// Each game's mod workflow is deliberately *not* here: it is per-game, it is
+/// long, and every guild paid for every game's copy of it on every message. The
+/// pointer block is what survives; [`guide`](super::guide) holds the rest.
 fn append_manager_guidance(prompt: &mut String, memories: &str) {
     push_block(prompt, &prompts::DiscordManagerLifecycle::render());
     push_block(prompt, &prompts::DiscordManagerTuning::render());
-    push_block(prompt, &prompts::DiscordManagerModChoice::render());
-    push_block(prompt, &prompts::DiscordManagerModInstall::render());
+    push_block(prompt, &prompts::DiscordManagerGameGuide::render());
     push_block(prompt, &prompts::DiscordManagerResources::render());
     push_block(prompt, &prompts::DiscordManagerOccupancy::render());
     push_block(prompt, &prompts::DiscordManagerScheduling::render());

@@ -1,12 +1,20 @@
 ---
-id: DiscordManagerModChoice
+id: GameGuideModrinthChoice
 type: prompt
 annotations:
-  sent_when: appended to the Discord system prompt for managers and admins (access >= Manager)
+  sent_when: >-
+    the first half of the game_guide result for a game whose mods come from
+    Modrinth
   used_by:
-    - file: discord/gary/mod.rs
-      function: append_manager_guidance
+    - file: discord/gary/guide.rs
+      function: render_guide
   reasoning:
+    - >-
+      Loaded on demand rather than appended to every manager turn. The text is
+      unchanged from when it rode the system prompt; what changed is that a
+      guild running no Minecraft server no longer pays for it on every message,
+      and that adding a second game's workflow no longer means a second block
+      that everyone reads.
     - >-
       Teaches Gary when to reach for search_mods and mod_info at all. The tool
       descriptions alone never told him mod management existed as a workflow, so
