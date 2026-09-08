@@ -10,10 +10,11 @@
 #      /config/.grizzly/thunderstore/staged/BepInEx before launching this child,
 #      but it deliberately knows nothing about where Valheim's loader lives —
 #      that knowledge is here, which is what keeps the reconciler game-agnostic.
-#      plugins/patchers/monomod mirror with --delete so removing a line from the
-#      mod list removes the files; config/ mirrors with --ignore-existing so a
-#      .cfg a friend or Gary has edited is never clobbered by the package default.
-#      core/ is never touched: that is the loader itself, which this image owns.
+#      That tree is the *complete* desired state, so plugins/patchers/monomod
+#      mirror with --delete: removing a line from the mod list removes the files.
+#      config/ mirrors with --ignore-existing so a .cfg a friend or Gary has
+#      edited is never clobbered by the package default. core/ is never touched:
+#      that is the loader itself, which this image owns.
 #   2. Drop the baked ValheimRcon plugin into BepInEx's real plugins dir
 #      (idempotent; overwrite so a pinned-version bump in the image lands). That
 #      dir lives on the image, not the PVC — lloesche only symlinks the *config*
@@ -41,24 +42,22 @@ staged=/config/.grizzly/thunderstore/staged/BepInEx
 
 mkdir -p "$plugins_dir" "$config_dir"
 
-# 1. Mirror the staged mod tree. Absent entirely when the reconciler isn't
-# configured or has never run, in which case this whole block is skipped and the
-# image behaves exactly as it did before mods existed.
+# 1. Mirror the staged mod tree. The supervisor always stages the full directory
+# skeleton when the reconciler is on, so this directory is present-and-empty for
+# an empty mod list and absent only when the reconciler isn't configured at all —
+# in which case the block is skipped and the image behaves as it did before mods
+# existed. That distinction is load-bearing: an empty source with --delete is
+# exactly what makes deleting a line delete the files.
 if [ -d "$staged" ]; then
     for dir in plugins patchers monomod; do
-        # An empty source directory is the correct input when the mod list asks
-        # for nothing of that kind: --delete then clears whatever a previous mod
-        # list left behind, which is what makes deleting a line delete the files.
-        mkdir -p "${staged}/${dir}" "${bepinex_dir}/${dir}"
+        mkdir -p "${bepinex_dir}/${dir}"
         rsync -a --delete --chmod=D755,F644 --exclude "$rcon_plugin" \
             "${staged}/${dir}/" "${bepinex_dir}/${dir}/"
     done
     # Config is the friend's to own once it exists: a package ships defaults, and
-    # re-copying them every boot would silently revert every tuning change.
-    if [ -d "${staged}/config" ]; then
-        rsync -a --ignore-existing --chmod=D755,F644 \
-            "${staged}/config/" "${config_dir}/"
-    fi
+    # re-copying them every boot would silently revert every tuning change. No
+    # --delete here for the same reason.
+    rsync -a --ignore-existing --chmod=D755,F644 "${staged}/config/" "${config_dir}/"
 fi
 
 # 2. The baked RCON plugin, re-placed after the mirror so it survives --delete

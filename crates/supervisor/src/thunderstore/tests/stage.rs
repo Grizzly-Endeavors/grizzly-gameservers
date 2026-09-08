@@ -87,15 +87,50 @@ fn a_removed_package_is_gone_after_the_next_rebuild() {
 }
 
 #[test]
-fn an_empty_mod_list_leaves_an_empty_tree_rather_than_the_old_one() {
+fn an_empty_mod_list_stages_an_empty_tree_not_an_absent_one() {
+    // The image mirrors this tree as the complete desired state and deletes what
+    // isn't in it. An absent tree reads as "no mod list at all", so the mirror
+    // skips and the previous set stays installed — removing the last mod would
+    // silently remove nothing.
     let dir = tempfile::tempdir().unwrap();
     let one = release("Author-One-1.0.0");
     cache::store(dir.path(), &one, &package(&one, &[("One.dll", b"MZ")])).unwrap();
     rebuild(dir.path(), &[resolved(&one)], PackageLayout::BepInEx).unwrap();
 
     rebuild(dir.path(), &[], PackageLayout::BepInEx).unwrap();
-    assert!(staged_path(dir.path()).is_dir());
-    assert!(!staged_path(dir.path()).join("BepInEx").exists());
+    let staged = staged_path(dir.path());
+    assert!(
+        staged.join("BepInEx/plugins").is_dir(),
+        "the skeleton stays"
+    );
+    assert!(
+        !staged.join("BepInEx/plugins/Author-One").exists(),
+        "but the package is gone"
+    );
+}
+
+#[test]
+fn every_skeleton_directory_is_present_even_with_no_mods() {
+    let dir = tempfile::tempdir().unwrap();
+    rebuild(dir.path(), &[], PackageLayout::BepInEx).unwrap();
+    for relative in PackageLayout::BepInEx.skeleton() {
+        assert!(
+            staged_path(dir.path()).join(relative).is_dir(),
+            "{relative} must exist so the mirror can clear it"
+        );
+    }
+}
+
+#[test]
+fn the_skeleton_never_includes_the_loader_core() {
+    // `core` is the loader itself, which the image owns. Staging an empty one
+    // would invite a mirror step to delete the live loader.
+    assert!(
+        !PackageLayout::BepInEx
+            .skeleton()
+            .iter()
+            .any(|dir| dir.ends_with("core")),
+    );
 }
 
 #[test]
