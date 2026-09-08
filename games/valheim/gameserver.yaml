@@ -43,7 +43,11 @@ spec:
     # world before it's joinable; give it room before Agones health-gates it.
     initialDelaySeconds: 300
     periodSeconds: 15
-    failureThreshold: 5
+    # Wider than the catalog's usual 5 because a rolled-back mod list has to be
+    # repaired *inside* this window: the bot restores the file's snapshot and
+    # restarts, and that restart re-resolves the mod list and may re-download it.
+    # At 5 the repair could still be downloading when Agones gave up on the pod.
+    failureThreshold: 10
   template:
     metadata:
       labels:
@@ -106,6 +110,18 @@ spec:
                   name: grizzly-gameservers-control
                   key: control_token
                   optional: true
+            # Per-instance mod list. Which file an instance may list mods in is
+            # per-game *policy*, so it lives here where changing it is a
+            # reviewable catalog edit that lands on the next /create — the rest
+            # of the reconciler's settings are facts about the image and live in
+            # games/valheim/Dockerfile. Both halves are required together; with
+            # only this one the supervisor warns and leaves mods off.
+            #
+            # Gary edits this file through the ordinary file tools, which is the
+            # whole point: the edit is snapshotted, the restart verifies it, and
+            # a list that stops the server is rolled back automatically.
+            - name: SUPERVISOR_MODS_FILE
+              value: ".grizzly/mods"
           volumeMounts:
             - name: data
               mountPath: /config
