@@ -39,6 +39,7 @@ fn entry(gameserver: &str, pvc: &str) -> GameCatalogEntry {
         gameserver_yaml: gameserver.to_owned(),
         service_yaml: String::new(),
         pvc_yaml: pvc.to_owned(),
+        mod_registry: None,
     }
 }
 

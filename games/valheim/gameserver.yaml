@@ -24,6 +24,13 @@ kind: GameServer
 metadata:
   name: valheim
   namespace: game-servers
+  annotations:
+    # Where this game's mods come from; see games/minecraft/gameserver.yaml for
+    # what the bot does with it. Thunderstore is per game, so the community slug
+    # is part of the registry's identity rather than a search filter — packages
+    # never cross between communities, and the pair is required together.
+    grizzly-gameservers.grizzly-endeavors.com/mod-registry: thunderstore
+    grizzly-gameservers.grizzly-endeavors.com/thunderstore-community: valheim
 spec:
   container: valheim
   ports:

@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use crate::registry::Side;
+
 /// How many hits a search returns. Deliberately small: hit titles and
 /// descriptions are third-party text entering the model's context, so the
 /// surface is bounded the same way game logs are.
@@ -83,6 +85,23 @@ pub(crate) struct SearchQuery {
     pub(crate) kind: Option<Kind>,
     pub(crate) loader: Option<Loader>,
     pub(crate) game_version: Option<String>,
+    pub(crate) side: Option<Side>,
+}
+
+/// The facet values that mean "this project does something on that side".
+///
+/// Both `required` and `optional` count: `optional` means the project works
+/// there, which is what a caller narrowing to a side is asking about. Only
+/// `unsupported` — the excluded third value — means it does not.
+const APPLIES: [&str; 2] = ["required", "optional"];
+
+/// The facet group selecting projects that apply on one side.
+fn side_group(field: &str) -> String {
+    let terms: Vec<String> = APPLIES
+        .iter()
+        .map(|support| format!("{field}:{support}"))
+        .collect();
+    facet_group(&terms.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 impl SearchQuery {
@@ -103,6 +122,17 @@ impl SearchQuery {
         }
         if let Some(version) = self.game_version.as_deref() {
             groups.push(facet_group(&[&format!("versions:{version}")]));
+        }
+        match self.side {
+            Some(Side::Server) => groups.push(side_group("server_side")),
+            Some(Side::Client) => groups.push(side_group("client_side")),
+            // Both sides are separate AND'd groups rather than one OR'd group:
+            // a project needing installing in both places must satisfy each.
+            Some(Side::Both) => {
+                groups.push(side_group("server_side"));
+                groups.push(side_group("client_side"));
+            }
+            None => {}
         }
         if groups.is_empty() {
             return None;

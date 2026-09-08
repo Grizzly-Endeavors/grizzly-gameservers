@@ -39,7 +39,7 @@ use crate::agones::{
     supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
     wait_for_instance_ready, wait_for_ready,
 };
-use crate::agones::{InstanceOwner, guild_usage, owner_of};
+use crate::agones::{InstanceOwner, ModRegistry, guild_usage, owner_of};
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
@@ -54,8 +54,8 @@ use crate::events::{
 use crate::limits::{LimitRefusal, check_added_load, format_cores, human_size};
 use crate::memory::{ForgetOutcome, RememberOutcome, normalize_scope};
 use crate::modrinth::{
-    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, list_or_none, search_projects,
-    short_description, short_title, versions_for_display,
+    Kind, Loader, Project, SearchHit, SearchQuery, fetch_project, search_projects,
+    versions_for_display,
 };
 use crate::notify::Escalation;
 use crate::prompts::{
@@ -68,7 +68,12 @@ use crate::prompts::{
     SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
     SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
+use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
+use crate::thunderstore::{
+    Listing, Package, SearchQuery as ThunderstoreQuery, fetch_package, search_packages,
+    split_full_name,
+};
 
 /// How a destructive tool obtains the human approval it requires.
 ///
@@ -396,7 +401,7 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ModInfo::NAME => match parse::<ModInfoParams>(args) {
-            Ok(params) => exec_mod_info(ctx, &params.slug).await,
+            Ok(params) => exec_mod_info(ctx, &params.game, &params.slug).await,
             Err(message) => message,
         },
         // Memory tools carry no server name (memory is shared across guilds), so
@@ -2397,33 +2402,138 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-/// Search Modrinth. Reaches no server, so it needs nothing from the cluster —
-/// only the shared HTTP client.
-async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String {
-    let query = SearchQuery {
-        text: params.query,
-        kind: params.kind.map(Kind::from),
-        loader: params.loader.map(Loader::from),
-        game_version: params.game_version,
+/// The registry a catalog game declares, or the text to hand back instead of
+/// searching: an unknown game is a typo to correct, a registry-less game is a
+/// final answer. Both mod tools resolve their `game` argument through here, so
+/// the two refusals are worded once.
+fn registry_for_game(ctx: &ToolCtx<'_>, game: &str) -> Result<ModRegistry, String> {
+    let Some(entry) = ctx.data.catalog.get(game) else {
+        return Err(mod_game_unknown(ctx, game));
     };
-    match search_projects(&ctx.data.http, &query).await {
-        Ok(hits) => format_mod_search(&query.text, query.game_version.as_deref(), &hits),
-        Err(err) => {
-            error!(error = ?err, query = %query.text, "agent: modrinth search failed");
-            modrinth_unavailable()
+    entry
+        .mod_registry
+        .clone()
+        .ok_or_else(|| mods_not_supported(game))
+}
+
+/// Search a game's mod registry. Reaches no server, so it needs nothing from
+/// the cluster — only the catalog and the shared HTTP client.
+async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String {
+    let registry = match registry_for_game(ctx, &params.game) {
+        Ok(registry) => registry,
+        Err(refusal) => return refusal,
+    };
+    // Computed before anything consumes `params`, so the "filters ignored"
+    // notice describes the call the model actually made.
+    let ignored = minecraft_only_filters(&params);
+    let side = params.side.map(Side::from);
+    match registry {
+        ModRegistry::Modrinth => {
+            let query = SearchQuery {
+                text: params.query,
+                kind: params.kind.map(Kind::from),
+                loader: params.loader.map(Loader::from),
+                game_version: params.game_version,
+                side,
+            };
+            match search_projects(&ctx.data.http, &query).await {
+                Ok(hits) => format_mod_search(&query.text, query.game_version.as_deref(), &hits),
+                Err(err) => {
+                    error!(error = ?err, query = %query.text, "agent: modrinth search failed");
+                    modrinth_unavailable()
+                }
+            }
+        }
+        ModRegistry::Thunderstore { community } => {
+            let query = ThunderstoreQuery {
+                community,
+                text: params.query,
+                side,
+            };
+            let listing = match search_packages(&ctx.data.http, &query).await {
+                Ok(hits) => format_thunderstore_search(&params.game, &query.text, &hits),
+                Err(err) => {
+                    error!(
+                        error = ?err,
+                        query = %query.text,
+                        community = %query.community,
+                        "agent: thunderstore search failed"
+                    );
+                    thunderstore_unavailable()
+                }
+            };
+            // The Minecraft-only filters are reported as dropped rather than
+            // silently ignored: a narrowing that never happened reads as a real
+            // one, and every result would then be miscategorised downstream.
+            if ignored.is_empty() {
+                listing
+            } else {
+                format!(
+                    "{}\n{listing}",
+                    prompts::ModrinthFiltersIgnored {
+                        game: &params.game,
+                        filters: &ignored.join(", "),
+                    }
+                    .render()
+                )
+            }
         }
     }
 }
 
-/// Look one Modrinth project up by slug. A slug the registry doesn't know is an
-/// ordinary answer — the exact case this tool exists to catch — not an error.
-async fn exec_mod_info(ctx: &ToolCtx<'_>, slug: &str) -> String {
-    match fetch_project(&ctx.data.http, slug).await {
-        Ok(Some(project)) => format_mod_info(&project),
-        Ok(None) => prompts::ModNotFound { slug }.render(),
-        Err(err) => {
-            error!(error = ?err, %slug, "agent: modrinth project lookup failed");
-            modrinth_unavailable()
+/// The Minecraft-only search parameters this call set, in schema order. Empty
+/// when the call is portable across registries.
+fn minecraft_only_filters(params: &SearchModsParams) -> Vec<&'static str> {
+    let mut set = Vec::new();
+    if params.kind.is_some() {
+        set.push("kind");
+    }
+    if params.loader.is_some() {
+        set.push("loader");
+    }
+    if params.game_version.is_some() {
+        set.push("game_version");
+    }
+    set
+}
+
+/// Look one mod up by the identifier its registry uses. An identifier the
+/// registry doesn't know is an ordinary answer — the exact case this tool exists
+/// to catch — not an error.
+async fn exec_mod_info(ctx: &ToolCtx<'_>, game: &str, slug: &str) -> String {
+    let registry = match registry_for_game(ctx, game) {
+        Ok(registry) => registry,
+        Err(refusal) => return refusal,
+    };
+    match registry {
+        ModRegistry::Modrinth => match fetch_project(&ctx.data.http, slug).await {
+            Ok(Some(project)) => format_mod_info(&project),
+            Ok(None) => prompts::ModNotFound { slug }.render(),
+            Err(err) => {
+                error!(error = ?err, %slug, "agent: modrinth project lookup failed");
+                modrinth_unavailable()
+            }
+        },
+        ModRegistry::Thunderstore { community } => {
+            // A bare slug is not a lookup that happens to miss — it is the wrong
+            // shape of identifier, so it is answered without a call rather than
+            // as a 404 that would read as "no such mod".
+            let Some((namespace, name)) = split_full_name(slug) else {
+                return prompts::ThunderstoreNotFound { game, slug }.render();
+            };
+            match fetch_package(&ctx.data.http, namespace, name).await {
+                Ok(Some(package)) => format_thunderstore_info(&package, &community),
+                Ok(None) => prompts::ThunderstoreNotFound { game, slug }.render(),
+                Err(err) => {
+                    error!(
+                        error = ?err,
+                        %slug,
+                        %community,
+                        "agent: thunderstore package lookup failed"
+                    );
+                    thunderstore_unavailable()
+                }
+            }
         }
     }
 }
@@ -3152,6 +3262,27 @@ fn modrinth_unavailable() -> String {
     prompts::ModrinthUnavailable::render()
 }
 
+fn thunderstore_unavailable() -> String {
+    prompts::ThunderstoreUnavailable::render()
+}
+
+/// A `game` argument naming nothing in the catalog — a typo to correct, so the
+/// result names the catalog.
+fn mod_game_unknown(ctx: &ToolCtx<'_>, game: &str) -> String {
+    let ids = game_ids(ctx);
+    prompts::ModGameUnknown {
+        game,
+        games: if ids.is_empty() { "(none)" } else { &ids },
+    }
+    .render()
+}
+
+/// A real game that declares no mod registry. Final: no other game id answers
+/// this question, so the result says to stop rather than to retry.
+fn mods_not_supported(game: &str) -> String {
+    prompts::ModsNotSupported { game }.render()
+}
+
 /// Render a `search_mods` listing: one bounded line per hit. `asked_for` is the
 /// game version the search filtered on, if any, so each line keeps it visible.
 fn format_mod_search(query: &str, asked_for: Option<&str>, hits: &[SearchHit]) -> String {
@@ -3202,6 +3333,64 @@ fn format_mod_info(project: &Project) -> String {
         client_side: &project.client_side,
         loaders: &loaders,
         versions: &versions,
+    }
+    .render()
+}
+
+/// Render a `search_mods` listing for a Thunderstore game: one bounded line per
+/// hit. A hit carries no version, so the header sends the model to `mod_info`
+/// for the string it would pin.
+fn format_thunderstore_search(game: &str, query: &str, hits: &[Listing]) -> String {
+    if hits.is_empty() {
+        return prompts::ThunderstoreSearchEmpty { game, query }.render();
+    }
+    let results = hits
+        .iter()
+        .map(format_thunderstore_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    prompts::ThunderstoreSearchHeader {
+        game,
+        query,
+        results: &results,
+    }
+    .render()
+}
+
+/// One search hit as a single line.
+fn format_thunderstore_line(hit: &Listing) -> String {
+    prompts::ThunderstoreSummaryLine {
+        package: &short_title(&hit.full_name()),
+        description: &short_description(&hit.description),
+        downloads: &hit.download_count.to_string(),
+        side: hit.side_support().label(),
+        updated: hit.updated_day(),
+    }
+    .render()
+}
+
+/// Render a resolved `mod_info` lookup for a Thunderstore package. The side
+/// classification is read from the game's own community: a package listed in
+/// several communities is categorised separately in each, and another game's
+/// categories describe another game.
+fn format_thunderstore_info(package: &Package, community: &str) -> String {
+    let shown = package.shown_dependencies();
+    let mut dependencies = list_or_none(&shown);
+    if package.dependencies_truncated() {
+        dependencies.push_str(", and more");
+    }
+    prompts::ThunderstorePackageDetail {
+        package: &short_title(&package.full_name()),
+        pinned: &package.pinned_name(),
+        description: &short_description(&package.latest.description),
+        downloads: &package.latest.downloads.to_string(),
+        side: package.side_support(community).label(),
+        status: if package.is_deprecated {
+            "deprecated by its author — do not install it"
+        } else {
+            "active"
+        },
+        dependencies: &dependencies,
     }
     .render()
 }
