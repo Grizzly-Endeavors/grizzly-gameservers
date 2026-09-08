@@ -92,4 +92,4 @@ Two things are worth keeping in mind for later work. **The removal rule held, bu
 
 The bad-slug flow also re-confirmed [ADR-010](../../decisions/010-recoverable-crash-escalation.md) in place: the `GameServer` never left `Ready` and the pod's restart count stayed 0 through the crash-and-repair cycle.
 
-Not fixed here: the two blocks are the first game-specific prose in the system prompt and every manager turn pays for them regardless of guild. Filed as issue #61 — a third path is wanted for guidance that is load-bearing (so not prunable like Gary's memory) but game-scoped (so not unconditional like a block).
+The two blocks were the first game-specific prose in the system prompt, and every manager turn paid for them regardless of guild. That is closed: both moved verbatim behind a `game_guide` tool that loads one game's workflow on demand, and the system prompt keeps a single pointer at it. See [ADR-032](../../decisions/032-game-guidance-loads-on-demand.md).

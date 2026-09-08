@@ -87,4 +87,8 @@ Phases 1 and 2 are independent; 3 needs 2; 4 needs 1; 5 needs all. Each ships as
 
 ### Phase 5 findings
 
-(none yet)
+- **`docs/decisions/README.md` was missing 029 and 030** as well as this work's 031 and 032; all four are indexed now.
+- **Issue #61 was already closed** before this phase reached it, so the merge commit's `closes #61` is a no-op. The work it describes did land here (ADR-032), and `../mod-management/phases.md`'s "not fixed here" paragraph is rewritten to say so rather than left pointing at an open issue that isn't.
+- **Two unrelated blockers were fixed to get a deploy at all**, each as its own PR rather than smuggled into a phase:
+  - the gate's trivy scan was failing `main` on 30 HIGH findings from the pinned `debian:trixie-slim` layer (CVE-2026-53612/53613/53614 in util-linux, CVE-2026-14456 in openssl) — the digest is bumped to one carrying `util-linux 2.41.5-0+deb13u1`;
+  - the gate runs a **newer stable toolchain than a local checkout gets by default** (1.98.1 vs 1.97.1 here), and 1.98's clippy flags two things 1.97's does not — `result_large_err` on `ResolveError::Unknown` (now boxed) and `unused_async_trait_impl` on the resolver test fixture. Worth knowing: `cargo clippy` does not re-emit diagnostics for unchanged crates, so a local run can look clean while the gate is red. `rustup update stable` before trusting a clean local lint.

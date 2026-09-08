@@ -1,6 +1,6 @@
 # Thunderstore Mods (Valheim first, r2modman-shaped) — Design
 
-**Status:** Approved, not yet implemented. This is the design of record for mod management on every game whose modding ecosystem is Thunderstore/r2modman. The phases and their verification checklists are in `phases.md` (same directory). The Minecraft/Modrinth design it extends is [`../mod-management/design.md`](../mod-management/design.md) and [ADR-012](../../decisions/012-per-instance-env-overlay.md).
+**Status:** Implemented. This is the design of record for mod management on every game whose modding ecosystem is Thunderstore/r2modman; Valheim is the first game on it. What each phase found — including where the shipped behaviour differs from what is written below — is recorded under the findings headings in `phases.md` (same directory). The decisions are [ADR-031](../../decisions/031-supervisor-reconciles-thunderstore-mods.md) (the reconciler) and [ADR-032](../../decisions/032-game-guidance-loads-on-demand.md) (on-demand guidance). The Minecraft/Modrinth design it extends is [`../mod-management/design.md`](../mod-management/design.md) and [ADR-012](../../decisions/012-per-instance-env-overlay.md).
 
 > This document must stand on its own: it will be implemented in fresh sessions that have only this doc, `phases.md`, and the codebase — not the conversation that produced it. Every external fact it relies on is stated here with how it was verified, because most of them came from reading upstream source and live API responses rather than documentation.
 
@@ -165,4 +165,4 @@ A manager-tier tool that targets no server: `game_guide(game)` returns the mod w
 
 ## Open questions
 
-None the phases do not close empirically: the per-package-subfolder detail of the layout rule, file ownership of root-written DLLs against the `valheim` runtime user, first-install wall time against the bot's readiness ceiling, and whether the inline reconcile starves control requests are all verified on a scratch server in Phase 3 and recorded in `phases.md`.
+None. The four the design left to empirical verification — the per-package-subfolder detail of the layout rule, file ownership of root-written DLLs against the `valheim` runtime user, first-install wall time against the bot's readiness ceiling, and whether the inline reconcile starves control requests — are closed in the Phase 3 findings in `phases.md`.
