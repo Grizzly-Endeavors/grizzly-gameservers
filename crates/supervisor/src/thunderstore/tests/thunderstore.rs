@@ -3,6 +3,24 @@ use super::*;
 use crate::config::ThunderstoreMods;
 use types::PackageId;
 
+/// A minimal package zip carrying nothing but its manifest — enough for the
+/// cache checks, which only read that.
+fn package_zip(name: &str, version: &str) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    writer.start_file("manifest.json", options).unwrap();
+    writer
+        .write_all(
+            format!(r#"{{"name":"{name}","version_number":"{version}","dependencies":[]}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
 fn mods(file: &str) -> ThunderstoreMods {
     ThunderstoreMods {
         file: file.to_owned(),
@@ -144,4 +162,37 @@ async fn an_empty_list_reconciles_to_an_empty_staged_tree_with_no_network() {
             .first()
             .is_some_and(|line| line.contains("no mods listed"))
     );
+}
+
+#[test]
+fn a_missing_archive_is_not_a_cache_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let release: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
+    assert!(!usable_in_cache(dir.path(), &release).unwrap());
+}
+
+#[test]
+fn a_damaged_archive_is_not_a_cache_hit_either() {
+    // Otherwise the download is skipped, staging fails on the damaged file, and
+    // every restart afterwards fails identically — a permanent break with no way
+    // out short of deleting the file by hand.
+    let dir = tempfile::tempdir().unwrap();
+    let release: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
+    cache::store(dir.path(), &release, b"not a zip at all").unwrap();
+    assert!(!usable_in_cache(dir.path(), &release).unwrap());
+}
+
+#[test]
+fn an_archive_for_a_different_release_is_not_a_cache_hit() {
+    // The manifest cross-check is what makes a cache hit trustworthy at all.
+    let dir = tempfile::tempdir().unwrap();
+    let wanted: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
+    let other: PackageRelease = "Author-Mod-2.0.0".parse().unwrap();
+    let bytes = package_zip("Mod", "2.0.0");
+    cache::store(dir.path(), &wanted, &bytes).unwrap();
+
+    assert!(!usable_in_cache(dir.path(), &wanted).unwrap());
+    // Sanity: the same bytes *are* a hit for the release they actually describe.
+    cache::store(dir.path(), &other, &bytes).unwrap();
+    assert!(usable_in_cache(dir.path(), &other).unwrap());
 }

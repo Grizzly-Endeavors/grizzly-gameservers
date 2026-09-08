@@ -174,7 +174,7 @@ async fn download_missing(
 ) -> Result<()> {
     for package in packages {
         let release = &package.release;
-        if cache::open(work_dir, release)?.is_some() {
+        if usable_in_cache(work_dir, release)? {
             continue;
         }
         info!(package = %release, "downloading mod");
@@ -187,6 +187,33 @@ async fn download_missing(
         cache::store(work_dir, release, &bytes)?;
     }
     Ok(())
+}
+
+/// Whether the cache already holds a usable copy of `release`.
+///
+/// A cache hit has to *hold up*, not merely exist. Treating presence as proof
+/// would make a damaged zip permanent: the download would be skipped, staging
+/// would fail on it, and every restart afterwards would fail identically with no
+/// way out short of someone deleting the file by hand.
+///
+/// # Errors
+///
+/// Returns an error only if the file exists and cannot be opened at all.
+fn usable_in_cache(work_dir: &Path, release: &PackageRelease) -> Result<bool> {
+    let Some(cached) = cache::open(work_dir, release)? else {
+        return Ok(false);
+    };
+    match archive::read_manifest(cached, release) {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            warn!(
+                package = %release,
+                error = ?err,
+                "cached mod archive is unusable; fetching it again"
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Write the `resolved` file: exactly what is installed, one release per line,
