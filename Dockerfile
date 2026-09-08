@@ -33,7 +33,7 @@ RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-game
 COPY . .
 RUN cargo build --release --locked -p grizzly-gameservers
 
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
