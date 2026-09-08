@@ -26,6 +26,25 @@ impl FakeSource {
         self
     }
 
+    /// The newest version this fixture registry knows of `id`.
+    fn newest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
+        if self.unreachable.contains(&id.to_string()) {
+            return Err(SourceError::Unavailable("fake outage".to_owned()));
+        }
+        let prefix = format!("{id}-");
+        let highest = self
+            .versions
+            .keys()
+            .filter_map(|release| release.strip_prefix(&prefix))
+            .filter_map(|version| version.parse::<PackageVersion>().ok())
+            .max()
+            .ok_or(SourceError::NotFound)?;
+        self.lookup(&PackageRelease {
+            id: id.clone(),
+            version: highest,
+        })
+    }
+
     fn lookup(&self, release: &PackageRelease) -> Result<SourceVersion, SourceError> {
         if self.unreachable.contains(&release.id.to_string()) {
             return Err(SourceError::Unavailable("fake outage".to_owned()));
@@ -44,27 +63,22 @@ impl FakeSource {
     }
 }
 
+// The fixture answers from a map, so neither method awaits anything; they return
+// ready futures rather than being `async fn`, which is the same contract without
+// a future that never yields.
 impl PackageSource for FakeSource {
-    async fn latest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
-        if self.unreachable.contains(&id.to_string()) {
-            return Err(SourceError::Unavailable("fake outage".to_owned()));
-        }
-        let prefix = format!("{id}-");
-        let highest = self
-            .versions
-            .keys()
-            .filter_map(|release| release.strip_prefix(&prefix))
-            .filter_map(|version| version.parse::<PackageVersion>().ok())
-            .max()
-            .ok_or(SourceError::NotFound)?;
-        self.lookup(&PackageRelease {
-            id: id.clone(),
-            version: highest,
-        })
+    fn latest(
+        &self,
+        id: &PackageId,
+    ) -> impl std::future::Future<Output = Result<SourceVersion, SourceError>> + Send {
+        std::future::ready(self.newest(id))
     }
 
-    async fn exact(&self, release: &PackageRelease) -> Result<SourceVersion, SourceError> {
-        self.lookup(release)
+    fn exact(
+        &self,
+        release: &PackageRelease,
+    ) -> impl std::future::Future<Output = Result<SourceVersion, SourceError>> + Send {
+        std::future::ready(self.lookup(release))
     }
 }
 

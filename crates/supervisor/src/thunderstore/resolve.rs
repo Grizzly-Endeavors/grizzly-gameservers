@@ -109,33 +109,38 @@ impl fmt::Display for ResolveWarning {
     }
 }
 
+/// A package the source could not produce, and who asked for it.
+///
+/// Split out and boxed inside [`ResolveError`] because it is several times the
+/// size of the other variants, and this type is what a `Result` carries on every
+/// resolution — an unboxed variant would make every success pay for the failure
+/// case's width.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownPackage {
+    pub id: PackageId,
+    pub version: Option<PackageVersion>,
+    pub requested_by: Requester,
+    pub cause: SourceError,
+}
+
 /// Why resolution failed. Every variant names what was asked for and who asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolveError {
-    Unknown {
-        id: PackageId,
-        version: Option<PackageVersion>,
-        requested_by: Requester,
-        cause: SourceError,
-    },
-    TooManyPackages {
-        limit: usize,
-    },
-    TooDeep {
-        limit: usize,
-        id: PackageId,
-    },
+    Unknown(Box<UnknownPackage>),
+    TooManyPackages { limit: usize },
+    TooDeep { limit: usize, id: PackageId },
 }
 
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unknown {
-                id,
-                version,
-                requested_by,
-                cause,
-            } => {
+            Self::Unknown(unknown) => {
+                let UnknownPackage {
+                    id,
+                    version,
+                    requested_by,
+                    cause,
+                } = unknown.as_ref();
                 let what = version.map_or_else(|| id.to_string(), |v| format!("{id}-{v}"));
                 write!(f, "{what} (from {requested_by}): {cause}")
             }
@@ -342,11 +347,13 @@ async fn fetch<S: PackageSource>(
         }
         None => source.latest(id).await,
     };
-    result.map_err(|cause| ResolveError::Unknown {
-        id: id.clone(),
-        version,
-        requested_by: requested_by.clone(),
-        cause,
+    result.map_err(|cause| {
+        ResolveError::Unknown(Box::new(UnknownPackage {
+            id: id.clone(),
+            version,
+            requested_by: requested_by.clone(),
+            cause,
+        }))
     })
 }
 
