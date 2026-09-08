@@ -1,4 +1,5 @@
 use super::*;
+use crate::registry::Side;
 
 fn query(text: &str) -> SearchQuery {
     SearchQuery {
@@ -57,6 +58,7 @@ fn every_filter_together_produces_one_group_each() {
         kind: Some(Kind::Mod),
         loader: Some(Loader::Neoforge),
         game_version: Some("26.2".to_owned()),
+        side: None,
     }
     .facets()
     .expect("filters set facets");
@@ -87,4 +89,59 @@ fn loaders_render_as_modrinth_category_names() {
     assert_eq!(Loader::Neoforge.to_string(), "neoforge");
     assert_eq!(Loader::Quilt.to_string(), "quilt");
     assert_eq!(Loader::Forge.to_string(), "forge");
+}
+
+#[test]
+fn a_server_side_search_accepts_required_and_optional_support() {
+    // "optional" means the project works server-side; only "unsupported" means
+    // it does not, so narrowing to a side must not exclude the optional half.
+    let facets = SearchQuery {
+        side: Some(Side::Server),
+        ..query("map")
+    }
+    .facets()
+    .expect("side sets a facet");
+    assert_eq!(
+        facets,
+        r#"[["server_side:required","server_side:optional"]]"#
+    );
+}
+
+#[test]
+fn a_both_sided_search_ands_the_two_groups() {
+    // One OR'd group would match a project needed on either side; a mod the
+    // players also have to install must satisfy both.
+    let facets = SearchQuery {
+        side: Some(Side::Both),
+        ..query("map")
+    }
+    .facets()
+    .expect("side sets a facet");
+    let parsed: serde_json::Value = serde_json::from_str(&facets).expect("valid json");
+    assert_eq!(
+        parsed,
+        serde_json::json!([
+            ["server_side:required", "server_side:optional"],
+            ["client_side:required", "client_side:optional"]
+        ])
+    );
+}
+
+#[test]
+fn side_composes_with_the_other_filters() {
+    let facets = SearchQuery {
+        kind: Some(Kind::Mod),
+        side: Some(Side::Client),
+        ..query("map")
+    }
+    .facets()
+    .expect("filters set facets");
+    let parsed: serde_json::Value = serde_json::from_str(&facets).expect("valid json");
+    assert_eq!(
+        parsed,
+        serde_json::json!([
+            ["project_type:mod"],
+            ["client_side:required", "client_side:optional"]
+        ])
+    );
 }

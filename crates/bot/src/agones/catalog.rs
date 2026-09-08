@@ -3,6 +3,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use super::mod_registry::{ModRegistry, mod_registry_or_warn};
+
 /// One game's raw, version-controlled templates as read from `games/<id>/`. The
 /// strings are deserialized per instance by the renderer rather than at load
 /// time, so a malformed template surfaces against a specific `/create` instead
@@ -13,6 +15,10 @@ pub(crate) struct GameCatalogEntry {
     pub(crate) gameserver_yaml: String,
     pub(crate) service_yaml: String,
     pub(crate) pvc_yaml: String,
+    /// Where this game's mods come from, read off the `GameServer` template's
+    /// annotations at load time. `None` for a game that declares none — and, by
+    /// the lenient wrapper, for one whose declaration is malformed.
+    pub(crate) mod_registry: Option<ModRegistry>,
 }
 
 /// The per-game catalog: every game the shim can provision, keyed by id.
@@ -77,11 +83,14 @@ pub(crate) async fn load_catalog(dir: &Path) -> Result<GameCatalog> {
 }
 
 async fn load_entry(id: &str, dir: &Path) -> Result<GameCatalogEntry> {
+    let gameserver_yaml = read_template(dir, "gameserver.yaml").await?;
+    let mod_registry = mod_registry_or_warn(id, &gameserver_yaml);
     Ok(GameCatalogEntry {
         id: id.to_owned(),
-        gameserver_yaml: read_template(dir, "gameserver.yaml").await?,
+        gameserver_yaml,
         service_yaml: read_template(dir, "service.yaml").await?,
         pvc_yaml: read_template(dir, "pvc.yaml").await?,
+        mod_registry,
     })
 }
 

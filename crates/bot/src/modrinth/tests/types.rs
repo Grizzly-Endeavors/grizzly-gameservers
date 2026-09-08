@@ -63,49 +63,6 @@ fn a_project_lookup_reads_its_own_loader_and_version_fields() {
 }
 
 #[test]
-fn short_text_passes_through_untouched() {
-    assert_eq!(truncate("Terralith", 80), "Terralith");
-    assert_eq!(truncate("abc", 3), "abc");
-}
-
-#[test]
-fn overlong_text_is_cut_and_marked() {
-    assert_eq!(truncate("abcdef", 3), "abc…");
-}
-
-#[test]
-fn truncation_counts_characters_not_bytes() {
-    // A byte-wise cut would split these and panic; the limit is a character
-    // count so multi-byte author text survives it.
-    assert_eq!(truncate("日本語テキスト", 3), "日本語…");
-    assert_eq!(truncate("émoji 🎮 pack", 7), "émoji 🎮…");
-}
-
-#[test]
-fn a_description_is_flattened_to_one_line() {
-    // Descriptions feed a one-line-per-hit rendering, so embedded newlines would
-    // break the listing apart into what reads like extra results.
-    assert_eq!(
-        short_description("adds biomes\nand  caves\n\nand more"),
-        "adds biomes and caves and more"
-    );
-}
-
-#[test]
-fn a_long_description_is_bounded() {
-    let long = "x".repeat(500);
-    let short = short_description(&long);
-    assert_eq!(short.chars().count(), 201, "200 characters plus the marker");
-    assert!(short.ends_with('…'));
-}
-
-#[test]
-fn a_long_title_is_bounded() {
-    let short = short_title(&"t".repeat(200));
-    assert_eq!(short.chars().count(), 81, "80 characters plus the marker");
-}
-
-#[test]
 fn recent_versions_takes_the_newest_end_of_the_list() {
     // Modrinth returns versions oldest-first, so "recent" is the tail.
     let versions: Vec<String> = (1..=20).map(|n| format!("26.{n}")).collect();
@@ -165,13 +122,4 @@ fn a_version_the_project_lacks_is_never_invented() {
     // never reported — worse than hiding a supported one.
     let versions = vec!["26.1".to_owned(), "26.2".to_owned()];
     assert_eq!(versions_for_display(&versions, Some("1.7.10")), versions);
-}
-
-#[test]
-fn an_empty_list_renders_as_words_not_a_blank() {
-    assert_eq!(list_or_none(&[]), "none listed");
-    assert_eq!(
-        list_or_none(&["fabric".to_owned(), "quilt".to_owned()]),
-        "fabric, quilt"
-    );
 }

@@ -14,7 +14,13 @@ Phases 1 and 2 are independent; 3 needs 2; 4 needs 1; 5 needs all. Each ships as
 
 ### Phase 1 findings
 
-(none yet)
+- **A Thunderstore search result carries no version at all.** The Cyberstorm listing envelope has `namespace`, `name`, `description`, `download_count`, `categories`, `is_deprecated`, `is_nsfw`, and `last_updated` — and nothing version-shaped. So a search line cannot be acted on: `mod_info` is the only source of the string a pinned entry uses, and `ThunderstoreSearchHeader` says so outright rather than leaving the model to compose one.
+- **The two endpoints spell a category differently.** A listing carries category *objects* with a `slug` (`server-side`); a package detail carries display *names* (`Server-side`). They differ only in case, so the classifier matches case-insensitively and no slugifier is needed. This is verified live in both directions (`the_side_categories_are_still_how_this_community_expresses_sidedness`, `a_package_detail_classifies_off_display_names`) — a classifier written against one spelling silently reports `Unknown` for everything reached through the other.
+- **`Unknown` sidedness is common, not exceptional.** `ValheimModding-Jotunn` — the community's own modding framework — carries `["Libraries", "Bog Witch Update"]` and no side category at all. The design's "neither means unknown, point the friend at the mod page" rule is therefore the normal path for libraries, not an edge case, and `SideSupport::Unknown` deliberately matches *no* side filter so an untagged package never survives a `server` filter as if the registry had vouched for it. The empty-search result names the side filter as the first thing to drop for exactly this reason.
+- **Modrinth's side facets accept `required` *and* `optional`.** Only `unsupported` means "does not apply here", so a side filter built from `required` alone would exclude projects that work fine on that side. Pinned by a unit test on the facet string and by a live narrowing test, since a well-formed facet with the wrong vocabulary matches nothing and looks like an empty registry.
+- **`SideFilterNotApplicable` was not created.** Both shipped registries express sidedness, so the result would be unreachable — and an orphaned prompt id fails the annotations test. Add it with the first registry that genuinely can't answer the question.
+- **The tool descriptions point at `game_guide`, which lands in Phase 4.** Deliberate, per `design.md` §4, but it means that between this phase's deploy and Phase 4's a `game_guide` call comes back as `UnknownTool`. Harmless (the model recovers and proceeds) and self-healing; worth knowing if the interval widens.
+- **The `SearchMods` schema now requires `["game", "query"]`.** Parameter order in the generated schema follows the `tool_schema` mapping order in the file, so `game` leads.
 
 ## Phase 2 — Supervisor reconciler (generic, inert until configured)
 

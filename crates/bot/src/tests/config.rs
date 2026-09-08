@@ -1073,3 +1073,94 @@ fn guild_limit_env_rejects_garbage_loudly() {
         );
     }
 }
+
+// ---- mod-registry drift guard ----
+//
+// The registry a game's mods come from is declared on its `GameServer`
+// annotations and read by the catalog loader through a *lenient* wrapper: a
+// malformed pair costs that one game its mod tools and warns, rather than
+// stopping the bot from starting. That leniency is deliberate and it is also
+// exactly what hides a typo — the symptom is Gary telling a friend their game
+// takes no mods, which is indistinguishable from the truth.
+//
+// This guard runs the strict parser over the real manifests, so a broken pair
+// fails CI instead of degrading in production, and pins the two games whose
+// registry is a decision rather than an accident.
+
+use crate::agones::parse_mod_registry_from_template;
+
+/// Every `games/<game>/gameserver.yaml` paired with its raw text, `_template`
+/// included — an annotation typo copied out of the template would propagate
+/// into every game onboarded afterwards.
+fn load_game_templates() -> Vec<(String, String)> {
+    let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
+    let entries =
+        std::fs::read_dir(&games_dir).unwrap_or_else(|err| panic!("reading {games_dir:?}: {err}"));
+    let mut templates = Vec::new();
+    for entry in entries {
+        let dir = entry.unwrap_or_else(|err| panic!("reading a games/ entry: {err}"));
+        let path = dir.path().join("gameserver.yaml");
+        if !path.is_file() {
+            continue;
+        }
+        let yaml =
+            std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {path:?}: {err}"));
+        templates.push((dir.file_name().to_string_lossy().into_owned(), yaml));
+    }
+    assert!(!templates.is_empty(), "no game templates found");
+    templates
+}
+
+#[test]
+fn every_game_declares_a_parseable_mod_registry_or_none_at_all() {
+    for (game, yaml) in load_game_templates() {
+        parse_mod_registry_from_template(&yaml).unwrap_or_else(|err| {
+            panic!(
+                "games/{game}/gameserver.yaml has unusable mod-registry annotations, which the \
+                 catalog loader degrades to \"this game takes no mods\" with only a log line: {err:#}"
+            )
+        });
+    }
+}
+
+#[test]
+fn the_moddable_games_declare_the_registries_they_are_built_against() {
+    use crate::agones::ModRegistry;
+
+    let declared: std::collections::BTreeMap<String, Option<ModRegistry>> = load_game_templates()
+        .into_iter()
+        .map(|(game, yaml)| {
+            let registry = parse_mod_registry_from_template(&yaml)
+                .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
+            (game, registry)
+        })
+        .collect();
+
+    assert_eq!(
+        declared.get("minecraft"),
+        Some(&Some(ModRegistry::Modrinth)),
+        "minecraft's mod tools are built against Modrinth"
+    );
+    assert_eq!(
+        declared.get("valheim"),
+        Some(&Some(ModRegistry::Thunderstore {
+            community: "valheim".to_owned()
+        })),
+        "valheim's mod tools are built against the valheim Thunderstore community"
+    );
+
+    // Every other game — the template included — must declare nothing rather
+    // than inherit a registry it has no install path for. A game that gains one
+    // is a deliberate edit here as well as in its manifest.
+    let unexpected: Vec<&String> = declared
+        .iter()
+        .filter(|(game, registry)| {
+            registry.is_some() && game.as_str() != "minecraft" && game.as_str() != "valheim"
+        })
+        .map(|(game, _)| game)
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "these games declare a mod registry with no install path behind it: {unexpected:?}"
+    );
+}

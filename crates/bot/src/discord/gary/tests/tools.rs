@@ -563,13 +563,49 @@ fn the_search_schema_offers_closed_enums_for_kind_and_loader() {
 }
 
 #[test]
-fn only_the_search_query_is_required() {
+fn a_search_names_its_game_and_its_query_and_nothing_else() {
+    // game is required rather than defaulted: each game has its own registry and
+    // the identifiers are not interchangeable, so a defaulted game would answer
+    // a different game's question confidently.
     let schema = SearchMods::spec().parameters;
     let required = schema
         .pointer("/required")
         .and_then(serde_json::Value::as_array)
         .expect("the schema names its required params");
-    assert_eq!(required, &[serde_json::json!("query")]);
+    assert_eq!(
+        required,
+        &[serde_json::json!("game"), serde_json::json!("query")]
+    );
+}
+
+#[test]
+fn the_search_schema_offers_a_closed_enum_for_side() {
+    let schema = SearchMods::spec().parameters;
+    let sides = schema
+        .pointer("/properties/side/enum")
+        .and_then(serde_json::Value::as_array)
+        .expect("side is an enum");
+    assert_eq!(
+        sides,
+        &[
+            serde_json::json!("server"),
+            serde_json::json!("client"),
+            serde_json::json!("both")
+        ]
+    );
+}
+
+#[test]
+fn a_lookup_names_its_game_alongside_the_identifier() {
+    let schema = ModInfo::spec().parameters;
+    let required = schema
+        .pointer("/required")
+        .and_then(serde_json::Value::as_array)
+        .expect("the schema names its required params");
+    assert_eq!(
+        required,
+        &[serde_json::json!("game"), serde_json::json!("slug")]
+    );
 }
 
 #[test]
@@ -937,5 +973,178 @@ fn an_unparseable_quantity_names_which_field_was_wrong() {
     assert!(
         message.contains("memory_request"),
         "the model has to know which of four figures to fix: {message}"
+    );
+}
+
+fn valheim_listing() -> Listing {
+    serde_json::from_str(
+        r#"{"namespace":"Mydayyy","name":"ServerSideMap",
+            "description":"Shares map exploration between players.",
+            "download_count":114094,
+            "categories":[{"id":"29","name":"Server-side","slug":"server-side"},
+                          {"id":"30","name":"Client-side","slug":"client-side"}],
+            "is_deprecated":false,"is_nsfw":false,
+            "last_updated":"2025-03-12T00:31:53Z"}"#,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_thunderstore_line_leads_with_the_pair_and_names_where_it_installs() {
+    // The Namespace-Name pair leads because it's the only field copied verbatim
+    // into a server's mod list.
+    let line = format_thunderstore_line(&valheim_listing());
+    assert!(line.starts_with("Mydayyy-ServerSideMap —"), "{line}");
+    assert!(
+        line.contains("needs installing on: the server and every player's machine"),
+        "{line}"
+    );
+    assert!(line.contains("downloads: 114094"), "{line}");
+    assert!(line.contains("last updated: 2025-03-12"), "{line}");
+}
+
+#[test]
+fn a_thunderstore_line_carries_no_version_and_the_header_says_where_to_get_one() {
+    // A search result genuinely has none, and an install entry must be pinned —
+    // so the listing has to hand the model on to mod_info rather than look
+    // actionable on its own.
+    let rendered = format_thunderstore_search("valheim", "map", &[valheim_listing()]);
+    assert!(rendered.contains("mod_info"), "{rendered}");
+    assert!(rendered.contains("best five only"), "{rendered}");
+    assert!(rendered.contains("valheim"), "{rendered}");
+    assert!(rendered.contains("Mydayyy-ServerSideMap"), "{rendered}");
+}
+
+#[test]
+fn an_empty_thunderstore_search_blames_the_side_filter_rather_than_the_registry() {
+    let rendered = format_thunderstore_search("valheim", "teleporter", &[]);
+    assert!(rendered.contains("teleporter"), "{rendered}");
+    assert!(rendered.contains("side filter"), "{rendered}");
+    assert!(!rendered.contains("couldn't reach"), "{rendered}");
+}
+
+#[test]
+fn package_detail_hands_over_the_exact_line_to_pin() {
+    // Composing Namespace-Name-Version is the step a model gets subtly wrong,
+    // and a malformed entry stops the server rather than being ignored.
+    let package: Package = serde_json::from_str(
+        r#"{"namespace":"ValheimModding","name":"Jotunn","is_deprecated":false,
+            "latest":{"version_number":"2.28.0","description":"Valheim library",
+                      "dependencies":["denikson-BepInExPack_Valheim-5.4.2333"],
+                      "downloads":1208923},
+            "community_listings":[{"community":"valheim",
+                                   "categories":["Libraries","Server-side","Client-side"]}]}"#,
+    )
+    .unwrap();
+    let rendered = format_thunderstore_info(&package, "valheim");
+    assert!(
+        rendered.contains("install this exact line: ValheimModding-Jotunn-2.28.0"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("status: active"), "{rendered}");
+    assert!(
+        rendered.contains("denikson-BepInExPack_Valheim-5.4.2333"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("installs automatically"),
+        "listing a dependency by hand is the mistake this line prevents: {rendered}"
+    );
+}
+
+#[test]
+fn a_deprecated_package_says_so_where_the_model_will_act_on_it() {
+    let package: Package = serde_json::from_str(
+        r#"{"namespace":"Someone","name":"Abandoned","is_deprecated":true,
+            "latest":{"version_number":"0.1.0","description":"","dependencies":[],"downloads":5},
+            "community_listings":[]}"#,
+    )
+    .unwrap();
+    let rendered = format_thunderstore_info(&package, "valheim");
+    assert!(rendered.contains("do not install it"), "{rendered}");
+    // No categories at all in this community: an honest "unknown", not a guess.
+    assert!(
+        rendered.contains("not stated by the registry"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("needs alongside it: none listed"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_thunderstore_outage_does_not_read_as_a_missing_mod() {
+    let rendered = thunderstore_unavailable();
+    assert!(
+        rendered.contains("couldn't reach the mod registry"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("doesn't mean the mod is missing"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn minecraft_only_filters_are_named_in_schema_order() {
+    let params = SearchModsParams {
+        game: "valheim".to_owned(),
+        query: "map".to_owned(),
+        side: None,
+        kind: Some(prompts::SearchModsKind::Datapack),
+        loader: None,
+        game_version: Some("26.2".to_owned()),
+    };
+    assert_eq!(
+        minecraft_only_filters(&params),
+        vec!["kind", "game_version"]
+    );
+}
+
+#[test]
+fn a_portable_search_names_no_ignored_filters() {
+    let params = SearchModsParams {
+        game: "valheim".to_owned(),
+        query: "map".to_owned(),
+        side: Some(prompts::SearchModsSide::Server),
+        kind: None,
+        loader: None,
+        game_version: None,
+    };
+    assert!(minecraft_only_filters(&params).is_empty());
+}
+
+#[test]
+fn ignored_filters_are_announced_rather_than_dropped_in_silence() {
+    // A narrowing that never happened reads as a real one: a model that asked
+    // for datapacks and got a full page back would relay every hit as one.
+    let rendered = prompts::ModrinthFiltersIgnored {
+        game: "valheim",
+        filters: "kind, game_version",
+    }
+    .render();
+    assert!(rendered.contains("were ignored"), "{rendered}");
+    assert!(rendered.contains("kind, game_version"), "{rendered}");
+}
+
+#[test]
+fn a_game_with_no_registry_is_a_final_answer_not_a_retry() {
+    let rendered = mods_not_supported("factorio");
+    assert!(rendered.contains("factorio"), "{rendered}");
+    assert!(rendered.contains("don't try another game id"), "{rendered}");
+}
+
+#[test]
+fn an_unknown_game_names_the_catalog_so_it_can_be_corrected() {
+    let rendered = prompts::ModGameUnknown {
+        game: "minceraft",
+        games: "factorio, minecraft, valheim",
+    }
+    .render();
+    assert!(rendered.contains("minceraft"), "{rendered}");
+    assert!(
+        rendered.contains("factorio, minecraft, valheim"),
+        "{rendered}"
     );
 }

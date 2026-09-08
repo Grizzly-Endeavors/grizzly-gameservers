@@ -10,6 +10,7 @@ mod client;
 mod control_client;
 mod instance;
 mod labels;
+mod mod_registry;
 mod naming;
 mod ports;
 mod provision;
@@ -28,6 +29,12 @@ pub(crate) use labels::{
     GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
     label_value,
 };
+pub(crate) use mod_registry::ModRegistry;
+// Only the catalog drift guard in `crate::tests::config` reads the strict
+// parser — the runtime path goes through the lenient wrapper inside
+// `mod_registry` — so exporting it unconditionally would be an unused import.
+#[cfg(test)]
+pub(crate) use mod_registry::parse_mod_registry_from_template;
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ProvisionSpec, ShutdownOutcome, StartBegin,

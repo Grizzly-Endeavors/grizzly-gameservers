@@ -24,12 +24,14 @@ mod memory;
 mod modrinth;
 mod notify;
 mod prompts;
+mod registry;
 mod settings;
 mod signups;
 mod sizing;
 mod store;
 mod telemetry;
 mod throttle;
+mod thunderstore;
 mod untrusted;
 mod watchdog;
 

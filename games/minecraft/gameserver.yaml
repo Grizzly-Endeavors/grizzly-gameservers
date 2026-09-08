@@ -16,6 +16,12 @@ kind: GameServer
 metadata:
   name: minecraft
   namespace: game-servers
+  annotations:
+    # Where this game's mods come from. The bot reads it at catalog load and
+    # points `search_mods`/`mod_info` at that registry; a game without it takes
+    # no mods through Gary at all. Declared here rather than in Rust so
+    # onboarding a moddable game stays a reviewable catalog edit.
+    grizzly-gameservers.grizzly-endeavors.com/mod-registry: modrinth
 spec:
   # Agones injects its SDK sidecar, so the pod is multi-container; name the one
   # that owns the game port.

@@ -18,6 +18,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::modrinth::{Kind, SearchQuery};
+    use crate::registry::Side;
 
     /// Terralith ships as both a datapack and a jar mod, so it is the one
     /// project that tells a correct kind filter from a plausible-looking one.
@@ -79,6 +80,27 @@ mod tests {
             assert!(
                 filtered * 2 >= unfiltered,
                 "{kind:?} collapsed {unfiltered} hits to {filtered} — the terms are likely disjoint"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Modrinth API"]
+    async fn the_side_facets_narrow_without_emptying_the_result() {
+        // The same trap the kind filter fell into: `server_side` is a real facet
+        // field, but a wrong support vocabulary would be well-formed and match
+        // nothing. A side filter is a narrowing, so it must keep a healthy share.
+        let unfiltered = slugs(&seeking(None)).await.len();
+        for side in [Side::Server, Side::Client, Side::Both] {
+            let filtered = slugs(&SearchQuery {
+                side: Some(side),
+                ..seeking(None)
+            })
+            .await
+            .len();
+            assert!(
+                filtered > 0,
+                "{side:?} collapsed {unfiltered} hits to none — the support vocabulary is likely wrong"
             );
         }
     }
