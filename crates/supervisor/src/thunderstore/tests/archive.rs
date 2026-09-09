@@ -254,14 +254,74 @@ fn an_absolute_entry_is_refused() {
 }
 
 #[test]
-fn a_backslash_entry_is_refused() {
+fn a_backslash_entry_that_climbs_is_still_refused() {
+    // Backslashes are separators, so this is `../evil.dll` and has to be caught
+    // as the traversal it is. Normalising first is what makes that possible: on
+    // Unix `Path::new("..\\evil.dll")` is one component literally named
+    // `..\evil.dll`, which `ParentDir` would never match.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
         (r"..\evil.dll", b"MZ"),
     ]);
     let err = extract_to(bytes, dir.path()).unwrap_err();
-    assert!(format!("{err:#}").contains("backslash"), "{err:#}");
+    assert!(format!("{err:#}").contains("climbs out"), "{err:#}");
+}
+
+#[test]
+fn a_windows_packed_entry_installs_rather_than_being_refused() {
+    // A real package hit this: ArgusMagnus-ServersideQoL-2.0.0 is zipped with
+    // backslash separators, which is a fact about the packer rather than a
+    // security problem — r2modman installs it fine, and so must this.
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = zip_with(&[
+        ("manifest.json", &manifest("Mod", "1.0.0")),
+        (r"plugins\Mod.dll", b"MZ"),
+    ]);
+    extract_to(bytes, dir.path()).expect("a windows-packed archive installs");
+    let installed = dir.path().join("BepInEx/plugins/Author-Mod/Mod.dll");
+    assert!(installed.is_file(), "expected {}", installed.display());
+}
+
+#[test]
+fn the_real_serverside_qol_shape_routes_to_both_loader_dirs() {
+    // ArgusMagnus-ServersideQoL-2.0.0 as actually published: a mixed archive
+    // whose metadata uses no separator and whose nested entries use backslashes,
+    // spanning two per-package loader directories. This is the package that
+    // exposed the defect, so its exact shape is the regression test.
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = zip_with(&[
+        ("manifest.json", &manifest("Mod", "1.0.0")),
+        ("README.md", b"readme"),
+        (r"patchers\Mod.Patchers.dll", b"MZ"),
+        (r"plugins\Mod.deps.json", b"{}"),
+        (r"plugins\Mod.dll", b"MZ"),
+    ]);
+    extract_to(bytes, dir.path()).expect("the published archive installs");
+    for expected in [
+        "BepInEx/patchers/Author-Mod/Mod.Patchers.dll",
+        "BepInEx/plugins/Author-Mod/Mod.deps.json",
+        "BepInEx/plugins/Author-Mod/Mod.dll",
+    ] {
+        let path = dir.path().join(expected);
+        assert!(path.is_file(), "expected {}", path.display());
+    }
+}
+
+#[test]
+fn a_backslash_never_becomes_part_of_a_filename() {
+    // Planning the layout on the raw name would treat `a\b.dll` as one filename
+    // and write a file with a backslash in it, which nothing would ever load.
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = zip_with(&[
+        ("manifest.json", &manifest("Mod", "1.0.0")),
+        (r"BepInEx\plugins\nested\Deep.dll", b"MZ"),
+    ]);
+    extract_to(bytes, dir.path()).expect("a nested windows-packed archive installs");
+    let installed = dir
+        .path()
+        .join("BepInEx/plugins/Author-Mod/nested/Deep.dll");
+    assert!(installed.is_file(), "expected {}", installed.display());
 }
 
 #[test]

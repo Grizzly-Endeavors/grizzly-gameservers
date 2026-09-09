@@ -122,7 +122,7 @@ pub fn plan_layout(layout: PackageLayout, id: &PackageId, path: &Path) -> Option
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => part.to_str(),
-            // Everything else was already refused by `check_entry_name`; a
+            // Everything else was already refused by `safe_entry_name`; a
             // caller passing one anyway gets it dropped rather than honoured.
             Component::Prefix(_)
             | Component::RootDir
@@ -183,28 +183,44 @@ pub fn plan_layout(layout: PackageLayout, id: &PackageId, path: &Path) -> Option
     )
 }
 
-/// Whether a zip entry's own name is safe to act on at all.
+/// A zip entry's name as this extractor will act on it: separators normalised,
+/// and refused outright if it addresses anywhere but inside the tree.
 ///
-/// Rejected outright rather than sanitised: an archive containing `../evil.dll`
-/// is not a package with one bad path, it is an archive doing something it has
-/// no reason to do, and the rest of its files are no more trustworthy.
-fn check_entry_name(name: &str) -> Result<()> {
+/// A path that climbs is rejected rather than sanitised: an archive containing
+/// `../evil.dll` is not a package with one bad path, it is an archive doing
+/// something it has no reason to do, and the rest of its files are no more
+/// trustworthy.
+///
+/// A **backslash is a separator here, not an attack.** The zip spec says entries
+/// use `/` (APPNOTE 4.4.17.1), but Windows packers write `\` anyway and
+/// r2modman installs those packages happily — so refusing them refused real,
+/// correctly-built mods over their packaging tool. Normalising *before* the
+/// checks below is also what makes those checks real: on Unix
+/// `Path::new("..\\evil.dll")` is a single component literally named
+/// `..\evil.dll`, so `ParentDir` would never match and the climb would pass. The
+/// blanket rejection was carrying that weight; now the traversal check sees the
+/// same path the extractor will write.
+///
+/// # Errors
+///
+/// Returns an error if the name holds a NUL byte, is absolute, or climbs out of
+/// the archive. Messages quote the archive's own spelling, since what is being
+/// judged is what it claims.
+fn safe_entry_name(name: &str) -> Result<String> {
     if name.contains('\0') {
         bail!("archive entry {name:?} contains a NUL byte");
     }
-    if name.contains('\\') {
-        bail!("archive entry {name:?} uses backslashes, which could escape the install tree");
-    }
-    if name.starts_with('/') {
+    let normalized = name.replace('\\', "/");
+    if normalized.starts_with('/') {
         bail!("archive entry {name:?} is an absolute path");
     }
-    if Path::new(name)
+    if Path::new(&normalized)
         .components()
         .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
     {
         bail!("archive entry {name:?} climbs out of the archive");
     }
-    Ok(())
+    Ok(normalized)
 }
 
 /// Read and validate the `manifest.json` at the root of a package zip.
@@ -257,7 +273,7 @@ fn strip_bom(text: &str) -> &str {
 ///
 /// `dest` is the staged loader root; every produced path is under it by
 /// construction, because [`plan_layout`] builds from a fixed prefix and
-/// [`check_entry_name`] has already refused anything that could climb.
+/// [`safe_entry_name`] has already refused anything that could climb.
 ///
 /// # Errors
 ///
@@ -304,7 +320,11 @@ pub fn extract_within<R: Read + Seek>(
         // rewritten to `etc/passwd` and sail through the check below. What has
         // to be judged is what the archive actually claims.
         let name = entry.name().to_owned();
-        check_entry_name(&name).with_context(|| format!("in the archive for {release}"))?;
+        // The normalised form is what everything downstream must use: planning
+        // the layout on the raw name would treat a Windows-packed `a\\b.dll` as
+        // one filename and write a file with a backslash in its name.
+        let entry_path =
+            safe_entry_name(&name).with_context(|| format!("in the archive for {release}"))?;
         if entry.is_symlink() {
             bail!("archive entry {name:?} in {release} is a symlink");
         }
@@ -324,7 +344,7 @@ pub fn extract_within<R: Read + Seek>(
                 caps.total_bytes
             );
         }
-        let Some(relative) = plan_layout(layout, &release.id, Path::new(&name)) else {
+        let Some(relative) = plan_layout(layout, &release.id, Path::new(&entry_path)) else {
             continue;
         };
         let target = dest.join(&relative);
