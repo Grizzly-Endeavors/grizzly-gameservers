@@ -219,27 +219,122 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
 pub struct FileWindow {
     /// The decoded text of the window.
     pub content: String,
-    /// Whether bytes remain after this window.
+    /// Whether more of the file remains than came back.
     pub truncated: bool,
-    /// The byte offset the window actually starts at. May sit slightly past a
-    /// requested offset that landed inside a multi-byte character, which is why
-    /// it is reported rather than assumed: a caller paging with
-    /// `offset + content.len()` needs the real start to make progress.
-    pub offset: usize,
+    /// Whether any line in the window was cut at [`READ_LINE_CHARS`].
+    pub line_cut: bool,
+    /// 1-based line the window starts at, or `0` for a byte-addressed read,
+    /// whose start doesn't correspond to a line boundary.
+    pub start_line: usize,
+    /// Lines in the whole file, not in this window — what tells a caller how
+    /// much it hasn't seen. `0` for a byte-addressed read, which never counts.
+    pub total_lines: usize,
 }
 
-/// Read up to [`READ_CAP_BYTES`] of a UTF-8 file under `root`, starting at
-/// `offset` bytes in.
+/// Characters of a single line returned before it is cut short. One minified
+/// JSON config is a single line of hundreds of kilobytes, and without this it
+/// would consume a whole line window on its own.
+pub const READ_LINE_CHARS: usize = 2000;
+
+/// Marker appended to a line cut at [`READ_LINE_CHARS`], so a truncated line
+/// can't be mistaken for the file's actual content.
+const LINE_CUT_MARKER: &str = "… [line truncated]";
+
+/// Read a window of `count` lines from `rel`, starting at 1-based `start`.
 ///
-/// An offset past the end of the file reads as an empty, untruncated window
-/// rather than an error — that is the natural end of a paged read, not a
-/// mistake worth reporting as one.
+/// Streams rather than loading the file, so a large file costs IO instead of
+/// memory, and counts the whole file's lines on the way through so the caller
+/// learns what it hasn't seen. A `start` past the end of the file reads as an
+/// empty window rather than an error — the natural end of a paged read.
+///
+/// Each line is cut at [`READ_LINE_CHARS`], and the window as a whole is still
+/// bounded by [`READ_CAP_BYTES`]; `truncated` covers all three ways a window can
+/// fall short of the file — more lines after it, a line cut short, or the byte
+/// cap reached.
 ///
 /// # Errors
 ///
 /// Returns [`FsError::OutsideRoot`], [`FsError::NotFound`], [`FsError::NotAFile`]
 /// for a directory, [`FsError::NotText`] for non-UTF-8 bytes, or [`FsError::Io`].
-pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileWindow, FsError> {
+pub fn read_file_lines(
+    root: &Path,
+    rel: &str,
+    start: usize,
+    count: usize,
+) -> Result<FileWindow, FsError> {
+    use std::io::BufRead as _;
+
+    let resolved = resolve_in_root(root, rel)?;
+    let canonical = canonical_within(root, &resolved)?;
+    let meta = std::fs::metadata(&canonical).map_err(|err| io(&err))?;
+    if meta.is_dir() {
+        return Err(FsError::NotAFile);
+    }
+    let file = std::fs::File::open(&canonical).map_err(|err| io(&err))?;
+    let reader = std::io::BufReader::new(file);
+
+    // A `start` of zero would otherwise silently mean "line one"; 1-based is the
+    // contract, and clamping keeps an off-by-one caller reading the file's head
+    // rather than erroring on a detail it can't see.
+    let first = start.max(1);
+    let last = first.saturating_add(count);
+    let mut content = String::new();
+    let mut total_lines = 0_usize;
+    let mut cut_a_line = false;
+    let mut hit_byte_cap = false;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(line) => line,
+            // An invalid byte anywhere means this isn't a text file, which is the
+            // same verdict the byte-addressed read reaches; `InvalidData` is how
+            // `BufRead::lines` reports it.
+            Err(err) if err.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(FsError::NotText);
+            }
+            Err(err) => return Err(io(&err)),
+        };
+        total_lines = total_lines.saturating_add(1);
+        if total_lines < first || total_lines >= last || hit_byte_cap {
+            continue;
+        }
+        let kept = match line.char_indices().nth(READ_LINE_CHARS) {
+            Some((cut, _)) => {
+                cut_a_line = true;
+                let head = line.get(..cut).unwrap_or(&line);
+                format!("{head}{LINE_CUT_MARKER}")
+            }
+            None => line,
+        };
+        if content.len().saturating_add(kept.len()) > READ_CAP_BYTES {
+            hit_byte_cap = true;
+            continue;
+        }
+        content.push_str(&kept);
+        content.push('\n');
+    }
+
+    let more_lines = total_lines >= last;
+    Ok(FileWindow {
+        content,
+        truncated: more_lines || hit_byte_cap,
+        line_cut: cut_a_line,
+        start_line: first,
+        total_lines,
+    })
+}
+
+/// Read up to [`READ_CAP_BYTES`] of a UTF-8 file under `root`.
+///
+/// The whole file, for a caller that will parse it. Anything read for a person
+/// or a model wants [`read_file_lines`] instead, which bounds what comes back
+/// and says where it sits in the file.
+///
+/// # Errors
+///
+/// Returns [`FsError::OutsideRoot`], [`FsError::NotFound`], [`FsError::NotAFile`]
+/// for a directory, [`FsError::NotText`] for non-UTF-8 bytes, or [`FsError::Io`].
+pub fn read_file(root: &Path, rel: &str) -> Result<FileWindow, FsError> {
     let resolved = resolve_in_root(root, rel)?;
     let canonical = canonical_within(root, &resolved)?;
     let meta = std::fs::metadata(&canonical).map_err(|err| io(&err))?;
@@ -247,30 +342,16 @@ pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileWindow, Fs
         return Err(FsError::NotAFile);
     }
     let bytes = std::fs::read(&canonical).map_err(|err| io(&err))?;
-    let start = offset.min(bytes.len());
-    let window = bytes.get(start..).unwrap_or(&[]);
-    let truncated = window.len() > READ_CAP_BYTES;
-    let capped = window.get(..READ_CAP_BYTES).unwrap_or(window);
-    // An offset can land inside a multi-byte character, leaving the window
-    // opening on continuation bytes that are not a character on their own. Drop
-    // them rather than call an ordinary UTF-8 file binary.
-    let skipped = if start > 0 {
-        capped
-            .iter()
-            .take_while(|byte| (**byte & 0b1100_0000) == 0b1000_0000)
-            .count()
-    } else {
-        0
-    };
-    let slice = capped.get(skipped..).unwrap_or(&[]);
-    let content = match std::str::from_utf8(slice) {
+    let truncated = bytes.len() > READ_CAP_BYTES;
+    let capped = bytes.get(..READ_CAP_BYTES).unwrap_or(&bytes);
+    let content = match std::str::from_utf8(capped) {
         Ok(text) => text.to_owned(),
         // Cutting at the cap can split a multibyte char, which surfaces as an
         // *incomplete* trailing sequence (`error_len() == None`). Keep the valid
         // prefix rather than mislabel a real UTF-8 file as binary — a genuine
         // invalid byte (`error_len() == Some`) is really not text.
         Err(err) if truncated && err.error_len().is_none() => {
-            let valid = slice.get(..err.valid_up_to()).unwrap_or(slice);
+            let valid = capped.get(..err.valid_up_to()).unwrap_or(capped);
             String::from_utf8_lossy(valid).into_owned()
         }
         Err(_) => return Err(FsError::NotText),
@@ -278,8 +359,69 @@ pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileWindow, Fs
     Ok(FileWindow {
         content,
         truncated,
-        offset: start.saturating_add(skipped),
+        line_cut: false,
+        // Not addressed in lines, and counting them is work this caller didn't
+        // ask for.
+        start_line: 0,
+        total_lines: 0,
     })
+}
+
+/// Replace the single occurrence of `old` with `new` in a file under `root`,
+/// snapshotting the prior version first exactly as [`write_file`] does.
+///
+/// Returns how many times `old` occurred. Anything but exactly one leaves the
+/// file untouched: zero has no location to write at, and more than one would mean
+/// guessing which the caller meant. Only the count comes back, so a caller learns
+/// why an edit didn't land without the file's contents crossing the wire.
+///
+/// # Errors
+///
+/// Returns [`FsError::OutsideRoot`], [`FsError::NotFound`], [`FsError::NotAFile`]
+/// for a directory, [`FsError::NotText`] for non-UTF-8 bytes, [`FsError::TooLarge`]
+/// if the result would exceed [`WRITE_CAP_BYTES`], or [`FsError::Io`].
+pub fn edit_file(root: &Path, rel: &str, old: &str, new: &str) -> Result<EditCount, FsError> {
+    let resolved = resolve_in_root(root, rel)?;
+    let canonical = canonical_within(root, &resolved)?;
+    let meta = std::fs::metadata(&canonical).map_err(|err| io(&err))?;
+    if meta.is_dir() {
+        return Err(FsError::NotAFile);
+    }
+    // Checked before the read, not after: an edit has to write the whole file
+    // back, so a file already past the write cap can never be edited, and
+    // learning that from its metadata avoids pulling it into memory to find out.
+    if meta.len() > WRITE_CAP_BYTES as u64 {
+        return Err(FsError::TooLarge);
+    }
+    let bytes = std::fs::read(&canonical).map_err(|err| io(&err))?;
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Err(FsError::NotText);
+    };
+
+    let occurrences = text.matches(old).count();
+    if occurrences != 1 {
+        return Ok(EditCount {
+            occurrences,
+            backed_up: false,
+        });
+    }
+    let updated = text.replacen(old, new, 1);
+    if updated.len() > WRITE_CAP_BYTES {
+        return Err(FsError::TooLarge);
+    }
+    let backed_up = write_file(root, rel, &updated)?;
+    Ok(EditCount {
+        occurrences,
+        backed_up,
+    })
+}
+
+/// What an [`edit_file`] attempt did: how many times the anchor matched, and
+/// whether a snapshot was taken (only ever on the single-match path that wrote).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditCount {
+    pub occurrences: usize,
+    pub backed_up: bool,
 }
 
 /// Overwrite a file under `root`, snapshotting any existing version first.

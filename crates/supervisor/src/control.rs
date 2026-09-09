@@ -12,11 +12,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use grizzly_control_api::{
     ANNOUNCE_PATH, ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, COMMAND_PATH, CommandRequest,
-    CommandResponse, ControlCommand, ControlError, ControlOk, ExtractQuery, FS_LIST_PATH,
-    FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse,
-    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest,
-    RestoreResponse, ResultKind, RouteError, SHELL_PATH, ShellRequest, StatusResponse,
-    WriteRequest, WriteResponse,
+    CommandResponse, ControlCommand, ControlError, ControlOk, DEFAULT_READ_LINES, EditRequest,
+    EditResponse, ExtractQuery, FS_EDIT_PATH, FS_LIST_PATH, FS_READ_PATH, FS_RESTORE_PATH,
+    FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse, OCCUPANCY_PATH,
+    OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest, RestoreResponse,
+    ResultKind, RouteError, SHELL_PATH, ShellRequest, StatusResponse, WriteRequest, WriteResponse,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -101,6 +101,7 @@ pub async fn serve(
         .route(FS_LIST_PATH, get(fs_list))
         .route(FS_READ_PATH, get(fs_read))
         .route(FS_WRITE_PATH, post(fs_write))
+        .route(FS_EDIT_PATH, post(fs_edit))
         .route(FS_RESTORE_PATH, post(fs_restore))
         .route(ARCHIVE_PATH, get(archive_out).post(archive_in))
         .route(LOGS_PATH, get(logs_tail))
@@ -190,18 +191,48 @@ async fn fs_list(State(state): State<ControlState>, Query(query): Query<PathQuer
 }
 
 async fn fs_read(State(state): State<ControlState>, Query(query): Query<ReadQuery>) -> Response {
-    match fs::read_file(&state.data_root, &query.path, query.offset.unwrap_or(0)) {
+    // Naming neither half of a window asks for the whole file, which is the
+    // parser's read. Naming either one asks for a window, and the other half
+    // falls back to a default rather than turning a partial request into a
+    // whole-file one.
+    let read = match (query.start_line, query.line_count) {
+        (None, None) => fs::read_file(&state.data_root, &query.path),
+        (start, count) => fs::read_file_lines(
+            &state.data_root,
+            &query.path,
+            start.unwrap_or(1),
+            count.unwrap_or(DEFAULT_READ_LINES),
+        ),
+    };
+    match read {
         Ok(window) => (
             StatusCode::OK,
             Json(ReadResponse {
                 path: query.path,
                 content: window.content,
                 truncated: window.truncated,
-                offset: window.offset,
+                line_cut: window.line_cut,
+                start_line: window.start_line,
+                total_lines: window.total_lines,
             }),
         )
             .into_response(),
         Err(err) => fs_error("read", &query.path, &err),
+    }
+}
+
+async fn fs_edit(State(state): State<ControlState>, Json(body): Json<EditRequest>) -> Response {
+    match fs::edit_file(&state.data_root, &body.path, &body.old, &body.new) {
+        Ok(edit) => (
+            StatusCode::OK,
+            Json(EditResponse {
+                path: body.path,
+                occurrences: edit.occurrences,
+                backed_up: edit.backed_up,
+            }),
+        )
+            .into_response(),
+        Err(err) => fs_error("edit", &body.path, &err),
     }
 }
 

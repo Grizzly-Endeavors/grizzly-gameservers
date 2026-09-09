@@ -13,6 +13,7 @@ use serenity::{
 };
 use tracing::{error, info, warn};
 
+use grizzly_control_api::DEFAULT_READ_LINES;
 use grizzly_control_api::{
     CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, ShellResponse,
     WriteResponse,
@@ -32,7 +33,7 @@ use super::super::{COMPONENT_TIMEOUT, Data, backup_ctx};
 use crate::agent::recorder::GuardrailVerdict;
 use crate::agent::{EscalationRequest, ToolCall, ToolDef, TurnOrigin};
 use crate::agones::{
-    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ProvisionSpec, ReadyWait,
+    DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ProvisionSpec, ReadWindow, ReadyWait,
     Replacement, ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary,
     ShutdownOutcome, StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name,
     catalog_sizing, destroy_instance, instance_runtime_state, list_active_servers, now_entropy,
@@ -503,8 +504,8 @@ async fn dispatch_files(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
             Err(message) => message,
         },
         ReadFile::NAME => match parse::<ReadFileParams>(args) {
-            Ok(params) => match narrow_offset(params.offset) {
-                Ok(offset) => exec_read_file(ctx, &params.name, &params.path, offset).await,
+            Ok(params) => match narrow_window(params.start_line, params.line_count) {
+                Ok(window) => exec_read_file(ctx, &params.name, &params.path, window).await,
                 Err(message) => message,
             },
             Err(message) => message,
@@ -659,16 +660,29 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
     })
 }
 
-/// Narrow the model-supplied byte offset to the unsigned window `read_file`
-/// wants, refusing a negative rather than silently reading from the start.
-fn narrow_offset(offset: Option<i64>) -> Result<Option<usize>, String> {
-    match offset {
-        None => Ok(None),
+/// Narrow the model-supplied line window to the unsigned form `read_file` wants,
+/// refusing a negative rather than silently reading somewhere else.
+///
+/// The generated schema carries both as signed integers (the v1 tool vocab has no
+/// unsigned type), so a negative value is possible on the wire. An omitted half
+/// takes its default rather than widening the request: a caller that named only
+/// a start wants a window there, not the whole file.
+fn narrow_window(start: Option<i64>, count: Option<i64>) -> Result<ReadWindow, String> {
+    let start = match start {
+        None => 1,
         Some(value) => match usize::try_from(value) {
-            Ok(narrowed) => Ok(Some(narrowed)),
-            Err(_) => Err(prompts::NegativeOffset::render()),
+            Ok(line) => line.max(1),
+            Err(_) => return Err(prompts::NegativeLineNumber::render()),
         },
-    }
+    };
+    let count = match count {
+        None => DEFAULT_READ_LINES,
+        Some(value) => match usize::try_from(value) {
+            Ok(lines) => lines,
+            Err(_) => return Err(prompts::NegativeLineCount::render()),
+        },
+    };
+    Ok(ReadWindow::Lines { start, count })
 }
 
 /// Narrow the model-supplied line count to the unsigned window `read_logs` wants.
@@ -2269,12 +2283,7 @@ async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
     }
 }
 
-async fn exec_read_file(
-    ctx: &ToolCtx<'_>,
-    server: &str,
-    path: &str,
-    offset: Option<usize>,
-) -> String {
+async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str, window: ReadWindow) -> String {
     match supervisor_read_file(
         &ctx.data.kube_client,
         &ctx.data.control_http,
@@ -2282,12 +2291,12 @@ async fn exec_read_file(
         server,
         ctx.data.control_port,
         path,
-        offset,
+        window,
     )
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(file) => format_file(&file, offset),
+            Ok(file) => format_file(&file),
             Err(problem) => problem,
         },
         Err(err) => {
@@ -3166,50 +3175,64 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
     .render()
 }
 
-/// Render a file window, with the notes that make a partial read legible: where
-/// it starts, where it continues, and — when the server is still running a
-/// supervisor that predates paged reads — that the offset was ignored outright.
-fn format_file(file: &ReadResponse, requested: Option<usize>) -> String {
+/// Render a file window for the model: every line numbered from its real
+/// position in the file, under a note saying which slice this is.
+///
+/// Numbering is what makes the window addressable. Without it the model can see
+/// the text but has no way to name a location in it — neither to ask for the
+/// next window nor to say where a value it found actually sits.
+fn format_file(file: &ReadResponse) -> String {
     // Each parenthetical's leading space is a code-owned separator; the note
     // prompts carry none, so the empty case renders cleanly.
     let mut notes = String::new();
-    // An older supervisor omits the echoed offset entirely, so it deserializes
-    // as zero. Content is the tell: an offset legitimately clamps to zero only
-    // on an empty file, which has nothing to show anyway.
-    let ignored =
-        requested.is_some_and(|asked| asked > 0) && file.offset == 0 && !file.content.is_empty();
-    if ignored {
-        notes.push(' ');
-        notes.push_str(&prompts::FileOffsetIgnored::render());
-    } else if file.offset > 0 {
+    let shown = file.content.lines().count();
+    let first = file.start_line.max(1);
+    // A window shorter than the whole file gets a range; a file that fits
+    // entirely in the window gets no note, because there is nothing the reader
+    // needs to act on.
+    if file.truncated || shown < file.total_lines {
+        let last = first.saturating_add(shown.saturating_sub(1));
         notes.push(' ');
         notes.push_str(
             &prompts::FileWindowNote {
-                offset: &file.offset.to_string(),
+                first: &first.to_string(),
+                last: &last.to_string(),
+                total: &file.total_lines.to_string(),
             }
             .render(),
         );
     }
-    if file.truncated {
+    if file.line_cut {
         notes.push(' ');
-        notes.push_str(&prompts::FileTruncatedNote::render());
-        if !ignored {
-            notes.push(' ');
-            notes.push_str(
-                &prompts::FileContinuation {
-                    offset: &file.offset.saturating_add(file.content.len()).to_string(),
-                }
-                .render(),
-            );
-        }
+        notes.push_str(&prompts::FileLineCut::render());
     }
     let note = notes;
     prompts::FileContents {
         path: file.path.as_str(),
         note: &note,
-        content: &crate::untrusted::scrub(file.content.as_str()),
+        content: &crate::untrusted::scrub(&number_lines(&file.content, first)),
     }
     .render()
+}
+
+/// Prefix each line with its 1-based position in the file, starting at `first`.
+///
+/// Scrubbing runs over the *numbered* text so a line of file content can't
+/// forge a line number: the number and its separator are added here, and the
+/// untrusted-fence check downstream sees them as part of the payload it is
+/// guarding rather than as structure it must preserve.
+fn number_lines(content: &str, first: usize) -> String {
+    content
+        .lines()
+        .enumerate()
+        .fold(String::new(), |mut acc, (index, line)| {
+            let number = first.saturating_add(index);
+            acc.push_str(&number.to_string());
+            acc.push('\t');
+            acc.push_str(line);
+            acc.push('\n');
+            acc
+        })
 }
 
 fn format_logs(server: &str, lines: &[String]) -> String {
@@ -3264,7 +3287,6 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
             .render()
         }
         EditOutcome::Unchanged => prompts::EditUnchanged { path }.render(),
-        EditOutcome::TooLargeToEdit => prompts::EditTooLarge { path }.render(),
         EditOutcome::Unserved(problem) => match fs_result(server, problem) {
             // Unserved only ever carries a failure; the Ok arm is unreachable in
             // practice but is handled defensively rather than panicking.

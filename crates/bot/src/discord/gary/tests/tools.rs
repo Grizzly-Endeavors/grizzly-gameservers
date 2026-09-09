@@ -632,21 +632,62 @@ fn discovery_tools_are_manager_and_up() {
 }
 
 #[test]
-fn read_file_notes_truncation() {
+fn a_whole_small_file_carries_no_window_note() {
     let whole = ReadResponse {
         path: "server.properties".to_owned(),
-        content: "difficulty=hard".to_owned(),
+        content: "difficulty=hard\n".to_owned(),
         truncated: false,
-        offset: 0,
+        line_cut: false,
+        start_line: 1,
+        total_lines: 1,
     };
-    assert!(!format_file(&whole, None).contains("truncated"));
-    let cut = ReadResponse {
-        path: "logs/latest.log".to_owned(),
-        content: "...".to_owned(),
+    let rendered = format_file(&whole);
+    assert!(
+        !rendered.contains("lines"),
+        "a file shown in full has nothing for the reader to act on"
+    );
+    assert!(
+        rendered.contains("1\tdifficulty=hard"),
+        "every line is numbered from its real position"
+    );
+}
+
+#[test]
+fn a_partial_window_says_where_it_sits_and_how_much_it_missed() {
+    let window = ReadResponse {
+        path: "BepInEx/config/items.cfg".to_owned(),
+        content: "a\nb\nc\n".to_owned(),
         truncated: true,
-        offset: 0,
+        line_cut: false,
+        start_line: 401,
+        total_lines: 5_000,
     };
-    assert!(format_file(&cut, None).contains("truncated"));
+    let rendered = format_file(&window);
+    assert!(rendered.contains("401"), "the window's first line");
+    assert!(rendered.contains("403"), "the window's last line");
+    assert!(
+        rendered.contains("5000"),
+        "the file's size, so a partial read can't read as the whole file"
+    );
+    assert!(
+        rendered.contains("401\ta"),
+        "numbering continues from the window's real start, not from one"
+    );
+}
+
+#[test]
+fn a_cut_line_is_called_out_separately_from_a_partial_window() {
+    // The two call for different responses — read on, versus search for the line
+    // — so they must not render as one undifferentiated "truncated".
+    let window = ReadResponse {
+        path: "config.json".to_owned(),
+        content: "{...".to_owned(),
+        truncated: false,
+        line_cut: true,
+        start_line: 1,
+        total_lines: 1,
+    };
+    assert!(format_file(&window).contains("too long"));
 }
 
 #[test]
@@ -691,10 +732,6 @@ fn edit_soft_failures_explain_the_recovery() {
     );
     let ambiguous = format_edit("mc", "server.properties", EditOutcome::Ambiguous(3));
     assert!(ambiguous.contains('3'), "ambiguity should report the count");
-    assert!(
-        format_edit("mc", "server.properties", EditOutcome::TooLargeToEdit).contains("write_file"),
-        "an un-editable large file should point at the write_file fallback"
-    );
     // A shared FS failure carried through Unserved renders like any other.
     assert_eq!(
         format_edit(
@@ -1246,68 +1283,68 @@ fn output_cannot_forge_a_fence_marker() {
     );
 }
 
-fn file_window(content: &str, offset: usize, truncated: bool) -> ReadResponse {
+fn file_window(content: &str, start_line: usize, total_lines: usize) -> ReadResponse {
     ReadResponse {
         path: "server.properties".to_owned(),
         content: content.to_owned(),
-        truncated,
-        offset,
+        truncated: start_line.saturating_sub(1) + content.lines().count() < total_lines,
+        line_cut: false,
+        start_line,
+        total_lines,
     }
 }
 
 #[test]
-fn a_whole_file_carries_no_window_notes() {
-    let rendered = format_file(&file_window("difficulty=normal", 0, false), None);
-    assert!(!rendered.contains("starting at byte"));
-    assert!(!rendered.contains("read on from byte"));
+fn a_window_names_the_line_the_next_one_starts_at() {
+    // Addressing in lines only pays if the number to ask for next is visible
+    // rather than computed; the range note is where it comes from.
+    let rendered = format_file(&file_window("a\nb\nc\n", 1, 900));
+    assert!(rendered.contains("1–3"), "got: {rendered}");
+    assert!(rendered.contains("900"));
 }
 
 #[test]
-fn a_truncated_read_names_the_offset_that_continues_it() {
-    let rendered = format_file(&file_window("0123456789", 0, true), None);
-    assert!(rendered.contains("read on from byte 10"));
+fn numbering_continues_from_the_window_start_not_from_one() {
+    let rendered = format_file(&file_window("x\ny\n", 250, 900));
+    assert!(rendered.contains("250\tx"));
+    assert!(rendered.contains("251\ty"));
 }
 
 #[test]
-fn a_windowed_read_says_where_it_started() {
-    let rendered = format_file(&file_window("tail", 4_096, false), Some(4_096));
-    assert!(rendered.contains("starting at byte 4096"));
-}
-
-#[test]
-fn continuation_counts_from_the_window_start_not_from_zero() {
-    // Paging is the whole point; an offset computed from zero would re-read the
-    // same window forever.
-    let rendered = format_file(&file_window("0123456789", 100, true), Some(100));
-    assert!(rendered.contains("read on from byte 110"));
-}
-
-#[test]
-fn an_older_supervisor_ignoring_the_offset_is_reported_not_hidden() {
-    // The echoed offset is zero because the field was absent from the reply.
-    let rendered = format_file(&file_window("start of file", 0, true), Some(4_096));
-    assert!(rendered.contains("older supervisor"));
-    // No continuation offset: it would point into a file this server won't page.
-    assert!(!rendered.contains("read on from byte"));
-}
-
-#[test]
-fn an_offset_landing_on_an_empty_file_is_not_mistaken_for_an_old_supervisor() {
-    let rendered = format_file(&file_window("", 0, false), Some(4_096));
-    assert!(!rendered.contains("older supervisor"));
-}
-
-#[test]
-fn a_negative_offset_is_refused_with_its_own_message() {
-    let refusal = narrow_offset(Some(-1)).expect_err("a negative offset is refused");
-    assert!(refusal.contains("offset"));
+fn a_negative_start_line_is_refused_with_its_own_message() {
+    let refusal = narrow_window(Some(-1), None).expect_err("a negative line is refused");
+    assert!(refusal.contains("line number"));
     assert!(!refusal.contains("line count"));
 }
 
 #[test]
-fn an_absent_offset_reads_from_the_start() {
-    assert_eq!(narrow_offset(None), Ok(None));
-    assert_eq!(narrow_offset(Some(0)), Ok(Some(0)));
+fn a_negative_line_count_is_refused_with_its_own_message() {
+    let refusal = narrow_window(None, Some(-5)).expect_err("a negative count is refused");
+    assert!(refusal.contains("line count"));
+}
+
+#[test]
+fn an_absent_window_reads_a_default_sized_head() {
+    assert_eq!(
+        narrow_window(None, None),
+        Ok(ReadWindow::Lines {
+            start: 1,
+            count: DEFAULT_READ_LINES
+        })
+    );
+}
+
+#[test]
+fn naming_half_a_window_keeps_it_a_window() {
+    // A start with no count must not widen into a whole-file read; the caller
+    // asked to look at one place.
+    assert_eq!(
+        narrow_window(Some(500), None),
+        Ok(ReadWindow::Lines {
+            start: 500,
+            count: DEFAULT_READ_LINES
+        })
+    );
 }
 
 #[test]

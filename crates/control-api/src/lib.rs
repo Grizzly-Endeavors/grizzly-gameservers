@@ -6,7 +6,7 @@
 //! consumes. Routing and bodies live together so a contract change is one edit
 //! both sides recompile against: the lifecycle routes as [`ControlCommand`], the
 //! body-carrying routes as path constants ([`FS_LIST_PATH`], [`FS_READ_PATH`],
-//! [`FS_WRITE_PATH`], [`FS_RESTORE_PATH`], [`LOGS_PATH`], [`COMMAND_PATH`],
+//! [`FS_WRITE_PATH`], [`FS_EDIT_PATH`], [`FS_RESTORE_PATH`], [`LOGS_PATH`], [`COMMAND_PATH`],
 //! [`ANNOUNCE_PATH`], plus [`ARCHIVE_PATH`] and [`OCCUPANCY_PATH`]), and each
 //! route's request/response bodies beside them — so no route path is a bare
 //! literal one side could rename into a silent 404. The control port both sides
@@ -260,32 +260,78 @@ pub struct ListResponse {
     pub entries: Vec<DirEntry>,
 }
 
-/// Query for `GET /fs/read`: which file, and how far into it to start.
+/// Query for `GET /fs/read`: which file, and which window of it to return.
 ///
-/// `offset` is a byte offset, which is what pages a file larger than the read
-/// cap: read once, and if the reply comes back `truncated`, ask again from
-/// `offset + content.len()`. Absent means the start of the file.
+/// `start_line` is 1-based and `line_count` bounds how many lines come back.
+/// Lines are the addressable unit because a caller can derive one from a window
+/// it has already seen or from a `grep` hit, which a byte offset never allowed.
+///
+/// Naming neither returns the whole file, capped by the supervisor's read cap.
+/// That is for a caller that will *parse* what it reads; anything being read for
+/// a person or a model should name a window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadQuery {
     pub path: String,
-    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<usize>,
 }
 
 /// Body of `GET /fs/read`. `content` is UTF-8 (the supervisor refuses binary);
-/// `truncated` is set when there were more bytes after the window that was
-/// returned.
+/// `truncated` is set when there was more of the file than came back — more
+/// lines after the window, a single line cut at its character cap, or the byte
+/// cap reached.
 ///
-/// `offset` echoes where the window actually started. It defaults to zero when
-/// absent so a reply from a supervisor predating paged reads still deserializes
-/// — and, because it is an echo rather than a repeat of the request, the caller
-/// can tell that older supervisor apart from one that honoured the offset.
+/// `start_line` and `total_lines` describe the window in lines. `total_lines` is
+/// the whole file's count, not the window's, so a caller knows how much it
+/// hasn't seen. Both are `0` for a whole-file read, which isn't addressed in
+/// lines and doesn't count them.
+///
+/// `line_cut` is separate from `truncated` because the two call for different
+/// responses: more file after the window is read by asking for the next window,
+/// while a single line too long to show is only ever seen whole by searching for
+/// it. Folded together they would be indistinguishable to the reader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResponse {
     pub path: String,
     pub content: String,
     pub truncated: bool,
-    #[serde(default)]
-    pub offset: usize,
+    pub line_cut: bool,
+    pub start_line: usize,
+    pub total_lines: usize,
+}
+
+/// Lines returned by `GET /fs/read` when the query names no window. Sized so an
+/// ordinary game config comes back whole and a mod config does not, which is
+/// what keeps `grep`-before-read worth doing on the files where it pays.
+pub const DEFAULT_READ_LINES: usize = 400;
+
+/// Body of `POST /fs/edit`: replace the one occurrence of `old` in `path` with
+/// `new`, snapshotting the prior version first exactly as a write does.
+///
+/// The replacement happens in the pod because that is where the file already is.
+/// Editing from the far side of the control API would mean shipping the whole
+/// file out and the whole file back to change one line, which bounds what can be
+/// edited by what fits in a read — a limit with nothing to do with editing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditRequest {
+    pub path: String,
+    pub old: String,
+    pub new: String,
+}
+
+/// Body of the `POST /fs/edit` response.
+///
+/// `occurrences` is what `old` matched: exactly one is the success, and any
+/// other value means nothing was written. Zero says the anchor isn't in the
+/// file; more than one says it needs to be more specific, and carrying the count
+/// lets the caller say which without a second read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditResponse {
+    pub path: String,
+    pub occurrences: usize,
+    pub backed_up: bool,
 }
 
 /// Body of `POST /fs/write`: overwrite `path` with `content`. The supervisor
@@ -383,6 +429,13 @@ pub const FS_READ_PATH: &str = "/fs/read";
 /// the prior version first ([`WriteRequest`]/[`WriteResponse`]). Shared so the
 /// bot's client and the supervisor's server build and match the same path.
 pub const FS_WRITE_PATH: &str = "/fs/write";
+
+/// Path of `POST /fs/edit`: replace one occurrence of an anchor in a file under
+/// the data root, snapshotting the prior version first
+/// ([`EditRequest`]/[`EditResponse`]). Shared so the bot's client and the
+/// supervisor's server build and match the same path.
+///
+pub const FS_EDIT_PATH: &str = "/fs/edit";
 
 /// Path of `POST /fs/restore`: restore a file from the snapshot its last write
 /// took ([`RestoreRequest`]/[`RestoreResponse`]). Shared so the bot's client and
