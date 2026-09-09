@@ -27,7 +27,7 @@ Building a bespoke `search_logs` route was the alternative, and it is the wrong 
 
 Parsing commands for "mutating" verbs was never a candidate: `sed -i`, a bare `>`, and a script invoked by name all defeat it, and a guarantee that can be defeated by rephrasing is not one.
 
-`read_file` gains a byte `offset` alongside this, so the tool can page past its own cap instead of the file's tail being permanently out of reach.
+`read_file` gains a byte `offset` alongside this, so the tool can page past its own cap instead of the file's tail being permanently out of reach. (Superseded by [ADR-036](036-context-is-sized-against-the-window.md), which addresses reads in lines instead.)
 
 ### Why Landlock and not a mount namespace
 
@@ -46,5 +46,5 @@ A kernel that cannot fully enforce the ruleset produces no shell at all. A sandb
 - Gary can now read anything on a server, including the loader logs outside the data root that were previously invisible to him. `grep`, `sed -n`, `find` and `tail` do the work that a bespoke search route would have done worse.
 - `ps` and process substitution do not work in this shell, because `/proc` is not readable. That is the deliberate cost of keeping the control token out of a Discord channel.
 - Writes are possible in `/tmp` and `/dev/null` only. "Read-only" means the game's state is immutable from here, not that no byte anywhere can be written — `sort` needs somewhere to spill.
-- **This ships in the game images, not the bot image.** A running server keeps its supervisor until it next starts, so `run_shell` answers "older supervisor without shell support" there, and `read_file` reports when an offset was ignored. Both say so rather than degrading quietly.
+- **This ships in the game images, not the bot image.** A running server keeps its supervisor until it next starts, so `run_shell` answers "older supervisor without shell support" there rather than degrading quietly.
 - A shell reads what still exists, which is only half the problem: the rollback's restart overwrites the evidence within seconds of producing it. [ADR-035](035-preserve-a-crashed-launch.md) closes that half by preserving each dead launch's output to the volume, and the two are only useful together — the artifact is a whole launch, which is a thing worth grepping and not worth reading.
