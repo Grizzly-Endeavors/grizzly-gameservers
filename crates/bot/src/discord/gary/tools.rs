@@ -67,11 +67,11 @@ use crate::prompts::{
     DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Escalate, EscalateParams,
     ExportProfile, Forget, ForgetParams, GameGuide, GameGuideParams, ImportProfile,
     ImportProfileParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
-    NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
-    RememberParams, RestartServer, RestoreFile, RestoreServer, RunShell, RunShellParams, RunWhen,
-    RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams, ServerResources,
-    SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile,
-    WriteFileParams,
+    NameParams, PathParams, ReadFile, ReadFileParams, ReadLogs, ReadLogsParams, RecoverServer,
+    Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunShell, RunShellParams,
+    RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams,
+    ServerResources, SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer,
+    WriteFile, WriteFileParams,
 };
 use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
@@ -502,8 +502,11 @@ async fn dispatch_files(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
             Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
             Err(message) => message,
         },
-        ReadFile::NAME => match parse::<PathParams>(args) {
-            Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
+        ReadFile::NAME => match parse::<ReadFileParams>(args) {
+            Ok(params) => match narrow_offset(params.offset) {
+                Ok(offset) => exec_read_file(ctx, &params.name, &params.path, offset).await,
+                Err(message) => message,
+            },
             Err(message) => message,
         },
         ReadLogs::NAME => match parse::<ReadLogsParams>(args) {
@@ -654,6 +657,18 @@ fn parse<T: DeserializeOwned>(args: &str) -> Result<T, String> {
         }
         .render()
     })
+}
+
+/// Narrow the model-supplied byte offset to the unsigned window `read_file`
+/// wants, refusing a negative rather than silently reading from the start.
+fn narrow_offset(offset: Option<i64>) -> Result<Option<usize>, String> {
+    match offset {
+        None => Ok(None),
+        Some(value) => match usize::try_from(value) {
+            Ok(narrowed) => Ok(Some(narrowed)),
+            Err(_) => Err(prompts::NegativeOffset::render()),
+        },
+    }
 }
 
 /// Narrow the model-supplied line count to the unsigned window `read_logs` wants.
@@ -2241,7 +2256,12 @@ async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
     }
 }
 
-async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
+async fn exec_read_file(
+    ctx: &ToolCtx<'_>,
+    server: &str,
+    path: &str,
+    offset: Option<usize>,
+) -> String {
     match supervisor_read_file(
         &ctx.data.kube_client,
         &ctx.data.control_http,
@@ -2249,11 +2269,12 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
         server,
         ctx.data.control_port,
         path,
+        offset,
     )
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(file) => format_file(&file),
+            Ok(file) => format_file(&file, offset),
             Err(problem) => problem,
         },
         Err(err) => {
@@ -2279,7 +2300,8 @@ async fn exec_run_shell(ctx: &ToolCtx<'_>, server: &str, command: &str) -> Strin
     .await
     {
         Ok(outcome) => match fs_result(server, outcome) {
-            Ok(result) => format_shell(server, command, &result),
+            Ok(Some(result)) => format_shell(server, command, &result),
+            Ok(None) => prompts::ShellUnsupported::render(),
             Err(problem) => problem,
         },
         Err(err) => {
@@ -3131,14 +3153,44 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
     .render()
 }
 
-fn format_file(file: &ReadResponse) -> String {
-    // The parenthetical's leading space is a code-owned separator; the note
-    // prompt itself carries none, so the empty case renders cleanly.
-    let note = if file.truncated {
-        format!(" {}", prompts::FileTruncatedNote::render())
-    } else {
-        String::new()
-    };
+/// Render a file window, with the notes that make a partial read legible: where
+/// it starts, where it continues, and — when the server is still running a
+/// supervisor that predates paged reads — that the offset was ignored outright.
+fn format_file(file: &ReadResponse, requested: Option<usize>) -> String {
+    // Each parenthetical's leading space is a code-owned separator; the note
+    // prompts carry none, so the empty case renders cleanly.
+    let mut notes = String::new();
+    // An older supervisor omits the echoed offset entirely, so it deserializes
+    // as zero. Content is the tell: an offset legitimately clamps to zero only
+    // on an empty file, which has nothing to show anyway.
+    let ignored =
+        requested.is_some_and(|asked| asked > 0) && file.offset == 0 && !file.content.is_empty();
+    if ignored {
+        notes.push(' ');
+        notes.push_str(&prompts::FileOffsetIgnored::render());
+    } else if file.offset > 0 {
+        notes.push(' ');
+        notes.push_str(
+            &prompts::FileWindowNote {
+                offset: &file.offset.to_string(),
+            }
+            .render(),
+        );
+    }
+    if file.truncated {
+        notes.push(' ');
+        notes.push_str(&prompts::FileTruncatedNote::render());
+        if !ignored {
+            notes.push(' ');
+            notes.push_str(
+                &prompts::FileContinuation {
+                    offset: &file.offset.saturating_add(file.content.len()).to_string(),
+                }
+                .render(),
+            );
+        }
+    }
+    let note = notes;
     prompts::FileContents {
         path: file.path.as_str(),
         note: &note,

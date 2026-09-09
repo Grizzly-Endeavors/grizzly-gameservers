@@ -246,6 +246,7 @@ async fn read_text(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Result<Option
         server,
         ctx.data.control_port,
         path,
+        None,
     )
     .await
     {

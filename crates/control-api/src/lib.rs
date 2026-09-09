@@ -260,13 +260,32 @@ pub struct ListResponse {
     pub entries: Vec<DirEntry>,
 }
 
+/// Query for `GET /fs/read`: which file, and how far into it to start.
+///
+/// `offset` is a byte offset, which is what pages a file larger than the read
+/// cap: read once, and if the reply comes back `truncated`, ask again from
+/// `offset + content.len()`. Absent means the start of the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadQuery {
+    pub path: String,
+    pub offset: Option<usize>,
+}
+
 /// Body of `GET /fs/read`. `content` is UTF-8 (the supervisor refuses binary);
-/// `truncated` is set when the file exceeded the read cap and was cut short.
+/// `truncated` is set when there were more bytes after the window that was
+/// returned.
+///
+/// `offset` echoes where the window actually started. It defaults to zero when
+/// absent so a reply from a supervisor predating paged reads still deserializes
+/// — and, because it is an echo rather than a repeat of the request, the caller
+/// can tell that older supervisor apart from one that honoured the offset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResponse {
     pub path: String,
     pub content: String,
     pub truncated: bool,
+    #[serde(default)]
+    pub offset: usize,
 }
 
 /// Body of `POST /fs/write`: overwrite `path` with `content`. The supervisor

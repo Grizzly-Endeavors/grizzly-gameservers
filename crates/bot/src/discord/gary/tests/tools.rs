@@ -1,6 +1,6 @@
 use crate::agones::ServerState;
 use crate::agones::{DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, SupervisorOutcome};
-use grizzly_control_api::ShellResponse;
+use grizzly_control_api::{ReadResponse, ShellResponse};
 
 use super::*;
 
@@ -637,14 +637,16 @@ fn read_file_notes_truncation() {
         path: "server.properties".to_owned(),
         content: "difficulty=hard".to_owned(),
         truncated: false,
+        offset: 0,
     };
-    assert!(!format_file(&whole).contains("truncated"));
+    assert!(!format_file(&whole, None).contains("truncated"));
     let cut = ReadResponse {
         path: "logs/latest.log".to_owned(),
         content: "...".to_owned(),
         truncated: true,
+        offset: 0,
     };
-    assert!(format_file(&cut).contains("truncated"));
+    assert!(format_file(&cut, None).contains("truncated"));
 }
 
 #[test]
@@ -1242,4 +1244,68 @@ fn output_cannot_forge_a_fence_marker() {
         1,
         "only the real closing marker should survive"
     );
+}
+
+fn file_window(content: &str, offset: usize, truncated: bool) -> ReadResponse {
+    ReadResponse {
+        path: "server.properties".to_owned(),
+        content: content.to_owned(),
+        truncated,
+        offset,
+    }
+}
+
+#[test]
+fn a_whole_file_carries_no_window_notes() {
+    let rendered = format_file(&file_window("difficulty=normal", 0, false), None);
+    assert!(!rendered.contains("starting at byte"));
+    assert!(!rendered.contains("read on from byte"));
+}
+
+#[test]
+fn a_truncated_read_names_the_offset_that_continues_it() {
+    let rendered = format_file(&file_window("0123456789", 0, true), None);
+    assert!(rendered.contains("read on from byte 10"));
+}
+
+#[test]
+fn a_windowed_read_says_where_it_started() {
+    let rendered = format_file(&file_window("tail", 4_096, false), Some(4_096));
+    assert!(rendered.contains("starting at byte 4096"));
+}
+
+#[test]
+fn continuation_counts_from_the_window_start_not_from_zero() {
+    // Paging is the whole point; an offset computed from zero would re-read the
+    // same window forever.
+    let rendered = format_file(&file_window("0123456789", 100, true), Some(100));
+    assert!(rendered.contains("read on from byte 110"));
+}
+
+#[test]
+fn an_older_supervisor_ignoring_the_offset_is_reported_not_hidden() {
+    // The echoed offset is zero because the field was absent from the reply.
+    let rendered = format_file(&file_window("start of file", 0, true), Some(4_096));
+    assert!(rendered.contains("older supervisor"));
+    // No continuation offset: it would point into a file this server won't page.
+    assert!(!rendered.contains("read on from byte"));
+}
+
+#[test]
+fn an_offset_landing_on_an_empty_file_is_not_mistaken_for_an_old_supervisor() {
+    let rendered = format_file(&file_window("", 0, false), Some(4_096));
+    assert!(!rendered.contains("older supervisor"));
+}
+
+#[test]
+fn a_negative_offset_is_refused_with_its_own_message() {
+    let refusal = narrow_offset(Some(-1)).expect_err("a negative offset is refused");
+    assert!(refusal.contains("offset"));
+    assert!(!refusal.contains("line count"));
+}
+
+#[test]
+fn an_absent_offset_reads_from_the_start() {
+    assert_eq!(narrow_offset(None), Ok(None));
+    assert_eq!(narrow_offset(Some(0)), Ok(Some(0)));
 }

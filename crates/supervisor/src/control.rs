@@ -14,8 +14,9 @@ use grizzly_control_api::{
     ANNOUNCE_PATH, ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, COMMAND_PATH, CommandRequest,
     CommandResponse, ControlCommand, ControlError, ControlOk, ExtractQuery, FS_LIST_PATH,
     FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse,
-    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse,
-    ResultKind, RouteError, SHELL_PATH, ShellRequest, StatusResponse, WriteRequest, WriteResponse,
+    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest,
+    RestoreResponse, ResultKind, RouteError, SHELL_PATH, ShellRequest, StatusResponse,
+    WriteRequest, WriteResponse,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -188,14 +189,15 @@ async fn fs_list(State(state): State<ControlState>, Query(query): Query<PathQuer
     }
 }
 
-async fn fs_read(State(state): State<ControlState>, Query(query): Query<PathQuery>) -> Response {
-    match fs::read_file(&state.data_root, &query.path) {
-        Ok((content, truncated)) => (
+async fn fs_read(State(state): State<ControlState>, Query(query): Query<ReadQuery>) -> Response {
+    match fs::read_file(&state.data_root, &query.path, query.offset.unwrap_or(0)) {
+        Ok(window) => (
             StatusCode::OK,
             Json(ReadResponse {
                 path: query.path,
-                content,
-                truncated,
+                content: window.content,
+                truncated: window.truncated,
+                offset: window.offset,
             }),
         )
             .into_response(),
