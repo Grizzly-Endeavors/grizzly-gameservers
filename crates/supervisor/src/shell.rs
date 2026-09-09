@@ -94,6 +94,15 @@ const SANDBOX_ABI: ABI = ABI::V3;
 /// Returns an error if the supervisor binary can't be located or re-executed, or
 /// if the child's pipes can't be taken.
 pub async fn run_command(data_root: &std::path::Path, command: &str) -> Result<ShellResponse> {
+    // The rule this suppresses guards against trusting current_exe for a
+    // privilege decision — a setuid-style path where the re-executed image gains
+    // something. This one only ever sheds: same uid, same container, same mount
+    // namespace, and the process it starts exists to drop privilege before
+    // becoming `sh`. Substituting the binary requires write access inside the
+    // container, which is root there (ADR-023 leaves that gap open knowingly),
+    // and root in this container can already do everything this path could be
+    // twisted into doing. Nothing is gained, so nothing is trusted.
+    // nosemgrep: rust.lang.security.current-exe
     let exe = std::env::current_exe()
         .context("failed to locate the supervisor binary to sandbox the shell with")?;
     let mut child = Command::new(exe)
