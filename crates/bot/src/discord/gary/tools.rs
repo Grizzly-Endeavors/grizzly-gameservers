@@ -3210,17 +3210,20 @@ fn format_file(file: &ReadResponse) -> String {
     prompts::FileContents {
         path: file.path.as_str(),
         note: &note,
-        content: &crate::untrusted::scrub(&number_lines(&file.content, first)),
+        content: &number_lines(&crate::untrusted::scrub(&file.content), first),
     }
     .render()
 }
 
 /// Prefix each line with its 1-based position in the file, starting at `first`.
 ///
-/// Scrubbing runs over the *numbered* text so a line of file content can't
-/// forge a line number: the number and its separator are added here, and the
-/// untrusted-fence check downstream sees them as part of the payload it is
-/// guarding rather than as structure it must preserve.
+/// Runs *after* the untrusted scrub, so a line the scrub redacted still carries
+/// its number and the numbering stays continuous. Order is safe either way — the
+/// scrub matches its markers anywhere in a line, so a number in front wouldn't
+/// hide one — but a redaction that kept its position is easier to ask about.
+///
+/// Content can't forge a number regardless: every number here is generated from
+/// the window's own offset, never read out of the file.
 fn number_lines(content: &str, first: usize) -> String {
     content
         .lines()
