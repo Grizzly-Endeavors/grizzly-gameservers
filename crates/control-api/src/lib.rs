@@ -14,7 +14,9 @@
 //! mismatch is a silent drop, not an error. The reverse direction — the
 //! supervisor posting in-game chat triggers to the bot's agent endpoint
 //! ([`IngameTriggerRequest`] on [`INGAME_TRIGGER_PATH`]) — shares this crate too,
-//! so the one contract file stays authoritative for both loops.
+//! so the one contract file stays authoritative for both loops. The one contract here that is not a route at all is [`mods`] — the `resolved` file the in-pod reconciler writes and the bot reads back through the file API, which needs the same both-sides agreement for the same reason.
+
+pub mod mods;
 
 use serde::{Deserialize, Serialize};
 

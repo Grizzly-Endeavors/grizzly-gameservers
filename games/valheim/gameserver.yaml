@@ -31,6 +31,13 @@ metadata:
     # never cross between communities, and the pair is required together.
     grizzly-gameservers.grizzly-endeavors.com/mod-registry: thunderstore
     grizzly-gameservers.grizzly-endeavors.com/thunderstore-community: valheim
+    # The packages this image already supplies, which an instance must never list
+    # for itself. Restated from SUPERVISOR_THUNDERSTORE_PROVIDED in
+    # games/valheim/Dockerfile because a Dockerfile ENV is baked into the image and
+    # never reaches the bot — and the bot needs it when it writes a mod list from an
+    # imported r2modman profile, which lists the loader pack. The two are held
+    # together by a drift guard in crates/bot/src/tests/config.rs.
+    grizzly-gameservers.grizzly-endeavors.com/thunderstore-provided: denikson-BepInExPack_Valheim
 spec:
   container: valheim
   ports:

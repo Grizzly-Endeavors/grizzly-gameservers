@@ -64,7 +64,7 @@ fn the_resolved_file_lists_installs_and_explains_the_skips() {
         "Lib-Core-2.0.0".parse().unwrap(),
     ];
     let provided: Vec<PackageId> = vec!["denikson-BepInExPack_Valheim".parse().unwrap()];
-    write_resolved(dir.path(), &installed, &provided).unwrap();
+    write_resolved(dir.path(), &installed, &[], &provided).unwrap();
 
     let text = std::fs::read_to_string(dir.path().join(RESOLVED_FILE)).unwrap();
     assert!(text.contains("Author-Mod-1.0.0\n"), "{text}");
@@ -80,7 +80,7 @@ fn the_log_summary_names_packages_and_the_skipped_pack() {
     let logs = LogBuffer::new();
     let installed = vec!["Author-Mod-1.0.0".parse::<PackageRelease>().unwrap()];
     let provided: Vec<PackageId> = vec!["denikson-BepInExPack_Valheim".parse().unwrap()];
-    report(&logs, &installed, &provided, 3);
+    report(&logs, &installed, &[], &provided, 3);
 
     let lines = logs.tail(10);
     let [summary, skipped] = lines.as_slice() else {
@@ -96,12 +96,63 @@ fn an_empty_list_still_says_so_rather_than_staying_silent() {
     // Silence after a restart reads as "the reconciler didn't run", which is a
     // different problem from "you haven't asked for any mods".
     let logs = LogBuffer::new();
-    report(&logs, &[], &[], 0);
+    report(&logs, &[], &[], &[], 0);
     let lines = logs.tail(10);
     let [only] = lines.as_slice() else {
         panic!("expected exactly one line, got {lines:?}")
     };
     assert!(only.contains("no mods listed"), "{only}");
+}
+
+#[test]
+fn resolved_records_the_client_only_half_of_the_modpack() {
+    // The file is what an exported profile code is built from, so a package the
+    // pack carries for players' machines has to survive into it — otherwise
+    // every code minted off a running server drops exactly the entries a player
+    // most needs.
+    let dir = tempfile::tempdir().unwrap();
+    let installed = vec!["Author-Mod-1.0.0".parse::<PackageRelease>().unwrap()];
+    let client_only = vec![
+        "RandyKnapp-EquipmentAndQuickSlots-3.0.2"
+            .parse::<PackageRelease>()
+            .unwrap(),
+    ];
+    write_resolved(dir.path(), &installed, &client_only, &[]).unwrap();
+
+    let text = std::fs::read_to_string(dir.path().join(RESOLVED_FILE)).unwrap();
+    let parsed = grizzly_control_api::mods::ResolvedMods::parse(&text);
+    assert_eq!(
+        parsed.installed,
+        vec!["Author-Mod-1.0.0".to_owned()],
+        "{text}"
+    );
+    assert_eq!(
+        parsed.client_only,
+        vec!["RandyKnapp-EquipmentAndQuickSlots-3.0.2".to_owned()],
+        "{text}"
+    );
+}
+
+#[test]
+fn the_log_summary_names_the_packages_this_server_did_not_install() {
+    let logs = LogBuffer::new();
+    let installed = vec!["Author-Mod-1.0.0".parse::<PackageRelease>().unwrap()];
+    let client_only = vec![
+        "RandyKnapp-EquipmentAndQuickSlots-3.0.2"
+            .parse::<PackageRelease>()
+            .unwrap(),
+    ];
+    report(&logs, &installed, &client_only, &[], 3);
+
+    let lines = logs.tail(10);
+    let [_summary, client] = lines.as_slice() else {
+        panic!("expected a summary and a client-only line, got {lines:?}")
+    };
+    assert!(client.contains("players' machines only"), "{client}");
+    assert!(
+        client.contains("RandyKnapp-EquipmentAndQuickSlots-3.0.2"),
+        "{client}"
+    );
 }
 
 #[tokio::test]

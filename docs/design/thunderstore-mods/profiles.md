@@ -1,6 +1,6 @@
 # r2modman Profile Codes — Design
 
-**Status:** Designed, not yet implemented. Extends the shipped mod reconciler in [`design.md`](design.md) (same directory) and [ADR-031](../../decisions/031-supervisor-reconciles-thunderstore-mods.md). Nothing here is built yet.
+**Status:** Implemented. The decision is [ADR-033](../../decisions/033-r2modman-profile-codes.md); this document remains the design of record for how profile codes work, and the "What implementation settled" section at the end records the three questions it left open. Extends the shipped mod reconciler in [`design.md`](design.md) (same directory) and [ADR-031](../../decisions/031-supervisor-reconciles-thunderstore-mods.md).
 
 > This document must stand on its own: it will be implemented in fresh sessions that have only this doc and the codebase — not the conversation that produced it. Every external fact it relies on is stated with how it was verified, because the profile format is r2modman's and is documented nowhere.
 
@@ -150,8 +150,18 @@ The Thunderstore blocks in `game_guide` gain the two workflows: that a code is t
 - **Provenance.** A profile carries no files, so the "every artifact comes from a moderated registry by name" property survives intact. This is worth re-checking if the format ever gains embedded content.
 - **Config tiers.** No new tier. `.grizzly/mods` changes meaning, not location.
 
-## Open questions
+## What implementation settled
 
-- **Whether an untagged mod should be installed or asked about.** The design says install, on the reasoning above. If it turns out that groups routinely import packs where most untagged entries are cosmetic, that reverses and the cost is wasted downloads plus a confusing `resolved`.
-- **What `export_profile` should do when `resolved` is stale** — the file is rewritten every launch, so a server stopped mid-edit can hold a `resolved` that disagrees with `.grizzly/mods`. Reading the mods file directly instead would avoid it but loses the resolved versions of unpinned entries, which are the whole point.
-- **Thunderstore's payload size limit**, which is undocumented and was not probed.
+Three things the design left open, and two it did not anticipate.
+
+**An untagged mod installs**, as designed. Nothing observed so far argues the other way; if groups turn out to import packs whose untagged entries are mostly cosmetic, the cost of the current choice is wasted downloads and a longer `resolved`, and reversing it is one arm of `plan_import`.
+
+**A stale `resolved` is the answer, not a problem to route around.** `export_profile` reads it as designed and the tool result says what it describes — the last launch. A server stopped mid-edit exports what it last actually ran, which is the honest answer to "what is this server running"; reading `.grizzly/mods` instead would lose the resolved version of every unpinned entry, and a profile without versions is useless to the launcher on the other end. A server that has never launched with mods has no `resolved` at all, which is reported as a timing answer with an obvious next step rather than as a failure.
+
+**Thunderstore's payload limit is still unprobed.** Ours stands at 1 MiB, checked before the base64 is expanded, alongside the 256-package cap the resolver already enforces. Both are refusals with named reasons, so hitting either says which.
+
+**How the bot learns what the image supplies.** `SUPERVISOR_THUNDERSTORE_PROVIDED` is a Dockerfile `ENV` — baked into the image, absent from the pod, and therefore invisible to the bot, which is the half that needs it at write time. The list is restated as a `thunderstore-provided` annotation on the game's `GameServer` template, matching how `thunderstore-community` already lives in both places, with a drift guard in the bot's `tests/config.rs` that reads the Dockerfile and the manifest and fails CI when they disagree.
+
+**Two cases the per-entry rules did not cover.** A package this community has no record of is **left out and named** rather than written and discovered — writing it stops the server on the next launch and gets rolled back, spending a restart to say what the lookup already said. And when *every* entry is unknown, the import is refused outright rather than writing an empty list, because a profile exported for a different game looks exactly like that and would otherwise uninstall everything the server runs. Separately, a registry that cannot be *reached* refuses the whole import: retrying is free, while a list written from unclassified entries is durable, silently wrong, and looks like it worked.
+
+**One contract moved.** `resolved` stopped being a supervisor-local convention. Its shape, the working directory it sits in, and the name of the cached-code file all live in `grizzly-control-api` beside the route constants, because the bot now parses the file the supervisor writes. An image that overrides `SUPERVISOR_THUNDERSTORE_DIR` still works in-pod but hides `resolved` from the bot, so the supervisor warns at startup when one does.

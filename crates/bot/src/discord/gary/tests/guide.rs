@@ -5,6 +5,7 @@ const CATALOG: &str = "factorio, minecraft, valheim";
 fn thunderstore() -> ModRegistry {
     ModRegistry::Thunderstore {
         community: "valheim".to_owned(),
+        provided: vec!["denikson-BepInExPack_Valheim".to_owned()],
     }
 }
 
@@ -80,4 +81,26 @@ fn an_unknown_game_names_the_catalog_and_how_to_find_the_right_id() {
 fn an_empty_catalog_renders_as_words_rather_than_a_blank() {
     let rendered = render_guide("anything", &GuideSubject::UnknownGame, "(none)");
     assert!(rendered.contains("(none)"), "{rendered}");
+}
+
+#[test]
+fn a_thunderstore_guide_carries_the_profile_code_workflow() {
+    // The fast path in both directions, and the one thing a code cannot do —
+    // follow the pack after it changes.
+    let guide = render_guide("valheim", &GuideSubject::Registry(&thunderstore()), CATALOG);
+    assert!(guide.contains("import_profile"), "{guide}");
+    assert!(guide.contains("export_profile"), "{guide}");
+    assert!(guide.contains("client:"), "{guide}");
+}
+
+#[test]
+fn a_modrinth_guide_says_nothing_about_profile_codes() {
+    // They are an r2modman idea; offering one on Minecraft would send a friend
+    // looking for a launcher feature that doesn't exist there.
+    let guide = render_guide(
+        "minecraft",
+        &GuideSubject::Registry(&ModRegistry::Modrinth),
+        CATALOG,
+    );
+    assert!(!guide.contains("profile code"), "{guide}");
 }

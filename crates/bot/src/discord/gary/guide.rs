@@ -43,17 +43,21 @@ pub(crate) fn render_guide(game: &str, subject: &GuideSubject<'_>, games: &str) 
         GuideSubject::NoRegistry => return prompts::GameGuideNoMods { game }.render(),
         GuideSubject::Registry(registry) => registry,
     };
-    let (choice, install) = match registry {
-        ModRegistry::Modrinth => (
-            prompts::GameGuideModrinthChoice::render(),
-            prompts::GameGuideModrinthInstall::render(),
-        ),
-        ModRegistry::Thunderstore { .. } => (
-            prompts::GameGuideThunderstoreChoice::render(),
-            prompts::GameGuideThunderstoreInstall::render(),
-        ),
-    };
-    [prompts::GameGuideIntro { game }.render(), choice, install].join(SECTION_GAP)
+    let mut sections = vec![prompts::GameGuideIntro { game }.render()];
+    match registry {
+        ModRegistry::Modrinth => {
+            sections.push(prompts::GameGuideModrinthChoice::render());
+            sections.push(prompts::GameGuideModrinthInstall::render());
+        }
+        ModRegistry::Thunderstore { .. } => {
+            sections.push(prompts::GameGuideThunderstoreChoice::render());
+            sections.push(prompts::GameGuideThunderstoreInstall::render());
+            // Only this registry has profile codes, so this is the one block
+            // with no Modrinth counterpart rather than half of a pair.
+            sections.push(prompts::GameGuideThunderstoreProfiles::render());
+        }
+    }
+    sections.join(SECTION_GAP)
 }
 
 #[cfg(test)]

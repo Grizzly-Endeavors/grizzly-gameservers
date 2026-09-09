@@ -18,6 +18,7 @@ use grizzly_control_api::{
 };
 
 use super::guide::{GuideSubject, render_guide};
+use super::profiles::{exec_export_profile, exec_import_profile};
 use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::{AccessLevel, Speaker, access_level_for};
@@ -63,12 +64,12 @@ use crate::prompts::{
     self, AboutServer, ArchiveServer, BackupServer, BrowseFiles, CreateServer, CreateServerParams,
     DeleteArchive, DeleteArchiveDone, DeleteArchiveFailed, DeleteArchiveNotFound,
     DeleteArchiveUnavailable, DestroyServer, EditFile, EditFileParams, Escalate, EscalateParams,
-    Forget, ForgetParams, GameGuide, GameGuideParams, ListArchives, ListBackups, ListServers,
-    ModInfo, ModInfoParams, NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams,
-    RecoverServer, Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen,
-    RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams, ServerResources,
-    SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile,
-    WriteFileParams,
+    ExportProfile, Forget, ForgetParams, GameGuide, GameGuideParams, ImportProfile,
+    ImportProfileParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
+    NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
+    RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods,
+    SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
+    SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
 };
 use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
@@ -144,7 +145,7 @@ impl ToolCtx<'_> {
     /// Record that `path` on `server` was just edited with a snapshot saved, so a
     /// following restart knows there's a change to verify and, if it crashes, undo.
     /// The last edit wins, mirroring `restore_file`'s own last-write-per-file model.
-    fn note_pending_change(&self, server: &str, path: &str) {
+    pub(crate) fn note_pending_change(&self, server: &str, path: &str) {
         *self.pending_lock() = Some(PendingChange {
             server: server.to_owned(),
             path: path.to_owned(),
@@ -228,6 +229,34 @@ impl ToolCtx<'_> {
     /// from the turn's origin, so a `run_when` batch and an operator-harness turn
     /// are separable from a friend's live conversation without any extra
     /// threading — the executors already carry both.
+    /// The catalog id of the game `server` runs, `Ok(None)` when the instance
+    /// carries no game label, or the text to hand back instead of running.
+    ///
+    /// Read off the live listing rather than off the instance name: a name is
+    /// only conventionally prefixed with its game, and treating that convention
+    /// as a fact would quietly answer the wrong game's question.
+    pub(crate) async fn game_of(&self, server: &str) -> Result<Option<String>, String> {
+        let summaries = match list_active_servers(
+            self.data.kube_client.clone(),
+            &self.data.namespace,
+            &self.data.domain,
+            &self.scope,
+        )
+        .await
+        {
+            Ok(summaries) => summaries,
+            Err(err) => {
+                error!(error = ?err, %server, "agent: could not resolve a server's game");
+                return Err(cluster_error());
+            }
+        };
+        summaries
+            .into_iter()
+            .find(|summary| summary.name == server)
+            .map(|summary| summary.game)
+            .ok_or_else(|| no_such(server))
+    }
+
     pub(crate) fn attribution(&self) -> Attribution {
         Attribution::new(
             Actor::Discord(self.author_id.get()),
@@ -290,6 +319,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::ReadOnly, ListBackups::spec().into()),
         (AccessLevel::ReadOnly, ListArchives::spec().into()),
         (AccessLevel::ReadOnly, ServerResources::spec().into()),
+        (AccessLevel::ReadOnly, ExportProfile::spec().into()),
         (AccessLevel::ReadOnly, Escalate::spec().into()),
         (AccessLevel::Manager, CreateServer::spec().into()),
         (AccessLevel::Manager, StopServer::spec().into()),
@@ -307,6 +337,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, GameGuide::spec().into()),
         (AccessLevel::Manager, SearchMods::spec().into()),
         (AccessLevel::Manager, ModInfo::spec().into()),
+        (AccessLevel::Manager, ImportProfile::spec().into()),
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
         (AccessLevel::Manager, SetResources::spec().into()),
@@ -393,6 +424,10 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
+        // The two r2modman profile tools sit at opposite tiers but share a
+        // dispatcher, because they are one feature and their arms would
+        // otherwise be pages apart.
+        ExportProfile::NAME | ImportProfile::NAME => dispatch_profiles(ctx, name, args).await,
         ServerResources::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_server_resources(ctx, &params.name).await,
             Err(message) => message,
@@ -424,6 +459,28 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         _ => dispatch_mutating(ctx, name, args).await,
+    }
+}
+
+/// Dispatch the r2modman profile tools. Both target a server by name, so both
+/// have already passed the scope gate in [`dispatch`]; their tiers — read-only
+/// for the export, manager for the import — are settled there too.
+///
+/// Export is read-only despite handing back a shareable identifier: it changes
+/// nothing a friend can see, and the cached code is what keeps a read-only
+/// caller from minting permanent artifacts on a third party's service one
+/// question at a time.
+async fn dispatch_profiles(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+    match name {
+        ExportProfile::NAME => match parse::<NameParams>(args) {
+            Ok(params) => exec_export_profile(ctx, &params.name).await,
+            Err(message) => message,
+        },
+        ImportProfile::NAME => match parse::<ImportProfileParams>(args) {
+            Ok(params) => exec_import_profile(ctx, &params.name, &params.code).await,
+            Err(message) => message,
+        },
+        other => prompts::UnknownTool { name: other }.render(),
     }
 }
 
@@ -618,6 +675,8 @@ fn targets_existing_server(tool: &str) -> bool {
             | RestoreServer::NAME
             | ServerResources::NAME
             | SetResources::NAME
+            | ImportProfile::NAME
+            | ExportProfile::NAME
     )
 }
 
@@ -2468,7 +2527,7 @@ async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String
                 }
             }
         }
-        ModRegistry::Thunderstore { community } => {
+        ModRegistry::Thunderstore { community, .. } => {
             let query = ThunderstoreQuery {
                 community,
                 text: params.query,
@@ -2538,7 +2597,7 @@ async fn exec_mod_info(ctx: &ToolCtx<'_>, game: &str, slug: &str) -> String {
                 modrinth_unavailable()
             }
         },
-        ModRegistry::Thunderstore { community } => {
+        ModRegistry::Thunderstore { community, .. } => {
             // A bare slug is not a lookup that happens to miss — it is the wrong
             // shape of identifier, so it is answered without a call rather than
             // as a 404 that would read as "no such mod".
@@ -2892,7 +2951,7 @@ async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
 
 /// Collapse a filesystem outcome into either its payload or a plain-language
 /// explanation of why the operation couldn't be served, for the model to relay.
-fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
+pub(crate) fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
     match outcome {
         FsOutcome::Ok(value) => Ok(value),
         FsOutcome::NotFound => Err(no_such(server)),
@@ -2937,7 +2996,7 @@ fn no_such(server: &str) -> String {
     prompts::ServerNotFound { server }.render()
 }
 
-fn cluster_error() -> String {
+pub(crate) fn cluster_error() -> String {
     prompts::ClusterUnreachable::render()
 }
 

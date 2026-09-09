@@ -6,7 +6,9 @@
 //! the fixture is still the fixture. Two things in particular can drift without
 //! any local signal — the Cyberstorm listing envelope, and whether the Valheim
 //! community still expresses sidedness with `server-side`/`client-side`
-//! categories at all.
+//! categories at all. The profile endpoints are here for a third reason: the
+//! payload format is r2modman's and is documented nowhere, so the only proof
+//! that it is still `#r2modman` plus base64 of a zip is fetching one.
 //!
 //! Ignored by default so the suite stays offline and CI never depends on a third
 //! party. Run them when touching this module:
@@ -20,7 +22,10 @@ mod tests {
     use std::time::Duration;
 
     use crate::registry::{Side, SideSupport};
-    use crate::thunderstore::{SearchQuery, fetch_package, search_packages};
+    use crate::thunderstore::profile::{ProfileMod, decode, encode};
+    use crate::thunderstore::{
+        SearchQuery, create_profile, fetch_package, fetch_profile, search_packages,
+    };
 
     /// The community every fact in this module was verified against.
     const COMMUNITY: &str = "valheim";
@@ -36,6 +41,10 @@ mod tests {
     /// that proves a package detail's categories still classify, since the
     /// package endpoint spells them as display names rather than slugs.
     const BOTH_SIDED: (&str, &str) = ("Mydayyy", "ServerSideMap");
+
+    /// A real profile code, minted while this format was being pinned down. It
+    /// holds four packages including the loader pack, and codes never expire.
+    const SAMPLE_CODE: &str = "01a0838e-8316-f62c-48aa-7bdd59d3f8da";
 
     fn http() -> reqwest::Client {
         reqwest::Client::builder()
@@ -134,5 +143,55 @@ mod tests {
             .await
             .expect("thunderstore reachable");
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Thunderstore API"]
+    async fn a_real_profile_code_still_decodes_to_its_packages() {
+        let payload = fetch_profile(&http(), SAMPLE_CODE)
+            .await
+            .expect("thunderstore reachable")
+            .expect("codes do not expire");
+        let mods = decode(&payload).expect("still an r2modman payload");
+        assert!(
+            mods.iter()
+                .any(|entry| entry.full_name == "denikson-BepInExPack_Valheim"),
+            "the sample's loader pack is missing: {mods:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Thunderstore API"]
+    async fn a_code_that_does_not_exist_reads_as_absent_rather_than_as_an_error() {
+        let missing = fetch_profile(&http(), "00000000-0000-0000-0000-000000000000")
+            .await
+            .expect("thunderstore reachable");
+        assert!(
+            missing.is_none(),
+            "a mistyped code is an answer, not a fault"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Thunderstore API and mints a permanent artifact"]
+    async fn a_minted_code_fetches_back_as_what_was_put_in() {
+        // Deliberately separated from the other live tests by its own ignore
+        // reason: there is no delete endpoint, so every run of this leaves a
+        // profile on somebody else's service forever.
+        let mods = vec![ProfileMod {
+            full_name: "ValheimModding-Jotunn".to_owned(),
+            version: "2.29.2".to_owned(),
+            enabled: true,
+        }];
+        let payload = encode("grizzly-live-test", &mods).expect("payload builds");
+        let code = create_profile(&http(), payload)
+            .await
+            .expect("thunderstore accepts the payload");
+
+        let fetched = fetch_profile(&http(), &code)
+            .await
+            .expect("thunderstore reachable")
+            .expect("a code just minted exists");
+        assert_eq!(decode(&fetched).expect("round trips"), mods);
     }
 }
