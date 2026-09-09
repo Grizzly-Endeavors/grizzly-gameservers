@@ -224,7 +224,7 @@ pub fn read_manifest<R: Read + Seek>(reader: R, expected: &PackageRelease) -> Re
     file.read_to_string(&mut text)
         .context("failed to read manifest.json from the package archive")?;
     let manifest: ZipManifest =
-        serde_json::from_str(&text).context("failed to parse manifest.json")?;
+        serde_json::from_str(strip_bom(&text)).context("failed to parse manifest.json")?;
     if manifest.name != expected.id.name {
         bail!(
             "package archive for {expected} contains {}, not {}",
@@ -239,6 +239,18 @@ pub fn read_manifest<R: Read + Seek>(reader: R, expected: &PackageRelease) -> Re
         );
     }
     Ok(manifest)
+}
+
+/// Drop a leading UTF-8 byte-order mark.
+///
+/// Thunderstore packages are authored on Windows more often than not, and a good
+/// share of them ship a `manifest.json` that starts with `EF BB BF`. JSON has no
+/// notion of a BOM, so `serde_json` refuses the document at column 1 — which
+/// surfaced as `ValheimModding-Jotunn` failing validation, and would fail every
+/// package written by the same tooling. Stripping it is what the rest of the
+/// ecosystem does; refusing would mean refusing packages r2modman installs fine.
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
 /// Extract one package into `dest`, laying its files out per `layout`.
