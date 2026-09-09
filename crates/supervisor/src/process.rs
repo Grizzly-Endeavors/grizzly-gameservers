@@ -10,6 +10,7 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use crate::config::SupervisorConfig;
+use crate::launch_log::LaunchLog;
 use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
@@ -55,7 +56,8 @@ pub fn spawn(
         .with_context(|| format!("failed to spawn child command {:?}", cfg.child_command))
 }
 
-/// Drain the child's piped stdout and stderr into `logs`, re-emitting each line
+/// Drain the child's piped stdout and stderr into `logs` and `launch`,
+/// re-emitting each line
 /// to the supervisor's own stdout/stderr so `kubectl logs` still shows the game's
 /// output. The reader tasks end on their own when the pipes close at child exit.
 ///
@@ -71,22 +73,27 @@ pub fn spawn(
 pub(crate) fn capture_output(
     child: &mut Child,
     logs: &Arc<LogBuffer>,
+    launch: &Arc<LaunchLog>,
     chat_tx: Option<&mpsc::Sender<String>>,
     ready: Option<&LogReadyWatch>,
 ) {
     if let Some(stdout) = child.stdout.take() {
+        launch.pump_started();
         spawn_line_pump(
             stdout,
             Arc::clone(logs),
+            Arc::clone(launch),
             Stream::Stdout,
             chat_tx.cloned(),
             ready.cloned(),
         );
     }
     if let Some(stderr) = child.stderr.take() {
+        launch.pump_started();
         spawn_line_pump(
             stderr,
             Arc::clone(logs),
+            Arc::clone(launch),
             Stream::Stderr,
             chat_tx.cloned(),
             ready.cloned(),
@@ -105,6 +112,7 @@ enum Stream {
 fn spawn_line_pump<R>(
     reader: R,
     logs: Arc<LogBuffer>,
+    launch: Arc<LaunchLog>,
     stream: Stream,
     chat_tx: Option<mpsc::Sender<String>>,
     ready: Option<LogReadyWatch>,
@@ -139,6 +147,7 @@ fn spawn_line_pump<R>(
                         // Watcher lagging or gone; a dropped chat line is acceptable
                         // — triggers are best-effort and must not stall log capture.
                     }
+                    launch.push(line.clone());
                     logs.push(line);
                 }
                 Ok(None) => break,
@@ -148,6 +157,8 @@ fn spawn_line_pump<R>(
                 }
             }
         }
+        // However this pump ended, the launch capture must stop waiting on it.
+        launch.pump_finished();
     });
 }
 

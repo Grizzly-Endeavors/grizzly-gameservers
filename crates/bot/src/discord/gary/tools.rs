@@ -1641,11 +1641,13 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 });
                 return if rollback_spent {
                     warn!(%server, path = %change.path, "agent: rolled a crashing config change back and the server recovered");
-                    prompts::ChangeRolledBackHealthy {
+                    let mut rendered = prompts::ChangeRolledBackHealthy {
                         path: change.path.as_str(),
                         server,
                     }
-                    .render()
+                    .render();
+                    rendered.push_str(&crash_evidence_note());
+                    rendered
                 } else {
                     info!(%server, path = %change.path, "agent: config change verified healthy after restart");
                     prompts::ChangeHealthy { server }.render()
@@ -1665,12 +1667,14 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
                 error!(%server, path = %change.path, "agent: config change crashed the server and a rollback did not recover it — escalating");
                 notify_crash_rollback(ctx, server, &change.path).await;
                 let escalation = prompts::OperatorFlagged::render();
-                return prompts::ChangeRollbackFailedFlagged {
+                let mut rendered = prompts::ChangeRollbackFailedFlagged {
                     path: change.path.as_str(),
                     server,
                     escalation: &escalation,
                 }
                 .render();
+                rendered.push_str(&crash_evidence_note());
+                return rendered;
             }
             RecoveryStep::Inconclusive => {
                 ctx.note_guardrail_verdict(GuardrailVerdict::Inconclusive);
@@ -1678,6 +1682,15 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
             }
         }
     }
+}
+
+/// The note pointing the model at the crashed launch's preserved output.
+///
+/// Appended to every rollback outcome rather than only the unhappy ones: a
+/// rollback that *worked* still leaves the question of what the change broke,
+/// and that answer is now on the volume instead of gone.
+fn crash_evidence_note() -> String {
+    format!("\n\n{}", prompts::CrashOutputPreserved::render())
 }
 
 /// Restore the pre-edit snapshot and restart, the mechanical half of an automatic

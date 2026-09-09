@@ -28,6 +28,7 @@ pub mod config;
 pub mod control;
 pub mod fs;
 pub mod heartbeat;
+pub mod launch_log;
 pub mod logs;
 pub mod occupancy;
 pub mod palworld;

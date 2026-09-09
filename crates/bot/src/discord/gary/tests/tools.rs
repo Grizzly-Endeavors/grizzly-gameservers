@@ -1309,3 +1309,12 @@ fn an_absent_offset_reads_from_the_start() {
     assert_eq!(narrow_offset(None), Ok(None));
     assert_eq!(narrow_offset(Some(0)), Ok(Some(0)));
 }
+
+#[test]
+fn a_rollback_points_at_the_preserved_crash_output() {
+    // The rollback is exactly the moment the evidence would otherwise be gone:
+    // it restarts the server, and that boot floods the live log ring.
+    let note = crash_evidence_note();
+    assert!(note.contains(".grizzly/crashes/"));
+    assert!(note.contains("run_shell"));
+}

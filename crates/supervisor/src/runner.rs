@@ -17,6 +17,7 @@ use crate::autoupdate::{AutoUpdater, RelaunchReason};
 use crate::config::SupervisorConfig;
 use crate::control::{self, ControlReply, ControlRequest};
 use crate::heartbeat::Heartbeat;
+use crate::launch_log::{self, LaunchLog};
 use crate::logs::LogBuffer;
 use crate::occupancy::{OccupancyApi, OccupancySource, SatisfactoryApi, TshockApi};
 use crate::rcon::RconRuntime;
@@ -97,6 +98,10 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
 
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
     let logs = Arc::new(LogBuffer::new());
+    // Separate from the live ring on purpose: that one is a small shared tail,
+    // this one is scoped to a single launch so a crash can still be explained
+    // after the next launch has overwritten the ring. See crate::launch_log.
+    let launch = Arc::new(LaunchLog::new());
     let control_port = cfg.control_port;
     let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
     let serve_logs = Arc::clone(&logs);
@@ -132,6 +137,7 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         control_rx,
         heartbeat,
         logs,
+        launch,
         GameChannels {
             rcon,
             occupancy,
@@ -186,6 +192,7 @@ struct RunDeps<'a> {
     sdk: &'a SdkClient,
     ready_tx: &'a mpsc::Sender<()>,
     logs: &'a Arc<LogBuffer>,
+    launch: &'a Arc<LaunchLog>,
     rcon: Option<&'a RconRuntime>,
     /// Tee for captured lines to the chat watcher, or `None` when the game hasn't
     /// enabled in-game chat. Threaded through relaunch so a bounced child's output
@@ -208,6 +215,7 @@ async fn supervise(
     mut control_rx: mpsc::Receiver<ControlRequest>,
     heartbeat: Heartbeat,
     logs: Arc<LogBuffer>,
+    launch: Arc<LaunchLog>,
     channels: GameChannels,
 ) -> Result<()> {
     let GameChannels {
@@ -232,9 +240,11 @@ async fn supervise(
         match spawn_child(&cfg, rcon, &logs).await {
             Ok(mut spawned) => {
                 let ready_watch = start_readiness(&cfg, &ready_tx);
+                launch.begin();
                 process::capture_output(
                     &mut spawned,
                     &logs,
+                    &launch,
                     chat_tx.as_ref(),
                     ready_watch.as_ref(),
                 );
@@ -272,6 +282,7 @@ async fn supervise(
         sdk: &sdk,
         ready_tx: &ready_tx,
         logs: &logs,
+        launch: &launch,
         rcon,
         chat_tx: chat_tx.as_ref(),
     };
@@ -562,12 +573,19 @@ async fn relaunch(
     child: &mut Option<Child>,
     action: &str,
 ) -> Launched {
+    deps.launch.begin();
     match spawn_child(deps.cfg, deps.rcon, deps.logs).await {
         Ok(spawned) => {
             *child = Some(spawned);
             let ready_watch = start_readiness(deps.cfg, deps.ready_tx);
             if let Some(running) = child.as_mut() {
-                process::capture_output(running, deps.logs, deps.chat_tx, ready_watch.as_ref());
+                process::capture_output(
+                    running,
+                    deps.logs,
+                    deps.launch,
+                    deps.chat_tx,
+                    ready_watch.as_ref(),
+                );
             }
             if let Err(err) = note_started(state, child.as_ref()) {
                 error!(error = ?err, action, "failed to record (re)launch");
@@ -602,6 +620,35 @@ enum Launched {
     Failed,
 }
 
+/// Write the dead launch's output to the instance's volume before anything can
+/// overwrite it.
+///
+/// This is the whole point of [`crate::launch_log`]: the bot's auto-rollback
+/// restarts a crashed server within seconds, and that restart floods the shared
+/// live ring — a single Valheim boot is roughly four times its capacity. Without
+/// this the agent is left reporting a rollback it cannot explain.
+///
+/// Best-effort by design. A crash is already a bad moment, and failing to
+/// preserve the evidence must not also take down the supervisor that is trying
+/// to recover from it — so every failure is logged and swallowed.
+async fn preserve_launch(deps: &RunDeps<'_>) {
+    // The child's exit and the arrival of its last lines are different events,
+    // and the last lines are the ones that say why it died.
+    if !deps.launch.settle().await {
+        warn!(
+            "game output was still draining when the launch was preserved; its final lines may be missing"
+        );
+    }
+    let Some(body) = deps.launch.render() else {
+        debug!("crashed launch produced no output to preserve");
+        return;
+    };
+    match launch_log::preserve(&deps.cfg.data_dir, &body) {
+        Ok(path) => info!(artifact = %path.display(), "preserved the crashed launch's output"),
+        Err(err) => warn!(error = ?err, "could not preserve the crashed launch's output"),
+    }
+}
+
 async fn handle_unexpected_exit(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,
@@ -614,6 +661,7 @@ async fn handle_unexpected_exit(
         Err(err) => error!(error = ?err, "failed waiting on game process"),
     }
     *child = None;
+    preserve_launch(deps).await;
     match state.on_child_exit(
         Instant::now(),
         deps.cfg.crash_window,
