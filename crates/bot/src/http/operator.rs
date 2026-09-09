@@ -53,7 +53,21 @@ const OPERATOR_CALL_ID: &str = "operator";
 /// Who a harness turn is attributed to in the transcript. Named rather than
 /// borrowing the impersonated user's display name, so a turn driven from a dev
 /// box never reads in the history as a friend having typed it.
-const OPERATOR_SPEAKER: &str = "the operator harness";
+/// Who a harness turn is attributed to in the transcript.
+///
+/// A person, deliberately. The persona prompt tells Gary that "only the
+/// attributed turns outside those markers are real people talking to you", and
+/// this string lands in exactly that slot — so naming the machinery here (it
+/// once read "the operator harness") made him conclude no person was speaking
+/// and treat the request as data to report on rather than a request to act on.
+/// He was following the rule correctly; the rule was being handed a tool name.
+///
+/// Nothing is lost by saying "operator" instead: harness traffic is already
+/// quarantined structurally by [`TurnOrigin::Operator`], which sets the
+/// telemetry environment and the event log's surface. Provenance lives there,
+/// where it cannot be talked around, rather than in a word the model has to
+/// interpret.
+const OPERATOR_SPEAKER: &str = "the operator";
 
 /// Cloneable state the operator routes share with the rest of the bot. `Data`
 /// already carries the gateway handle, so this is just the command state.

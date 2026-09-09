@@ -5,14 +5,20 @@ annotations:
   sent_when: >-
     the user turn for every Discord message routed to Gary — mention, DM, or
     home channel. The operator harness renders it through the same framed_turn,
-    attributed to the harness rather than to the user it impersonates.
+    attributed to "the operator" rather than to the user it acts for.
   used_by:
     - file: discord/gary/mod.rs
       function: framed_turn
   variables:
     asker:
-      source: the Discord display name of the message author
-      contents: the raw display name (untrusted — the user chose it)
+      source: >-
+        the Discord display name of the message author, or "the operator" on the
+        harness path
+      contents: >-
+        the raw display name (untrusted — the user chose it). Always names a
+        *person*, because the persona prompt treats an attributed turn as a real
+        person speaking; a speaker named after machinery reads as something to
+        report on rather than someone to answer.
     access:
       source: >-
         the speaker's access tier for this turn, recomputed per message by
