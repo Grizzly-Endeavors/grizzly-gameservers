@@ -5,6 +5,12 @@
 //! launch. Nothing else in the pod installs mods; nothing here knows what game
 //! it is running.
 //!
+//! **The file is the group's modpack, not this server's install list.** An entry
+//! prefixed `client:` belongs on the players' machines, so this server installs
+//! nothing for it and never resolves it; it is carried through to `resolved`
+//! marked as such, which is what lets the bot mint a profile code describing the
+//! whole pack rather than only the half that runs here.
+//!
 //! **Why the supervisor and not the bot.** The install has to inherit the
 //! platform's existing safety property: a config change is snapshotted, applied,
 //! verified, and rolled back automatically when the server doesn't come back.
@@ -110,11 +116,20 @@ async fn reconcile(
 
     let text = std::fs::read_to_string(&list_path)
         .with_context(|| format!("failed to read {}", mods.file))?;
-    let entries = mods_file::parse(&text).with_context(|| format!("{} is unusable", mods.file))?;
+    let list = mods_file::parse(&text).with_context(|| format!("{} is unusable", mods.file))?;
+
+    // Pushed before anything is fetched: a dropped client line changes nothing
+    // about this launch, so the one place it can be noticed is the log stream
+    // the agent reads back afterwards.
+    for warning in &list.warnings {
+        warn!(warning = %warning, "mod list entry skipped");
+        logs.push(format!("{LOG_PREFIX} {warning}"));
+    }
 
     let api = ThunderstoreApi::new()?;
     let source = LayeredSource::new(&api, &work_dir);
-    let wanted: Vec<Wanted> = entries
+    let wanted: Vec<Wanted> = list
+        .install
         .into_iter()
         .map(|entry| Wanted {
             id: entry.id,
@@ -143,7 +158,16 @@ async fn reconcile(
         .iter()
         .map(|package| package.release.clone())
         .collect();
-    write_resolved(&work_dir, &keep, &resolution.provided)?;
+    let mut client_only: Vec<PackageRelease> = list
+        .client_only
+        .into_iter()
+        .map(|entry| entry.release)
+        .collect();
+    // Sorted for the same reason the installed set is: `resolved` is read back
+    // and fingerprinted, so its order has to depend on the set and not on the
+    // order somebody happened to type the lines in.
+    client_only.sort();
+    write_resolved(&work_dir, &keep, &client_only, &resolution.provided)?;
     match cache::collect(&work_dir, &keep) {
         Ok(removed) if removed > 0 => info!(removed, "collected unused mod archives"),
         Ok(_) => {}
@@ -152,7 +176,7 @@ async fn reconcile(
         Err(err) => warn!(error = ?err, "could not collect unused mod archives"),
     }
 
-    report(logs, &keep, &resolution.provided, installed);
+    report(logs, &keep, &client_only, &resolution.provided, installed);
     Ok(())
 }
 
@@ -216,26 +240,26 @@ fn usable_in_cache(work_dir: &Path, release: &PackageRelease) -> Result<bool> {
     }
 }
 
-/// Write the `resolved` file: exactly what is installed, one release per line,
-/// with the image-provided packages named in a trailing comment so "why isn't
-/// the loader pack in here" answers itself.
+/// Write the `resolved` file: exactly what is installed, plus the two things
+/// that are deliberately *not* — the packages the modpack carries for players'
+/// machines, and the ones the game image supplies.
+///
+/// The whole modpack rather than just this server's share, because this file is
+/// the single artifact an export is built from: a client-only entry that only
+/// existed in `.grizzly/mods` would be dropped from every profile code minted
+/// off a running server, which is exactly the entry a player most needs.
 fn write_resolved(
     work_dir: &Path,
     packages: &[PackageRelease],
+    client_only: &[PackageRelease],
     provided: &[types::PackageId],
 ) -> Result<()> {
-    let mut text = String::new();
-    for release in packages {
-        text.push_str(&release.to_string());
-        text.push('\n');
+    let text = grizzly_control_api::mods::ResolvedMods {
+        installed: packages.iter().map(ToString::to_string).collect(),
+        client_only: client_only.iter().map(ToString::to_string).collect(),
+        provided: provided.iter().map(ToString::to_string).collect(),
     }
-    for id in provided {
-        // A comment rather than a line, so nothing reading `resolved` back
-        // concludes the loader pack is one of the packages this instance owns.
-        text.push_str("# ");
-        text.push_str(&id.to_string());
-        text.push_str(" is supplied by the game image and was not installed\n");
-    }
+    .render();
     let path = work_dir.join(RESOLVED_FILE);
     std::fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))
 }
@@ -245,22 +269,30 @@ fn write_resolved(
 fn report(
     logs: &LogBuffer,
     packages: &[PackageRelease],
+    client_only: &[PackageRelease],
     provided: &[types::PackageId],
     files: usize,
 ) {
     if packages.is_empty() {
         logs.push(format!("{LOG_PREFIX} no mods listed; nothing installed"));
-        return;
+    } else {
+        let names = join(packages);
+        logs.push(format!(
+            "{LOG_PREFIX} installed {} package(s), {files} file(s): {names}",
+            packages.len()
+        ));
+        info!(packages = %names, files, "mod install reconciled");
     }
-    let names = packages
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    logs.push(format!(
-        "{LOG_PREFIX} installed {} package(s), {files} file(s): {names}",
-        packages.len()
-    ));
+    if !client_only.is_empty() {
+        // Named rather than counted: this is the line that tells the agent a
+        // package in the modpack was deliberately not installed here, and a bare
+        // count would leave it unable to say which.
+        logs.push(format!(
+            "{LOG_PREFIX} {} package(s) are for players' machines only: {}",
+            client_only.len(),
+            join(client_only)
+        ));
+    }
     if !provided.is_empty() {
         let skipped = provided
             .iter()
@@ -271,7 +303,15 @@ fn report(
             "{LOG_PREFIX} skipped {skipped} — supplied by the game image"
         ));
     }
-    info!(packages = %names, files, "mod install reconciled");
+}
+
+/// Comma-joined release names for one log line.
+fn join(releases: &[PackageRelease]) -> String {
+    releases
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
