@@ -3,7 +3,7 @@
 # game *process* in place. See games/minecraft/Dockerfile for the worked reference.
 #
 # Valheim has no native RCON, so this image bakes in BepInEx + the ValheimRcon mod
-# (see the modfetch stage and valheim-seed-rcon.sh) to give the supervisor a real
+# (see the modfetch stage and valheim-pre-server.sh) to give the supervisor a real
 # console: Gary can run in-game commands and broadcasts, and the update-on-empty
 # loop reads the live player count — the same capabilities the RCON games have.
 #
@@ -51,8 +51,8 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly
 # hash together; latest is published on Thunderstore.
 # nosemgrep: dockerfile.best-practice.missing-image-version -- reuses the digest-pinned chef stage.
 FROM chef AS modfetch
-ARG VALHEIM_RCON_VERSION=1.5.1
-ARG VALHEIM_RCON_SHA256=0f74ec85f07ec7c1a4c8e97e29ee86b11ed0a186a17d6f698da089ab4f74012a
+ARG VALHEIM_RCON_VERSION=1.6.0
+ARG VALHEIM_RCON_SHA256=a4289d4eecd7a88ebf351aabfd657f788641458380a698a42b874e58e7bc40df
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl unzip ca-certificates \
     && curl -fsSL -o /tmp/rcon.zip \
