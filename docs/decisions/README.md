@@ -35,5 +35,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-031 — The supervisor reconciles a declarative mod list before each launch](031-supervisor-reconciles-thunderstore-mods.md)
 - [ADR-032 — Per-game guidance loads on demand through a tool, not on every turn](032-game-guidance-loads-on-demand.md)
 - [ADR-033 — A profile code is the unit a modpack moves in](033-r2modman-profile-codes.md)
+- [ADR-034 — Gary gets a shell, and the kernel is what makes it read-only](034-agent-read-only-shell.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).

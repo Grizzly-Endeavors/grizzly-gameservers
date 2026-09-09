@@ -29,7 +29,9 @@ How should the ops agent interact with running game server containers? Two broad
 
 ## Why not exec-as-tools
 
-The exec approach gives the agent effective shell access to running game servers — arbitrary commands over a cold exec session each call. That directly undercuts the snapshot→apply→verify→rollback guardrail the design depends on, because there's no enforcement layer between the agent and the container. Exec sessions are also inherently unstable: each call starts a new session that can fail mid-sequence, and if the container restarts between the snapshot and the write the operation is silently lost.
+`kubectl exec` gives the agent arbitrary commands over a cold session, with no enforcement layer between it and the container. That undercuts the snapshot→apply→verify→rollback guardrail: a write that does not go through the typed route takes no snapshot, so the next crash has nothing to restore. Exec sessions are also inherently unstable — each call starts a new session that can fail mid-sequence, and a container restart between the snapshot and the write loses the operation silently.
+
+The agent does have a shell, but it reaches it through the control API and it cannot write: commands run under a Landlock ruleset that grants read and execute and denies writes to everything holding game state, so mutation still flows through the typed routes that snapshot. The distinction that matters is not "commands versus tools" — it is whether an enforcement layer exists at all. See [ADR-034](../decisions/034-agent-read-only-shell.md).
 
 ## Sidecar model
 
