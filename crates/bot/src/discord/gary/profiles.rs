@@ -21,7 +21,9 @@ use tracing::{error, warn};
 use grizzly_control_api::mods::{PROFILE_FILE, RESOLVED_FILE, ResolvedMods};
 use poise::serenity_prelude as serenity;
 
-use crate::agones::{FsOutcome, ModRegistry, supervisor_read_file, supervisor_write_file};
+use crate::agones::{
+    FsOutcome, ModRegistry, ReadWindow, supervisor_read_file, supervisor_write_file,
+};
 use crate::prompts;
 use crate::thunderstore::modpack::{
     CachedProfile, ImportPlan, Lookup, fingerprint, lookups_needed, plan_export, plan_import,
@@ -246,7 +248,9 @@ async fn read_text(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Result<Option
         server,
         ctx.data.control_port,
         path,
-        None,
+        // Whole file, in bytes: this is parsed, not read, so a line window would
+        // silently hand the parser a prefix of a long mod list.
+        ReadWindow::Whole,
     )
     .await
     {

@@ -10,10 +10,10 @@ use std::time::Duration;
 use anyhow::Result;
 use grizzly_control_api::{
     ANNOUNCE_PATH, AnnounceRequest, COMMAND_PATH, CommandRequest, CommandResponse, ControlError,
-    DirEntry, FS_LIST_PATH, FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse,
-    LogsQuery, LogsResponse, OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadQuery, ReadResponse,
-    RestoreRequest, RestoreResponse, SHELL_PATH, ShellRequest, ShellResponse, WriteRequest,
-    WriteResponse,
+    DirEntry, EditRequest, EditResponse, FS_EDIT_PATH, FS_LIST_PATH, FS_READ_PATH, FS_RESTORE_PATH,
+    FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse, OCCUPANCY_PATH,
+    OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest, RestoreResponse,
+    SHELL_PATH, ShellRequest, ShellResponse, WriteRequest, WriteResponse,
 };
 use kube::Client;
 use serde::de::DeserializeOwned;
@@ -82,6 +82,21 @@ pub(crate) async fn supervisor_list_files(
     Ok(map_payload(outcome, |list| list.entries))
 }
 
+/// Which part of a file to ask for.
+///
+/// The two exist because the two kinds of caller want different things. A
+/// program reading a file it will parse wants all of it and doesn't care where
+/// the lines fall; the model wants a bounded window it can address and continue
+/// from. Spelling it as a choice keeps a caller from inheriting the other's
+/// default by omission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadWindow {
+    /// The whole file, up to the supervisor's read cap. What a parser wants.
+    Whole,
+    /// `count` lines starting at 1-based `start`. What the model reads.
+    Lines { start: usize, count: usize },
+}
+
 /// Read a UTF-8 file under the instance's data root.
 ///
 /// # Errors
@@ -94,19 +109,28 @@ pub(crate) async fn supervisor_read_file(
     instance: &str,
     control_port: u16,
     path: &str,
-    offset: Option<usize>,
+    window: ReadWindow,
 ) -> Result<FsOutcome<ReadResponse>> {
     let pod_ip = match target_pod(client, namespace, instance).await? {
         Ok(pod_ip) => pod_ip,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
     let url = format!("http://{pod_ip}:{control_port}{FS_READ_PATH}");
+    let query = match window {
+        ReadWindow::Whole => ReadQuery {
+            path: path.to_owned(),
+            start_line: None,
+            line_count: None,
+        },
+        ReadWindow::Lines { start, count } => ReadQuery {
+            path: path.to_owned(),
+            start_line: Some(start),
+            line_count: Some(count),
+        },
+    };
     let response = http
         .get(&url)
-        .query(&ReadQuery {
-            path: path.to_owned(),
-            offset,
-        })
+        .query(&query)
         .timeout(FS_TIMEOUT)
         .send()
         .await;
@@ -157,9 +181,6 @@ pub(crate) enum EditOutcome {
     Ambiguous(usize),
     /// `old` and `new` are identical — no change to make.
     Unchanged,
-    /// The file was too large to read in full, so a safe read-modify-write round
-    /// trip isn't possible; the caller should fall back to a full rewrite.
-    TooLargeToEdit,
     /// The read or the write couldn't be served; carries the shared FS failure
     /// (payload dropped to unit — it's irrelevant to why the edit didn't land).
     Unserved(FsOutcome<()>),
@@ -174,9 +195,12 @@ pub(crate) struct Replacement<'a> {
 }
 
 /// Edit a file in place by replacing the single occurrence of `old` with `new`,
-/// reading the current contents, applying the change, and writing it back (which
-/// snapshots the prior version for `restore_file`). Refuses ambiguous or missing
-/// anchors so a change can't silently hit the wrong text or clobber the file.
+/// snapshotting the prior version for `restore_file`. Refuses ambiguous or
+/// missing anchors so a change can't silently hit the wrong text or clobber the
+/// file.
+///
+/// The replacement runs in the pod, so the file never crosses the wire and what
+/// can be edited doesn't depend on what fits in a read.
 ///
 /// # Errors
 ///
@@ -200,69 +224,71 @@ pub(crate) async fn supervisor_edit_file(
         return Ok(EditOutcome::NoMatch);
     }
 
-    let read =
-        match supervisor_read_file(client, http, namespace, instance, control_port, path, None)
-            .await?
-        {
-            FsOutcome::Ok(read) => read,
-            unserved @ (FsOutcome::NotFound
-            | FsOutcome::NotManaged
-            | FsOutcome::PodNotReady
-            | FsOutcome::Unreachable
-            | FsOutcome::Rejected(_)) => return Ok(into_unserved(unserved)),
-        };
-    if read.truncated {
-        return Ok(EditOutcome::TooLargeToEdit);
-    }
-
-    let updated = match apply_unique_edit(&read.content, old, new) {
-        EditApply::Replaced(text) => text,
-        EditApply::NoMatch => return Ok(EditOutcome::NoMatch),
-        EditApply::Ambiguous(count) => return Ok(EditOutcome::Ambiguous(count)),
+    let pod_ip = match target_pod(client, namespace, instance).await? {
+        Ok(pod_ip) => pod_ip,
+        Err(not_ready) => return Ok(into_unserved::<()>(not_ready.into_outcome())),
     };
+    let url = format!("http://{pod_ip}:{control_port}{FS_EDIT_PATH}");
+    let response = http
+        .post(&url)
+        .json(&EditRequest {
+            path: path.to_owned(),
+            old: old.to_owned(),
+            new: new.to_owned(),
+        })
+        .timeout(FS_TIMEOUT)
+        .send()
+        .await;
 
-    match supervisor_write_file(
-        client,
-        http,
-        namespace,
-        instance,
-        control_port,
-        path,
-        &updated,
-    )
-    .await?
-    {
-        FsOutcome::Ok(result) => Ok(EditOutcome::Edited(result)),
-        unserved @ (FsOutcome::NotFound
-        | FsOutcome::NotManaged
-        | FsOutcome::PodNotReady
-        | FsOutcome::Unreachable
-        | FsOutcome::Rejected(_)) => Ok(into_unserved(unserved)),
+    read_edit_reply(response, &url).await
+}
+
+/// Turn the edit route's reply into an [`EditOutcome`].
+///
+/// Status is inspected directly rather than through [`finish`], which folds every
+/// non-success into `Rejected` — fine for the refusals, but the success body
+/// carries a match count that decides between three different outcomes.
+async fn read_edit_reply(
+    response: reqwest::Result<reqwest::Response>,
+    url: &str,
+) -> Result<EditOutcome> {
+    let reply = match response {
+        Ok(reply) => reply,
+        Err(err) => {
+            warn!(error = ?err, url, "failed to reach supervisor edit route");
+            return Ok(EditOutcome::Unserved(FsOutcome::Unreachable));
+        }
+    };
+    let status = reply.status();
+    if !status.is_success() {
+        return Ok(match reply.json::<ControlError>().await {
+            Ok(error) => EditOutcome::Unserved(FsOutcome::Rejected(error.error)),
+            Err(err) => {
+                warn!(%status, error = ?err, url, "supervisor edit route returned an unreadable error");
+                EditOutcome::Unserved(FsOutcome::Unreachable)
+            }
+        });
     }
+    Ok(match reply.json::<EditResponse>().await {
+        Ok(edit) => match edit.occurrences {
+            1 => EditOutcome::Edited(WriteResponse {
+                path: edit.path,
+                backed_up: edit.backed_up,
+            }),
+            0 => EditOutcome::NoMatch,
+            count => EditOutcome::Ambiguous(count),
+        },
+        Err(err) => {
+            warn!(error = ?err, url, "failed to parse supervisor edit reply");
+            EditOutcome::Unserved(FsOutcome::Unreachable)
+        }
+    })
 }
 
 /// Re-tag a read/write [`FsOutcome`] that didn't succeed as the edit's
 /// [`EditOutcome::Unserved`], dropping the (absent) payload.
 fn into_unserved<T>(outcome: FsOutcome<T>) -> EditOutcome {
     EditOutcome::Unserved(map_payload(outcome, |_| ()))
-}
-
-/// The pure in-memory outcome of applying a single-occurrence replacement.
-enum EditApply {
-    Replaced(String),
-    NoMatch,
-    Ambiguous(usize),
-}
-
-/// Replace `old` with `new` only when it occurs exactly once. Occurrences are
-/// counted non-overlapping, left to right — the same match semantics a reader
-/// expects when they copy a unique snippet to anchor a change.
-fn apply_unique_edit(content: &str, old: &str, new: &str) -> EditApply {
-    match content.matches(old).count() {
-        0 => EditApply::NoMatch,
-        1 => EditApply::Replaced(content.replacen(old, new, 1)),
-        count => EditApply::Ambiguous(count),
-    }
 }
 
 /// Restore a file under the instance's data root from its last snapshot.
@@ -549,7 +575,3 @@ fn map_payload<T, U>(outcome: FsOutcome<T>, transform: impl FnOnce(T) -> U) -> F
         FsOutcome::Rejected(message) => FsOutcome::Rejected(message),
     }
 }
-
-#[cfg(test)]
-#[path = "tests/supervisor_fs.rs"]
-mod tests;

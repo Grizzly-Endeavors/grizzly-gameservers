@@ -133,6 +133,8 @@ pub(crate) enum SettingKey {
     GaryModel,
     GaryBaseUrl,
     GaryMaxRounds,
+    TranscriptTriggerTokens,
+    TranscriptTargetTokens,
     ThrottleBurst,
     ThrottleRefillSeconds,
     ThrottleMaxConcurrent,
@@ -163,6 +165,8 @@ impl SettingKey {
         Self::GaryModel,
         Self::GaryBaseUrl,
         Self::GaryMaxRounds,
+        Self::TranscriptTriggerTokens,
+        Self::TranscriptTargetTokens,
         Self::ThrottleBurst,
         Self::ThrottleRefillSeconds,
         Self::ThrottleMaxConcurrent,
@@ -192,6 +196,8 @@ impl SettingKey {
             Self::GaryModel => "gary.model",
             Self::GaryBaseUrl => "gary.base_url",
             Self::GaryMaxRounds => "gary.max_rounds",
+            Self::TranscriptTriggerTokens => "gary.transcript_trigger_tokens",
+            Self::TranscriptTargetTokens => "gary.transcript_target_tokens",
             Self::ThrottleBurst => "throttle.burst",
             Self::ThrottleRefillSeconds => "throttle.refill_seconds",
             Self::ThrottleMaxConcurrent => "throttle.max_concurrent",
@@ -226,7 +232,11 @@ impl SettingKey {
     /// deciding where a human would look for it.
     pub(crate) fn section(self) -> Section {
         match self {
-            Self::GaryModel | Self::GaryBaseUrl | Self::GaryMaxRounds => Section::Agent,
+            Self::GaryModel
+            | Self::GaryBaseUrl
+            | Self::GaryMaxRounds
+            | Self::TranscriptTriggerTokens
+            | Self::TranscriptTargetTokens => Section::Agent,
             Self::ThrottleBurst | Self::ThrottleRefillSeconds | Self::ThrottleMaxConcurrent => {
                 Section::Throttle
             }
@@ -262,6 +272,8 @@ impl SettingKey {
             Self::GaryModel
             | Self::GaryBaseUrl
             | Self::GaryMaxRounds
+            | Self::TranscriptTriggerTokens
+            | Self::TranscriptTargetTokens
             | Self::ThrottleBurst
             | Self::ThrottleRefillSeconds
             | Self::ThrottleMaxConcurrent
@@ -285,6 +297,14 @@ impl SettingKey {
             Self::GaryModel => "Model tag Gary drives for every turn.",
             Self::GaryBaseUrl => "OpenAI-compatible chat-completions base URL.",
             Self::GaryMaxRounds => "Model calls one turn may spend before it escalates to a human.",
+            Self::TranscriptTriggerTokens => {
+                "Prompt tokens a conversation may reach before its oldest turns are dropped."
+            }
+            Self::TranscriptTargetTokens => {
+                "Size a conversation is cut back to once it trips the trigger. Well below the \
+                 trigger on purpose: trimming a little at a time would re-cost the whole prompt \
+                 on every turn."
+            }
             Self::ThrottleBurst => "Turns one person may start back-to-back.",
             Self::ThrottleRefillSeconds => "Seconds to earn one turn back.",
             Self::ThrottleMaxConcurrent => "Turns allowed to run at once across every surface.",
@@ -332,6 +352,8 @@ impl SettingKey {
             Self::GaryModel => snapshot.gary_model.clone(),
             Self::GaryBaseUrl => snapshot.gary_base_url.clone(),
             Self::GaryMaxRounds => snapshot.gary_max_rounds.to_string(),
+            Self::TranscriptTriggerTokens => snapshot.transcript_trigger_tokens.to_string(),
+            Self::TranscriptTargetTokens => snapshot.transcript_target_tokens.to_string(),
             Self::ThrottleBurst => snapshot.throttle.burst.to_string(),
             Self::ThrottleRefillSeconds => snapshot.throttle.refill_interval.as_secs().to_string(),
             Self::ThrottleMaxConcurrent => snapshot.throttle.max_concurrent.to_string(),
@@ -369,6 +391,8 @@ impl SettingKey {
             Self::GaryModel => "a model tag like \"glm-5.2\"",
             Self::GaryBaseUrl => "a base URL like \"https://ollama.com/v1\"",
             Self::GaryMaxRounds
+            | Self::TranscriptTriggerTokens
+            | Self::TranscriptTargetTokens
             | Self::ThrottleBurst
             | Self::ThrottleRefillSeconds
             | Self::ThrottleMaxConcurrent
@@ -404,6 +428,12 @@ impl SettingKey {
             Self::GaryModel => snapshot.gary_model = text(raw, expected)?,
             Self::GaryBaseUrl => snapshot.gary_base_url = text(raw, expected)?,
             Self::GaryMaxRounds => snapshot.gary_max_rounds = count(raw, expected)?,
+            Self::TranscriptTriggerTokens => {
+                snapshot.transcript_trigger_tokens = count(raw, expected)?;
+            }
+            Self::TranscriptTargetTokens => {
+                snapshot.transcript_target_tokens = count(raw, expected)?;
+            }
             Self::ThrottleBurst => {
                 snapshot.throttle.burst = u32::try_from(count(raw, expected)?).unwrap_or(u32::MAX);
             }
@@ -507,6 +537,10 @@ pub(crate) struct SettingsSnapshot {
     pub(crate) gary_model: String,
     pub(crate) gary_base_url: String,
     pub(crate) gary_max_rounds: usize,
+    /// Prompt tokens a transcript may reach before it is cut back.
+    pub(crate) transcript_trigger_tokens: usize,
+    /// Where a cut lands it. See [`SettingKey::TranscriptTargetTokens`].
+    pub(crate) transcript_target_tokens: usize,
     pub(crate) throttle: ThrottlePolicy,
     /// Guilds admitted. Empty admits every guild — see
     /// [`BotConfig::guild_allowlist`](crate::config::BotConfig::guild_allowlist).
@@ -568,6 +602,8 @@ impl SettingsSnapshot {
             gary_model: config.ollama_model.clone(),
             gary_base_url: config.ollama_base_url.clone(),
             gary_max_rounds: crate::agent::DEFAULT_MAX_ROUNDS,
+            transcript_trigger_tokens: crate::agent::DEFAULT_TRANSCRIPT_TRIGGER_TOKENS,
+            transcript_target_tokens: crate::agent::DEFAULT_TRANSCRIPT_TARGET_TOKENS,
             throttle: config.throttle,
             guild_allowlist: config.guild_allowlist.clone().into(),
             beta_invite_url: config.beta_invite_url.clone(),
@@ -584,12 +620,27 @@ impl SettingsSnapshot {
         }
     }
 
+    /// The transcript bounds a `commit` trims between.
+    pub(crate) fn transcript_limits(&self) -> crate::agent::TranscriptLimits {
+        crate::agent::TranscriptLimits {
+            trigger_tokens: self.transcript_trigger_tokens,
+            target_tokens: self.transcript_target_tokens,
+        }
+    }
+
     /// Cross-field rules no single key can enforce alone.
     ///
     /// # Errors
     ///
     /// Returns a plain-language description of the inconsistency.
     fn coherence(&self) -> Result<()> {
+        if self.transcript_target_tokens >= self.transcript_trigger_tokens {
+            bail!(
+                "a conversation would be cut back to the same size that triggers the cut, so \
+                 every turn after the first would pay to re-send the whole conversation — set \
+                 the target below the trigger"
+            );
+        }
         if !self.sizing_bounds.is_coherent() {
             bail!(
                 "the smallest a server may be would end up larger than the largest it may be — \
@@ -617,6 +668,8 @@ impl SettingsSnapshot {
             gary_model: "glm-5.2".to_owned(),
             gary_base_url: "https://ollama.com/v1".to_owned(),
             gary_max_rounds: crate::agent::DEFAULT_MAX_ROUNDS,
+            transcript_trigger_tokens: crate::agent::DEFAULT_TRANSCRIPT_TRIGGER_TOKENS,
+            transcript_target_tokens: crate::agent::DEFAULT_TRANSCRIPT_TARGET_TOKENS,
             throttle: ThrottlePolicy::default(),
             guild_allowlist: Vec::new().into(),
             beta_invite_url: String::new(),

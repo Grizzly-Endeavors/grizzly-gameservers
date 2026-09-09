@@ -3,22 +3,31 @@ id: FileWindowNote
 type: prompt
 annotations:
   sent_when: >-
-    appended to a read_file result whose window started partway into the file
+    appended to a read_file result whenever the window shown is not the whole
+    file
   used_by:
     - file: discord/gary/tools.rs
       function: format_file
   variables:
-    offset:
-      source: the byte offset the returned window actually starts at
-      contents: the offset as a number
+    first:
+      source: the 1-based line the returned window starts at
+      contents: a line number
+    last:
+      source: the 1-based line the returned window ends at
+      contents: a line number
+    total:
+      source: the file's total line count, as counted in the pod
+      contents: a line number
   reasoning:
     - >-
-      A window that does not start at zero has to say so, or the model reads a
-      fragment as the whole file and concludes a setting is missing when it is
-      simply above the window.
+      Says which slice of the file is in view and how big the file is, so a
+      partial read can't be mistaken for the whole thing. Without the total the
+      model has no way to tell a complete small file from the head of a large
+      one, which is the mistake that leads to confident answers about settings
+      that were never read.
     - >-
-      Reports where the window *actually* began rather than what was asked for:
-      an offset landing inside a multi-byte character resumes at the next
-      boundary, and a model paging by adding lengths needs the real number.
+      Phrased as a range rather than an offset because the next read is
+      addressed in lines: the number to ask for next is visible in the note
+      itself, with nothing to compute.
 ---
-(starting at byte {{offset}})
+(lines {{first}}–{{last}} of {{total}})

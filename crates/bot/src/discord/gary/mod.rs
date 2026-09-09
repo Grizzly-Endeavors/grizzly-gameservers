@@ -29,6 +29,7 @@ pub(crate) use self::tools::ConfirmMode;
 use super::auth::{AccessLevel, Speaker, access_level_for};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
+use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, Role, SessionCallbacks, SessionEvent, SessionId,
     SessionKey, SessionOutcome, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
@@ -273,17 +274,17 @@ async fn handle_message(
     // On a hard error, run_gary_turn already logged and posted a friendly message;
     // the prior session is left untouched so a retry doesn't inherit a half-finished
     // transcript. Only a clean turn is committed for continuity.
-    if let Ok(SessionOutcome { escalation, .. }) = run_gary_turn(&turn, &mut messages).await {
-        if let Some(reason) = escalation {
+    if let Ok(outcome) = run_gary_turn(&turn, &mut messages).await {
+        if let Some(reason) = outcome.escalation.as_ref() {
             warn!(
                 user = %message.author.id,
                 kind = reason.as_str(),
                 "agent escalated"
             );
-            notify_operators_escalated(data, message, &prompt, &messages, &reason).await;
+            notify_operators_escalated(data, message, &prompt, &messages, reason).await;
         }
-        data.sessions
-            .commit(key, session.id, messages, Instant::now());
+        let limits = data.settings.snapshot().transcript_limits();
+        commit_turn(&data.sessions, key, session.id, messages, &outcome, limits);
     }
 }
 
