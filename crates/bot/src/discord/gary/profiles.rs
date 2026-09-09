@@ -251,8 +251,13 @@ async fn read_text(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Result<Option
     {
         // A rejection is how "no such file" arrives, and both files this module
         // reads are legitimately absent until the reconciler or an export has
-        // run once.
-        Ok(FsOutcome::Rejected(_)) => Ok(None),
+        // run once. Logged all the same: a rejection for any *other* reason
+        // reads to the caller as "not there yet", which would be a wrong answer
+        // given confidently.
+        Ok(FsOutcome::Rejected(reason)) => {
+            tracing::debug!(%server, %path, %reason, "agent: profile file unavailable");
+            Ok(None)
+        }
         Ok(outcome) => fs_result(server, outcome).map(|file| Some(file.content)),
         Err(err) => {
             error!(error = ?err, %server, %path, "agent: profile file read failed");
