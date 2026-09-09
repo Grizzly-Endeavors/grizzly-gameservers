@@ -16,9 +16,10 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -257,13 +258,31 @@ impl RconRuntime {
     /// where the RCON port hasn't bound yet ([`ConnectMode::Retry`]) or fail fast
     /// on a refused connection ([`ConnectMode::Once`]).
     async fn run(&self, command: &str, connect: ConnectMode) -> Result<String> {
+        self.run_within(command, connect, RCON_TIMEOUT).await
+    }
+
+    /// [`Self::run`] against an explicit budget, so a test can exercise the
+    /// deadline without waiting out [`RCON_TIMEOUT`].
+    async fn run_within(
+        &self,
+        command: &str,
+        connect: ConnectMode,
+        budget: Duration,
+    ) -> Result<String> {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, self.port));
-        let output = timeout(RCON_TIMEOUT, self.exec(address, command, connect))
-            .await
-            .with_context(|| {
-                format!("rcon command timed out after {}s", RCON_TIMEOUT.as_secs())
-            })??;
-        Ok(truncate_output(output))
+        // Set the moment the TCP connection is established, so a blown deadline
+        // can say which half failed. Both halves burn the same budget under
+        // ConnectMode::Retry, but they point at different faults and the operator
+        // (or Gary, reading this through the control API) needs to tell them apart.
+        let connected = AtomicBool::new(false);
+        match timeout(budget, self.exec(address, command, connect, &connected)).await {
+            Ok(output) => Ok(truncate_output(output?)),
+            Err(_elapsed) => Err(deadline_error(
+                address,
+                connected.load(Ordering::Relaxed),
+                budget,
+            )),
+        }
     }
 
     /// Broadcast `message` to everyone on the server, using the game's own
@@ -349,6 +368,7 @@ impl RconRuntime {
         address: SocketAddr,
         command: &str,
         connect: ConnectMode,
+        connected: &AtomicBool,
     ) -> Result<String> {
         if command.len() > MAX_COMMAND_LEN {
             bail!("command is too long for rcon ({} bytes)", command.len());
@@ -357,8 +377,9 @@ impl RconRuntime {
             ConnectMode::Retry => connect_with_retry(address).await?,
             ConnectMode::Once => TcpStream::connect(address)
                 .await
-                .context("failed to connect to the game rcon port")?,
+                .with_context(|| format!("nothing is listening on the game rcon port {address}"))?,
         };
+        connected.store(true, Ordering::Relaxed);
         authenticate(&mut stream, &self.password).await?;
         write_packet(&mut stream, ID_EXEC, TYPE_EXECCOMMAND, command).await?;
         if self.dialect.single_packet_reply() {
@@ -423,12 +444,37 @@ fn broadcast_command(message: &str, dialect: RconDialect) -> Result<String> {
     }
 }
 
+/// The error for a blown RCON deadline, named by how far the exchange got.
+///
+/// A console that never accepted a connection and one that accepted and then went
+/// silent exhaust the same budget, but they are different faults with different
+/// fixes: an unbound listener means the game is still starting or its RCON plugin
+/// failed to load, while a silent one means the game is up but wedged. Reporting
+/// both as "timed out" sends the reader to the wrong half of the system — the
+/// failure mode that hid a mod incompatibility behind an apparent console hang.
+fn deadline_error(address: SocketAddr, connected: bool, budget: Duration) -> anyhow::Error {
+    let secs = budget.as_secs();
+    if connected {
+        anyhow!(
+            "rcon at {address} accepted the connection but sent no reply within {secs}s — \
+             the game is running but its console is not responding"
+        )
+    } else {
+        anyhow!(
+            "nothing is listening on the game rcon port {address} — every connection was \
+             refused for {secs}s; the game may still be starting, or its rcon plugin failed \
+             to load (check the game logs)"
+        )
+    }
+}
+
 /// Connect to the game's RCON port, retrying while the connection is refused —
 /// the listener may not have bound yet on a server that just (re)started, even
-/// though the game port is already accepting players. The caller's
-/// [`RCON_TIMEOUT`] bounds the loop, so a genuinely down console eventually
-/// surfaces as a timeout rather than looping forever. Any error other than
-/// connection-refused is a real fault and fails immediately.
+/// though the game port is already accepting players. The caller's budget bounds
+/// the loop rather than any deadline here; because no connection is ever
+/// established, blowing it reports a console that isn't listening instead of a
+/// bare timeout (see [`deadline_error`]). Any error other than connection-refused
+/// is a real fault and fails immediately.
 async fn connect_with_retry(address: SocketAddr) -> Result<TcpStream> {
     loop {
         match TcpStream::connect(address).await {

@@ -201,6 +201,88 @@ async fn read_packet_rejects_an_oversized_length_prefix() {
     );
 }
 
+#[test]
+fn deadline_error_names_an_unbound_listener() {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 27015));
+    let message = deadline_error(address, false, Duration::from_secs(15)).to_string();
+    assert!(
+        message.contains("nothing is listening"),
+        "a never-connected deadline should name the absent listener, got {message:?}"
+    );
+    assert!(
+        message.contains("27015"),
+        "the message should name the port that was refused, got {message:?}"
+    );
+    assert!(
+        !message.contains("no reply"),
+        "a never-connected deadline must not read as a silent console, got {message:?}"
+    );
+}
+
+#[test]
+fn deadline_error_names_a_silent_console() {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 27015));
+    let message = deadline_error(address, true, Duration::from_secs(15)).to_string();
+    assert!(
+        message.contains("accepted the connection"),
+        "a connected deadline should say the console answered the socket, got {message:?}"
+    );
+    assert!(
+        !message.contains("nothing is listening"),
+        "a connected deadline must not blame an absent listener, got {message:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_reports_an_unbound_listener_rather_than_a_bare_timeout() {
+    // Reserve a port and drop it, so every connect attempt is refused for the
+    // whole budget — the shape of a game whose rcon plugin never bound.
+    let probe = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let runtime = RconRuntime::new(port, RconDialect::Source, None).unwrap();
+    let err = runtime
+        .run_within("players", ConnectMode::Retry, Duration::from_millis(300))
+        .await
+        .expect_err("a refused port should fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("nothing is listening"),
+        "an unbound rcon port should be reported as such, got {message:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_reports_a_connected_but_silent_console() {
+    // Accept the connection and then say nothing, which is the wedged-game case
+    // the unbound-listener message must not be confused with.
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepter = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        // Hold the connection open past the caller's budget without replying.
+        sleep(Duration::from_secs(5)).await;
+        drop(stream);
+    });
+
+    let runtime = RconRuntime::new(port, RconDialect::Source, None).unwrap();
+    let err = runtime
+        .run_within("players", ConnectMode::Retry, Duration::from_millis(300))
+        .await
+        .expect_err("a silent console should fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("accepted the connection"),
+        "a silent console should be distinguished from an absent one, got {message:?}"
+    );
+    accepter.abort();
+}
+
 #[tokio::test]
 async fn connect_with_retry_waits_out_a_late_binding_listener() {
     // Reserve a port, then drop the listener so the address is refused, mirroring
