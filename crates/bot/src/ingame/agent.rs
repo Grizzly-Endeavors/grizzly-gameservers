@@ -17,10 +17,11 @@ use anyhow::Result;
 use tracing::{debug, error, warn};
 
 use super::IngameDeps;
+use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, SessionCallbacks, SessionEvent, SessionKey,
-    SessionOutcome, ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
-    run_session, send_chat_completion,
+    ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session,
+    send_chat_completion,
 };
 use crate::agones::{
     ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
@@ -152,9 +153,9 @@ pub(crate) async fn handle_ingame_question(
     .await;
 
     let reply = match outcome {
-        Ok(SessionOutcome {
-            reply, escalation, ..
-        }) => {
+        Ok(outcome) => {
+            let reply = outcome.reply.clone();
+            let escalation = outcome.escalation.clone();
             if let Some(reason) = escalation {
                 warn!(
                     server,
@@ -176,8 +177,8 @@ pub(crate) async fn handle_ingame_question(
                 )
                 .await;
             }
-            deps.sessions
-                .commit(key, session.id, messages, Instant::now());
+            let limits = deps.settings.snapshot().transcript_limits();
+            commit_turn(&deps.sessions, key, session.id, messages, &outcome, limits);
             reply
         }
         Err(err) => {

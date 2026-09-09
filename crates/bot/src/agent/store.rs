@@ -19,22 +19,40 @@ use super::llm::{ChatMessage, Role};
 /// How long a session may sit idle before its next use starts fresh.
 const SESSION_TTL: Duration = Duration::from_mins(30);
 
-/// Ceiling on retained messages per session (the leading system prompt always
-/// counts as one and is never dropped). Bounds memory and prompt size for a
-/// long-running back-and-forth; trimming keeps the most recent turns.
-const MAX_TRANSCRIPT: usize = 30;
-
-/// Ceiling on retained transcript *bytes* per session, alongside the message
-/// count.
+/// How big a transcript may get before its oldest turns are dropped.
 ///
-/// A count alone doesn't bound anything that matters: a single `read_file`
-/// result carries up to 256 KiB verbatim, so thirty of them is several megabytes
-/// resident — and, worse, re-sent as prompt tokens on every later turn in that
-/// channel. One big read should age out quickly rather than ride along for the
-/// next twenty-nine messages. The newest message is always kept even when it
-/// exceeds this on its own; dropping the result the model just asked for would
-/// leave it answering about nothing.
-const MAX_TRANSCRIPT_BYTES: usize = 128 * 1024;
+/// Set against the context window Gary's model actually has, not against a fear
+/// of long conversations. A transcript is trimmed because it would otherwise
+/// stop fitting, and for no other reason: the cost of carrying it is prompt
+/// tokens, which are cached between turns, while the cost of *cutting* it is
+/// losing what was said. Trimming early trades the cheap thing away to save the
+/// expensive one.
+pub(crate) const DEFAULT_TRANSCRIPT_TRIGGER_TOKENS: usize = 600_000;
+
+/// Where a trim lands the transcript once [`DEFAULT_TRANSCRIPT_TRIGGER_TOKENS`]
+/// is passed.
+///
+/// Well below the trigger on purpose. Every trim invalidates the cached prompt
+/// prefix, so the turn after one pays full price for the whole transcript;
+/// shaving off just enough to fit would do that on *every* subsequent turn.
+/// Cutting deep and rarely pays it once.
+pub(crate) const DEFAULT_TRANSCRIPT_TARGET_TOKENS: usize = 400_000;
+
+/// The two bounds a trim works between, resolved per turn from settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TranscriptLimits {
+    pub(crate) trigger_tokens: usize,
+    pub(crate) target_tokens: usize,
+}
+
+impl Default for TranscriptLimits {
+    fn default() -> Self {
+        Self {
+            trigger_tokens: DEFAULT_TRANSCRIPT_TRIGGER_TOKENS,
+            target_tokens: DEFAULT_TRANSCRIPT_TARGET_TOKENS,
+        }
+    }
+}
 
 /// What counts as one conversation. Raw ids rather than Discord types, so this
 /// module stays trivially testable.
@@ -193,15 +211,25 @@ impl SessionStore {
         }
     }
 
-    /// Persist the transcript produced by a completed turn, trimmed to
-    /// [`MAX_TRANSCRIPT`], under the id it was checked out with, and stamp it as
-    /// just-used.
+    /// Persist the transcript produced by a completed turn under the id it was
+    /// checked out with, and stamp it as just-used.
+    ///
+    /// `measured_tokens` is the prompt size the provider reported for the turn's
+    /// last model call, and `limits` the bounds to trim between. A turn that made
+    /// no model call reports zero, which trims nothing — the right answer, since
+    /// nothing was sent.
+    ///
+    /// Trimming happens here rather than mid-turn on purpose: a turn re-sends its
+    /// transcript on every round, so cutting between rounds would throw away the
+    /// cached prefix at the one moment it is being reused hardest.
     pub(crate) fn commit(
         &self,
         key: SessionKey,
         id: SessionId,
         messages: Vec<ChatMessage>,
         now: Instant,
+        measured_tokens: usize,
+        limits: TranscriptLimits,
     ) {
         let Ok(mut store) = self.inner.lock() else {
             return;
@@ -218,7 +246,7 @@ impl SessionStore {
             key,
             Entry {
                 id,
-                messages: trim(messages),
+                messages: trim(messages, measured_tokens, limits),
                 last_seen: now,
             },
         );
@@ -233,18 +261,30 @@ impl SessionStore {
     }
 }
 
-/// Keep the system message plus the most recent turns within [`MAX_TRANSCRIPT`]
-/// and [`MAX_TRANSCRIPT_BYTES`].
+/// Cut a transcript back to `limits.target_tokens` when its last measured size
+/// passed `limits.trigger_tokens`, keeping the system message and the most
+/// recent turns.
+///
+/// `measured_tokens` is what the provider charged for the last request of the
+/// turn — the real number, including the tool schemas and the system prompt that
+/// an estimate over the message list would miss entirely. It is only a *trigger*:
+/// usage is reported per request, not per message, so there is nothing to
+/// subtract message by message. The cut itself works in bytes, scaled by the
+/// bytes-per-token this very conversation just demonstrated, which beats any
+/// fixed guess at that ratio.
 ///
 /// The retained window must not begin with a tool result — that would dangle
 /// without the assistant turn that requested it and malform the next request —
-/// so the cut point advances past any leading tool messages, after both limits
-/// have had their say.
-fn trim(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let mut start = messages
-        .len()
-        .saturating_sub(MAX_TRANSCRIPT.saturating_sub(1));
-    start = start.max(byte_budget_start(&messages));
+/// so the cut point advances past any leading tool messages.
+fn trim(
+    messages: Vec<ChatMessage>,
+    measured_tokens: usize,
+    limits: TranscriptLimits,
+) -> Vec<ChatMessage> {
+    if measured_tokens <= limits.trigger_tokens {
+        return messages;
+    }
+    let mut start = target_start(&messages, measured_tokens, limits.target_tokens);
     // Skip leading tool results, which would dangle without the assistant turn
     // that asked for them — but never past the newest message, or a transcript
     // whose last message *is* a tool result would be trimmed away entirely.
@@ -254,8 +294,8 @@ fn trim(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     }
     // Landing on a tool result now means it is the newest message, so walk back
     // to the assistant turn that requested it and keep the pair intact. This can
-    // exceed the byte budget; a well-formed request matters more than the budget,
-    // and the alternative is a call with no visible result.
+    // overshoot the target; a well-formed request matters more, and the
+    // alternative is a call with no visible result.
     while start > 1 && messages.get(start).is_some_and(|m| m.role == Role::Tool) {
         start -= 1;
     }
@@ -271,17 +311,33 @@ fn trim(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     trimmed
 }
 
-/// The earliest message index (after the system prompt) that keeps the retained
-/// tail within [`MAX_TRANSCRIPT_BYTES`].
+/// The earliest message index (after the system prompt) whose retained tail is
+/// within `target_tokens`.
 ///
 /// Walks backwards from the newest so the most recent exchange is what survives,
-/// and always admits at least one message — a single oversized result still has
-/// to reach the model that asked for it. The system prompt is excluded from the
-/// walk because it is never dropped; it is charged against the budget so a large
-/// prompt doesn't leave the tail unbounded.
-fn byte_budget_start(messages: &[ChatMessage]) -> usize {
+/// and always admits at least one message — a turn with nothing in it answers
+/// about nothing. The system prompt is excluded from the walk because it is never
+/// dropped, and charged against the target because it is still sent.
+fn target_start(messages: &[ChatMessage], measured_tokens: usize, target_tokens: usize) -> usize {
+    let total_bytes: usize = messages.iter().map(message_bytes).sum();
+    // Everything the request carried that isn't a message — the tool schemas,
+    // the wire framing — is in `measured_tokens` but not in `total_bytes`, so it
+    // is charged here as a fixed overhead the target has to leave room for.
+    // Without this a transcript could be cut to nothing and still not "fit".
+    // The ratio in integer arithmetic: target_bytes = total_bytes × target ÷
+    // measured. Done in u128 so the intermediate product can't overflow on a
+    // large transcript, and without floats so there is no rounding to reason
+    // about in a size calculation.
+    let target_bytes = usize::try_from(
+        (total_bytes as u128)
+            .saturating_mul(target_tokens as u128)
+            .checked_div(measured_tokens.max(1) as u128)
+            .unwrap_or(0),
+    )
+    .unwrap_or(usize::MAX);
+
     let system_bytes = messages.first().map_or(0, message_bytes);
-    let budget = MAX_TRANSCRIPT_BYTES.saturating_sub(system_bytes);
+    let budget = target_bytes.saturating_sub(system_bytes);
     let mut used = 0_usize;
     let mut start = messages.len();
     for (index, message) in messages.iter().enumerate().skip(1).rev() {

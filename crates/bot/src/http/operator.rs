@@ -31,6 +31,7 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, ToolCall, ToolDef,
     TurnOrigin,
@@ -384,6 +385,9 @@ async fn run_gary(
         ))
     })?;
 
+    // Read off before the turn's fields are moved out below.
+    let (actor, guild) = (acting.author_id, acting.guild);
+    let committed = outcome.clone();
     let SessionOutcome {
         reply,
         escalation,
@@ -395,30 +399,21 @@ async fn run_gary(
         Some(EscalationReason::RoundBudget) | None => None,
     };
     if let Some(reason) = escalation.as_ref() {
-        // The harness gains the event and nothing else — its caller already sees
-        // the escalation in the response, so there is still no notification.
-        let named = match reason {
-            EscalationReason::AgentRequested { server, .. } => server.as_deref(),
-            EscalationReason::RoundBudget => None,
-        };
-        let mut event = ProductEvent::new(
-            EventKind::Escalation,
-            &Attribution::new(Actor::Discord(acting.author_id.get()), Surface::Operator),
-            reason.as_str(),
-        )
-        .guild(acting.guild.map(|guild| GuildId::new(guild.to_string())))
-        .details(mapping::escalation_details(named, None));
-        if let Some(server) = named {
-            event = event.instance(InstanceName::new(server));
-        }
-        data.events.record(event).await;
+        record_harness_escalation(data, actor, guild, reason).await;
     }
     let turn_slice = messages.get(mark..).unwrap_or_default();
     let tool_calls = tool_trace(turn_slice);
     let rounds = rounds(turn_slice);
     // Commit last: it moves the transcript the trace was read from.
-    data.sessions
-        .commit(key, session.id, messages, std::time::Instant::now());
+    let limits = data.settings.snapshot().transcript_limits();
+    commit_turn(
+        &data.sessions,
+        key,
+        session.id,
+        messages,
+        &committed,
+        limits,
+    );
 
     Ok(axum::Json(GaryResponse {
         reply,
@@ -431,6 +426,33 @@ async fn run_gary(
         generations: generations.iter().map(generation_trace).collect(),
         tool_calls,
     }))
+}
+
+/// Record an operator-harness escalation as a product event.
+///
+/// The harness gains the event and nothing else — its caller already sees the
+/// escalation in the response body, so there is deliberately no notification.
+async fn record_harness_escalation(
+    data: &Data,
+    actor: serenity::UserId,
+    guild: Option<u64>,
+    reason: &EscalationReason,
+) {
+    let named = match reason {
+        EscalationReason::AgentRequested { server, .. } => server.as_deref(),
+        EscalationReason::RoundBudget => None,
+    };
+    let mut event = ProductEvent::new(
+        EventKind::Escalation,
+        &Attribution::new(Actor::Discord(actor.get()), Surface::Operator),
+        reason.as_str(),
+    )
+    .guild(guild.map(|guild| GuildId::new(guild.to_string())))
+    .details(mapping::escalation_details(named, None));
+    if let Some(server) = named {
+        event = event.instance(InstanceName::new(server));
+    }
+    data.events.record(event).await;
 }
 
 /// The tools a tier may call, with their JSON Schemas — so a harness never has

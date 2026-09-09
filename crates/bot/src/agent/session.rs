@@ -173,6 +173,22 @@ impl SessionOutcome {
     pub(crate) fn escalated(&self) -> bool {
         self.escalation.is_some()
     }
+
+    /// Prompt tokens the turn's largest request cost, as the provider counted
+    /// them, or `0` if it reported none.
+    ///
+    /// The *last* generation rather than the largest by inspection: a turn's
+    /// transcript only grows, so the final call is the biggest, and it is the one
+    /// whose size the next turn inherits. A provider that reports no usage yields
+    /// zero, which reads as "no reason to trim" — the safe direction, since the
+    /// alternative is cutting a conversation on a number nobody measured.
+    pub(crate) fn measured_prompt_tokens(&self) -> usize {
+        self.generations
+            .last()
+            .and_then(|generation| generation.usage.as_ref())
+            .and_then(|usage| usage.prompt)
+            .map_or(0, |tokens| tokens as usize)
+    }
 }
 
 /// Drive the tool-calling loop to a final reply.

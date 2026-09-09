@@ -21,5 +21,33 @@ pub(crate) use session::{
     DEFAULT_MAX_ROUNDS, EscalationReason, EscalationRequest, Generation, SessionCallbacks,
     SessionEvent, SessionOutcome, run_session,
 };
-pub(crate) use store::{SessionId, SessionKey, SessionStore};
+pub(crate) use store::{
+    DEFAULT_TRANSCRIPT_TARGET_TOKENS, DEFAULT_TRANSCRIPT_TRIGGER_TOKENS, SessionId, SessionKey,
+    SessionStore, TranscriptLimits,
+};
 pub(crate) use turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};
+
+/// Persist a finished turn's transcript under the conversation it belongs to,
+/// sized against the settings in force for that turn.
+///
+/// Wraps [`SessionStore::commit`] so the three surfaces that finish a turn don't
+/// each re-derive the measured prompt size from the outcome — a detail that
+/// belongs with the loop, not with a Discord handler.
+pub(crate) fn commit_turn(
+    sessions: &SessionStore,
+    key: SessionKey,
+    id: SessionId,
+    messages: Vec<ChatMessage>,
+    outcome: &SessionOutcome,
+    limits: TranscriptLimits,
+) {
+    let measured = outcome.measured_prompt_tokens();
+    sessions.commit(
+        key,
+        id,
+        messages,
+        std::time::Instant::now(),
+        measured,
+        limits,
+    );
+}
