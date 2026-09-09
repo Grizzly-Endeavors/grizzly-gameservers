@@ -119,7 +119,7 @@ A pure parser is strict (unknown registry, thunderstore without community, commu
 
 The reconciler is assembled only when both the file and the community are set; either alone logs a startup warning (same precedent as the half-configured env overlay). Both paths must resolve inside the data root.
 
-**The mods file.** One package per line: `Namespace-Name` (latest at resolve time) or `Namespace-Name-1.2.3` (pinned). `#` comments and blank lines are ignored. Components are `[A-Za-z0-9_]+`; versions are three numeric parts. A malformed line or a package listed twice is an error that names the line — unlike the env overlay, a typo here must fail loudly so it is rolled back. Seeded empty at supervisor startup and before every launch with the same `create_new` seeding the env overlay uses (hoisted into a shared helper).
+**The mods file.** One package per line: `Namespace-Name` (latest at resolve time) or `Namespace-Name-1.2.3` (pinned), or `client:Namespace-Name-1.2.3` for a package the pack carries for the players' machines and this server never installs — the file is the group's modpack, not just this server's install list ([`profiles.md`](profiles.md), [ADR-033](../../decisions/033-r2modman-profile-codes.md)). `#` comments and blank lines are ignored. Components are `[A-Za-z0-9_]+`; versions are three numeric parts. A malformed line or a package listed twice is an error that names the line — unlike the env overlay, a typo here must fail loudly so it is rolled back. Seeded empty at supervisor startup and before every launch with the same `create_new` seeding the env overlay uses (hoisted into a shared helper).
 
 **Per launch:**
 
@@ -128,7 +128,7 @@ The reconciler is assembled only when both the file and the community are set; e
 3. Download missing zips to `cache/<Namespace-Name-1.2.3>.zip.part` and rename atomically. Per-zip cap 256 MiB (content-length and streamed bytes), entry-count cap, total-uncompressed cap.
 4. Validate every zip: reject `..`, absolute or backslash-rooted paths, NUL bytes, symlink entries; the inner `manifest.json` name and version must match the filename.
 5. Rebuild `staged/` from scratch into `staged.next`, then swap. The staged tree is the loader-relative layout (`BepInEx/plugins/<Namespace-Name>/…`, `BepInEx/patchers/…`, `BepInEx/config/…`).
-6. Write `resolved`: one `Namespace-Name-1.2.3` per line, with a comment naming provided packages that were skipped. Plain data Gary can `read_file`.
+6. Write `resolved`: one `Namespace-Name-1.2.3` per line, with comments naming the client-only entries and the provided packages that were skipped. Plain data Gary can `read_file`, and the artifact an exported profile code is built from — so its shape is a contract in `grizzly-control-api` rather than a local convention.
 7. Delete cache zips outside the resolved set.
 8. Push `[mods] installed …` / `[mods] failed: …` lines into the child-output log buffer so `read_logs` shows them. Log package names, never file contents.
 
