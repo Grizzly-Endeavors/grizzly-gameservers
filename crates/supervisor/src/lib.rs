@@ -13,7 +13,7 @@
 //! The pure decision logic ([`config`], [`state`], [`autoupdate`], [`palworld`],
 //! [`child_env`], [`heartbeat`]) is separated from the IO shell ([`process`], [`readiness`],
 //! [`sdk`], [`control`], [`runner`], [`rcon`], [`archive`], [`chat_watcher`],
-//! [`fs`], [`logs`]) so the state machine is unit-testable without spawning
+//! [`fs`], [`logs`], [`shell`]) so the state machine is unit-testable without spawning
 //! processes or opening sockets. [`thunderstore`] keeps the same split
 //! internally: its resolution and layout rules are pure over a trait, its
 //! network and filesystem work is not.
@@ -36,5 +36,6 @@ pub mod rcon;
 pub mod readiness;
 pub mod runner;
 pub mod sdk;
+pub mod shell;
 pub mod state;
 pub mod thunderstore;

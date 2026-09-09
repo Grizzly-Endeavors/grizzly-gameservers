@@ -8,7 +8,7 @@ annotations:
     - file: discord/gary/tools.rs
       function: tool_table
     - file: discord/gary/tools.rs
-      function: dispatch_mutating
+      function: dispatch_files
   reasoning:
     - >-
       Reads a config or text file so the model can see a setting's current value

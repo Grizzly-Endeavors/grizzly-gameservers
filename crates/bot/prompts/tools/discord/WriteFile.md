@@ -19,7 +19,7 @@ annotations:
     - file: discord/gary/tools.rs
       function: tool_table
     - file: discord/gary/tools.rs
-      function: dispatch_mutating
+      function: dispatch_files
   reasoning:
     - >-
       The wholesale rewrite — for creating a file or replacing one entirely. The

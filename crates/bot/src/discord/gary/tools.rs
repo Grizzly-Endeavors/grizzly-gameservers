@@ -14,7 +14,8 @@ use serenity::{
 use tracing::{error, info, warn};
 
 use grizzly_control_api::{
-    CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, WriteResponse,
+    CommandResponse, DirEntry, EntryKind, ReadResponse, RestoreResponse, ShellResponse,
+    WriteResponse,
 };
 
 use super::guide::{GuideSubject, render_guide};
@@ -37,9 +38,9 @@ use crate::agones::{
     catalog_sizing, destroy_instance, instance_runtime_state, list_active_servers, now_entropy,
     provision_instance, resize_instance, shutdown_instance, supervisor_announce,
     supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
-    supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_send_command,
-    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file, verify_scope,
-    wait_for_instance_ready, wait_for_ready,
+    supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_run_shell,
+    supervisor_send_command, supervisor_start, supervisor_status, supervisor_stop,
+    supervisor_write_file, verify_scope, wait_for_instance_ready, wait_for_ready,
 };
 use crate::agones::{InstanceOwner, ModRegistry, guild_usage, owner_of};
 use crate::backup::{
@@ -67,9 +68,10 @@ use crate::prompts::{
     ExportProfile, Forget, ForgetParams, GameGuide, GameGuideParams, ImportProfile,
     ImportProfileParams, ListArchives, ListBackups, ListServers, ModInfo, ModInfoParams,
     NameParams, PathParams, ReadFile, ReadLogs, ReadLogsParams, RecoverServer, Remember,
-    RememberParams, RestartServer, RestoreFile, RestoreServer, RunWhen, RunWhenParams, SearchMods,
-    SearchModsParams, SendCommand, SendCommandParams, ServerResources, SetResources,
-    SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile, WriteFileParams,
+    RememberParams, RestartServer, RestoreFile, RestoreServer, RunShell, RunShellParams, RunWhen,
+    RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams, ServerResources,
+    SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer, WriteFile,
+    WriteFileParams,
 };
 use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
@@ -329,6 +331,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, BrowseFiles::spec().into()),
         (AccessLevel::Manager, ReadFile::spec().into()),
         (AccessLevel::Manager, ReadLogs::spec().into()),
+        (AccessLevel::Manager, RunShell::spec().into()),
         (AccessLevel::Manager, EditFile::spec().into()),
         (AccessLevel::Manager, WriteFile::spec().into()),
         (AccessLevel::Manager, RestoreFile::spec().into()),
@@ -484,6 +487,61 @@ async fn dispatch_profiles(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
     }
 }
 
+/// Dispatch the tools that read or change one server's files — the inspection
+/// set (browse/read/logs/shell) and the editing set (write/edit/restore). All
+/// seven name a server and so have already passed the scope gate in
+/// [`dispatch`]; their manager tier is settled there too.
+///
+/// Inspection and editing stay together because they are two halves of one
+/// motion: the shell is how a change is *diagnosed*, and the typed writes are
+/// the only path that snapshots the file first, which is what arms the
+/// auto-rollback in [`verify_change`].
+async fn dispatch_files(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+    match name {
+        BrowseFiles::NAME => match parse::<PathParams>(args) {
+            Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
+        ReadFile::NAME => match parse::<PathParams>(args) {
+            Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
+        ReadLogs::NAME => match parse::<ReadLogsParams>(args) {
+            Ok(params) => match narrow_lines(params.lines) {
+                Ok(lines) => exec_read_logs(ctx, &params.name, lines).await,
+                Err(message) => message,
+            },
+            Err(message) => message,
+        },
+        RunShell::NAME => match parse::<RunShellParams>(args) {
+            Ok(params) => exec_run_shell(ctx, &params.name, &params.command).await,
+            Err(message) => message,
+        },
+        WriteFile::NAME => match parse::<WriteFileParams>(args) {
+            Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
+            Err(message) => message,
+        },
+        EditFile::NAME => match parse::<EditFileParams>(args) {
+            Ok(params) => {
+                exec_edit_file(
+                    ctx,
+                    &params.name,
+                    &params.path,
+                    &params.old_text,
+                    &params.new_text,
+                )
+                .await
+            }
+            Err(message) => message,
+        },
+        RestoreFile::NAME => match parse::<PathParams>(args) {
+            Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
+            Err(message) => message,
+        },
+        other => prompts::UnknownTool { name: other }.render(),
+    }
+}
+
 /// Dispatch the memory tools, kept out of [`dispatch_mutating`] because they
 /// target no server and take no scope gate. Their manager tier is enforced by
 /// the gate in [`dispatch`], like every other tool's.
@@ -527,42 +585,13 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
             Ok(params) => exec_shutdown(ctx, &params.name).await,
             Err(message) => message,
         },
-        BrowseFiles::NAME => match parse::<PathParams>(args) {
-            Ok(params) => exec_browse_files(ctx, &params.name, &params.path).await,
-            Err(message) => message,
-        },
-        ReadFile::NAME => match parse::<PathParams>(args) {
-            Ok(params) => exec_read_file(ctx, &params.name, &params.path).await,
-            Err(message) => message,
-        },
-        ReadLogs::NAME => match parse::<ReadLogsParams>(args) {
-            Ok(params) => match narrow_lines(params.lines) {
-                Ok(lines) => exec_read_logs(ctx, &params.name, lines).await,
-                Err(message) => message,
-            },
-            Err(message) => message,
-        },
-        WriteFile::NAME => match parse::<WriteFileParams>(args) {
-            Ok(params) => exec_write_file(ctx, &params.name, &params.path, &params.content).await,
-            Err(message) => message,
-        },
-        EditFile::NAME => match parse::<EditFileParams>(args) {
-            Ok(params) => {
-                exec_edit_file(
-                    ctx,
-                    &params.name,
-                    &params.path,
-                    &params.old_text,
-                    &params.new_text,
-                )
-                .await
-            }
-            Err(message) => message,
-        },
-        RestoreFile::NAME => match parse::<PathParams>(args) {
-            Ok(params) => exec_restore_file(ctx, &params.name, &params.path).await,
-            Err(message) => message,
-        },
+        BrowseFiles::NAME
+        | ReadFile::NAME
+        | ReadLogs::NAME
+        | RunShell::NAME
+        | WriteFile::NAME
+        | EditFile::NAME
+        | RestoreFile::NAME => dispatch_files(ctx, name, args).await,
         RunWhen::NAME => match parse::<RunWhenParams>(args) {
             Ok(params) => {
                 exec_run_when(ctx, &params.name, params.condition.into(), &params.task).await
@@ -664,6 +693,7 @@ fn targets_existing_server(tool: &str) -> bool {
             | BrowseFiles::NAME
             | ReadFile::NAME
             | ReadLogs::NAME
+            | RunShell::NAME
             | WriteFile::NAME
             | EditFile::NAME
             | RestoreFile::NAME
@@ -2231,6 +2261,79 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
             cluster_error()
         }
     }
+}
+
+/// Run one read-only shell command in the server's container and hand back what
+/// it printed. The sandbox lives in the supervisor, so there is nothing to police
+/// here: a command that tries to write is refused by the kernel, and the refusal
+/// arrives as ordinary stderr the model can read and respond to.
+async fn exec_run_shell(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
+    match supervisor_run_shell(
+        &ctx.data.kube_client,
+        &ctx.data.control_http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        command,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(server, outcome) {
+            Ok(result) => format_shell(server, command, &result),
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, %server, "agent: run_shell failed");
+            cluster_error()
+        }
+    }
+}
+
+/// The platform's own account of how the command ended, kept outside the fenced
+/// output so nothing the command printed can impersonate it.
+fn format_shell_status(result: &ShellResponse) -> String {
+    if result.timed_out {
+        return prompts::ShellTimedOut::render();
+    }
+    match result.exit_code {
+        Some(code) => prompts::ShellExited {
+            code: &code.to_string(),
+        }
+        .render(),
+        None => prompts::ShellSignalled::render(),
+    }
+}
+
+fn format_shell(server: &str, command: &str, result: &ShellResponse) -> String {
+    let status = format_shell_status(result);
+    let mut body = result.stdout.clone();
+    if !result.stderr.is_empty() {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&result.stderr);
+    }
+    if body.trim().is_empty() {
+        return prompts::ShellNoOutput {
+            server,
+            command,
+            status: &status,
+        }
+        .render();
+    }
+    let scrubbed = crate::untrusted::scrub(&body);
+    let mut rendered = prompts::ShellOutput {
+        server,
+        command,
+        status: &status,
+        output: &scrubbed,
+    }
+    .render();
+    if result.truncated {
+        rendered.push_str("\n\n");
+        rendered.push_str(&prompts::ShellTruncated::render());
+    }
+    rendered
 }
 
 async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -> String {

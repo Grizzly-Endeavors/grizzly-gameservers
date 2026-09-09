@@ -12,7 +12,8 @@ use grizzly_control_api::{
     ANNOUNCE_PATH, AnnounceRequest, COMMAND_PATH, CommandRequest, CommandResponse, ControlError,
     DirEntry, FS_LIST_PATH, FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse,
     LogsQuery, LogsResponse, OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse,
-    RestoreRequest, RestoreResponse, WriteRequest, WriteResponse,
+    RestoreRequest, RestoreResponse, SHELL_PATH, ShellRequest, ShellResponse, WriteRequest,
+    WriteResponse,
 };
 use kube::Client;
 use serde::de::DeserializeOwned;
@@ -25,6 +26,12 @@ use super::supervisor::{PodTarget, resolve_managed_pod};
 /// or an in-memory buffer, so they're fast; this is a guard against a wedged pod,
 /// not a real work budget.
 const FS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-request timeout for the shell route. Deliberately longer than the
+/// supervisor's own 30s ceiling on a command: the supervisor kills a slow command
+/// and answers with `timed_out`, and that answer is more useful to the agent than
+/// a transport error, so the client has to still be waiting when it arrives.
+const SHELL_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The result of a filesystem/logs call against an instance's supervisor.
 /// Distinguishes the payload from the ways the request can't be served, so the
@@ -337,6 +344,40 @@ pub(crate) async fn supervisor_send_command(
             command: command.to_owned(),
         })
         .timeout(FS_TIMEOUT)
+        .send()
+        .await;
+    Ok(finish(response, &url).await)
+}
+
+/// Run one read-only shell command inside the instance's game container.
+///
+/// The command is sandboxed in-pod (see the supervisor's `shell` module), so this
+/// carries no authority the caller has to police: a command that tries to write
+/// the game's files is refused by the kernel. A non-zero exit arrives as an
+/// ordinary [`ShellResponse`], not an error — a failed `grep` is a result.
+///
+/// # Errors
+///
+/// Returns an error if the cluster can't be queried to locate the pod.
+pub(crate) async fn supervisor_run_shell(
+    client: &Client,
+    http: &ControlClient,
+    namespace: &str,
+    instance: &str,
+    control_port: u16,
+    command: &str,
+) -> Result<FsOutcome<ShellResponse>> {
+    let pod_ip = match target_pod(client, namespace, instance).await? {
+        Ok(pod_ip) => pod_ip,
+        Err(not_ready) => return Ok(not_ready.into_outcome()),
+    };
+    let url = format!("http://{pod_ip}:{control_port}{SHELL_PATH}");
+    let response = http
+        .post(&url)
+        .json(&ShellRequest {
+            command: command.to_owned(),
+        })
+        .timeout(SHELL_TIMEOUT)
         .send()
         .await;
     Ok(finish(response, &url).await)

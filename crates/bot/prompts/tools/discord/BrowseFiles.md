@@ -8,7 +8,7 @@ annotations:
     - file: discord/gary/tools.rs
       function: tool_table
     - file: discord/gary/tools.rs
-      function: dispatch_mutating
+      function: dispatch_files
   reasoning:
     - >-
       The entry point for the file-tuning loop: the description tells the model
