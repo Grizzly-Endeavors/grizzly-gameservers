@@ -104,6 +104,19 @@ pub(crate) fn decode(payload: &[u8]) -> Result<Vec<ProfileMod>> {
             export.mods.len()
         );
     }
+    // Every name has to be a `Namespace-Name` pair before anything downstream
+    // renders it. That grammar is alphanumerics, underscores and one dash — so a
+    // name that passes it cannot carry a newline, a fence marker, or a megabyte
+    // of prose into Gary's context, and one that fails could never have
+    // installed anyway. Counted rather than quoted, for the same reason.
+    let malformed = export
+        .mods
+        .iter()
+        .filter(|entry| super::types::split_full_name(&entry.name).is_none())
+        .count();
+    if malformed > 0 {
+        bail!("profile lists {malformed} entries whose names aren't Namespace-Name packages");
+    }
     Ok(export.mods.into_iter().map(Into::into).collect())
 }
 
