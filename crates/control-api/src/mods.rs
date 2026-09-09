@@ -17,6 +17,26 @@
 //! releases is written as a `#` comment, so nothing that reads the file as a
 //! plain list of what is installed can mistake one for the other.
 
+/// Default directory the reconciler keeps its cache, staged tree, `resolved`
+/// file, and minted profile code in, relative to the instance's data root.
+///
+/// Shared because the bot addresses these files by path through the file API and
+/// has no other way to learn where they are: the supervisor takes the directory
+/// from `SUPERVISOR_THUNDERSTORE_DIR`, which is a Dockerfile `ENV` baked into the
+/// image and never visible on the pod. An image that overrides it hides
+/// `resolved` from the bot, which is why the supervisor warns when one does.
+pub const DEFAULT_WORK_DIR: &str = ".grizzly/thunderstore";
+
+/// Name of the file recording what the last launch resolved, inside the working
+/// directory.
+pub const RESOLVED_FILE: &str = "resolved";
+
+/// Name of the file caching the last profile code minted for this instance,
+/// inside the working directory. Written by the bot, read by the bot; it lives
+/// beside `resolved` because it is derived from it and rides the same
+/// whole-volume archive.
+pub const PROFILE_FILE: &str = "profile";
+
 /// Comment prefix on a package recorded for players' machines only.
 const CLIENT_ONLY_PREFIX: &str = "# client-only, not installed here: ";
 

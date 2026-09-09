@@ -111,6 +111,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Maintained drop-in fork of serde_yaml (which is unmaintained, RUSTSEC-2024-0370).
 # Parses the per-game catalog templates in games/ into kube/k8s-openapi types.
 serde_yaml_ng = "0.10.0"
+# Reads and writes r2modman profile payloads, which are a zip inside a base64
+# blob. Same pin and same pure-Rust deflate backend as the supervisor's, so the
+# two halves of mod management share one archive stack rather than two.
+zip = { version = "8.6", default-features = false, features = [
+    "deflate-flate2-zlib-rs",
+] }
 rusty-s3 = "0.10.0"
 url = "2.5.8"
 jiff = "0.2.31"

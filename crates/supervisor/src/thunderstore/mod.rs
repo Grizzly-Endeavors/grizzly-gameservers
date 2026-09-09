@@ -62,8 +62,10 @@ const DEADLINE: Duration = Duration::from_mins(3);
 
 /// Name of the file listing what actually got installed, written into the
 /// working tree beside the cache. Plain data: Gary reads it back to confirm an
-/// install rather than being told to trust the log.
-const RESOLVED_FILE: &str = "resolved";
+/// install rather than being told to trust the log, and the bot builds an
+/// exported profile code from it — which is why its name and its shape are both
+/// contract rather than local convention.
+const RESOLVED_FILE: &str = grizzly_control_api::mods::RESOLVED_FILE;
 
 /// Prefix on every line this subsystem pushes into the child-output buffer, so
 /// `read_logs` shows mod activity in the same stream as the game's own output —

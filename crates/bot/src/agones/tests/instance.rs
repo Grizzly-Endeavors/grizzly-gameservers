@@ -81,6 +81,7 @@ fn entry() -> GameCatalogEntry {
         service_yaml: SERVICE_TEMPLATE.to_owned(),
         pvc_yaml: PVC_TEMPLATE.to_owned(),
         mod_registry: None,
+        mods_file: None,
     }
 }
 
@@ -168,6 +169,7 @@ fn advertised_entry() -> GameCatalogEntry {
         service_yaml: ADVERTISED_SERVICE_TEMPLATE.to_owned(),
         pvc_yaml: PVC_TEMPLATE.to_owned(),
         mod_registry: None,
+        mods_file: None,
     }
 }
 

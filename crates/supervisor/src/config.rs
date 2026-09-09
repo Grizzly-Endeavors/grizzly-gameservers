@@ -69,7 +69,7 @@ const DEFAULT_AUTO_UPDATE_MAX_UPTIME_SECS: u64 = 259_200;
 /// relative to the data root. Under the same reserved `.grizzly/` directory as
 /// the env overlay, so everything the platform owns on an instance's volume sits
 /// in one place a friend can recognise as not-theirs.
-const DEFAULT_THUNDERSTORE_DIR: &str = ".grizzly/thunderstore";
+const DEFAULT_THUNDERSTORE_DIR: &str = grizzly_control_api::mods::DEFAULT_WORK_DIR;
 
 /// Runtime configuration for the supervisor, sourced from the process
 /// environment. Every knob has a default so the container can run with no env.
@@ -471,8 +471,24 @@ fn parse_thunderstore(lookup: EnvLookup) -> Result<Option<ThunderstoreMods>> {
             .collect::<Result<Vec<_>>>()?,
         None => Vec::new(),
     };
-    let work_dir = optional(lookup, "SUPERVISOR_THUNDERSTORE_DIR")
-        .unwrap_or_else(|| DEFAULT_THUNDERSTORE_DIR.to_owned());
+    let work_dir = match optional(lookup, "SUPERVISOR_THUNDERSTORE_DIR") {
+        Some(dir) if dir != DEFAULT_THUNDERSTORE_DIR => {
+            // The bot addresses `resolved` and the cached profile code by path,
+            // and it takes that path from the shared default because a
+            // Dockerfile ENV never reaches it. An override still works for
+            // everything in-pod; it just makes those two files unreadable from
+            // outside, so it is said out loud rather than discovered later.
+            warn!(
+                dir = %dir,
+                default = DEFAULT_THUNDERSTORE_DIR,
+                "SUPERVISOR_THUNDERSTORE_DIR overrides the shared default; \
+                 the bot will not find this instance's resolved mod set"
+            );
+            dir
+        }
+        Some(dir) => dir,
+        None => DEFAULT_THUNDERSTORE_DIR.to_owned(),
+    };
     Ok(Some(ThunderstoreMods {
         file,
         community,

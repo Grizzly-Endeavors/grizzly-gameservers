@@ -34,7 +34,7 @@ pub(crate) use mod_registry::ModRegistry;
 // parser — the runtime path goes through the lenient wrapper inside
 // `mod_registry` — so exporting it unconditionally would be an unused import.
 #[cfg(test)]
-pub(crate) use mod_registry::parse_mod_registry_from_template;
+pub(crate) use mod_registry::{parse_mod_registry_from_template, parse_mods_file_from_template};
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};
 pub(crate) use provision::{
     CreateOutcome, DestroyOutcome, ProvisionOutcome, ProvisionSpec, ShutdownOutcome, StartBegin,

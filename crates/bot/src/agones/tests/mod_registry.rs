@@ -31,7 +31,8 @@ fn thunderstore_carries_its_community() {
     assert_eq!(
         parse_mod_registry(Some(&map)).unwrap(),
         Some(ModRegistry::Thunderstore {
-            community: "valheim".to_owned()
+            community: "valheim".to_owned(),
+            provided: Vec::new(),
         })
     );
 }
@@ -95,7 +96,8 @@ fn a_template_annotation_pair_is_read_off_the_yaml() {
     assert_eq!(
         parse_mod_registry_from_template(&yaml).unwrap(),
         Some(ModRegistry::Thunderstore {
-            community: "valheim".to_owned()
+            community: "valheim".to_owned(),
+            provided: Vec::new(),
         })
     );
 }
@@ -112,4 +114,92 @@ fn the_lenient_wrapper_degrades_a_bad_pair_to_no_registry() {
 #[test]
 fn unparseable_yaml_degrades_rather_than_stopping_the_catalog() {
     assert_eq!(mod_registry_or_warn("broken", "\tnot: yaml: at all"), None);
+}
+
+#[test]
+fn a_thunderstore_game_carries_the_packages_its_image_supplies() {
+    let map = annotations(&[
+        (MOD_REGISTRY_ANNOTATION, "thunderstore"),
+        (THUNDERSTORE_COMMUNITY_ANNOTATION, "valheim"),
+        (
+            THUNDERSTORE_PROVIDED_ANNOTATION,
+            "denikson-BepInExPack_Valheim, Some-Other",
+        ),
+    ]);
+    assert_eq!(
+        parse_mod_registry(Some(&map)).unwrap(),
+        Some(ModRegistry::Thunderstore {
+            community: "valheim".to_owned(),
+            provided: vec![
+                "denikson-BepInExPack_Valheim".to_owned(),
+                "Some-Other".to_owned()
+            ],
+        })
+    );
+}
+
+#[test]
+fn a_provided_entry_that_is_not_a_package_pair_is_an_error() {
+    // A misspelled entry stops matching the package it names, and the only
+    // symptom is the loader pack quietly reappearing in mod lists — so it has to
+    // fail here rather than degrade.
+    let map = annotations(&[
+        (MOD_REGISTRY_ANNOTATION, "thunderstore"),
+        (THUNDERSTORE_COMMUNITY_ANNOTATION, "valheim"),
+        (THUNDERSTORE_PROVIDED_ANNOTATION, "bepinex"),
+    ]);
+    let err = format!("{:#}", parse_mod_registry(Some(&map)).unwrap_err());
+    assert!(err.contains("bepinex"), "got: {err}");
+    assert!(err.contains("Namespace-Name"), "got: {err}");
+}
+
+#[test]
+fn a_provided_list_without_the_registry_that_uses_it_is_an_error() {
+    let map = annotations(&[(
+        THUNDERSTORE_PROVIDED_ANNOTATION,
+        "denikson-BepInExPack_Valheim",
+    )]);
+    assert!(parse_mod_registry(Some(&map)).is_err());
+
+    let modrinth = annotations(&[
+        (MOD_REGISTRY_ANNOTATION, "modrinth"),
+        (
+            THUNDERSTORE_PROVIDED_ANNOTATION,
+            "denikson-BepInExPack_Valheim",
+        ),
+    ]);
+    assert!(parse_mod_registry(Some(&modrinth)).is_err());
+}
+
+#[test]
+fn the_mod_list_is_read_off_the_containers_environment() {
+    let yaml = "\
+kind: GameServer
+spec:
+  template:
+    spec:
+      containers:
+        - name: valheim
+          env:
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: whatever
+                  key: control_token
+            - name: SUPERVISOR_MODS_FILE
+              value: \".grizzly/mods\"
+";
+    assert_eq!(
+        parse_mods_file_from_template(yaml).unwrap().as_deref(),
+        Some(".grizzly/mods"),
+        "a valueFrom entry alongside it must not confuse the lookup"
+    );
+}
+
+#[test]
+fn a_game_that_declares_no_mod_list_has_none() {
+    assert_eq!(
+        parse_mods_file_from_template("kind: GameServer\n").unwrap(),
+        None
+    );
 }

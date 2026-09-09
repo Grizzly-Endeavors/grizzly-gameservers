@@ -1164,7 +1164,8 @@ fn the_moddable_games_declare_the_registries_they_are_built_against() {
     assert_eq!(
         declared.get("valheim"),
         Some(&Some(ModRegistry::Thunderstore {
-            community: "valheim".to_owned()
+            community: "valheim".to_owned(),
+            provided: vec!["denikson-BepInExPack_Valheim".to_owned()],
         })),
         "valheim's mod tools are built against the valheim Thunderstore community"
     );
@@ -1256,14 +1257,53 @@ fn a_thunderstore_game_is_wired_end_to_end() {
         let registry = parse_mod_registry_from_template(&yaml)
             .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
 
+        // The image's provided list is the other half of the same drift: the bot
+        // reads it off the annotations when it writes a mod list from an
+        // imported profile, and a disagreement puts the loader pack into a file
+        // whose own guidance says it is never listed.
+        let provided: Vec<String> = dockerfile_env(&game, "SUPERVISOR_THUNDERSTORE_PROVIDED")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect();
+
         assert_eq!(
             registry,
             Some(ModRegistry::Thunderstore {
-                community: community.clone()
+                community: community.clone(),
+                provided,
             }),
             "games/{game} installs from the {community} Thunderstore community, so its \
              mod-registry annotations must send Gary's search to the same one — otherwise \
              every package he finds resolves as missing at install time"
+        );
+    }
+}
+
+#[test]
+fn a_thunderstore_game_declares_the_mod_list_the_bot_writes() {
+    // import_profile rewrites this file wholesale, so the path the bot names has
+    // to be the one the supervisor in that pod actually reads. Both come from
+    // the same manifest, which is what makes them impossible to disagree — this
+    // guard pins that they are still read from the same place.
+    use crate::agones::parse_mods_file_from_template;
+
+    for (game, manifest) in load_game_manifests() {
+        let declared = manifest.spec.template.spec.env("SUPERVISOR_MODS_FILE");
+        let yaml = std::fs::read_to_string(
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+                .join(&game)
+                .join("gameserver.yaml"),
+        )
+        .unwrap_or_else(|err| panic!("reading games/{game}/gameserver.yaml: {err}"));
+        let parsed = parse_mods_file_from_template(&yaml)
+            .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
+        assert_eq!(
+            parsed.as_deref(),
+            declared,
+            "games/{game}: the bot reads a different mod list than the manifest declares"
         );
     }
 }
