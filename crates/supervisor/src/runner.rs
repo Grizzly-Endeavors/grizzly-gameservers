@@ -259,7 +259,8 @@ async fn supervise(
             // runs with no child, `/status` says `Crashed`, and the bot's
             // rollback has something to talk to.
             Err(LaunchError::Prepare(err)) => {
-                note_launch_failure(&mut state, &logs, &err);
+                note_launch_failure(&mut state, &logs, &launch, &err);
+                preserve_launch_output(&cfg.data_dir, &launch).await;
                 publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
                 None
             }
@@ -556,9 +557,20 @@ async fn spawn_child(
 /// The log buffer, not just the supervisor's tracing output: `read_logs` serves
 /// the child-output buffer, so a reason that only reached `tracing` would be
 /// invisible to the one tool Gary reaches for after a restart didn't take.
-fn note_launch_failure(state: &mut SupervisorState, logs: &LogBuffer, err: &anyhow::Error) {
+/// Also into the launch capture, so a refused launch is preserved on the volume
+/// like a crashed one. It is the same failure from the agent's side — the server
+/// did not come up and the reason is one line — and the rollback that follows
+/// floods the shared ring just as thoroughly either way.
+fn note_launch_failure(
+    state: &mut SupervisorState,
+    logs: &LogBuffer,
+    launch: &LaunchLog,
+    err: &anyhow::Error,
+) {
     error!(error = ?err, "launch preparation failed; reporting the server as crashed");
-    logs.push(format!("[mods] failed: {err:#}"));
+    let line = format!("[mods] failed: {err:#}");
+    launch.push(line.clone());
+    logs.push(line);
     state.on_launch_failed();
 }
 
@@ -595,7 +607,8 @@ async fn relaunch(
         }
         Err(LaunchError::Prepare(err)) => {
             *child = None;
-            note_launch_failure(state, deps.logs, &err);
+            note_launch_failure(state, deps.logs, deps.launch, &err);
+            preserve_launch_output(&deps.cfg.data_dir, deps.launch).await;
             publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await;
             Launched::Refused
         }
@@ -620,8 +633,8 @@ enum Launched {
     Failed,
 }
 
-/// Write the dead launch's output to the instance's volume before anything can
-/// overwrite it.
+/// Write a dead launch's output to the instance's volume before anything can
+/// overwrite it — whether the child crashed or was never spawned at all.
 ///
 /// This is the whole point of [`crate::launch_log`]: the bot's auto-rollback
 /// restarts a crashed server within seconds, and that restart floods the shared
@@ -631,19 +644,19 @@ enum Launched {
 /// Best-effort by design. A crash is already a bad moment, and failing to
 /// preserve the evidence must not also take down the supervisor that is trying
 /// to recover from it — so every failure is logged and swallowed.
-async fn preserve_launch(deps: &RunDeps<'_>) {
+async fn preserve_launch_output(data_dir: &std::path::Path, launch: &LaunchLog) {
     // The child's exit and the arrival of its last lines are different events,
     // and the last lines are the ones that say why it died.
-    if !deps.launch.settle().await {
+    if !launch.settle().await {
         warn!(
             "game output was still draining when the launch was preserved; its final lines may be missing"
         );
     }
-    let Some(body) = deps.launch.render() else {
+    let Some(body) = launch.render() else {
         debug!("crashed launch produced no output to preserve");
         return;
     };
-    match launch_log::preserve(&deps.cfg.data_dir, &body) {
+    match launch_log::preserve(data_dir, &body) {
         Ok(path) => info!(artifact = %path.display(), "preserved the crashed launch's output"),
         Err(err) => warn!(error = ?err, "could not preserve the crashed launch's output"),
     }
@@ -661,7 +674,7 @@ async fn handle_unexpected_exit(
         Err(err) => error!(error = ?err, "failed waiting on game process"),
     }
     *child = None;
-    preserve_launch(deps).await;
+    preserve_launch_output(&deps.cfg.data_dir, deps.launch).await;
     match state.on_child_exit(
         Instant::now(),
         deps.cfg.crash_window,
