@@ -26,6 +26,8 @@ Artifacts land in `.grizzly/crashes/` — the reserved tree the supervisor owns 
 
 That sizing is what makes "just save the whole file" true in practice while keeping memory bounded for a server that runs for a month before dying.
 
+A launch that is *refused* — a mod list naming a package that doesn't resolve, so no child is ever spawned — is preserved the same way. From the agent's side it is the same failure: the server didn't come up, the reason is one line, and the rollback that follows floods the shared ring just as thoroughly. Covering only the crash case would have left the exact scenario that started this investigation half-served.
+
 ### The pumps have to drain first
 
 A child's exit and the arrival of its final lines are two different events, and the final lines are the ones that say why it died. So the capture tracks how many output pumps are still reading and waits, briefly, for them to finish before writing. A wait that times out still writes the artifact and logs that its tail may be short — a slightly incomplete record beats none.
