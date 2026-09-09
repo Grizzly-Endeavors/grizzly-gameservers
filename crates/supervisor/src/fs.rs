@@ -214,15 +214,32 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<DirEntry>, FsError> {
     Ok(entries)
 }
 
-/// Read a UTF-8 file under `root`, truncated to [`READ_CAP_BYTES`].
+/// One window of a file's bytes, decoded as UTF-8.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileWindow {
+    /// The decoded text of the window.
+    pub content: String,
+    /// Whether bytes remain after this window.
+    pub truncated: bool,
+    /// The byte offset the window actually starts at. May sit slightly past a
+    /// requested offset that landed inside a multi-byte character, which is why
+    /// it is reported rather than assumed: a caller paging with
+    /// `offset + content.len()` needs the real start to make progress.
+    pub offset: usize,
+}
+
+/// Read up to [`READ_CAP_BYTES`] of a UTF-8 file under `root`, starting at
+/// `offset` bytes in.
 ///
-/// Returns the content and whether it was cut short.
+/// An offset past the end of the file reads as an empty, untruncated window
+/// rather than an error — that is the natural end of a paged read, not a
+/// mistake worth reporting as one.
 ///
 /// # Errors
 ///
 /// Returns [`FsError::OutsideRoot`], [`FsError::NotFound`], [`FsError::NotAFile`]
 /// for a directory, [`FsError::NotText`] for non-UTF-8 bytes, or [`FsError::Io`].
-pub fn read_file(root: &Path, rel: &str) -> Result<(String, bool), FsError> {
+pub fn read_file(root: &Path, rel: &str, offset: usize) -> Result<FileWindow, FsError> {
     let resolved = resolve_in_root(root, rel)?;
     let canonical = canonical_within(root, &resolved)?;
     let meta = std::fs::metadata(&canonical).map_err(|err| io(&err))?;
@@ -230,11 +247,25 @@ pub fn read_file(root: &Path, rel: &str) -> Result<(String, bool), FsError> {
         return Err(FsError::NotAFile);
     }
     let bytes = std::fs::read(&canonical).map_err(|err| io(&err))?;
-    let truncated = bytes.len() > READ_CAP_BYTES;
-    let slice = bytes.get(..READ_CAP_BYTES).unwrap_or(&bytes);
+    let start = offset.min(bytes.len());
+    let window = bytes.get(start..).unwrap_or(&[]);
+    let truncated = window.len() > READ_CAP_BYTES;
+    let capped = window.get(..READ_CAP_BYTES).unwrap_or(window);
+    // An offset can land inside a multi-byte character, leaving the window
+    // opening on continuation bytes that are not a character on their own. Drop
+    // them rather than call an ordinary UTF-8 file binary.
+    let skipped = if start > 0 {
+        capped
+            .iter()
+            .take_while(|byte| (**byte & 0b1100_0000) == 0b1000_0000)
+            .count()
+    } else {
+        0
+    };
+    let slice = capped.get(skipped..).unwrap_or(&[]);
     let content = match std::str::from_utf8(slice) {
         Ok(text) => text.to_owned(),
-        // Truncating at the cap can split a multibyte char, which surfaces as an
+        // Cutting at the cap can split a multibyte char, which surfaces as an
         // *incomplete* trailing sequence (`error_len() == None`). Keep the valid
         // prefix rather than mislabel a real UTF-8 file as binary — a genuine
         // invalid byte (`error_len() == Some`) is really not text.
@@ -244,7 +275,11 @@ pub fn read_file(root: &Path, rel: &str) -> Result<(String, bool), FsError> {
         }
         Err(_) => return Err(FsError::NotText),
     };
-    Ok((content, truncated))
+    Ok(FileWindow {
+        content,
+        truncated,
+        offset: start.saturating_add(skipped),
+    })
 }
 
 /// Overwrite a file under `root`, snapshotting any existing version first.

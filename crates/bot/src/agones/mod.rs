@@ -58,7 +58,7 @@ pub(crate) use supervisor::CONTROL_MUTATION_TIMEOUT;
 pub(crate) use supervisor_fs::{
     EditOutcome, FsOutcome, Replacement, supervisor_announce, supervisor_edit_file,
     supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,
-    supervisor_restore_file, supervisor_send_command, supervisor_write_file,
+    supervisor_restore_file, supervisor_run_shell, supervisor_send_command, supervisor_write_file,
 };
 pub(crate) use types::ServerSummary;
 // Named only by the discord/agent render test helpers that rebuild a

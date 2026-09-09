@@ -260,13 +260,32 @@ pub struct ListResponse {
     pub entries: Vec<DirEntry>,
 }
 
+/// Query for `GET /fs/read`: which file, and how far into it to start.
+///
+/// `offset` is a byte offset, which is what pages a file larger than the read
+/// cap: read once, and if the reply comes back `truncated`, ask again from
+/// `offset + content.len()`. Absent means the start of the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadQuery {
+    pub path: String,
+    pub offset: Option<usize>,
+}
+
 /// Body of `GET /fs/read`. `content` is UTF-8 (the supervisor refuses binary);
-/// `truncated` is set when the file exceeded the read cap and was cut short.
+/// `truncated` is set when there were more bytes after the window that was
+/// returned.
+///
+/// `offset` echoes where the window actually started. It defaults to zero when
+/// absent so a reply from a supervisor predating paged reads still deserializes
+/// — and, because it is an echo rather than a repeat of the request, the caller
+/// can tell that older supervisor apart from one that honoured the offset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadResponse {
     pub path: String,
     pub content: String,
     pub truncated: bool,
+    #[serde(default)]
+    pub offset: usize,
 }
 
 /// Body of `POST /fs/write`: overwrite `path` with `content`. The supervisor
@@ -315,6 +334,32 @@ pub struct CommandResponse {
     pub output: String,
 }
 
+/// Body of `POST /shell`: one command line to run inside the game container.
+///
+/// Interpreted by `sh -c`, so pipelines and redirection parse as usual — but the
+/// process is sandboxed read-only (see the supervisor's `shell` module), so a
+/// redirection onto a game file is refused by the kernel rather than by parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellRequest {
+    pub command: String,
+}
+
+/// Body of the `POST /shell` response.
+///
+/// `exit_code` is `None` when the command was killed by a signal, which includes
+/// the supervisor's own timeout kill — `timed_out` distinguishes that case.
+/// `truncated` is set when either stream exceeded the output cap; the retained
+/// bytes are the *first* ones, and the rest are drained and discarded so a noisy
+/// command can never fill the pod's memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellResponse {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub truncated: bool,
+    pub timed_out: bool,
+}
+
 /// Body of `POST /announce`: a message to broadcast to everyone on the running
 /// server. The supervisor renders it with the game's own broadcast mechanism
 /// (Minecraft `tellraw`), so the bot stays free of per-game console syntax. Only
@@ -348,6 +393,11 @@ pub const FS_RESTORE_PATH: &str = "/fs/restore";
 /// ([`LogsQuery`]/[`LogsResponse`]). Shared so the bot's client and the
 /// supervisor's server build and match the same path.
 pub const LOGS_PATH: &str = "/logs";
+
+/// Path of `POST /shell`: run one read-only shell command inside the game
+/// container ([`ShellRequest`]/[`ShellResponse`]). Shared so the bot's client and
+/// the supervisor's server build and match the same path.
+pub const SHELL_PATH: &str = "/shell";
 
 /// Path of `POST /command`: run one in-game console command over RCON
 /// ([`CommandRequest`]/[`CommandResponse`]). Only served for games whose per-game

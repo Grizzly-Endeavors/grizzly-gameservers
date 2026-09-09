@@ -26,7 +26,7 @@ annotations:
     - file: discord/gary/tools.rs
       function: tool_table
     - file: discord/gary/tools.rs
-      function: dispatch_mutating
+      function: dispatch_files
   reasoning:
     - >-
       The preferred surgical change: the body steers the model here over

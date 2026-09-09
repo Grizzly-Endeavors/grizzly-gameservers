@@ -24,6 +24,10 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
+# Landlock is how the agent's read-only shell is enforced: an unprivileged LSM,
+# so it needs none of the capabilities ADR-023 drops from the game pods. Upstream
+# landlock-lsm crate.
+landlock = "0.4.7"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.52.3", features = [

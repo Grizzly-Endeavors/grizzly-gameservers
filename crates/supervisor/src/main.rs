@@ -4,6 +4,7 @@ use anyhow::Result;
 use grizzly_supervisor::cli::{self, Invocation};
 use grizzly_supervisor::config::SupervisorConfig;
 use grizzly_supervisor::runner;
+use grizzly_supervisor::shell;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -11,15 +12,29 @@ async fn main() -> ExitCode {
     // Answered before anything reads the environment or opens a socket, so the
     // image smoke check can run it against a fully-configured game image.
     //
-    // The rule guards against trusting argv for a security decision. This grants
-    // nothing: argv[0] is skipped outright, and the only thing recognised is
-    // --version, which prints a build identity and exits. args_os rather than
-    // args because the latter panics on non-UTF-8 input, which is a worse
-    // failure than ignoring an argument we don't recognise anyway.
+    // The rule guards against trusting argv for a security decision. Neither
+    // mode grants anything: argv[0] is skipped outright, --version prints a
+    // build identity and exits, and the sandbox marker only ever *narrows* what
+    // the resulting process may do — a forged argv gets a Landlock-confined
+    // shell, never an unconfined one. args_os rather than args because the
+    // latter panics on non-UTF-8 input, which is a worse failure than ignoring
+    // an argument we don't recognise anyway.
     // nosemgrep: rust.lang.security.args-os
-    if cli::classify_args(std::env::args_os().skip(1)) == Invocation::ReportVersion {
-        println!("{}", cli::VERSION);
-        return ExitCode::SUCCESS;
+    match cli::classify_args(std::env::args_os().skip(1)) {
+        Invocation::ReportVersion => {
+            println!("{}", cli::VERSION);
+            return ExitCode::SUCCESS;
+        }
+        // Fails closed: an un-sandboxable kernel produces no shell at all,
+        // rather than one that quietly has write access to the game's config.
+        Invocation::RunSandboxedShell(command) => {
+            if let Err(err) = shell::exec_sandboxed(&command) {
+                eprintln!("error: {err:#}");
+                return ExitCode::FAILURE;
+            }
+            return ExitCode::SUCCESS;
+        }
+        Invocation::Supervise => {}
     }
 
     load_dotenv();

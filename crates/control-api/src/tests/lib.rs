@@ -150,10 +150,21 @@ fn read_response_round_trips() {
         path: "server.properties".to_owned(),
         content: "difficulty=hard\n".to_owned(),
         truncated: false,
+        offset: 0,
     };
     let json = serde_json::to_string(&response).unwrap();
     let parsed: ReadResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, response, "ReadResponse should survive a round-trip");
+}
+
+#[test]
+fn a_read_response_without_an_offset_still_parses() {
+    // A supervisor predating paged reads omits the field entirely, and a live
+    // server keeps that binary until it next starts. Failing to parse its reply
+    // would take read_file down on every already-running server.
+    let parsed: ReadResponse =
+        serde_json::from_str(r#"{"path":"a.txt","content":"x","truncated":false}"#).unwrap();
+    assert_eq!(parsed.offset, 0);
 }
 
 #[test]

@@ -14,8 +14,9 @@ use grizzly_control_api::{
     ANNOUNCE_PATH, ARCHIVE_PATH, AnnounceRequest, ArchiveQuery, COMMAND_PATH, CommandRequest,
     CommandResponse, ControlCommand, ControlError, ControlOk, ExtractQuery, FS_LIST_PATH,
     FS_READ_PATH, FS_RESTORE_PATH, FS_WRITE_PATH, LOGS_PATH, ListResponse, LogsQuery, LogsResponse,
-    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadResponse, RestoreRequest, RestoreResponse,
-    ResultKind, RouteError, StatusResponse, WriteRequest, WriteResponse,
+    OCCUPANCY_PATH, OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest,
+    RestoreResponse, ResultKind, RouteError, SHELL_PATH, ShellRequest, StatusResponse,
+    WriteRequest, WriteResponse,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -30,6 +31,7 @@ use crate::fs::{self, FsError};
 use crate::logs::{DEFAULT_TAIL_LINES, LogBuffer};
 use crate::occupancy::OccupancySource;
 use crate::rcon::RconRuntime;
+use crate::shell;
 
 /// A control request handed from the HTTP layer to the runner, with a one-shot
 /// channel for the runner to answer on.
@@ -104,6 +106,7 @@ pub async fn serve(
         .route(LOGS_PATH, get(logs_tail))
         .route(OCCUPANCY_PATH, get(occupancy))
         .route(COMMAND_PATH, post(run_command))
+        .route(SHELL_PATH, post(run_shell))
         .route(ANNOUNCE_PATH, post(announce))
         .fallback(any(handle))
         .with_state(ControlState {
@@ -186,14 +189,15 @@ async fn fs_list(State(state): State<ControlState>, Query(query): Query<PathQuer
     }
 }
 
-async fn fs_read(State(state): State<ControlState>, Query(query): Query<PathQuery>) -> Response {
-    match fs::read_file(&state.data_root, &query.path) {
-        Ok((content, truncated)) => (
+async fn fs_read(State(state): State<ControlState>, Query(query): Query<ReadQuery>) -> Response {
+    match fs::read_file(&state.data_root, &query.path, query.offset.unwrap_or(0)) {
+        Ok(window) => (
             StatusCode::OK,
             Json(ReadResponse {
                 path: query.path,
-                content,
-                truncated,
+                content: window.content,
+                truncated: window.truncated,
+                offset: window.offset,
             }),
         )
             .into_response(),
@@ -422,6 +426,22 @@ async fn run_command(
 /// game doesn't enable RCON (the bot treats this as best-effort and moves on), and
 /// 500 when the console can't be reached. The bot never blocks a real action on
 /// this route's outcome.
+/// Run one read-only shell command inside the game container and return its
+/// captured output. Always 200 for a command that *ran*, whatever it exited
+/// with — a non-zero status is an ordinary result the agent reads, not a
+/// transport failure. 500 is reserved for the shell being unable to run at all,
+/// which includes a kernel that can't enforce the sandbox: that fails closed
+/// rather than degrading to an unconfined shell.
+async fn run_shell(State(state): State<ControlState>, Json(body): Json<ShellRequest>) -> Response {
+    match shell::run_command(&state.data_root, &body.command).await {
+        Ok(result) => (StatusCode::OK, Json(result)).into_response(),
+        Err(err) => {
+            error!(error = ?err, "failed to run a sandboxed shell command");
+            internal_error("the server could not run that command")
+        }
+    }
+}
+
 async fn announce(
     State(state): State<ControlState>,
     Json(body): Json<AnnounceRequest>,
