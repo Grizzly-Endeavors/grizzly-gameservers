@@ -140,21 +140,44 @@ impl BackupService {
             return;
         }
         info!(servers, "starting scheduled backup cycle");
+        let attribution = Attribution::system();
         let (mut backed_up, mut failed) = (0_usize, 0_usize);
         for target in targets {
             match self.snapshot_target(ctx, &target, CREATED_BY_AUTO).await {
-                Ok(BackupOutcome::BackedUp { .. }) => backed_up += 1,
-                Ok(other) => {
-                    failed += 1;
-                    warn!(
-                        instance = %target.instance,
-                        outcome = ?other,
-                        "scheduled backup did not complete"
-                    );
+                Ok(outcome) => {
+                    // The same per-instance row the on-demand path writes, so
+                    // "when was this server last backed up" has one answer
+                    // regardless of who took the backup. Without it a server the
+                    // cycle backs up nightly reads as last-backed-up whenever a
+                    // human happened to ask for one.
+                    self.record(
+                        ctx,
+                        Self::snapshot_event(
+                            EventKind::BackupTaken,
+                            &attribution,
+                            &target,
+                            &outcome,
+                        ),
+                    )
+                    .await;
+                    if matches!(outcome, BackupOutcome::BackedUp { .. }) {
+                        backed_up += 1;
+                    } else {
+                        failed += 1;
+                        warn!(
+                            instance = %target.instance,
+                            outcome = ?outcome,
+                            "scheduled backup did not complete"
+                        );
+                    }
                 }
                 Err(err) => {
                     failed += 1;
-                    error!(error = ?err, "scheduled backup failed");
+                    error!(
+                        error = ?err,
+                        instance = %target.instance,
+                        "scheduled backup failed"
+                    );
                 }
             }
         }
@@ -1398,3 +1421,7 @@ async fn control_error(response: reqwest::Response, op: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/orchestrate.rs"]
+mod tests;
