@@ -159,6 +159,19 @@ fn a_manifest_matching_the_filename_is_accepted() {
 }
 
 #[test]
+fn a_manifest_with_a_utf8_byte_order_mark_is_accepted() {
+    // Thunderstore packages are authored on Windows more often than not, and a
+    // good share ship a manifest starting with EF BB BF. JSON has no notion of
+    // a BOM, so refusing one means refusing packages r2modman installs fine —
+    // and the refusal lands as a launch failure, not as a skipped mod.
+    let mut with_bom = b"\xef\xbb\xbf".to_vec();
+    with_bom.extend_from_slice(&manifest("Mod", "1.0.0"));
+    let bytes = zip_with(&[("manifest.json", &with_bom)]);
+    let found = read_manifest(Cursor::new(bytes), &release("Author-Mod-1.0.0")).unwrap();
+    assert_eq!(found.name, "Mod");
+}
+
+#[test]
 fn a_zip_holding_a_different_package_is_refused() {
     // A swapped or mislabeled cache file would otherwise install under the name
     // the mod list asked for.
