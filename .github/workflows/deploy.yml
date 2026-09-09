@@ -11,6 +11,16 @@ on:
   push:
     branches: [main]
 
+# One deploy at a time, newest wins. Without this, two pushes close together
+# race: each run pins the digest *it* built, and whichever finishes last commits
+# last — so a run started from an older commit can overwrite a newer pin and
+# hand Flux an image missing the change that was merged after it. Cancelling the
+# older run is safe because the pin commit is its only side effect and it
+# happens at the very end.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
 env:
   REGISTRY: registry.registry.svc.cluster.local:5000
   IMAGE_NAME: grizzly-gameservers
