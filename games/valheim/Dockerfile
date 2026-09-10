@@ -62,6 +62,16 @@ RUN apt-get update \
     && mkdir -p /out && unzip -j /tmp/rcon.zip ValheimRcon.dll -d /out \
     && apt-get clean && rm -rf /var/lib/apt/lists/* && rm -f /tmp/rcon.zip /tmp/rcon.sha256
 
+# Build the GrizzlyPlayerInfoGuard BepInEx preloader patcher. It is a *patcher*
+# rather than a plugin because the game assemblies only land at runtime (steamcmd
+# downloads them on first boot), so there is nothing here to compile a plugin
+# against — a patcher needs only Mono.Cecil, which comes from NuGet. See
+# docs/decisions/038-valheim-null-player-info-guard.md for what it fixes and why.
+FROM mcr.microsoft.com/dotnet/sdk@sha256:4ea6fe75dd36706bb6d8c3c293d4c4315840f5d76ea28ac97def77e3ec487fa5 AS patcherbuild
+WORKDIR /src
+COPY games/valheim/patchers/GrizzlyPlayerInfoGuard/ .
+RUN dotnet publish -c Release -o /out
+
 # Upstream lloesche valheim-server pinned by digest (tag: latest). Its bootstrap
 # runs as root then execs `tini -- supervisord`, which manages the valheim-server
 # process and stops it gracefully (world save) on SIGTERM — tini forwards the
@@ -82,6 +92,8 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-superv
 # directories, drops the baked RCON DLL into the plugins dir, and seeds its RCON
 # config. See valheim-pre-server.sh for why each of the three has to happen here.
 COPY --from=modfetch /out/ValheimRcon.dll /opt/valheim-plugins/ValheimRcon.dll
+COPY --from=patcherbuild /out/GrizzlyPlayerInfoGuard.dll \
+     /opt/valheim-patchers/GrizzlyPlayerInfoGuard.dll
 COPY games/valheim/valheim-pre-server.sh /usr/local/bin/valheim-pre-server
 RUN chmod +x /usr/local/bin/valheim-pre-server
 # The supervisor launches lloesche's bootstrap (which execs supervisord).
