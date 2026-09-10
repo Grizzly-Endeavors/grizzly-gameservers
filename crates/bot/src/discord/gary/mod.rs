@@ -32,8 +32,8 @@ use super::{Data, Error};
 use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, Role, SessionCallbacks, SessionEvent, SessionId,
-    SessionKey, SessionOutcome, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder,
-    run_session, send_chat_completion,
+    SessionKey, SessionOutcome, ToolDef, TurnActor, TurnEnding, TurnIdentity, TurnOrigin,
+    TurnRecorder, run_session, send_chat_completion,
 };
 use crate::agones::ServerScope;
 use crate::domain::GuildId;
@@ -275,7 +275,7 @@ async fn handle_message(
     // the prior session is left untouched so a retry doesn't inherit a half-finished
     // transcript. Only a clean turn is committed for continuity.
     if let Ok(outcome) = run_gary_turn(&turn, &mut messages).await {
-        if let Some(reason) = outcome.escalation.as_ref() {
+        if let Some(reason) = outcome.escalation() {
             warn!(
                 user = %message.author.id,
                 kind = reason.as_str(),
@@ -351,7 +351,7 @@ pub(crate) async fn run_gary_turn(
         send_chunks(turn.ctx, turn.channel_id, GARY_NOT_CONFIGURED_REPLY).await;
         return Ok(SessionOutcome {
             reply: String::new(),
-            escalation: None,
+            ending: TurnEnding::Answered,
             generations: Vec::new(),
         });
     };
@@ -402,6 +402,9 @@ pub(crate) async fn run_gary_turn(
     let escalation_requested = move || tool_ctx.escalation_request();
 
     let recorder = TurnRecorder::new(turn.identity(), Arc::clone(&turn.data.telemetry));
+    // Registered for the whole run and deregistered by the guard on the way out,
+    // so `/gary-stop` in this channel reaches this turn and nothing else.
+    let (cancel, _interrupt) = turn.data.interrupts.register(turn.channel_id.get());
     let typing = start_typing(turn.ctx, turn.channel_id);
     let outcome = run_session(
         messages,
@@ -413,6 +416,7 @@ pub(crate) async fn run_gary_turn(
             dispatch: &dispatch,
             progress: &progress,
             escalation_requested: &escalation_requested,
+            cancel: &cancel,
         },
     )
     .await;

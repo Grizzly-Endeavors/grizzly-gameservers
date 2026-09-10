@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use super::env_overlay::{EnvOverlay, env_overlay_or_warn};
 use super::mod_registry::{ModRegistry, mod_registry_or_warn, mods_file_or_warn};
 
 /// One game's raw, version-controlled templates as read from `games/<id>/`. The
@@ -23,6 +24,12 @@ pub(crate) struct GameCatalogEntry {
     /// the same template's `SUPERVISOR_MODS_FILE`. `None` for a game whose
     /// supervisor reconciles no mods.
     pub(crate) mods_file: Option<String>,
+    /// The settings an instance of this game may override for itself, read off
+    /// the same template's `SUPERVISOR_CHILD_ENV_FILE` /
+    /// `SUPERVISOR_CHILD_ENV_ALLOWLIST` pair. `None` for a game that declares
+    /// none, which is most of them — their settings live in the game's own
+    /// config files instead.
+    pub(crate) env_overlay: Option<EnvOverlay>,
 }
 
 /// The per-game catalog: every game the shim can provision, keyed by id.
@@ -90,6 +97,7 @@ async fn load_entry(id: &str, dir: &Path) -> Result<GameCatalogEntry> {
     let gameserver_yaml = read_template(dir, "gameserver.yaml").await?;
     let mod_registry = mod_registry_or_warn(id, &gameserver_yaml);
     let mods_file = mods_file_or_warn(id, &gameserver_yaml);
+    let env_overlay = env_overlay_or_warn(id, &gameserver_yaml);
     Ok(GameCatalogEntry {
         id: id.to_owned(),
         gameserver_yaml,
@@ -97,6 +105,7 @@ async fn load_entry(id: &str, dir: &Path) -> Result<GameCatalogEntry> {
         pvc_yaml: read_template(dir, "pvc.yaml").await?,
         mod_registry,
         mods_file,
+        env_overlay,
     })
 }
 

@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 use super::{Incident, IncidentFacts, IncidentKind};
-use crate::agent::{ChatMessage, SessionOutcome, TurnOrigin};
+use crate::agent::{ChatMessage, SessionOutcome, TurnEnding, TurnOrigin};
 use crate::agones::ServerScope;
 use crate::config::WatchdogMode;
 use crate::defer::Condition;
@@ -310,7 +310,7 @@ async fn run_incident_turn(
     };
     match run_gary_turn(&turn, &mut messages).await {
         Ok(SessionOutcome {
-            escalation: Some(reason),
+            ending: TurnEnding::Escalated(reason),
             ..
         }) => {
             data.events
@@ -347,8 +347,12 @@ async fn run_incident_turn(
                 .await;
             data.notifier.notify(&escalation).await;
         }
+        // A watchdog turn nobody can see has no stop command pointed at it, so
+        // Cancelled is unreachable here; it is grouped with the answered case
+        // because "the incident was responded to" is what both mean.
         Ok(SessionOutcome {
-            escalation: None, ..
+            ending: TurnEnding::Answered | TurnEnding::Cancelled,
+            ..
         }) => {
             data.events
                 .record(mapping::incident_event(

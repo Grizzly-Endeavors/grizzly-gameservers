@@ -129,6 +129,39 @@ spec:
             # a list that stops the server is rolled back automatically.
             - name: SUPERVISOR_MODS_FILE
               value: ".grizzly/mods"
+            # Per-instance settings overlay (ADR-012). Valheim is the one
+            # catalog game whose join password, display name and browser
+            # visibility are env-only: lloesche reads SERVER_PASS at each launch
+            # and passes it to the game as `-password`, so unlike every other
+            # game here there is no file on the PVC holding it. Without this
+            # block those settings are unreachable at runtime — the image's
+            # baked defaults are final for the life of the instance.
+            #
+            # The allowlist is the whole mutable surface, and it is deliberately
+            # four keys:
+            #   SERVER_PASS    the join password; Valheim refuses <5 chars, and
+            #                  refuses one contained in the world name
+            #   SERVER_NAME    how the server appears in the browser
+            #   SERVER_PUBLIC  1 lists it in the community browser, 0 hides it
+            #   CROSSPLAY      Xbox/PC crossplay
+            #
+            # Three neighbours are held off it on purpose. WORLD_NAME switches
+            # the server to a *different world* — recoverable, but it reads as
+            # total data loss to whoever is playing, and no guardrail here can
+            # tell the two apart. SERVER_ARGS takes arbitrary launch arguments,
+            # the same open surface that keeps MODS/PLUGINS off Minecraft's
+            # allowlist. VALHEIM_PLUS cannot be combined with BEPINEX (see
+            # games/valheim/Dockerfile), so setting it would take down the baked
+            # RCON plugin and with it Gary's console and the player count.
+            #
+            # Like the mod list, these live here rather than in the Dockerfile
+            # ENV because an allowlist is per-game *policy*: widening it should
+            # be a reviewable catalog edit that lands on the next cold start,
+            # not an image rebuild.
+            - name: SUPERVISOR_CHILD_ENV_FILE
+              value: ".grizzly/env"
+            - name: SUPERVISOR_CHILD_ENV_ALLOWLIST
+              value: "SERVER_PASS,SERVER_NAME,SERVER_PUBLIC,CROSSPLAY"
           volumeMounts:
             - name: data
               mountPath: /config

@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 
 use super::condition::{Condition, compose_batch_prompt, next_empty_since, wait_key};
 use super::task::DeferredTask;
-use crate::agent::{ChatMessage, SessionOutcome, TurnOrigin};
+use crate::agent::{ChatMessage, SessionOutcome, TurnEnding, TurnOrigin};
 use crate::agones::{
     FsOutcome, ReadyWait, ServerScope, owner_of, supervisor_occupancy, wait_for_ready_within,
 };
@@ -266,7 +266,7 @@ async fn run_batch(
     let outcome = run_gary_turn(&turn, &mut messages).await;
     deliver_extras(ctx, primary_channel, &tasks, &outcome).await;
     if let Ok(SessionOutcome {
-        escalation: Some(reason),
+        ending: TurnEnding::Escalated(reason),
         ..
     }) = &outcome
     {

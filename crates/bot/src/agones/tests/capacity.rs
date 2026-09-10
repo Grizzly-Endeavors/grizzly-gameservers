@@ -41,6 +41,7 @@ fn entry(gameserver: &str, pvc: &str) -> GameCatalogEntry {
         pvc_yaml: pvc.to_owned(),
         mod_registry: None,
         mods_file: None,
+        env_overlay: None,
     }
 }
 

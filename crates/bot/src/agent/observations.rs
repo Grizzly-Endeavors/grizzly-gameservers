@@ -8,7 +8,7 @@
 use opentelemetry::{Array, KeyValue, Value};
 
 use super::llm::{ChatMessage, Completion, Role, TokenUsage};
-use super::session::{EscalationReason, SessionOutcome};
+use super::session::{EscalationReason, SessionOutcome, TurnEnding};
 use super::turn::{TurnActor, TurnIdentity};
 use crate::telemetry::{Level, ObservationType, langfuse};
 
@@ -96,16 +96,22 @@ pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValu
     if let Some(input) = input {
         attributes.push(KeyValue::new(langfuse::INPUT, input.to_owned()));
     }
-    // The two escalations read very differently to whoever opens the trace, so
-    // the status line says which one rather than describing the budget path for
-    // both.
-    match outcome.escalation.as_ref() {
-        None => {}
-        Some(EscalationReason::RoundBudget) => attributes.push(KeyValue::new(
+    // The endings read very differently to whoever opens the trace, so the
+    // status line says which one rather than describing the budget path for all
+    // of them. A stopped turn says so explicitly: without it, a trace that ends
+    // mid-investigation looks like the agent losing the thread rather than
+    // somebody pulling the plug.
+    match &outcome.ending {
+        TurnEnding::Answered => {}
+        TurnEnding::Cancelled => attributes.push(KeyValue::new(
+            langfuse::STATUS_MESSAGE,
+            "a person stopped the turn before it reached an answer",
+        )),
+        TurnEnding::Escalated(EscalationReason::RoundBudget) => attributes.push(KeyValue::new(
             langfuse::STATUS_MESSAGE,
             "the round budget was exhausted without reaching an answer",
         )),
-        Some(EscalationReason::AgentRequested { reason, .. }) => {
+        TurnEnding::Escalated(EscalationReason::AgentRequested { reason, .. }) => {
             attributes.push(KeyValue::new(
                 langfuse::STATUS_MESSAGE,
                 format!("the agent handed off to a human: {reason}"),

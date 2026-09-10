@@ -1361,3 +1361,73 @@ fn a_game_with_no_mod_list_declares_no_thunderstore_settings() {
         );
     }
 }
+
+// The settings-overlay half of the same drift class. ADR-012 requires both
+// variables together — the supervisor reads nothing from a file with no
+// allowlist, and has nowhere to read from with an allowlist and no file — and a
+// half-finished catalog edit fails the way the others here do: silently, with
+// Gary told a setting exists that the launch then drops on the floor.
+
+#[test]
+fn a_settings_overlay_declares_both_halves_or_neither() {
+    use crate::agones::parse_env_overlay_from_template;
+
+    for (game, manifest) in load_game_manifests() {
+        let file = manifest.spec.template.spec.env("SUPERVISOR_CHILD_ENV_FILE");
+        let allowlist = manifest
+            .spec
+            .template
+            .spec
+            .env("SUPERVISOR_CHILD_ENV_ALLOWLIST");
+        assert_eq!(
+            file.is_some(),
+            allowlist.is_some(),
+            "games/{game}/gameserver.yaml declares only half of the per-instance settings \
+             overlay (file: {file:?}, allowlist: {allowlist:?}); the supervisor needs both, \
+             so as it stands the overlay is inert and any setting written to it is dropped \
+             at launch"
+        );
+
+        let yaml = std::fs::read_to_string(
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
+                .join(&game)
+                .join("gameserver.yaml"),
+        )
+        .unwrap_or_else(|err| panic!("reading games/{game}/gameserver.yaml: {err}"));
+        let parsed = parse_env_overlay_from_template(&yaml)
+            .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
+        assert_eq!(
+            parsed.is_some(),
+            file.is_some(),
+            "games/{game} declares a settings overlay the bot can't parse back out, so \
+             game_guide would tell Gary the game has no per-instance settings"
+        );
+    }
+}
+
+#[test]
+fn valheim_holds_the_dangerous_keys_off_its_allowlist() {
+    // Three of lloesche's variables are deliberately unreachable per instance,
+    // and none of them fails loudly if exposed. WORLD_NAME switches the server
+    // to a different world, which reads to whoever is playing as total data
+    // loss. SERVER_ARGS takes arbitrary launch arguments — the open surface that
+    // keeps MODS/PLUGINS off Minecraft's allowlist. VALHEIM_PLUS cannot be
+    // combined with the BEPINEX loader this image builds on, so setting it takes
+    // down the baked RCON plugin and with it Gary's console and player count.
+    let yaml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../games/valheim/gameserver.yaml"
+    ))
+    .expect("reading games/valheim/gameserver.yaml");
+    let overlay = crate::agones::parse_env_overlay_from_template(&yaml)
+        .expect("games/valheim/gameserver.yaml parses")
+        .expect("valheim declares a settings overlay");
+
+    for forbidden in ["WORLD_NAME", "SERVER_ARGS", "VALHEIM_PLUS"] {
+        assert!(
+            !overlay.keys.iter().any(|key| key == forbidden),
+            "games/valheim/gameserver.yaml puts {forbidden} on the per-instance allowlist; \
+             it is held off deliberately and nothing downstream would catch the damage"
+        );
+    }
+}

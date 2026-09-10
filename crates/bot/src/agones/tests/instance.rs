@@ -82,6 +82,7 @@ fn entry() -> GameCatalogEntry {
         pvc_yaml: PVC_TEMPLATE.to_owned(),
         mod_registry: None,
         mods_file: None,
+        env_overlay: None,
     }
 }
 
@@ -170,6 +171,7 @@ fn advertised_entry() -> GameCatalogEntry {
         pvc_yaml: PVC_TEMPLATE.to_owned(),
         mod_registry: None,
         mods_file: None,
+        env_overlay: None,
     }
 }
 

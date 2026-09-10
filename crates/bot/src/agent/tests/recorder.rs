@@ -2,6 +2,7 @@ use opentelemetry::Value;
 use opentelemetry_sdk::trace::{BatchSpanProcessor, InMemorySpanExporter, SpanData};
 
 use super::super::llm::Role;
+use super::super::session::TurnEnding;
 use super::super::turn::{Environment, TurnActor, TurnOrigin};
 use super::*;
 use crate::discord::AccessLevel;
@@ -67,7 +68,7 @@ fn simple_turn(recorder: &TurnRecorder) {
     recorder.record_generation(&sent, &completion());
     recorder.turn_finished(&SessionOutcome {
         reply: "done".to_owned(),
-        escalation: None,
+        ending: TurnEnding::Answered,
         generations: Vec::new(),
     });
 }

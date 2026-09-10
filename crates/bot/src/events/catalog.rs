@@ -35,6 +35,13 @@ pub(crate) enum EventKind {
     BackupCycle,
     /// Gary gave up — round budget spent, or a crash rollback that didn't recover.
     Escalation,
+    /// A person stopped a running Gary turn with `/gary-stop`. Deliberately not
+    /// an [`Self::Escalation`]: nothing was handed to a human and nobody was
+    /// paged, and counting it as one would put an operator action into the
+    /// escalation rate, which measures how often Gary can't finish. Recorded at
+    /// all because "how often does a turn have to be stopped, and on what" is
+    /// the question a runaway turn raises.
+    TurnCancelled,
     /// First-ever sighting of a guild, backed by the known-guilds table so a
     /// gateway reconnect can't re-fire it.
     GuildJoined,
@@ -77,6 +84,7 @@ impl EventKind {
             Self::ServerRestored => "server_restored",
             Self::BackupCycle => "backup_cycle",
             Self::Escalation => "escalation",
+            Self::TurnCancelled => "turn_cancelled",
             Self::GuildJoined => "guild_joined",
             Self::BetaApproved => "beta_approved",
             Self::BetaDenied => "beta_denied",
