@@ -1,7 +1,7 @@
 #!/bin/bash
 # lloesche PRE_SERVER_RUN_HOOK: runs after BepInEx is set up but before each
 # Valheim server start (it blocks the server start until it returns, so every
-# plugin is in place before BepInEx's chainloader scans). It does the three
+# plugin is in place before BepInEx's chainloader scans). It does the four
 # things the supervisor can't do itself — BepInEx is set up inside this child
 # process, so there is no earlier moment the supervisor could reach these dirs:
 #
@@ -20,7 +20,14 @@
 #      dir lives on the image, not the PVC — lloesche only symlinks the *config*
 #      dir to /config, not plugins — so the hook re-places it every boot. It is
 #      excluded from the mirror above so --delete can't take it away.
-#   3. Seed the plugin's RCON port + the supervisor-minted password into its
+#   3. Drop the baked GrizzlyPlayerInfoGuard preloader patcher into BepInEx's
+#      patchers dir. Same reasoning as the plugin above: patchers/ lives on the
+#      image, not the PVC, and it is inside the mirror that runs with --delete, so
+#      it is excluded there and re-placed here. It rewrites ZPackage.Write(string)
+#      to substitute an empty string for null, which is what keeps a Steam-only
+#      server's peer handshake from aborting — see
+#      docs/decisions/038-valheim-null-player-info-guard.md.
+#   4. Seed the plugin's RCON port + the supervisor-minted password into its
 #      BepInEx config. lloesche symlinks BepInEx/config -> /config/bepinex, so the
 #      plugin's cfg lives at /config/bepinex/<guid>.cfg (on the PVC). RCON then
 #      comes up on exactly the port/password the supervisor authenticates with.
@@ -38,9 +45,12 @@ config_dir=/config/bepinex
 rcon_cfg="${config_dir}/org.tristan.rcon.cfg"
 baked_plugin=/opt/valheim-plugins/ValheimRcon.dll
 rcon_plugin=ValheimRcon.dll
+patchers_dir="${bepinex_dir}/patchers"
+baked_patcher=/opt/valheim-patchers/GrizzlyPlayerInfoGuard.dll
+grizzly_patcher=GrizzlyPlayerInfoGuard.dll
 staged=/config/.grizzly/thunderstore/staged/BepInEx
 
-mkdir -p "$plugins_dir" "$config_dir"
+mkdir -p "$plugins_dir" "$patchers_dir" "$config_dir"
 
 # 1. Mirror the staged mod tree. The supervisor always stages the full directory
 # skeleton when the reconciler is on, so this directory is present-and-empty for
@@ -51,7 +61,8 @@ mkdir -p "$plugins_dir" "$config_dir"
 if [ -d "$staged" ]; then
     for dir in plugins patchers monomod; do
         mkdir -p "${bepinex_dir}/${dir}"
-        rsync -a --delete --chmod=D755,F644 --exclude "$rcon_plugin" \
+        rsync -a --delete --chmod=D755,F644 \
+            --exclude "$rcon_plugin" --exclude "$grizzly_patcher" \
             "${staged}/${dir}/" "${bepinex_dir}/${dir}/"
     done
     # Config is the friend's to own once it exists: a package ships defaults, and
@@ -64,7 +75,10 @@ fi
 # even if the exclude above is ever dropped.
 cp -f "$baked_plugin" "$plugins_dir/$rcon_plugin"
 
-# 3. RCON config.
+# 3. The baked preloader patcher, re-placed for the same reason.
+cp -f "$baked_patcher" "$patchers_dir/$grizzly_patcher"
+
+# 4. RCON config.
 if [ -z "${VALHEIM_RCON_PASSWORD:-}" ]; then
     echo "valheim-pre-server: VALHEIM_RCON_PASSWORD is empty; the RCON plugin disables itself" >&2
 fi
