@@ -31,6 +31,13 @@ const ESCALATED_SCORE: &str = "escalated";
 /// replacing it, because the escalation-rate metric is defined on the boolean
 /// and every turn must contribute to that denominator.
 const ESCALATION_KIND_SCORE: &str = "escalation_kind";
+/// Name of the boolean score carried by every turn, saying whether a person
+/// stopped it. A sibling of [`ESCALATED_SCORE`] rather than a value inside it:
+/// a stopped turn is not the agent giving up, and folding the two together
+/// would mix a product signal (how often Gary can't finish) with an operator
+/// action (how often somebody pulled the plug). Boolean on every turn for the
+/// same reason `escalated` is — so the rate has an honest denominator.
+const CANCELLED_SCORE: &str = "cancelled";
 /// Name of the categorical score carried by turns that restarted into a config
 /// change.
 const GUARDRAIL_SCORE: &str = "guardrail";
@@ -168,13 +175,15 @@ impl TurnRecorder {
         );
     }
 
-    /// The turn reached a reply, whether by answering or by escalating.
+    /// The turn reached a reply — by answering, by escalating, or by being
+    /// stopped.
     pub(crate) fn turn_finished(&self, outcome: &SessionOutcome) {
         trace!(
             trace_id = %self.trace_id,
             session = session_field(self.identity.session.as_ref()),
             escalated = outcome.escalated(),
-            escalation_kind = outcome.escalation.as_ref().map(EscalationReason::as_str),
+            cancelled = outcome.cancelled(),
+            escalation_kind = outcome.escalation().map(EscalationReason::as_str),
             generations = outcome.generations.len(),
             reply_chars = outcome.reply.chars().count(),
             "turn: finished"
@@ -189,7 +198,13 @@ impl TurnRecorder {
             value: ScoreValue::Boolean(outcome.escalated()),
             environment: self.identity.environment().as_str(),
         });
-        if let Some(reason) = outcome.escalation.as_ref() {
+        self.telemetry.score(ScorePost {
+            trace_id: self.trace_id,
+            name: CANCELLED_SCORE,
+            value: ScoreValue::Boolean(outcome.cancelled()),
+            environment: self.identity.environment().as_str(),
+        });
+        if let Some(reason) = outcome.escalation() {
             self.telemetry.score(ScorePost {
                 trace_id: self.trace_id,
                 name: ESCALATION_KIND_SCORE,

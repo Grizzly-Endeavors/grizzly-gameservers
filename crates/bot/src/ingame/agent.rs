@@ -18,6 +18,8 @@ use tracing::{debug, error, warn};
 
 use super::IngameDeps;
 use crate::agent::commit_turn;
+use tokio_util::sync::CancellationToken;
+
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, SessionCallbacks, SessionEvent, SessionKey,
     ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session,
@@ -138,6 +140,8 @@ pub(crate) async fn handle_ingame_question(
     // The in-game tool set is a fixed read-only pair with no escalation tool, so
     // the only way out here is still the round budget.
     let never_escalates = || None;
+    // In-game chat carries no channel for `/gary-stop` to scope a stop to.
+    let never_cancelled = CancellationToken::new();
     let outcome = run_session(
         &mut messages,
         tool_defs,
@@ -148,6 +152,7 @@ pub(crate) async fn handle_ingame_question(
             dispatch: &dispatch,
             progress: &progress,
             escalation_requested: &never_escalates,
+            cancel: &never_cancelled,
         },
     )
     .await;
@@ -155,14 +160,7 @@ pub(crate) async fn handle_ingame_question(
     let reply = match outcome {
         Ok(outcome) => {
             let reply = outcome.reply.clone();
-            let escalation = outcome.escalation.clone();
-            if let Some(reason) = escalation {
-                warn!(
-                    server,
-                    player,
-                    kind = reason.as_str(),
-                    "in-game session escalated"
-                );
+            if let Some(reason) = outcome.escalation().cloned() {
                 escalate(
                     deps,
                     &attribution,
@@ -216,6 +214,12 @@ async fn escalate(
     reason: &EscalationReason,
     asked: Asked<'_>,
 ) {
+    warn!(
+        server = asked.server,
+        player = asked.player,
+        kind = reason.as_str(),
+        "in-game session escalated"
+    );
     let escalation = Escalation::from_turn(
         reason,
         EscalationContext::InGame {

@@ -17,6 +17,7 @@ mod domain;
 mod events;
 mod http;
 mod ingame;
+mod interrupt;
 mod kv;
 mod limits;
 mod mail;
@@ -182,6 +183,7 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
         guild_limits,
         backup,
         turn_throttle: std::sync::Arc::new(throttle::TurnThrottle::new(effective.throttle)),
+        interrupts: std::sync::Arc::new(interrupt::TurnInterrupts::default()),
         tasks: tasks.clone(),
         notifier,
         defer,

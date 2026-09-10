@@ -1016,6 +1016,41 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Stop the Gary turn running in this channel.
+#[poise::command(slash_command, rename = "gary-stop")]
+pub(crate) async fn gary_stop(ctx: Context<'_>) -> Result<(), Error> {
+    // Ungated, like /new-session and for the same reason: the conversation
+    // belongs to the channel, so anyone who can add to it can end a turn against
+    // it. The cost of a stop nobody wanted is that somebody asks again.
+    let stopped = ctx.data().interrupts.cancel(ctx.channel_id().get());
+    if stopped {
+        let data = ctx.data();
+        data.events
+            .record(mapping::turn_cancelled_event(
+                &attribution(ctx),
+                ctx.guild_id()
+                    .map(|guild| GuildId::new(guild.get().to_string())),
+            ))
+            .await;
+    }
+    let embed = if stopped {
+        neutral_embed(
+            "Stopping",
+            "I'll stop as soon as I can. If I'm part-way through changing something on a              server I'll finish that step first rather than leave it half-done — nothing              new will start after it.",
+        )
+    } else {
+        neutral_embed(
+            "Nothing to stop",
+            "I'm not working on anything in this channel right now.",
+        )
+    };
+    // Not ephemeral: the conversation is shared, so a stop is something everyone
+    // in the channel needs to see — otherwise Gary going quiet mid-answer looks
+    // like a fault to whoever didn't run the command.
+    ctx.send(reply_with(embed)).await?;
+    Ok(())
+}
+
 /// Review and prune the durable facts Gary has learned about each game.
 #[poise::command(
     slash_command,

@@ -150,6 +150,8 @@ pub(crate) struct Data {
     /// Discord mention, a home-channel message, an in-game `@Gary` — passes
     /// through it, because each is reachable by someone the operator never vetted.
     pub(crate) turn_throttle: std::sync::Arc<crate::throttle::TurnThrottle>,
+    /// The Gary turns currently running, so `/gary-stop` can end one.
+    pub(crate) interrupts: std::sync::Arc<crate::interrupt::TurnInterrupts>,
     /// Tracks spawned Gary sessions so the shutdown drain can await an in-flight
     /// turn (e.g. between a mutating tool call and its follow-up) before exit.
     pub(crate) tasks: TaskTracker,
@@ -234,6 +236,7 @@ pub(crate) fn slash_commands() -> Vec<poise::Command<Data, Error>> {
         self::commands::restore(),
         self::commands::recover(),
         self::commands::new_session(),
+        self::commands::gary_stop(),
         self::commands::gary_home(),
         self::commands::gary_memory(),
         self::commands::config(),

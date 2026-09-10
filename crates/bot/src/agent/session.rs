@@ -2,14 +2,15 @@
 //! testable with mock closures. The shell supplies two async callbacks —
 //! `complete` (one model turn) and `dispatch` (run one tool) — and this drives
 //! them: ask the model, run any tools it requests, feed results back, repeat
-//! until it answers in plain text, a tool hands the turn to a human, or the
-//! round budget is spent.
+//! until it answers in plain text, a tool hands the turn to a human, a person
+//! stops the turn, or the round budget is spent.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use tokio_util::sync::CancellationToken;
 
 use super::llm::{ChatMessage, Completion, TokenUsage, ToolCall, ToolDef};
 use super::recorder::TurnRecorder;
@@ -30,6 +31,12 @@ pub(crate) const DEFAULT_MAX_ROUNDS: usize = 16;
 /// with the model's own words, which is the point of having the tool.
 pub(crate) const ESCALATION_REPLY: &str =
     "I wasn't able to sort that out on my own — I've flagged it for Bear to take a look.";
+
+/// What lands in the transcript when a person stopped the turn. Short and
+/// factual: whoever ran the command already got their own confirmation, so this
+/// exists to keep the conversation coherent — the next turn must be able to see
+/// that the previous request was abandoned rather than silently unanswered.
+pub(crate) const CANCELLED_REPLY: &str = "Stopped — I left everything as it was.";
 
 /// Shown when the model returns neither tool calls nor any text.
 const EMPTY_REPLY_FALLBACK: &str =
@@ -89,6 +96,19 @@ pub(crate) struct SessionCallbacks<'a, 'f> {
     pub(crate) progress: &'a ProgressFn<'f>,
     /// Whether a tool has asked to end the turn; see [`EscalationCheckFn`].
     pub(crate) escalation_requested: &'a EscalationCheckFn<'f>,
+    /// Tripped when a person asks for this turn to stop.
+    ///
+    /// The loop races it against each model call and re-checks it after each
+    /// round of tools, so a stop lands on the model — which is where a runaway
+    /// turn spends nearly all of its time — while a tool that is already running
+    /// always finishes. That asymmetry is deliberate: abandoning a model call
+    /// costs nothing but the tokens already spent, and abandoning a tool could
+    /// leave a config half-written or a restart issued with nothing watching it
+    /// come back.
+    ///
+    /// A surface with no way to stop a turn passes a token nobody holds, which
+    /// simply never trips.
+    pub(crate) cancel: &'a CancellationToken,
 }
 
 /// Why a turn ended without the agent answering the request itself.
@@ -155,14 +175,34 @@ impl From<&Completion> for Generation {
     }
 }
 
-/// The end state of a session: the text to send back, why it escalated if it
-/// did (so the caller can log, notify, and score accordingly), and what each of
-/// its model calls cost.
+/// How a turn finished.
+///
+/// An enum rather than a pair of flags because the three endings are mutually
+/// exclusive and each shell has to do something different with each — post the
+/// reply, page an operator, or say nothing because the person who stopped it was
+/// already told. With `wildcard_enum_match_arm` denied, a fourth ending would
+/// have to be answered at every one of those sites rather than falling into
+/// whichever arm happened to be the catch-all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TurnEnding {
+    /// The agent answered the request itself.
+    Answered,
+    /// The turn ended without an answer and a human is needed.
+    Escalated(EscalationReason),
+    /// A person stopped the turn while it was running. Not a failure and
+    /// deliberately not an escalation: nobody needs to be paged, and counting it
+    /// as one would inflate the escalation rate with turns the agent was never
+    /// given the chance to finish.
+    Cancelled,
+}
+
+/// The end state of a session: the text to send back, how it ended (so the
+/// caller can log, notify, and score accordingly), and what each of its model
+/// calls cost.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionOutcome {
     pub(crate) reply: String,
-    /// `None` when the agent answered the request itself.
-    pub(crate) escalation: Option<EscalationReason>,
+    pub(crate) ending: TurnEnding,
     /// One entry per model call, in the order they ran.
     pub(crate) generations: Vec<Generation>,
 }
@@ -171,7 +211,20 @@ impl SessionOutcome {
     /// Whether the turn ended by handing off rather than answering — the shape
     /// the telemetry score and the `escalation-rate` metric are defined on.
     pub(crate) fn escalated(&self) -> bool {
-        self.escalation.is_some()
+        matches!(self.ending, TurnEnding::Escalated(_))
+    }
+
+    /// Whether a person stopped this turn.
+    pub(crate) fn cancelled(&self) -> bool {
+        matches!(self.ending, TurnEnding::Cancelled)
+    }
+
+    /// Why the turn escalated, if it did.
+    pub(crate) fn escalation(&self) -> Option<&EscalationReason> {
+        match &self.ending {
+            TurnEnding::Escalated(reason) => Some(reason),
+            TurnEnding::Answered | TurnEnding::Cancelled => None,
+        }
     }
 
     /// Prompt tokens the turn's largest request cost, as the provider counted
@@ -192,6 +245,11 @@ impl SessionOutcome {
 }
 
 /// Drive the tool-calling loop to a final reply.
+///
+/// Stops early if `callbacks.cancel` trips: the in-flight model call is
+/// abandoned, any tool round already running is allowed to finish first, and the
+/// transcript is closed with [`CANCELLED_REPLY`] so the conversation stays
+/// coherent for the next turn.
 ///
 /// `messages` is the seeded transcript — `[system, ...prior turns, user]` — and
 /// is appended to in place as the model answers, so on return the caller holds
@@ -218,13 +276,28 @@ pub(crate) async fn run_session(
     let dispatch = callbacks.dispatch;
     let progress = callbacks.progress;
     let escalation_requested = callbacks.escalation_requested;
+    let cancel = callbacks.cancel;
     recorder.turn_started();
     let mut generations = Vec::new();
 
     for _ in 0..max_rounds {
         // `messages` is untouched until the reply lands, so it still holds exactly
         // what was sent — no second clone needed to show the recorder the request.
-        let completion = match complete(messages.clone(), tools.clone()).await {
+        //
+        // Biased so an already-tripped token wins without the model being asked
+        // again: that is how a stop that arrived during the previous tool round
+        // takes effect here, at the top of the round rather than part-way into a
+        // call nobody is waiting for any more.
+        let completion = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                let outcome = cancelled_outcome(messages, generations);
+                recorder.turn_finished(&outcome);
+                return Ok(outcome);
+            }
+            result = complete(messages.clone(), tools.clone()) => result,
+        };
+        let completion = match completion {
             Ok(completion) => completion,
             Err(err) => {
                 recorder.turn_failed(&err);
@@ -249,7 +322,7 @@ pub(crate) async fn run_session(
             messages.push(assistant);
             let outcome = SessionOutcome {
                 reply,
-                escalation: None,
+                ending: TurnEnding::Answered,
                 generations,
             };
             recorder.turn_finished(&outcome);
@@ -278,7 +351,7 @@ pub(crate) async fn run_session(
         if let Some(request) = escalation_requested() {
             let outcome = SessionOutcome {
                 reply: request.reply,
-                escalation: Some(EscalationReason::AgentRequested {
+                ending: TurnEnding::Escalated(EscalationReason::AgentRequested {
                     reason: request.reason,
                     server: request.server,
                 }),
@@ -287,15 +360,46 @@ pub(crate) async fn run_session(
             recorder.turn_finished(&outcome);
             return Ok(outcome);
         }
+
+        // Checked here as well as at the top of the round so a stop that arrives
+        // during the final round's tools is reported as a stop, rather than as
+        // the round budget running out on its own.
+        if cancel.is_cancelled() {
+            let outcome = cancelled_outcome(messages, generations);
+            recorder.turn_finished(&outcome);
+            return Ok(outcome);
+        }
     }
 
     let outcome = SessionOutcome {
         reply: ESCALATION_REPLY.to_owned(),
-        escalation: Some(EscalationReason::RoundBudget),
+        ending: TurnEnding::Escalated(EscalationReason::RoundBudget),
         generations,
     };
     recorder.turn_finished(&outcome);
     Ok(outcome)
+}
+
+/// Close out a turn a person stopped.
+///
+/// Appends the stop to the transcript for the same reason the plain-answer exit
+/// appends its reply: without it the next turn sees the user's question with
+/// nothing after it and answers it again — which on a turn somebody stopped
+/// deliberately is the worst possible response.
+///
+/// Carries the generations already paid for, because a stopped turn still cost
+/// whatever it spent getting there, and a cost report that omitted them would
+/// understate exactly the turns most worth looking at.
+fn cancelled_outcome(
+    messages: &mut Vec<ChatMessage>,
+    generations: Vec<Generation>,
+) -> SessionOutcome {
+    messages.push(ChatMessage::assistant(CANCELLED_REPLY));
+    SessionOutcome {
+        reply: CANCELLED_REPLY.to_owned(),
+        ending: TurnEnding::Cancelled,
+        generations,
+    }
 }
 
 /// Run one round's tool calls in order, appending each result to the transcript

@@ -102,6 +102,11 @@ pub(crate) const UNDELIVERABLE: &str = "undeliverable";
 /// A watchdog incident's proactive turn errored before producing a reply.
 pub(crate) const TURN_FAILED: &str = "turn_failed";
 
+/// A person stopped a running turn. The only outcome `turn_cancelled` carries —
+/// there is no partial or failed stop, since a token that has been tripped
+/// always ends the turn at the next round boundary.
+pub(crate) const STOPPED: &str = "stopped";
+
 /// Which way Gary gave up. The escalation kind *is* the outcome, so the two
 /// escalation shapes are separable without reaching into the details payload.
 pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
@@ -148,6 +153,18 @@ pub(crate) fn escalation_event(
         event = event.instance(InstanceName::new(server));
     }
     event
+}
+
+/// The row for a turn somebody stopped.
+///
+/// The actor is whoever ran the command rather than whoever started the turn:
+/// the conversation is shared, so those are often different people, and the
+/// useful audit answer is who pulled the plug.
+pub(crate) fn turn_cancelled_event(
+    attribution: &Attribution,
+    guild: Option<GuildId>,
+) -> ProductEvent {
+    ProductEvent::new(EventKind::TurnCancelled, attribution, STOPPED).guild(guild)
 }
 
 /// The row for a watchdog incident: which signal fired, its numbers, and where

@@ -34,7 +34,7 @@ use tracing::{error, info, warn};
 use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, ToolCall, ToolDef,
-    TurnOrigin,
+    TurnEnding, TurnOrigin,
 };
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
@@ -390,15 +390,19 @@ async fn run_gary(
     let committed = outcome.clone();
     let SessionOutcome {
         reply,
-        escalation,
+        ending,
         generations,
     } = outcome;
-    let escalation_kind = escalation.as_ref().map(EscalationReason::as_str);
-    let escalation_reason = match escalation.as_ref() {
+    let escalation = match &ending {
+        TurnEnding::Escalated(reason) => Some(reason),
+        TurnEnding::Answered | TurnEnding::Cancelled => None,
+    };
+    let escalation_kind = escalation.map(EscalationReason::as_str);
+    let escalation_reason = match escalation {
         Some(EscalationReason::AgentRequested { reason, .. }) => Some(reason.clone()),
         Some(EscalationReason::RoundBudget) | None => None,
     };
-    if let Some(reason) = escalation.as_ref() {
+    if let Some(reason) = escalation {
         record_harness_escalation(data, actor, guild, reason).await;
     }
     let turn_slice = messages.get(mark..).unwrap_or_default();

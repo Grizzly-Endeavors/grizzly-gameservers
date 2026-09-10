@@ -4,6 +4,8 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tokio_util::sync::CancellationToken;
+
 use super::super::llm::{FunctionCall, Role};
 use super::super::turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};
 use super::*;
@@ -105,6 +107,11 @@ fn never_escalates() -> impl Fn() -> Option<EscalationRequest> + Sync {
     || None
 }
 
+/// A token nobody holds, for the cases where stopping isn't what's under test.
+fn never_cancelled() -> CancellationToken {
+    CancellationToken::new()
+}
+
 #[tokio::test]
 async fn returns_text_reply_without_calling_tools() {
     let turns = canned(vec![text_turn("3 servers are running")]);
@@ -134,6 +141,7 @@ async fn returns_text_reply_without_calling_tools() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -190,6 +198,7 @@ async fn runs_one_tool_round_then_replies() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -242,6 +251,7 @@ async fn every_model_call_is_reported_in_order() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -285,6 +295,7 @@ async fn an_escalating_turn_still_reports_what_it_spent() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -292,7 +303,7 @@ async fn an_escalating_turn_still_reports_what_it_spent() {
 
     assert!(outcome.escalated());
     assert_eq!(
-        outcome.escalation,
+        outcome.escalation().cloned(),
         Some(EscalationReason::RoundBudget),
         "running out of rounds is the budget exit, not an agent-requested one"
     );
@@ -344,6 +355,7 @@ async fn a_tool_escalation_ends_the_turn_with_the_models_own_reply() {
             progress: &progress,
 
             escalation_requested: &escalates_after_first_round(&dispatched),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -354,7 +366,7 @@ async fn a_tool_escalation_ends_the_turn_with_the_models_own_reply() {
         "the user reads the model's own words, not the canned budget line"
     );
     assert_eq!(
-        outcome.escalation,
+        outcome.escalation().cloned(),
         Some(EscalationReason::AgentRequested {
             reason: "the world file is corrupt and needs a restore decision".to_owned(),
             server: Some("mc-summer".to_owned()),
@@ -393,6 +405,7 @@ async fn an_escalating_round_still_records_the_tools_it_ran_alongside() {
             progress: &progress,
 
             escalation_requested: &escalates_after_first_round(&dispatched),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -443,6 +456,7 @@ async fn emits_interim_text_only_when_the_model_narrates() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -494,6 +508,7 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -528,6 +543,7 @@ async fn escalates_when_round_budget_is_exhausted() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -561,6 +577,7 @@ async fn empty_text_reply_falls_back_to_a_prompt() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
@@ -594,10 +611,323 @@ async fn propagates_completion_errors() {
             progress: &progress,
 
             escalation_requested: &never_escalates(),
+            cancel: &never_cancelled(),
         },
     )
     .await
     .unwrap_err();
 
     assert!(err.to_string().contains("unreachable"));
+}
+
+#[tokio::test]
+async fn a_turn_stopped_before_it_starts_never_calls_the_model() {
+    // The token is already tripped, so the biased select must take the stop arm
+    // rather than paying for a call whose answer nobody is waiting for.
+    //
+    // Counted inside the future rather than at the call: `select!` builds every
+    // branch's future before polling any of them, so constructing the request is
+    // free and only polling it would reach the provider.
+    let asked = AtomicUsize::new(0);
+    let complete: &CompleteFn = &|_, _| {
+        let asked = &asked;
+        Box::pin(async move {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Ok(completion(text_turn("hello")))
+        })
+    };
+    let dispatch: &DispatchFn = &|_| Box::pin(async move { String::new() });
+    let progress = ignore_progress();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let mut messages = seed("what's up");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "the model call was never polled, so nothing was paid for"
+    );
+    assert_eq!(outcome.ending, TurnEnding::Cancelled);
+    assert!(!outcome.escalated(), "a stop is not the agent giving up");
+    assert!(outcome.cancelled());
+}
+
+#[tokio::test]
+async fn a_stop_during_a_model_call_abandons_it() {
+    // Where a runaway turn actually spends its time. The call never resolves, so
+    // the only way out is the cancel arm.
+    let complete: &CompleteFn = &|_, _| Box::pin(std::future::pending());
+    let dispatch: &DispatchFn = &|_| Box::pin(async move { String::new() });
+    let progress = ignore_progress();
+    let cancel = CancellationToken::new();
+
+    let trip = cancel.clone();
+    tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        trip.cancel();
+    });
+
+    let mut messages = seed("what's up");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.ending, TurnEnding::Cancelled);
+}
+
+#[tokio::test]
+async fn a_tool_already_running_is_allowed_to_finish() {
+    // The asymmetry the whole design turns on: abandoning a model call costs
+    // only the tokens already spent, but abandoning a tool could leave a config
+    // half-written or a restart issued with nothing watching it come back.
+    let turns = canned(vec![
+        tool_turn("1", "restart_server", "{}", None),
+        text_turn("never reached"),
+    ]);
+    let finished = AtomicUsize::new(0);
+    let cancel = CancellationToken::new();
+
+    let complete: &CompleteFn = &|_, _| {
+        let next = turns.lock().unwrap().pop_front().unwrap();
+        Box::pin(async move { Ok(completion(next)) })
+    };
+    let trip = cancel.clone();
+    let dispatch: &DispatchFn = &|_| {
+        let trip = trip.clone();
+        let finished = &finished;
+        Box::pin(async move {
+            // A stop lands mid-tool, exactly the case that must not tear it up.
+            trip.cancel();
+            tokio::task::yield_now().await;
+            finished.fetch_add(1, Ordering::SeqCst);
+            "restarted".to_owned()
+        })
+    };
+    let progress = ignore_progress();
+
+    let mut messages = seed("restart it");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "the tool ran to completion despite the stop arriving while it was in flight"
+    );
+    assert_eq!(outcome.ending, TurnEnding::Cancelled);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.role == Role::Tool
+                && message.content.as_deref() == Some("restarted")),
+        "the finished tool's result is still in the transcript"
+    );
+}
+
+#[tokio::test]
+async fn a_stopped_turn_records_the_stop_in_the_transcript() {
+    // Without this the next turn sees the question with nothing after it and
+    // answers it again — the worst possible response to one somebody stopped.
+    let complete: &CompleteFn = &|_, _| Box::pin(std::future::pending());
+    let dispatch: &DispatchFn = &|_| Box::pin(async move { String::new() });
+    let progress = ignore_progress();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let mut messages = seed("what's up");
+    let before = messages.len();
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(messages.len(), before + 1);
+    let last = messages.last().unwrap();
+    assert_eq!(last.role, Role::Assistant);
+    assert_eq!(last.content.as_deref(), Some(CANCELLED_REPLY));
+    assert_eq!(outcome.reply, CANCELLED_REPLY);
+}
+
+#[tokio::test]
+async fn a_stopped_turn_still_reports_what_it_spent() {
+    // A stopped turn is exactly the kind worth costing, so the generations it
+    // already paid for must survive into the outcome.
+    let turns = canned(vec![
+        tool_turn("1", "read_logs", "{}", None),
+        text_turn("never reached"),
+    ]);
+    let cancel = CancellationToken::new();
+    let complete: &CompleteFn = &|_, _| {
+        let next = turns.lock().unwrap().pop_front().unwrap();
+        Box::pin(async move { Ok(completion(next)) })
+    };
+    let trip = cancel.clone();
+    let dispatch: &DispatchFn = &|_| {
+        let trip = trip.clone();
+        Box::pin(async move {
+            trip.cancel();
+            String::new()
+        })
+    };
+    let progress = ignore_progress();
+
+    let mut messages = seed("what happened");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.ending, TurnEnding::Cancelled);
+    assert_eq!(
+        outcome.generations.len(),
+        1,
+        "the model call it already paid for is still counted"
+    );
+}
+
+#[tokio::test]
+async fn a_stop_on_the_last_round_reads_as_a_stop_not_a_spent_budget() {
+    // The bottom-of-round check exists for this case: with only the top-of-round
+    // select, a stop arriving during the final tool round would fall out of the
+    // loop and be reported as the round budget running out on its own.
+    let cancel = CancellationToken::new();
+    let complete: &CompleteFn =
+        &|_, _| Box::pin(async move { Ok(completion(tool_turn("1", "read_logs", "{}", None))) });
+    let trip = cancel.clone();
+    let dispatch: &DispatchFn = &|_| {
+        let trip = trip.clone();
+        Box::pin(async move {
+            trip.cancel();
+            String::new()
+        })
+    };
+    let progress = ignore_progress();
+
+    let mut messages = seed("what happened");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        1,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &never_escalates(),
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.ending, TurnEnding::Cancelled);
+    assert!(!outcome.escalated(), "nobody should be paged for a stop");
+}
+
+#[tokio::test]
+async fn an_escalation_in_the_same_round_as_a_stop_still_pages() {
+    // The escalation check runs first on purpose: the model asked for a human
+    // before anyone asked it to stop, and that request must not be swallowed.
+    let cancel = CancellationToken::new();
+    let complete: &CompleteFn =
+        &|_, _| Box::pin(async move { Ok(completion(tool_turn("1", "escalate", "{}", None))) });
+    let trip = cancel.clone();
+    let dispatch: &DispatchFn = &|_| {
+        let trip = trip.clone();
+        Box::pin(async move {
+            trip.cancel();
+            String::new()
+        })
+    };
+    let progress = ignore_progress();
+    let escalates = || {
+        Some(EscalationRequest {
+            reply: "Bear is on it.".to_owned(),
+            reason: "needs a restore decision".to_owned(),
+            server: None,
+        })
+    };
+
+    let mut messages = seed("help");
+    let outcome = run_session(
+        &mut messages,
+        Vec::new(),
+        DEFAULT_MAX_ROUNDS,
+        &recorder(),
+        &SessionCallbacks {
+            complete,
+            dispatch,
+            progress: &progress,
+            escalation_requested: &escalates,
+            cancel: &cancel,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(outcome.escalated());
+    assert!(!outcome.cancelled());
 }

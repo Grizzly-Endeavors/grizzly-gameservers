@@ -55,6 +55,12 @@ impl ChatMessage {
         Self::text(Role::User, content)
     }
 
+    /// An assistant turn the loop wrote rather than the model — the record of a
+    /// turn that ended without the model producing a final message of its own.
+    pub(crate) fn assistant(content: impl Into<String>) -> Self {
+        Self::text(Role::Assistant, content)
+    }
+
     /// A tool result fed back to the model, tied to the call it answers.
     pub(crate) fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {

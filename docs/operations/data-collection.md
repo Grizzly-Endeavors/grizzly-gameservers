@@ -119,15 +119,18 @@ Authentication is HTTP Basic with the key pair on every one of these. `scripts/l
 
 **Names.** Trace name is `gary.turn.<origin>` — `gary.turn.discord`, `.ingame`, `.deferred`, `.operator`. Within a trace: the root span is `gary.turn` (observation type `AGENT`), each model call is `model.completion` (type `GENERATION`), and each tool call carries the tool's own name (type `TOOL`), so filtering by a real tool name works.
 
-**Scores.** Three, all attached after the turn completes:
+**Scores.** Four, all attached after the turn completes:
 
 | Score | Type | Values |
 |---|---|---|
 | `escalated` | `BOOLEAN` | every turn that completes; `1`/`0` on the wire |
 | `escalation_kind` | `CATEGORICAL` | only on turns that escalated: `agent_requested` (Gary called the escalate tool and stopped) or `round_budget_exhausted` (the loop ran out) |
+| `cancelled` | `BOOLEAN` | every turn that completes; `1` when somebody ran `/gary-stop` against it |
 | `guardrail` | `CATEGORICAL` | only on turns whose restart carried a pending config change: `healthy`, `rolled_back`, `rollback_failed`, `inconclusive`, `unverified` |
 
 `escalated` stays boolean and stays on every turn because the escalation rate is an average over it — `escalation_kind` splits the numerator, never the denominator. Its values are the same strings the `events` table writes into `outcome` for `kind='escalation'`, so the two planes join on them.
+
+`cancelled` is a sibling of `escalated`, never a value inside it. A stopped turn is an operator action, not Gary failing to finish, so counting it as an escalation would put the two in one number and make the headline metric unreadable the moment anyone started using the command ([ADR-037](../decisions/037-stopping-a-running-turn.md)). It is boolean on every turn for the same reason `escalated` is — so its own rate has an honest denominator. A stopped turn still exports the generations it paid for, so it counts toward cost.
 
 A turn that dies on a hard model-endpoint failure exports its trace but **no scores**. Escalation rate is therefore a rate over turns that finished, and provider outages don't silently count as successes.
 
@@ -205,6 +208,8 @@ An `escalation` row's `outcome` says which exit the turn took: `agent_requested`
 ### Escalation rate
 
 `just metric escalation-rate` — the average of the `escalated` score over `production`, which is the experiment's headline number: how often Gary hands a request to a human rather than fixing the thing. The assessment's stop signal is >30% after tuning; its go-hard signal is <10%.
+
+Read it alongside `cancelled`. A turn somebody stopped never got the chance to escalate, so a period with a lot of stops has an escalation rate measured over fewer real attempts — and a rising stop rate is its own signal, usually that turns are running long enough for people to give up on them.
 
 Split it by `escalation_kind` before reading it as a verdict, because the two exits mean opposite things. `agent_requested` is the guardrail working — Gary judged he couldn't finish and stopped instead of guessing. `round_budget_exhausted` is thrashing: sixteen rounds spent without converging *or* deciding to stop. A rate that holds steady while the mix shifts toward `agent_requested` is an improvement, not a regression.
 
