@@ -8,6 +8,7 @@ mod capacity;
 mod catalog;
 mod client;
 mod control_client;
+mod env_overlay;
 mod instance;
 mod labels;
 mod mod_registry;
@@ -19,20 +20,24 @@ mod scope;
 mod stranded;
 mod supervisor;
 mod supervisor_fs;
+mod template;
 mod types;
 
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{LiveInstance, guild_usage, list_active_servers, list_live_instances};
 pub(crate) use control_client::ControlClient;
+pub(crate) use env_overlay::EnvOverlay;
 pub(crate) use instance::catalog_sizing;
 pub(crate) use labels::{
     GAME_KEY, GAMESERVER_SELECTOR_KEY, GUILD_KEY, INSTANCE_KEY, MANAGED_BY_KEY, MANAGED_BY_VALUE,
     label_value,
 };
 pub(crate) use mod_registry::ModRegistry;
-// Only the catalog drift guard in `crate::tests::config` reads the strict
-// parser — the runtime path goes through the lenient wrapper inside
-// `mod_registry` — so exporting it unconditionally would be an unused import.
+// Only the catalog drift guards in `crate::tests::config` read the strict
+// parsers — every runtime path goes through the lenient `*_or_warn` wrappers
+// beside them — so exporting these unconditionally would be an unused import.
+#[cfg(test)]
+pub(crate) use env_overlay::parse_env_overlay_from_template;
 #[cfg(test)]
 pub(crate) use mod_registry::{parse_mod_registry_from_template, parse_mods_file_from_template};
 pub(crate) use naming::{build_instance_name, now_entropy, validate_world_name};

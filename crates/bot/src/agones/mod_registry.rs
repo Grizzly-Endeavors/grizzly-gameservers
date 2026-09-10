@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use tracing::warn;
 
+use super::template::AnnotatedTemplate;
 use crate::thunderstore::split_full_name;
 
 /// Annotation naming the registry a game's mods come from.
@@ -139,8 +140,7 @@ pub(crate) fn parse_mod_registry(
 pub(crate) fn parse_mod_registry_from_template(
     gameserver_yaml: &str,
 ) -> Result<Option<ModRegistry>> {
-    let template: AnnotatedTemplate = serde_yaml_ng::from_str(gameserver_yaml)?;
-    parse_mod_registry(template.metadata.annotations.as_ref())
+    parse_mod_registry(AnnotatedTemplate::parse(gameserver_yaml)?.annotations())
 }
 
 /// [`parse_mod_registry_from_template`], degraded to "no registry" with a
@@ -191,18 +191,9 @@ fn parse_provided(raw: Option<&str>) -> Result<Vec<String>> {
 ///
 /// Returns an error if the template is not parseable YAML.
 pub(crate) fn parse_mods_file_from_template(gameserver_yaml: &str) -> Result<Option<String>> {
-    let template: AnnotatedTemplate = serde_yaml_ng::from_str(gameserver_yaml)?;
-    Ok(template
-        .spec
-        .template
-        .spec
-        .containers
-        .into_iter()
-        .flat_map(|container| container.env)
-        .find(|var| var.name == MODS_FILE_ENV)
-        .and_then(|var| var.value)
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty()))
+    Ok(AnnotatedTemplate::parse(gameserver_yaml)?
+        .env_value(MODS_FILE_ENV)
+        .map(str::to_owned))
 }
 
 /// [`parse_mods_file_from_template`], degraded to "no mod list" with a warning —
@@ -220,52 +211,6 @@ pub(crate) fn mods_file_or_warn(id: &str, gameserver_yaml: &str) -> Option<Strin
             None
         }
     }
-}
-
-/// The only parts of a `GameServer` template this module reads. Deliberately
-/// partial so an unrelated manifest edit can't perturb the parse.
-#[derive(Default, serde::Deserialize)]
-struct AnnotatedTemplate {
-    #[serde(default)]
-    metadata: TemplateMetadata,
-    #[serde(default)]
-    spec: TemplateSpec,
-}
-
-#[derive(Default, serde::Deserialize)]
-struct TemplateMetadata {
-    annotations: Option<BTreeMap<String, String>>,
-}
-
-#[derive(Default, serde::Deserialize)]
-struct TemplateSpec {
-    #[serde(default)]
-    template: PodTemplate,
-}
-
-#[derive(Default, serde::Deserialize)]
-struct PodTemplate {
-    #[serde(default)]
-    spec: PodSpec,
-}
-
-#[derive(Default, serde::Deserialize)]
-struct PodSpec {
-    #[serde(default)]
-    containers: Vec<Container>,
-}
-
-#[derive(serde::Deserialize)]
-struct Container {
-    #[serde(default)]
-    env: Vec<EnvVar>,
-}
-
-#[derive(serde::Deserialize)]
-struct EnvVar {
-    name: String,
-    /// Absent for a `valueFrom` variable, which names a secret rather than a path.
-    value: Option<String>,
 }
 
 #[cfg(test)]

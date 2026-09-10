@@ -2617,19 +2617,27 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-/// Load one game's mod workflow. Reaches nothing at all — the catalog is
+/// Load one game's configuration workflow: where its settings live, and how
+/// its mods work if it takes any. Reaches nothing at all — the catalog is
 /// already in memory — so this dispatches ahead of the scope gate and costs
 /// nothing when the answer is "this game takes no mods".
 fn exec_game_guide(ctx: &ToolCtx<'_>, game: &str) -> String {
-    let subject = match ctx.data.catalog.get(game) {
+    let entry = ctx.data.catalog.get(game);
+    let subject = match entry {
         None => GuideSubject::UnknownGame,
         Some(entry) => match entry.mod_registry.as_ref() {
             Some(registry) => GuideSubject::Registry(registry),
             None => GuideSubject::NoRegistry,
         },
     };
+    let overlay = entry.and_then(|entry| entry.env_overlay.as_ref());
     let ids = game_ids(ctx);
-    render_guide(game, &subject, if ids.is_empty() { "(none)" } else { &ids })
+    render_guide(
+        game,
+        &subject,
+        overlay,
+        if ids.is_empty() { "(none)" } else { &ids },
+    )
 }
 
 /// The registry a catalog game declares, or the text to hand back instead of
