@@ -1,17 +1,29 @@
-//! The r2modman profile-code tools: adopting a group's modpack from a code, and
-//! minting a code that describes what a server is running.
+//! The tools that read and rewrite a server's whole mod list: adopting a group's
+//! modpack from an r2modman profile code, minting a code that describes what a
+//! server is running, and bumping every pinned version in the list at once.
 //!
-//! Both live here rather than in [`tools`](super::tools) because each is a
-//! several-step conversation with a third party — fetch, classify, write; or
-//! read, compare, mint — and because the interesting decisions in them are the
-//! *classifications*, which are pure and tested next door in
-//! [`crate::thunderstore::modpack`]. What is left in this file is the shell: the
-//! cluster and registry calls, and the wording of the answers.
+//! All three live here rather than in [`tools`](super::tools) because each is a
+//! several-step conversation with a third party — fetch, classify, write; read,
+//! compare, mint; read, look up, rewrite — and because the interesting decisions
+//! in them are the *classifications* and the *rewrite*, which are pure and
+//! tested next door in [`crate::thunderstore::modpack`] and
+//! [`crate::thunderstore::updates`]. What is left in this file is the shell: the
+//! cluster and registry calls, and the wording of the answers. They also share
+//! the two things every mod-list tool needs first — the guard that confirms this
+//! server's game speaks Thunderstore at all, and the read of one file off its
+//! volume.
 //!
 //! **Export is read-only tier, and the cache is what makes that safe.** Minting a
 //! code creates a permanent artifact on somebody else's service with no way to
 //! delete it; without the cache, anyone who could ask a question could mint
 //! unbounded numbers of them. With it, N friends asking produces one.
+//!
+//! **An update writes only when asked.** Every one of these tools is reached by
+//! someone asking a question as often as by someone asking for a change, and
+//! `update_mods` is the one where the two are hardest to tell apart — "are there
+//! updates" and "update them" are the same sentence in most phrasings. So the
+//! mode is an explicit argument with no default rather than a flag to forget:
+//! checking reads the registry and touches nothing, applying rewrites the file.
 
 use std::collections::BTreeMap;
 
@@ -19,6 +31,7 @@ use serenity::futures::StreamExt as _;
 use tracing::{error, warn};
 
 use grizzly_control_api::mods::{PROFILE_FILE, RESOLVED_FILE, ResolvedMods};
+use grizzly_control_api::package::PackageId;
 use poise::serenity_prelude as serenity;
 
 use crate::agones::{
@@ -30,6 +43,7 @@ use crate::thunderstore::modpack::{
     plan_export, plan_import,
 };
 use crate::thunderstore::profile;
+use crate::thunderstore::updates;
 use crate::thunderstore::{create_profile, fetch_package, fetch_profile};
 
 use super::tools::{ToolCtx, cluster_error, fs_result};
@@ -40,16 +54,18 @@ use super::tools::{ToolCtx, cluster_error, fs_result};
 /// rate limit and asks to be contacted rather than blocked.
 const LOOKUP_CONCURRENCY: usize = 8;
 
-/// Everything an r2modman-shaped server needs before either tool can run.
-struct ProfileTarget {
-    community: String,
-    provided: Vec<String>,
-    mods_file: String,
+/// Everything an r2modman-shaped server needs before any of these tools can
+/// run: which Thunderstore catalog its mods come from, what its image already
+/// supplies, and which file on its volume lists them.
+pub(super) struct ThunderstoreTarget {
+    pub(super) community: String,
+    pub(super) provided: Vec<String>,
+    pub(super) mods_file: String,
 }
 
-/// Resolve the server's game and confirm it is one that speaks profile codes, or
-/// return the text to hand back instead.
-async fn target(ctx: &ToolCtx<'_>, server: &str) -> Result<ProfileTarget, String> {
+/// Resolve the server's game and confirm it is one whose mods come from a
+/// Thunderstore community, or return the text to hand back instead.
+pub(super) async fn target(ctx: &ToolCtx<'_>, server: &str) -> Result<ThunderstoreTarget, String> {
     let game = ctx.game_of(server).await?;
     let entry = game.as_deref().and_then(|game| ctx.data.catalog.get(game));
     let registry = entry.and_then(|entry| entry.mod_registry.as_ref());
@@ -61,7 +77,7 @@ async fn target(ctx: &ToolCtx<'_>, server: &str) -> Result<ProfileTarget, String
                 provided,
             }),
             Some(mods_file),
-        ) => Ok(ProfileTarget {
+        ) => Ok(ThunderstoreTarget {
             community: community.clone(),
             provided: provided.clone(),
             mods_file,
@@ -162,6 +178,148 @@ pub(crate) async fn exec_import_profile(ctx: &ToolCtx<'_>, server: &str, code: &
     }
 }
 
+/// Bump every pinned version in a server's mod list to the newest the registry
+/// reports, or just say what an update would move.
+pub(crate) async fn exec_update_mods(ctx: &ToolCtx<'_>, server: &str, apply: bool) -> String {
+    let target = match target(ctx, server).await {
+        Ok(target) => target,
+        Err(refusal) => return refusal,
+    };
+
+    let current = match read_text(ctx, server, &target.mods_file).await {
+        Ok(Some(text)) => text,
+        // No file, or an empty one: both mean there is nothing pinned to raise,
+        // and saying so is a complete answer rather than a failure.
+        Ok(None) => return prompts::ModsNoneListed { server }.render(),
+        Err(problem) => return problem,
+    };
+    let wanted = updates::lookups_needed(&current);
+    if wanted.is_empty() {
+        return prompts::ModsNonePinned {
+            server,
+            path: &target.mods_file,
+        }
+        .render();
+    }
+
+    let latest = match latest_versions(ctx, &wanted).await {
+        Ok(latest) => latest,
+        Err(err) => {
+            error!(error = ?err, %server, "agent: mod update lookups failed");
+            return prompts::ThunderstoreUnavailable::render();
+        }
+    };
+    let plan = updates::plan_update(&current, &latest);
+
+    if plan.is_empty() {
+        return prompts::ModsAlreadyCurrent {
+            server,
+            current: &plan.current.to_string(),
+            floating: &list(&plan.floating),
+            deprecated: &list(&plan.deprecated),
+            unknown: &list(&plan.unknown),
+        }
+        .render();
+    }
+    if !apply {
+        return format_update_check(server, &target.mods_file, &plan);
+    }
+
+    match supervisor_write_file(
+        &ctx.data.kube_client,
+        &ctx.data.control_http,
+        &ctx.data.namespace,
+        server,
+        ctx.data.control_port,
+        &target.mods_file,
+        &plan.text,
+    )
+    .await
+    {
+        Ok(outcome) => match fs_result(server, outcome) {
+            Ok(result) => {
+                if result.backed_up {
+                    ctx.note_pending_change(server, &result.path);
+                }
+                format_update_applied(server, &result.path, &plan)
+            }
+            Err(problem) => problem,
+        },
+        Err(err) => {
+            error!(error = ?err, %server, "agent: update_mods write failed");
+            cluster_error()
+        }
+    }
+}
+
+/// Ask the registry for the newest version of each pinned package.
+///
+/// A lookup that cannot be *reached* fails the whole update, for the same reason
+/// an import's does: the call is cheap and idempotent, so retrying costs
+/// nothing, whereas an update that silently skipped the packages it couldn't
+/// check would report a list as up to date when it isn't — and that answer is
+/// durable, since nobody asks twice.
+async fn latest_versions(
+    ctx: &ToolCtx<'_>,
+    wanted: &[PackageId],
+) -> anyhow::Result<BTreeMap<String, updates::Latest>> {
+    let results: Vec<anyhow::Result<(String, updates::Latest)>> =
+        serenity::futures::stream::iter(wanted.iter().map(ToString::to_string))
+            .map(|full_name| async move {
+                let Some((namespace, name)) = crate::thunderstore::split_full_name(&full_name)
+                else {
+                    return Ok((full_name.clone(), updates::Latest::Missing));
+                };
+                let found = fetch_package(&ctx.data.http, namespace, name).await?;
+                let latest = found.map_or(updates::Latest::Missing, |package| {
+                    package.latest.version_number.parse().map_or(
+                        updates::Latest::Missing,
+                        |version| updates::Latest::Known {
+                            version,
+                            deprecated: package.is_deprecated,
+                        },
+                    )
+                });
+                Ok((full_name, latest))
+            })
+            .buffer_unordered(LOOKUP_CONCURRENCY)
+            .collect()
+            .await;
+    results.into_iter().collect()
+}
+
+/// What an update would move, with nothing written.
+fn format_update_check(server: &str, path: &str, plan: &updates::UpdatePlan) -> String {
+    prompts::ModsUpdatesAvailable {
+        server,
+        path,
+        count: &plan.bumps().to_string(),
+        bumped: &list(&plan.bumped),
+        client_bumped: &list(&plan.client_bumped),
+        current: &plan.current.to_string(),
+        floating: &list(&plan.floating),
+        deprecated: &list(&plan.deprecated),
+        unknown: &list(&plan.unknown),
+    }
+    .render()
+}
+
+/// What an update wrote.
+fn format_update_applied(server: &str, path: &str, plan: &updates::UpdatePlan) -> String {
+    prompts::ModsUpdated {
+        server,
+        path,
+        count: &plan.bumps().to_string(),
+        bumped: &list(&plan.bumped),
+        client_bumped: &list(&plan.client_bumped),
+        current: &plan.current.to_string(),
+        floating: &list(&plan.floating),
+        deprecated: &list(&plan.deprecated),
+        unknown: &list(&plan.unknown),
+    }
+    .render()
+}
+
 /// Ask the registry where each entry has to be installed.
 ///
 /// A lookup that cannot be *reached* fails the whole import. Import is cheap and
@@ -169,7 +327,7 @@ pub(crate) async fn exec_import_profile(ctx: &ToolCtx<'_>, server: &str, code: &
 /// unclassified entries is durable, silently wrong, and looks like it worked.
 async fn classify(
     ctx: &ToolCtx<'_>,
-    target: &ProfileTarget,
+    target: &ThunderstoreTarget,
     mods: &[profile::ProfileMod],
 ) -> anyhow::Result<BTreeMap<String, Lookup>> {
     let names = lookups_needed(mods, &target.provided);
@@ -252,8 +410,12 @@ fn work_dir() -> &'static str {
 }
 
 /// Read one file off the instance. `Ok(None)` means it isn't there yet, which is
-/// an ordinary state for both files this module reads.
-async fn read_text(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Result<Option<String>, String> {
+/// an ordinary state for every file this module reads.
+pub(super) async fn read_text(
+    ctx: &ToolCtx<'_>,
+    server: &str,
+    path: &str,
+) -> Result<Option<String>, String> {
     match supervisor_read_file(
         &ctx.data.kube_client,
         &ctx.data.control_http,
@@ -373,5 +535,5 @@ fn list(entries: &[String]) -> String {
 }
 
 #[cfg(test)]
-#[path = "tests/profiles.rs"]
+#[path = "tests/mod_list.rs"]
 mod tests;

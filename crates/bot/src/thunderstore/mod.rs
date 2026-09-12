@@ -30,6 +30,7 @@ pub(crate) mod modpack;
 pub(crate) mod profile;
 pub(crate) mod query;
 pub(crate) mod types;
+pub(crate) mod updates;
 
 pub(crate) use client::{create_profile, fetch_package, fetch_profile, search_packages};
 pub(crate) use query::SearchQuery;

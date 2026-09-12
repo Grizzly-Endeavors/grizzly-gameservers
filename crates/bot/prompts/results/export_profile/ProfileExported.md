@@ -4,7 +4,7 @@ type: prompt
 annotations:
   sent_when: tool result after export_profile produced a profile code for a server
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: format_export
   variables:
     server:

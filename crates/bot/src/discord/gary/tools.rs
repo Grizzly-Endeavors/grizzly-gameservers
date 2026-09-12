@@ -20,7 +20,7 @@ use grizzly_control_api::{
 };
 
 use super::guide::{GuideSubject, render_guide};
-use super::profiles::{exec_export_profile, exec_import_profile};
+use super::mod_list::{exec_export_profile, exec_import_profile, exec_update_mods};
 use super::recovery::{PendingChange, RecoveryStep, next_step};
 
 use super::super::auth::{AccessLevel, Speaker, access_level_for};
@@ -72,7 +72,7 @@ use crate::prompts::{
     Remember, RememberParams, RestartServer, RestoreFile, RestoreServer, RunShell, RunShellParams,
     RunWhen, RunWhenParams, SearchMods, SearchModsParams, SendCommand, SendCommandParams,
     ServerResources, SetResources, SetResourcesParams, ShutdownServer, StartServer, StopServer,
-    WriteFile, WriteFileParams,
+    UpdateMods, UpdateModsMode, UpdateModsParams, WriteFile, WriteFileParams,
 };
 use crate::registry::{Side, list_or_none, short_description, short_title};
 use crate::sizing::{Sizing, SizingBounds, SizingRejection};
@@ -342,6 +342,7 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
         (AccessLevel::Manager, SearchMods::spec().into()),
         (AccessLevel::Manager, ModInfo::spec().into()),
         (AccessLevel::Manager, ImportProfile::spec().into()),
+        (AccessLevel::Manager, UpdateMods::spec().into()),
         (AccessLevel::Manager, Remember::spec().into()),
         (AccessLevel::Manager, Forget::spec().into()),
         (AccessLevel::Manager, SetResources::spec().into()),
@@ -428,10 +429,12 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
-        // The two r2modman profile tools sit at opposite tiers but share a
+        // The three whole-mod-list tools sit at two different tiers but share a
         // dispatcher, because they are one feature and their arms would
         // otherwise be pages apart.
-        ExportProfile::NAME | ImportProfile::NAME => dispatch_profiles(ctx, name, args).await,
+        ExportProfile::NAME | ImportProfile::NAME | UpdateMods::NAME => {
+            dispatch_mod_list(ctx, name, args).await
+        }
         ServerResources::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_server_resources(ctx, &params.name).await,
             Err(message) => message,
@@ -466,15 +469,22 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     }
 }
 
-/// Dispatch the r2modman profile tools. Both target a server by name, so both
-/// have already passed the scope gate in [`dispatch`]; their tiers — read-only
-/// for the export, manager for the import — are settled there too.
+/// Dispatch the tools that read or rewrite a server's whole mod list. All three
+/// target a server by name, so all three have already passed the scope gate in
+/// [`dispatch`]; their tiers — read-only for the export, manager for the import
+/// and the update — are settled there too.
 ///
 /// Export is read-only despite handing back a shareable identifier: it changes
 /// nothing a friend can see, and the cached code is what keeps a read-only
 /// caller from minting permanent artifacts on a third party's service one
 /// question at a time.
-async fn dispatch_profiles(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
+///
+/// The update is manager tier in both its modes, including the one that writes
+/// nothing. A check is a burst of registry calls per invocation, which is the
+/// cost a read-only tier exists to keep off a public API — and the two modes are
+/// one tool precisely so the model can't reach the write half without having
+/// been allowed the read half.
+async fn dispatch_mod_list(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     match name {
         ExportProfile::NAME => match parse::<NameParams>(args) {
             Ok(params) => exec_export_profile(ctx, &params.name).await,
@@ -482,6 +492,16 @@ async fn dispatch_profiles(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
         },
         ImportProfile::NAME => match parse::<ImportProfileParams>(args) {
             Ok(params) => exec_import_profile(ctx, &params.name, &params.code).await,
+            Err(message) => message,
+        },
+        UpdateMods::NAME => match parse::<UpdateModsParams>(args) {
+            Ok(params) => {
+                let apply = match params.mode {
+                    UpdateModsMode::Check => false,
+                    UpdateModsMode::Apply => true,
+                };
+                exec_update_mods(ctx, &params.name, apply).await
+            }
             Err(message) => message,
         },
         other => prompts::UnknownTool { name: other }.render(),
@@ -736,6 +756,7 @@ fn targets_existing_server(tool: &str) -> bool {
             | SetResources::NAME
             | ImportProfile::NAME
             | ExportProfile::NAME
+            | UpdateMods::NAME
     )
 }
 

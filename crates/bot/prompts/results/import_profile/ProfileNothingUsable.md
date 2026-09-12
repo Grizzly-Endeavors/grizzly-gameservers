@@ -6,7 +6,7 @@ annotations:
     tool result when every mod in an imported profile was unknown to this game's
     registry, so writing the list would have emptied it
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: exec_import_profile
   variables:
     code:

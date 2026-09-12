@@ -4,7 +4,7 @@ type: prompt
 annotations:
   sent_when: tool result after import_profile successfully rewrote a server's mod list
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: format_import
   variables:
     server:
