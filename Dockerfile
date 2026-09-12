@@ -43,6 +43,18 @@ FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc401
 # check a local gate run cannot reproduce, so a stale base surfaces only as a
 # blocked deploy. Upgrading at build time makes each build current against the
 # archive instead of against whenever the base was last rolled.
+#
+# The suppression below is scoped to this one line and this one rule. That
+# rule's stated premise — "packages in base containers should be up-to-date, so
+# contact the maintainers if one is out of date" — is the thing measured to be
+# false here: this digest IS the newest debian:trixie-slim, and the gate's own
+# image scan found 12 fixable HIGH/CRITICAL CVEs in it (3 critical: perl-base,
+# and the rest across gzip, libpcre2 and libsqlite3). Without the upgrade,
+# scan:trivy-image fails; with it, scan:semgrep does. Upgrading and saying why
+# is the resolution that leaves the image actually patched. Re-check it if the
+# base ever starts shipping current packages: then the rule is right and this
+# line should go.
+# nosemgrep: dockerfile.best-practice.avoid-apt-get-upgrade -- newest base digest still ships 12 fixable HIGH/CRITICAL CVEs; scan:trivy-image fails without this.
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
