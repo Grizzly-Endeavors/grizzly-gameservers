@@ -26,7 +26,8 @@ use crate::agones::{
 };
 use crate::prompts;
 use crate::thunderstore::modpack::{
-    CachedProfile, ImportPlan, Lookup, fingerprint, lookups_needed, plan_export, plan_import,
+    CachedProfile, ImportPlan, Lookup, ModsDiff, diff_import, fingerprint, lookups_needed,
+    plan_export, plan_import,
 };
 use crate::thunderstore::profile;
 use crate::thunderstore::{create_profile, fetch_package, fetch_profile};
@@ -122,6 +123,18 @@ pub(crate) async fn exec_import_profile(ctx: &ToolCtx<'_>, server: &str, code: &
         .render();
     }
 
+    // Read before writing, because an import replaces the list rather than
+    // adding to it: what it *removes* is the half nobody asking for a modpack
+    // thinks to check, and after the write there is nothing left to compare
+    // against. An absent list is an ordinary state and diffs as all-new; a read
+    // that genuinely failed stops here, since the write about to follow would
+    // fail the same way.
+    let current = match read_text(ctx, server, &target.mods_file).await {
+        Ok(text) => text.unwrap_or_default(),
+        Err(problem) => return problem,
+    };
+    let diff = diff_import(&current, &plan);
+
     match supervisor_write_file(
         &ctx.data.kube_client,
         &ctx.data.control_http,
@@ -138,7 +151,7 @@ pub(crate) async fn exec_import_profile(ctx: &ToolCtx<'_>, server: &str, code: &
                 if result.backed_up {
                     ctx.note_pending_change(server, &result.path);
                 }
-                format_import(server, &result.path, &plan)
+                format_import(server, &result.path, &plan, &diff)
             }
             Err(problem) => problem,
         },
@@ -314,11 +327,25 @@ async fn store_code(
     }
 }
 
-/// What an import wrote, and what it left out and why.
-fn format_import(server: &str, path: &str, plan: &ImportPlan) -> String {
+/// What an import changed, what it wrote, and what it left out and why.
+fn format_import(server: &str, path: &str, plan: &ImportPlan, diff: &ModsDiff) -> String {
     prompts::ProfileImported {
         server,
         path,
+        added: &list(&diff.added),
+        removed: &list(&diff.removed),
+        changed: &list(&diff.changed),
+        moved: &list(&diff.moved),
+        unchanged: &diff.unchanged.to_string(),
+        // Said outright rather than left to be inferred from four empty lines,
+        // because "the server already runs this pack" is a complete answer and
+        // reading it out of absences invites reporting a change that didn't
+        // happen.
+        identical: if diff.is_empty() {
+            "The list is unchanged — the server was already running exactly this pack."
+        } else {
+            ""
+        },
         installs: &list(&plan.install),
         client_only: &list(&plan.client_only),
         disabled: &list(&plan.disabled),

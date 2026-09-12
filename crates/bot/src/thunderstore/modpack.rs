@@ -19,16 +19,13 @@
 
 use std::collections::BTreeMap;
 
-use grizzly_control_api::mods::ResolvedMods;
+use grizzly_control_api::mods::{CLIENT_PREFIX, ModsLine, ResolvedMods, classify};
+use grizzly_control_api::package::PackageVersion;
 
 use crate::registry::SideSupport;
 
 use super::profile::ProfileMod;
 use super::types::split_full_name;
-
-/// Prefix marking a mod-list line as belonging to the players' machines. The
-/// supervisor's `mods_file` parser owns the other half of this contract.
-const CLIENT_PREFIX: &str = "client:";
 
 /// What the registry had to say about one profile entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +156,168 @@ pub(crate) fn plan_export(resolved: &ResolvedMods) -> Vec<ProfileMod> {
     // the reconciler happened to write it in.
     mods.sort_by(|a, b| a.full_name.cmp(&b.full_name));
     mods
+}
+
+/// Which machines a mod-list entry belongs on. The distinction an import can
+/// change without adding or removing anything, and the one a friend most needs
+/// told: a mod that moved to the players' side is no longer running on the
+/// server even though it is still in the pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Server,
+    Players,
+}
+
+/// One package as a mod list declares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Declared {
+    side: Side,
+    /// The pinned version, or `None` for an install line that takes the latest
+    /// at every launch.
+    version: Option<PackageVersion>,
+}
+
+/// What writing a new mod list changes about the one already on the server.
+///
+/// Against the *declared* list rather than against `resolved`, which is the
+/// distinction that makes this readable: `resolved` also contains every
+/// transitively-pulled dependency, none of which a new declared list names, so
+/// diffing against it would report a dozen removals for a change that removed
+/// nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ModsDiff {
+    /// Packages the new list names and the old one didn't, as pinned releases.
+    pub(crate) added: Vec<String>,
+    /// Packages the old list named and the new one doesn't. The category an
+    /// import can produce by accident, since it replaces rather than merges.
+    pub(crate) removed: Vec<String>,
+    /// Packages in both lists at a different version, as `Name old -> new`.
+    pub(crate) changed: Vec<String>,
+    /// Packages in both lists that swapped sides, as `Name: where it goes now`.
+    pub(crate) moved: Vec<String>,
+    /// Packages in both lists, same side, same version.
+    pub(crate) unchanged: usize,
+}
+
+impl ModsDiff {
+    /// Whether the write changes anything at all. A friend who asks for a pack
+    /// the server is already running should be told that, not handed a list of
+    /// nothing.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.added.is_empty()
+            && self.removed.is_empty()
+            && self.changed.is_empty()
+            && self.moved.is_empty()
+    }
+}
+
+/// Compare the mod list an import is about to write against the one on the
+/// server now.
+///
+/// `current` is the raw text of the server's mod list — empty when it has none,
+/// which is an ordinary state and reports as everything being added. Lines
+/// `current` can't be parsed at all are skipped: the diff's job is to describe a
+/// change, and a line that names no package can't have changed.
+pub(crate) fn diff_import(current: &str, plan: &ImportPlan) -> ModsDiff {
+    let before = declared(current);
+    let after = planned(plan);
+
+    let mut diff = ModsDiff::default();
+    for (id, was) in &before {
+        match after.get(id) {
+            None => diff.removed.push(pinned(id, was.version)),
+            Some(now) if now.side != was.side => {
+                diff.moved.push(format!("{id}: {}", destination(now.side)));
+            }
+            Some(now) if now.version != was.version => diff.changed.push(format!(
+                "{id} {} -> {}",
+                version_text(was.version),
+                version_text(now.version)
+            )),
+            Some(_) => diff.unchanged += 1,
+        }
+    }
+    for (id, now) in &after {
+        if !before.contains_key(id) {
+            diff.added.push(pinned(id, now.version));
+        }
+    }
+    diff
+}
+
+/// The packages a mod list's text declares. Built over the shared line grammar,
+/// so what counts as an entry here is what the supervisor will install.
+fn declared(text: &str) -> BTreeMap<String, Declared> {
+    let mut declared = BTreeMap::new();
+    for line in text.lines() {
+        let (id, entry) = match classify(line) {
+            ModsLine::Install(Ok(install)) => (
+                install.id.to_string(),
+                Declared {
+                    side: Side::Server,
+                    version: install.pin,
+                },
+            ),
+            ModsLine::Client(Ok(release)) => (
+                release.id.to_string(),
+                Declared {
+                    side: Side::Players,
+                    version: Some(release.version),
+                },
+            ),
+            ModsLine::Ignored | ModsLine::Install(Err(_)) | ModsLine::Client(Err(_)) => continue,
+        };
+        declared.insert(id, entry);
+    }
+    declared
+}
+
+/// The packages the import is about to write. Always pinned on both sides — the
+/// plan is built from a profile, and a profile entry carries a version.
+fn planned(plan: &ImportPlan) -> BTreeMap<String, Declared> {
+    let sides = plan
+        .install
+        .iter()
+        .map(|release| (release, Side::Server))
+        .chain(
+            plan.client_only
+                .iter()
+                .map(|release| (release, Side::Players)),
+        );
+    sides
+        .filter_map(|(release, side)| {
+            let (full_name, version) = split_release(release)?;
+            Some((
+                full_name,
+                Declared {
+                    side,
+                    version: version.parse().ok(),
+                },
+            ))
+        })
+        .collect()
+}
+
+/// One package and its version, as a mod list would write it.
+fn pinned(id: &str, version: Option<PackageVersion>) -> String {
+    match version {
+        Some(version) => format!("{id}-{version}"),
+        None => id.to_owned(),
+    }
+}
+
+/// A version for a diff line, naming the absence of one rather than eliding it:
+/// an entry that was floating and is now pinned really did change.
+fn version_text(version: Option<PackageVersion>) -> String {
+    version.map_or_else(|| "unpinned".to_owned(), |version| version.to_string())
+}
+
+/// Where a package that changed sides goes now.
+fn destination(side: Side) -> &'static str {
+    match side {
+        Side::Server => "now installed on the server",
+        Side::Players => "now players' machines only",
+    }
 }
 
 /// Split `Namespace-Name-1.2.3` into its pair and its version, rejecting
