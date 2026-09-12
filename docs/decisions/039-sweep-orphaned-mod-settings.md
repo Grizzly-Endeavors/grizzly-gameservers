@@ -38,7 +38,7 @@ A directory in the settings tree is judged by its name (a plugin that keeps seve
 
 The settings directory now reads as the current install set, which is the property that makes it usable: a settings file Gary can find belongs to a mod that is running. The per-game guidance says so, because without it he has no reason to trust what he finds and the habit that follows — read a stale file, edit it — produces a change that appears to land and does nothing.
 
-Each removal is named in the `[mods]` log lines, so a file that was there last week and isn't now is accounted for somewhere Gary already looks after a restart.
+Each removal is named in the `[mods]` log lines and in the supervisor's own tracing. The log line is a convenience rather than the record: the sweep fires at ready, and on a chatty game the flood of startup output that follows can push it out of the bounded child-output buffer within seconds — observed on Valheim. The durable answer to "where did that settings file go" is `resolved`, which says the mod isn't installed, and the invariant the per-game guidance states: a settings file that is still there belongs to a mod that is still installed.
 
 A game whose image sets no settings directory sweeps nothing and behaves exactly as before. The sweep is off for every game but Valheim today.
 

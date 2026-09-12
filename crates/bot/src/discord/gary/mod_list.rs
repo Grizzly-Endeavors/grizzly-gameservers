@@ -188,13 +188,21 @@ pub(crate) async fn exec_update_mods(ctx: &ToolCtx<'_>, server: &str, apply: boo
 
     let current = match read_text(ctx, server, &target.mods_file).await {
         Ok(Some(text)) => text,
-        // No file, or an empty one: both mean there is nothing pinned to raise,
-        // and saying so is a complete answer rather than a failure.
-        Ok(None) => return prompts::ModsNoneListed { server }.render(),
+        // The reconciler seeds the file before every launch, so an absent one
+        // means this server has never run with mods configured — the same answer
+        // as an empty one, and not a failure either way.
+        Ok(None) => String::new(),
         Err(problem) => return problem,
     };
     let wanted = updates::lookups_needed(&current);
     if wanted.is_empty() {
+        // Two different answers, and the difference matters: a list with
+        // unpinned entries is already installing the latest of everything, while
+        // an empty one has nothing in it at all. Reporting the first as the
+        // second would be a wrong answer to "are my mods up to date".
+        if current.trim().is_empty() {
+            return prompts::ModsNoneListed { server }.render();
+        }
         return prompts::ModsNonePinned {
             server,
             path: &target.mods_file,
