@@ -1,15 +1,10 @@
-//! The per-instance mod list: `.grizzly/mods`, one package per line.
+//! The per-instance mod list as the *reconciler* reads it: `.grizzly/mods`, one
+//! package per line, split by which machines each entry belongs on and paired
+//! with the line number every later failure names.
 //!
-//! The file is the *group's modpack*, not just this server's install list. Two
-//! forms of line, and the difference is which machines a package belongs on:
-//!
-//! - `Namespace-Name` (latest at resolve time) or `Namespace-Name-1.2.3`
-//!   (pinned) — the server installs it;
-//! - `client:Namespace-Name-1.2.3` — it belongs on the players' machines, and
-//!   this server installs nothing for it.
-//!
-//! Blank lines and `#` comments are ignored. Trailing and leading whitespace is
-//! trimmed.
+//! The line grammar itself lives in [`grizzly_control_api::mods`], because the
+//! bot authors the same lines. What this module adds is the half only the
+//! supervisor can supply — what a bad line *does* to a launch.
 //!
 //! Unlike the env overlay next door, a bad *install* line is a **hard error**
 //! that fails the launch. That asymmetry is deliberate and load-bearing: the
@@ -26,14 +21,10 @@
 //! the registry is already being consulted.
 
 use std::fmt;
-use std::str::FromStr;
+
+use grizzly_control_api::mods::{ClientLineProblem, InstallLine, ModsLine, classify};
 
 use super::types::{PackageId, PackageRelease, PackageVersion, ParseError};
-
-/// Marks a line as belonging to the players' machines rather than this server.
-/// One file, one diff, greppable — the same shape as Minecraft's `datapack:`
-/// prefix in `MODRINTH_PROJECTS`.
-const CLIENT_PREFIX: &str = "client:";
 
 /// One package the server installs, optionally pinned to an exact version, and
 /// the line it came from so every later failure can name it.
@@ -48,10 +39,6 @@ pub struct ModsEntry {
 }
 
 /// One package the modpack carries for the players' machines only.
-///
-/// Always an exact release, never a bare id: nothing downstream resolves a
-/// client entry, so no later step could supply the missing version — and a
-/// version is exactly what the launcher on the other end needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientEntry {
     pub release: PackageRelease,
@@ -169,21 +156,33 @@ pub fn parse(text: &str) -> Result<ModsList, ModsFileError> {
     let mut list = ModsList::default();
     for (index, raw) in text.lines().enumerate() {
         let line_number = index + 1;
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        match line.strip_prefix(CLIENT_PREFIX) {
-            Some(rest) => push_client(&mut list, rest.trim(), line_number),
-            None => push_install(&mut list, line, line_number)?,
+        match classify(raw) {
+            ModsLine::Ignored => {}
+            ModsLine::Install(Ok(entry)) => push_install(&mut list, entry, line_number)?,
+            ModsLine::Install(Err(reason)) => {
+                return Err(ModsFileError::Malformed {
+                    line_number,
+                    line: raw.trim().to_owned(),
+                    reason,
+                });
+            }
+            ModsLine::Client(Ok(release)) => push_client(&mut list, release, line_number),
+            ModsLine::Client(Err(problem)) => {
+                list.warnings
+                    .push(client_warning(&problem, raw.trim(), line_number));
+            }
         }
     }
     Ok(list)
 }
 
-/// Record a line the server installs, or fail the launch on it.
-fn push_install(list: &mut ModsList, line: &str, line_number: usize) -> Result<(), ModsFileError> {
-    let entry = parse_install(line, line_number)?;
+/// Record a line the server installs, or fail the launch on a second listing of
+/// the same package.
+fn push_install(
+    list: &mut ModsList,
+    entry: InstallLine,
+    line_number: usize,
+) -> Result<(), ModsFileError> {
     if let Some(first_seen) = first_seen(list, &entry.id) {
         return Err(ModsFileError::Duplicate {
             line_number,
@@ -191,30 +190,16 @@ fn push_install(list: &mut ModsList, line: &str, line_number: usize) -> Result<(
             first_seen,
         });
     }
-    list.install.push(entry);
+    list.install.push(ModsEntry {
+        id: entry.id,
+        pin: entry.pin,
+        line_number,
+    });
     Ok(())
 }
 
 /// Record a line that belongs on the players' machines, or warn and drop it.
-fn push_client(list: &mut ModsList, rest: &str, line_number: usize) {
-    let release = match rest.parse::<PackageRelease>() {
-        Ok(release) => release,
-        Err(reason) => {
-            // An unpinned but otherwise valid entry gets its own warning: the
-            // fix is to add a version, not to re-type the whole line, and the
-            // generic "not a release" message would send someone looking for a
-            // typo that isn't there.
-            list.warnings.push(match PackageId::from_str(rest) {
-                Ok(id) => ModsFileWarning::Unpinned { line_number, id },
-                Err(_) => ModsFileWarning::Unusable {
-                    line_number,
-                    line: rest.to_owned(),
-                    reason,
-                },
-            });
-            return;
-        }
-    };
+fn push_client(list: &mut ModsList, release: PackageRelease, line_number: usize) {
     if let Some(first_seen) = first_seen(list, &release.id) {
         list.warnings.push(ModsFileWarning::Duplicate {
             line_number,
@@ -227,6 +212,27 @@ fn push_client(list: &mut ModsList, rest: &str, line_number: usize) {
         release,
         line_number,
     });
+}
+
+/// Turn a rejected client line into the warning that names its actual fix. The
+/// raw text is carried only by the unusable case — an unpinned entry is named by
+/// its package, since re-reading the line is not what fixes it.
+fn client_warning(problem: &ClientLineProblem, line: &str, line_number: usize) -> ModsFileWarning {
+    match problem {
+        ClientLineProblem::Unpinned(id) => ModsFileWarning::Unpinned {
+            line_number,
+            id: id.clone(),
+        },
+        ClientLineProblem::Unusable(reason) => ModsFileWarning::Unusable {
+            line_number,
+            line: line
+                .strip_prefix(grizzly_control_api::mods::CLIENT_PREFIX)
+                .unwrap_or(line)
+                .trim()
+                .to_owned(),
+            reason: *reason,
+        },
+    }
 }
 
 /// The line `id` was first listed on, in either form. A package belongs to one
@@ -242,33 +248,6 @@ fn first_seen(list: &ModsList, id: &PackageId) -> Option<usize> {
                 .find(|entry| entry.release.id == *id)
                 .map(|entry| entry.line_number)
         })
-}
-
-/// One install line. Tries the pinned shape first: a bare `Namespace-Name` never
-/// parses as a release (a release needs a numeric third field), so the order
-/// can't misread one as the other.
-fn parse_install(line: &str, line_number: usize) -> Result<ModsEntry, ModsFileError> {
-    if let Ok(release) = line.parse::<PackageRelease>() {
-        return Ok(ModsEntry {
-            id: release.id,
-            pin: Some(release.version),
-            line_number,
-        });
-    }
-    match PackageId::from_str(line) {
-        Ok(id) => Ok(ModsEntry {
-            id,
-            pin: None,
-            line_number,
-        }),
-        // Reported against the pinned shape, since that is the form the guidance
-        // tells Gary to write and the form a typo is most likely aiming at.
-        Err(_) => Err(ModsFileError::Malformed {
-            line_number,
-            line: line.to_owned(),
-            reason: ParseError::NotARelease,
-        }),
-    }
 }
 
 #[cfg(test)]

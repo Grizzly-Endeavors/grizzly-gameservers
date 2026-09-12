@@ -1,10 +1,23 @@
-//! The `resolved` file the in-pod mod reconciler writes, and the one parser for
-//! it. A file rather than a route, but a contract between the same two halves
-//! for the same reason every route constant lives here: the supervisor renders
-//! it after each launch and the bot reads it back through the file API, so the
-//! two must agree on its shape or an export silently describes the wrong set.
+//! The two mod files both halves read, and the one parser for each. Files
+//! rather than routes, but contracts between the same two halves for the same
+//! reason every route constant lives here — and each is read by the half that
+//! did not write it, so a disagreement about shape is silent rather than an
+//! error.
 //!
-//! Three kinds of line, and the distinction between them is the whole point:
+//! **`.grizzly/mods`** is the declarative mod list. The supervisor parses it
+//! before every launch to decide what to install; the bot parses it to rewrite a
+//! pin ([`classify`]) and renders it from a profile code. One grammar with two
+//! authors, so the grammar lives here and each half layers its own reporting on
+//! top: the supervisor turns a bad install line into a launch failure naming the
+//! line number, and the bot refuses to write one in the first place.
+//!
+//! **`resolved`** is what the last launch actually installed. The supervisor
+//! renders it after each launch and the bot reads it back through the file API,
+//! so the two must agree on its shape or an export silently describes the wrong
+//! set.
+//!
+//! `resolved` has three kinds of line, and the distinction between them is the
+//! whole point:
 //!
 //! - an **installed** release, one per line, which is what this instance runs;
 //! - a **client-only** package, recorded but deliberately not installed here,
@@ -16,6 +29,8 @@
 //! isn't the loader pack in here" answers itself. Everything but the installed
 //! releases is written as a `#` comment, so nothing that reads the file as a
 //! plain list of what is installed can mistake one for the other.
+
+use crate::package::{PackageId, PackageRelease, PackageVersion, ParseError};
 
 /// Default directory the reconciler keeps its cache, staged tree, `resolved`
 /// file, and minted profile code in, relative to the instance's data root.
@@ -110,6 +125,112 @@ impl ResolvedMods {
         }
         parsed
     }
+}
+
+/// Marks a `.grizzly/mods` line as belonging to the players' machines rather
+/// than to this server. Public because the bot renders lines with it and the
+/// supervisor parses them with it.
+pub const CLIENT_PREFIX: &str = "client:";
+
+/// One package a `.grizzly/mods` install line names, with the version its
+/// author pinned or `None` to take the latest at resolve time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallLine {
+    pub id: PackageId,
+    pub pin: Option<PackageVersion>,
+}
+
+/// Why a `client:` line couldn't be used.
+///
+/// Its own type rather than a bare [`ParseError`] because an unpinned entry is a
+/// different mistake with a different fix — add a version, don't re-type the
+/// line — and the generic "not a release" message would send someone looking
+/// for a typo that isn't there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientLineProblem {
+    /// Well-formed but unpinned, which a launcher can do nothing with.
+    Unpinned(PackageId),
+    /// Neither `Namespace-Name-1.2.3` nor anything close to it.
+    Unusable(ParseError),
+}
+
+/// One line of `.grizzly/mods`, classified but not judged.
+///
+/// Deliberately stops at "what is this line", leaving what to *do* about a bad
+/// one to each half: the same malformed text is a launch failure on an install
+/// line and a skipped entry on a client line, and only the consumer knows which
+/// of those it is in a position to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModsLine {
+    /// Blank, or a `#` comment. Carried rather than dropped so a rewrite can put
+    /// it back where it was.
+    Ignored,
+    /// A package this server installs, or the reason the line isn't one.
+    Install(Result<InstallLine, ParseError>),
+    /// A package the modpack carries for the players' machines only, or the
+    /// reason the line isn't one.
+    Client(Result<PackageRelease, ClientLineProblem>),
+}
+
+/// Classify one line of `.grizzly/mods`. Leading and trailing whitespace is
+/// insignificant.
+#[must_use]
+pub fn classify(raw: &str) -> ModsLine {
+    let line = raw.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return ModsLine::Ignored;
+    }
+    match line.strip_prefix(CLIENT_PREFIX) {
+        Some(rest) => ModsLine::Client(classify_client(rest.trim())),
+        None => ModsLine::Install(classify_install(line)),
+    }
+}
+
+/// A package the server installs. Tries the pinned shape first: a bare
+/// `Namespace-Name` never parses as a release (a release needs a numeric third
+/// field), so the order can't misread one as the other.
+fn classify_install(line: &str) -> Result<InstallLine, ParseError> {
+    if let Ok(release) = line.parse::<PackageRelease>() {
+        return Ok(InstallLine {
+            id: release.id,
+            pin: Some(release.version),
+        });
+    }
+    match line.parse::<PackageId>() {
+        Ok(id) => Ok(InstallLine { id, pin: None }),
+        // Reported against the pinned shape, since that is the form the guidance
+        // tells Gary to write and the form a typo is most likely aiming at.
+        Err(_) => Err(ParseError::NotARelease),
+    }
+}
+
+/// A package for the players' machines. Always an exact release, never a bare
+/// id: nothing downstream resolves a client entry, so no later step could supply
+/// the missing version — and a version is exactly what the launcher on the other
+/// end needs.
+fn classify_client(rest: &str) -> Result<PackageRelease, ClientLineProblem> {
+    match rest.parse::<PackageRelease>() {
+        Ok(release) => Ok(release),
+        Err(reason) => Err(match rest.parse::<PackageId>() {
+            Ok(id) => ClientLineProblem::Unpinned(id),
+            Err(_) => ClientLineProblem::Unusable(reason),
+        }),
+    }
+}
+
+/// Render one install line, pinned when a version is given.
+#[must_use]
+pub fn render_install(id: &PackageId, pin: Option<PackageVersion>) -> String {
+    match pin {
+        Some(version) => format!("{id}-{version}"),
+        None => id.to_string(),
+    }
+}
+
+/// Render one `client:` line.
+#[must_use]
+pub fn render_client(release: &PackageRelease) -> String {
+    format!("{CLIENT_PREFIX}{release}")
 }
 
 #[cfg(test)]
