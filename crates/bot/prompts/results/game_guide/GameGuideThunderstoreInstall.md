@@ -34,6 +34,12 @@ annotations:
       (the log lines and the resolved file) so "did it work" is answered by
       reading rather than by assuming.
     - >-
+      States that removing a mod removes its settings file too, which is what
+      makes the settings directory readable as the current install set. Without
+      it the model has no reason to trust that a settings file it finds belongs
+      to a mod that is running, and the habit that follows — reading a stale file
+      and editing it — produces a change that appears to land and does nothing.
+    - >-
       The backup-first rule and the minute-or-so expectation exist for the same
       reasons they do on Minecraft: a mod loader touching a world with state is
       the one change a manager cannot undo alone, and a first install that
@@ -44,4 +50,4 @@ Installing is a config change to a single file: .grizzly/mods, at the top of the
 
 List only the mods someone actually asked for. Anything a mod depends on is installed automatically, and the mod loader itself is already part of the image — listing it is refused. To remove a mod, delete its line: the installed set is rebuilt from this file at every start, so a line that isn't there is a mod that isn't installed. That is the opposite of how Minecraft's list works, so don't carry the habit across.
 
-Restart to apply it, and that restart self-guards like any other config change: a line naming a mod that doesn't exist, or a malformed line, stops the server, and the previous version of the file is restored and the server restarted automatically. Afterwards, read_logs shows lines beginning with [mods] naming exactly what was installed, and .grizzly/thunderstore/resolved lists the same thing as plain text — check one of them rather than assuming it worked. Each mod's own settings file appears under the data directory after its first boot and is edited like any other config file; your edits there are never overwritten. Before the first install on a world people have already played on, take a backup_server — putting a world back afterwards is something only an admin can do. Tell them up front that a first install takes a minute or so: every mod is fetched before the world even loads.
+Restart to apply it, and that restart self-guards like any other config change: a line naming a mod that doesn't exist, or a malformed line, stops the server, and the previous version of the file is restored and the server restarted automatically. Afterwards, read_logs shows lines beginning with [mods] naming exactly what was installed, and .grizzly/thunderstore/resolved lists the same thing as plain text — check one of them rather than assuming it worked. Each mod's own settings file appears under the data directory after its first boot and is edited like any other config file; your edits there are never overwritten while the mod is installed, and when you remove a mod its settings file is deleted with it on the next start that comes up cleanly — so a settings file you can still find belongs to a mod that is still installed. Before the first install on a world people have already played on, take a backup_server — putting a world back afterwards is something only an admin can do. Tell them up front that a first install takes a minute or so: every mod is fetched before the world even loads.

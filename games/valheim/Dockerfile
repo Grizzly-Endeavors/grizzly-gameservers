@@ -110,7 +110,7 @@ ENV BEPINEX=true
 # start sequence (after BepInEx, before the server). See valheim-pre-server.sh.
 ENV PRE_SERVER_RUN_HOOK=/usr/local/bin/valheim-pre-server
 
-# Mod management. These three are facts about *this image*, which is why they
+# Mod management. These are facts about *this image*, which is why they
 # live here rather than in the catalog manifest — the manifest declares the
 # policy (which file an instance may list mods in), the image declares what it
 # can actually do with that list. The reconciler only assembles when both halves
@@ -130,6 +130,20 @@ ENV SUPERVISOR_THUNDERSTORE_LAYOUT=bepinex
 # Skipped by Namespace-Name, so whichever version lloesche pulls is the one that
 # stands.
 ENV SUPERVISOR_THUNDERSTORE_PROVIDED=denikson-BepInExPack_Valheim
+# Where BepInEx actually reads mod settings from, so the supervisor can remove
+# the settings of a mod that is no longer installed. lloesche symlinks
+# BepInEx/config to /config/bepinex, so this is on the PVC and inside the data
+# root — which is what lets the sweep live in the supervisor rather than as more
+# shell in the pre-server hook. A mod's plugin writes its own settings file here
+# at runtime, and the mirror below deliberately never overwrites one, so nothing
+# else would ever remove it.
+ENV SUPERVISOR_THUNDERSTORE_CONFIG_DIR=bepinex
+# The settings files this image owns. The RCON plugin is baked into the image
+# rather than installed from a package, so its assembly is not in the staged tree
+# and nothing there claims its GUID — without this the sweep would read its
+# settings as left over from an uninstalled mod. BepInEx's own config carries no
+# plugin GUID at all and needs no entry.
+ENV SUPERVISOR_THUNDERSTORE_CONFIG_KEEP=org.tristan.rcon.cfg
 # RCON via the ValheimRcon mod: the supervisor speaks the `valheim` dialect (Source
 # framing, single-packet replies, `say` broadcasts, `players` for the online count)
 # to the mod's loopback port. The seed hook writes this port + the minted password

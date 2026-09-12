@@ -13,8 +13,10 @@
 #      That tree is the *complete* desired state, so plugins/patchers/monomod
 #      mirror with --delete: removing a line from the mod list removes the files.
 #      config/ mirrors with --ignore-existing so a .cfg a friend or Gary has
-#      edited is never clobbered by the package default. core/ is never touched:
-#      that is the loader itself, which this image owns.
+#      edited is never clobbered by the package default; removing the settings of
+#      a mod that is no longer installed is the supervisor's job instead, once a
+#      launch has proven good (SUPERVISOR_THUNDERSTORE_CONFIG_DIR). core/ is
+#      never touched: that is the loader itself, which this image owns.
 #   2. Drop the baked ValheimRcon plugin into BepInEx's real plugins dir
 #      (idempotent; overwrite so a pinned-version bump in the image lands). That
 #      dir lives on the image, not the PVC — lloesche only symlinks the *config*
@@ -67,7 +69,9 @@ if [ -d "$staged" ]; then
     done
     # Config is the friend's to own once it exists: a package ships defaults, and
     # re-copying them every boot would silently revert every tuning change. No
-    # --delete here for the same reason.
+    # --delete here for the same reason — a plugin writes most of these itself at
+    # runtime, so the staged tree is not the complete desired state for this
+    # directory the way it is for the three above.
     rsync -a --ignore-existing --chmod=D755,F644 "${staged}/config/" "${config_dir}/"
 fi
 

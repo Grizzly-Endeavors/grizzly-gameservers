@@ -28,6 +28,8 @@ fn mods(file: &str) -> ThunderstoreMods {
         layout: archive::PackageLayout::BepInEx,
         provided: Vec::new(),
         work_dir: ".grizzly/thunderstore".to_owned(),
+        config_dir: None,
+        config_keep: Vec::new(),
     }
 }
 

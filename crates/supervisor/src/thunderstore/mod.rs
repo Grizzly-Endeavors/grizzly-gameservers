@@ -26,6 +26,15 @@
 //! r2modman game is three environment variables and a mirror step in its image,
 //! not a branch in here.
 //!
+//! **Why settings are swept separately.** Removing a mod removes its files, but
+//! its *settings* are written by the loader at runtime into the game's own
+//! settings directory and are deliberately never overwritten — so nothing in the
+//! rebuild-and-mirror path ever removes them. [`OrphanedConfigSweep`] is the
+//! other half of "the mod list is the whole truth", and it runs after the game
+//! reports ready rather than before it launches: a mod list that stops the
+//! server gets restored by the bot, and a sweep that ran first would have
+//! already deleted the settings the rollback just made relevant again.
+//!
 //! **Why a failure stops the launch.** A mod list that names a package that
 //! doesn't exist is a mistake somebody just made, and the recovery for it
 //! already exists — the supervisor reports the child as `Crashed`, the bot
@@ -37,6 +46,7 @@ pub mod api;
 pub mod archive;
 pub mod cache;
 pub mod mods_file;
+pub mod orphaned_config;
 pub mod resolve;
 pub mod stage;
 pub mod types;
@@ -45,7 +55,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::{SupervisorConfig, ThunderstoreMods};
 use crate::logs::LogBuffer;
@@ -105,14 +115,12 @@ async fn reconcile(
     logs: &LogBuffer,
 ) -> Result<()> {
     let list_path = seed_mods_file(&cfg.data_dir, &mods.file)?;
-    let work_dir = crate::fs::resolve_in_root(&cfg.data_dir, &mods.work_dir)
-        .map_err(|err| anyhow::anyhow!("{err}"))
-        .with_context(|| {
-            format!(
-                "mod working directory {} is not inside the data root",
-                mods.work_dir
-            )
-        })?;
+    let work_dir = in_root(&cfg.data_dir, &mods.work_dir).with_context(|| {
+        format!(
+            "mod working directory {} is not inside the data root",
+            mods.work_dir
+        )
+    })?;
     std::fs::create_dir_all(&work_dir)
         .with_context(|| format!("failed to create {}", work_dir.display()))?;
 
@@ -180,6 +188,110 @@ async fn reconcile(
 
     report(logs, &keep, &client_only, &resolution.provided, installed);
     Ok(())
+}
+
+/// One orphaned-settings sweep, with everything it needs resolved off the
+/// config so it can run on a blocking thread without borrowing it.
+///
+/// Planned and run as two steps for that reason alone: deciding whether this
+/// game opted in, and where its directories are, belongs next to the rest of the
+/// reconciler rather than in the supervision loop — but the work itself reads
+/// every staged assembly, which has no business holding up a control request.
+pub struct OrphanedConfigSweep {
+    /// The settings directory as the image declared it, for the log line — the
+    /// resolved absolute path would name the container's layout rather than the
+    /// path the agent reads files by.
+    declared_dir: String,
+    config_path: PathBuf,
+    staged_path: PathBuf,
+    keep: Vec<String>,
+}
+
+impl OrphanedConfigSweep {
+    /// Work out what a sweep would do, or `None` when this game hasn't opted in
+    /// — it isn't one of the r2modman games, or its image doesn't say where its
+    /// loader keeps settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the settings directory or the working directory is
+    /// outside the data root.
+    pub fn plan(cfg: &SupervisorConfig) -> Result<Option<Self>> {
+        let Some(mods) = cfg.thunderstore.as_ref() else {
+            return Ok(None);
+        };
+        let Some(declared_dir) = mods.config_dir.clone() else {
+            return Ok(None);
+        };
+        let config_path = in_root(&cfg.data_dir, &declared_dir).with_context(|| {
+            format!("mod settings directory {declared_dir} is not inside the data root")
+        })?;
+        let work_dir = in_root(&cfg.data_dir, &mods.work_dir).with_context(|| {
+            format!(
+                "mod working directory {} is not inside the data root",
+                mods.work_dir
+            )
+        })?;
+        Ok(Some(Self {
+            declared_dir,
+            config_path,
+            staged_path: stage::staged_path(&work_dir),
+            keep: mods.config_keep.clone(),
+        }))
+    }
+
+    /// Remove the settings of every mod that is no longer installed, and say
+    /// what went.
+    ///
+    /// Blocking: reads the settings directory and every staged assembly. Run it
+    /// off the supervision loop.
+    ///
+    /// Failure is logged rather than returned. The game is already running by
+    /// the time this happens, so there is nothing left to abandon — and a stale
+    /// settings file costs a confusing read, not a broken server.
+    pub fn run(self, logs: &LogBuffer) {
+        let report = match orphaned_config::sweep(&self.config_path, &self.staged_path, &self.keep)
+        {
+            Ok(report) => report,
+            Err(err) => {
+                error!(
+                    error = ?err,
+                    dir = %self.declared_dir,
+                    "could not sweep the settings of uninstalled mods"
+                );
+                return;
+            }
+        };
+        if report.removed.is_empty() {
+            return;
+        }
+        let names = report
+            .removed
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Pushed into the child-output buffer like the rest of this subsystem's
+        // reporting: the agent reads that stream after a restart, and a settings
+        // file it saw last week and can no longer find has to be accounted for
+        // somewhere it will look.
+        logs.push(format!(
+            "{LOG_PREFIX} removed settings for {} uninstalled mod(s) from {}: {names}",
+            report.removed.len(),
+            self.declared_dir
+        ));
+        info!(
+            removed = report.removed.len(),
+            kept = report.kept,
+            "swept the settings of uninstalled mods"
+        );
+    }
+}
+
+/// Resolve a data-root-relative path, widening the path guard's error so it
+/// chains under a caller's context.
+fn in_root(root: &Path, rel: &str) -> Result<PathBuf> {
+    crate::fs::resolve_in_root(root, rel).map_err(|err| anyhow::anyhow!("{err}"))
 }
 
 /// Create the mod list if it isn't there, so the friend's very first edit is an

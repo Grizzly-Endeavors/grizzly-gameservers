@@ -308,7 +308,7 @@ async fn supervise(
                 handle_unexpected_exit(&deps, &mut state, &mut child, &heartbeat, exit).await;
             }
             Some(()) = ready_rx.recv() => {
-                settle_ready(&sdk, &mut state, &heartbeat).await;
+                settle_ready(&deps, &mut state, &heartbeat).await;
             }
             _ = occupancy_ticker.tick(), if auto_update_active => {
                 spawn_occupancy_poll(&state, occupancy.as_ref(), &occupancy_tx);
@@ -410,7 +410,13 @@ fn spawn_readiness_probe(port: u16, give_up: Duration, ready_tx: mpsc::Sender<()
 /// far booted cleanly, so the heartbeat resumes and the crash budget starts over.
 /// Only a repair reaches here — a still-broken child never becomes ready, so it
 /// stays condemned.
-async fn settle_ready(sdk: &SdkClient, state: &mut SupervisorState, heartbeat: &Heartbeat) {
+///
+/// And the point where the settings of uninstalled mods are swept, on *every*
+/// ready rather than the first: the launch that needs a sweep is the one that
+/// just applied a mod-list change, which is a restart. Reaching here is what
+/// proves that launch survived, so a mod list the bot is about to roll back never
+/// gets its settings deleted.
+async fn settle_ready(deps: &RunDeps<'_>, state: &mut SupervisorState, heartbeat: &Heartbeat) {
     let first_ready = !state.is_ready();
     state.on_ready();
     if !heartbeat.is_beating() {
@@ -418,10 +424,31 @@ async fn settle_ready(sdk: &SdkClient, state: &mut SupervisorState, heartbeat: &
         state.clear_crash_history();
         info!("game recovered after crash escalation; resuming agones health heartbeat");
     }
-    if first_ready && let Err(err) = sdk.ready().await {
+    if first_ready && let Err(err) = deps.sdk.ready().await {
         warn!(error = ?err, "agones ready signal failed");
     }
-    publish_label(sdk, PROCESS_LABEL_RUNNING).await;
+    publish_label(deps.sdk, PROCESS_LABEL_RUNNING).await;
+    spawn_orphaned_config_sweep(deps);
+}
+
+/// Sweep the settings of uninstalled mods on a blocking thread.
+///
+/// Off the supervision loop because the sweep reads every staged assembly, which
+/// has no business delaying a control request — and nothing waits on the result,
+/// since the game is already serving players by the time it runs.
+fn spawn_orphaned_config_sweep(deps: &RunDeps<'_>) {
+    let planned = match thunderstore::OrphanedConfigSweep::plan(deps.cfg) {
+        Ok(planned) => planned,
+        Err(err) => {
+            warn!(error = ?err, "cannot sweep the settings of uninstalled mods");
+            return;
+        }
+    };
+    let Some(sweep) = planned else {
+        return;
+    };
+    let logs = Arc::clone(deps.logs);
+    tokio::task::spawn_blocking(move || sweep.run(&logs));
 }
 
 async fn publish_label(sdk: &SdkClient, value: &str) {
