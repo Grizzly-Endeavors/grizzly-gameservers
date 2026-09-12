@@ -42,5 +42,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-038 — Valheim's peer handshake is guarded against a null string in the image](038-valheim-null-player-info-guard.md)
 - [ADR-039 — A removed mod's settings are swept once the launch has proven good](039-sweep-orphaned-mod-settings.md)
 - [ADR-040 — A mod-list change says what it changed, and updating is one call](040-a-mod-list-change-is-legible.md)
+- [ADR-041 — The Valheim patcher ships as a committed binary](041-vendor-the-valheim-patcher.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).
