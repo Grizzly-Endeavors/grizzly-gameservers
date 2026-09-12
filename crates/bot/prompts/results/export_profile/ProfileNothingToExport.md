@@ -5,7 +5,7 @@ annotations:
   sent_when: >-
     tool result when export_profile found the server's resolved set to be empty
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: exec_export_profile
   variables:
     server:

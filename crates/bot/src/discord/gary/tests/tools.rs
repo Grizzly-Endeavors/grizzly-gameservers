@@ -24,7 +24,7 @@ const ADMIN_ONLY: [&str; 6] = [
 
 /// The lifecycle, file, discovery, and memory tools a manager gets on top of the
 /// read-only set.
-const MANAGER_ADDED: [&str; 21] = [
+const MANAGER_ADDED: [&str; 22] = [
     CreateServer::NAME,
     StopServer::NAME,
     StartServer::NAME,
@@ -46,6 +46,7 @@ const MANAGER_ADDED: [&str; 21] = [
     Forget::NAME,
     SetResources::NAME,
     ImportProfile::NAME,
+    UpdateMods::NAME,
 ];
 
 #[test]
@@ -88,8 +89,8 @@ fn managers_get_lifecycle_and_files_but_not_the_destructive_tools() {
     }
     assert_eq!(
         names.len(),
-        28,
-        "seven read tools (six lookups plus escalate) and twenty-one manager \
+        29,
+        "seven read tools (six lookups plus escalate) and twenty-two manager \
          lifecycle/file/discovery/memory/resize tools"
     );
 }
@@ -105,8 +106,8 @@ fn admins_get_the_full_lifecycle_and_filesystem_set() {
     }
     assert_eq!(
         names.len(),
-        34,
-        "the seven read tools, twenty-one manager tools, and six admin-only tools"
+        35,
+        "the seven read tools, twenty-two manager tools, and six admin-only tools"
     );
 }
 

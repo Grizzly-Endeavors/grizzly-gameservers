@@ -369,6 +369,51 @@ fn thunderstore_assembles_when_the_manifest_and_the_image_agree() {
         vec!["denikson-BepInExPack_Valheim"]
     );
     assert_eq!(mods.work_dir, ".grizzly/thunderstore");
+    assert_eq!(
+        mods.config_dir, None,
+        "an image that doesn't say where its loader keeps settings sweeps nothing"
+    );
+}
+
+#[test]
+fn a_settings_directory_and_its_protected_entries_come_off_the_image() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        ("SUPERVISOR_THUNDERSTORE_CONFIG_DIR", "bepinex"),
+        (
+            "SUPERVISOR_THUNDERSTORE_CONFIG_KEEP",
+            "org.tristan.rcon.cfg, BepInEx.cfg",
+        ),
+    ]);
+    let mods = SupervisorConfig::from_env_with(&env)
+        .unwrap()
+        .thunderstore
+        .expect("the reconciler is configured");
+    assert_eq!(mods.config_dir.as_deref(), Some("bepinex"));
+    assert_eq!(
+        mods.config_keep,
+        vec!["org.tristan.rcon.cfg", "BepInEx.cfg"]
+    );
+}
+
+#[test]
+fn protected_entries_without_a_settings_directory_are_inert() {
+    // Warns rather than failing: there is nothing to sweep, so the list protects
+    // nothing and a live server has no reason to refuse to start over it.
+    let env = lookup_from(&[
+        ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
+        ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
+        (
+            "SUPERVISOR_THUNDERSTORE_CONFIG_KEEP",
+            "org.tristan.rcon.cfg",
+        ),
+    ]);
+    let mods = SupervisorConfig::from_env_with(&env)
+        .unwrap()
+        .thunderstore
+        .expect("the reconciler is configured");
+    assert_eq!(mods.config_dir, None);
 }
 
 #[test]

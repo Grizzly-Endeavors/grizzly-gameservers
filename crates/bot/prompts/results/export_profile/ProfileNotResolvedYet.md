@@ -6,7 +6,7 @@ annotations:
     tool result when export_profile found no record of what the server resolved,
     because it has not started since mods were set up
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: exec_export_profile
   variables:
     server:

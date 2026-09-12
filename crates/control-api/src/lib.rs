@@ -17,6 +17,7 @@
 //! so the one contract file stays authoritative for both loops. The one contract here that is not a route at all is [`mods`] — the `resolved` file the in-pod reconciler writes and the bot reads back through the file API, which needs the same both-sides agreement for the same reason.
 
 pub mod mods;
+pub mod package;
 
 use serde::{Deserialize, Serialize};
 

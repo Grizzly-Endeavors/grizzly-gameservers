@@ -6,7 +6,7 @@ annotations:
     tool result when a profile payload was fetched but could not be read as an
     r2modman export
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: exec_import_profile
   variables:
     code:

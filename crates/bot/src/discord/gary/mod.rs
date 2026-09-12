@@ -9,7 +9,7 @@
 //! tool executors in [`tools`].
 
 mod guide;
-mod profiles;
+mod mod_list;
 mod recovery;
 pub(crate) mod tools;
 

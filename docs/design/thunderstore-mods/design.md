@@ -116,6 +116,8 @@ A pure parser is strict (unknown registry, thunderstore without community, commu
 | `SUPERVISOR_THUNDERSTORE_LAYOUT=bepinex` | Dockerfile | closed enum, one variant today; an unknown value is a hard error |
 | `SUPERVISOR_THUNDERSTORE_PROVIDED=denikson-BepInExPack_Valheim` | Dockerfile | comma list of packages the image supplies, matched by `Namespace-Name` |
 | `SUPERVISOR_THUNDERSTORE_DIR` | optional, default `.grizzly/thunderstore` | holds `cache/`, `staged/`, `resolved` |
+| `SUPERVISOR_THUNDERSTORE_CONFIG_DIR=bepinex` | Dockerfile, optional | data-root-relative live settings directory; presence enables the orphaned-settings sweep |
+| `SUPERVISOR_THUNDERSTORE_CONFIG_KEEP=org.tristan.rcon.cfg` | Dockerfile, optional | comma list of entries in that directory the image owns, never swept |
 
 The reconciler is assembled only when both the file and the community are set; either alone logs a startup warning (same precedent as the half-configured env overlay). Both paths must resolve inside the data root.
 
@@ -131,6 +133,8 @@ The reconciler is assembled only when both the file and the community are set; e
 6. Write `resolved`: one `Namespace-Name-1.2.3` per line, with comments naming the client-only entries and the provided packages that were skipped. Plain data Gary can `read_file`, and the artifact an exported profile code is built from — so its shape is a contract in `grizzly-control-api` rather than a local convention.
 7. Delete cache zips outside the resolved set.
 8. Push `[mods] installed …` / `[mods] failed: …` lines into the child-output log buffer so `read_logs` shows them. Log package names, never file contents.
+
+**Once the launch reports ready:** sweep the live settings directory, when the image declares one. A settings file whose `## Plugin GUID:` header names a GUID that no staged assembly contains belongs to a mod that is no longer installed, and is deleted; a file with no header, a GUID any assembly claims, and an entry the image owns are all left alone. After the launch rather than before it, because a mod list that stops the server is restored and restarted by the bot — sweeping first would delete the settings of the mod the rollback just put back. Removals are pushed into the same `[mods]` log lines. See [ADR-039](../../decisions/039-sweep-orphaned-mod-settings.md).
 
 **Offline behaviour.** Pinned entries resolve entirely from cached zip manifests, so a restart with an unchanged pinned list needs no network. Unpinned entries fall back to the highest cached version with a warning when the API is unreachable. Nothing cached and no network is a failure.
 

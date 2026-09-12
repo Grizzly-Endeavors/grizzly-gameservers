@@ -21,7 +21,12 @@ fn an_import_result_accounts_for_every_entry_including_the_dropped_ones() {
         provided: vec!["denikson-BepInExPack_Valheim-5.4.2333".to_owned()],
         missing: vec!["Author-Typo-1.0.0".to_owned()],
     };
-    let text = format_import("valheim-abc123", ".grizzly/mods", &plan);
+    let text = format_import(
+        "valheim-abc123",
+        ".grizzly/mods",
+        &plan,
+        &ModsDiff::default(),
+    );
     for expected in [
         "valheim-abc123",
         ".grizzly/mods",
@@ -41,8 +46,49 @@ fn an_empty_category_reads_as_nothing_rather_than_as_a_gap() {
         install: vec!["ValheimModding-Jotunn-2.29.2".to_owned()],
         ..ImportPlan::default()
     };
-    let text = format_import("valheim-abc123", ".grizzly/mods", &plan);
+    let text = format_import(
+        "valheim-abc123",
+        ".grizzly/mods",
+        &plan,
+        &ModsDiff::default(),
+    );
     assert!(text.contains("none listed"), "{text}");
+}
+
+#[test]
+fn an_import_result_says_what_the_write_changed() {
+    let plan = ImportPlan {
+        install: vec!["Smoothbrain-Backpacks-1.4.0".to_owned()],
+        ..ImportPlan::default()
+    };
+    let diff = diff_import(
+        "Smoothbrain-Backpacks-1.3.8\nblacks7ar-OreMines-1.2.0\n",
+        &plan,
+    );
+    let text = format_import("valheim-abc123", ".grizzly/mods", &plan, &diff);
+
+    assert!(
+        text.contains("Smoothbrain-Backpacks 1.3.8 -> 1.4.0"),
+        "the version change is named on both sides: {text}"
+    );
+    assert!(
+        text.contains("blacks7ar-OreMines-1.2.0"),
+        "a mod the profile doesn't name is reported as removed: {text}"
+    );
+}
+
+#[test]
+fn an_unchanged_import_says_so_outright() {
+    // Four empty categories is a complete answer only if it is stated as one;
+    // left to inference it invites reporting a change that didn't happen.
+    let plan = ImportPlan {
+        install: vec!["ValheimModding-Jotunn-2.30.0".to_owned()],
+        ..ImportPlan::default()
+    };
+    let diff = diff_import("ValheimModding-Jotunn-2.30.0\n", &plan);
+    let text = format_import("valheim-abc123", ".grizzly/mods", &plan, &diff);
+
+    assert!(text.contains("unchanged"), "{text}");
 }
 
 #[test]

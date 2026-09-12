@@ -6,7 +6,7 @@ annotations:
     tool result when import_profile could not reach the registry to work out
     where each mod in the profile has to be installed
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: exec_import_profile
   reasoning:
     - >-

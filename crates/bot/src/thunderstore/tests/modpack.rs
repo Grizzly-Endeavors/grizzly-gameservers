@@ -214,3 +214,142 @@ fn a_cache_file_that_isnt_one_reads_as_absent() {
         "two codes in one file names no code at all"
     );
 }
+
+// ---- what an import changes about the list already there ----
+
+/// A plan as an import builds one: pinned releases on both sides.
+fn plan_of(install: &[&str], client_only: &[&str]) -> ImportPlan {
+    ImportPlan {
+        install: install.iter().map(|entry| (*entry).to_owned()).collect(),
+        client_only: client_only
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect(),
+        ..ImportPlan::default()
+    }
+}
+
+#[test]
+fn a_server_with_no_mod_list_diffs_as_all_new() {
+    let diff = diff_import("", &plan_of(&["ValheimModding-Jotunn-2.30.0"], &[]));
+
+    assert_eq!(diff.added, vec!["ValheimModding-Jotunn-2.30.0"]);
+    assert!(diff.removed.is_empty());
+    assert_eq!(diff.unchanged, 0);
+    assert!(!diff.is_empty());
+}
+
+#[test]
+fn adopting_the_pack_a_server_already_runs_changes_nothing() {
+    let current = "ValheimModding-Jotunn-2.30.0\nclient:Advize-PlantEasily-2.2.0\n";
+    let diff = diff_import(
+        current,
+        &plan_of(
+            &["ValheimModding-Jotunn-2.30.0"],
+            &["Advize-PlantEasily-2.2.0"],
+        ),
+    );
+
+    assert!(diff.is_empty(), "{diff:?}");
+    assert_eq!(diff.unchanged, 2);
+}
+
+#[test]
+fn a_mod_the_profile_does_not_name_is_reported_as_removed() {
+    // The category an import produces by accident, since it replaces rather
+    // than merges — and the one a friend never thinks to check.
+    let current = "ValheimModding-Jotunn-2.30.0\nblacks7ar-OreMines-1.2.0\n";
+    let diff = diff_import(current, &plan_of(&["ValheimModding-Jotunn-2.30.0"], &[]));
+
+    assert_eq!(diff.removed, vec!["blacks7ar-OreMines-1.2.0"]);
+    assert!(diff.added.is_empty());
+    assert_eq!(diff.unchanged, 1);
+}
+
+#[test]
+fn a_version_change_names_both_versions() {
+    let diff = diff_import(
+        "Smoothbrain-Backpacks-1.3.8\n",
+        &plan_of(&["Smoothbrain-Backpacks-1.4.0"], &[]),
+    );
+
+    assert_eq!(diff.changed, vec!["Smoothbrain-Backpacks 1.3.8 -> 1.4.0"]);
+    assert!(diff.added.is_empty() && diff.removed.is_empty());
+}
+
+#[test]
+fn pinning_a_previously_floating_entry_is_a_change() {
+    let diff = diff_import(
+        "Smoothbrain-Backpacks\n",
+        &plan_of(&["Smoothbrain-Backpacks-1.4.0"], &[]),
+    );
+
+    assert_eq!(
+        diff.changed,
+        vec!["Smoothbrain-Backpacks unpinned -> 1.4.0"]
+    );
+}
+
+#[test]
+fn changing_sides_is_neither_an_addition_nor_a_removal() {
+    // Still in the pack, no longer running here. Reporting it as removed would
+    // be a wrong answer to the only question the distinction affects.
+    let diff = diff_import(
+        "Advize-PlantEasily-2.2.0\n",
+        &plan_of(&[], &["Advize-PlantEasily-2.2.0"]),
+    );
+
+    assert_eq!(
+        diff.moved,
+        vec!["Advize-PlantEasily: now players' machines only"]
+    );
+    assert!(diff.added.is_empty() && diff.removed.is_empty());
+
+    let back = diff_import(
+        "client:Advize-PlantEasily-2.2.0\n",
+        &plan_of(&["Advize-PlantEasily-2.2.0"], &[]),
+    );
+    assert_eq!(
+        back.moved,
+        vec!["Advize-PlantEasily: now installed on the server"]
+    );
+}
+
+#[test]
+fn a_side_change_outranks_a_version_change_on_the_same_entry() {
+    // Which side it goes on decides whether the server runs it at all; the
+    // version is a detail of an entry that has moved.
+    let diff = diff_import(
+        "Advize-PlantEasily-2.1.0\n",
+        &plan_of(&[], &["Advize-PlantEasily-2.2.0"]),
+    );
+
+    assert_eq!(diff.moved.len(), 1);
+    assert!(diff.changed.is_empty());
+}
+
+#[test]
+fn comments_and_junk_in_the_old_list_are_not_removals() {
+    let current = "# the group's pack\n\nValheimModding-Jotunn-2.30.0\nnot a package\n";
+    let diff = diff_import(current, &plan_of(&["ValheimModding-Jotunn-2.30.0"], &[]));
+
+    assert!(diff.is_empty(), "{diff:?}");
+}
+
+#[test]
+fn the_diff_is_ordered_by_package_rather_than_by_file_position() {
+    // So the same change always reads the same way, whatever order the
+    // exporting launcher listed the pack in.
+    let diff = diff_import(
+        "",
+        &plan_of(
+            &["mtnewton-ItemStacks-1.2.0", "Akoozie-ValheimTune-0.7.1"],
+            &[],
+        ),
+    );
+
+    assert_eq!(
+        diff.added,
+        vec!["Akoozie-ValheimTune-0.7.1", "mtnewton-ItemStacks-1.2.0"]
+    );
+}

@@ -210,6 +210,16 @@ pub struct ThunderstoreMods {
     /// Working directory for the cache, staged tree, and `resolved` file,
     /// relative to [`SupervisorConfig::data_dir`].
     pub work_dir: String,
+    /// The live directory the game's loader reads mod settings from, relative to
+    /// [`SupervisorConfig::data_dir`], or `None` when the image doesn't say.
+    ///
+    /// Absent disables the orphaned-settings sweep rather than guessing: the
+    /// sweep deletes files, and a wrong directory would delete the wrong ones.
+    pub config_dir: Option<String>,
+    /// Entries in `config_dir` the image owns — settings for a plugin it bakes
+    /// in, whose assembly is not in the staged tree and which would otherwise
+    /// look like it belonged to an uninstalled mod.
+    pub config_keep: Vec<String>,
 }
 
 /// Configuration for the in-game chat watcher, present only when the game enables
@@ -429,6 +439,10 @@ fn parse_child_env(lookup: EnvLookup) -> Option<ChildEnvOverlay> {
 /// unparseable provided-package name would each silently install mods into the
 /// wrong place or install a second loader pack over the image's — failures that
 /// look like the game being broken rather than like a typo.
+///
+/// The settings directory is the one value with no bad form to reject: any path
+/// parses, so a wrong one can only be caught by the sweep finding nothing to do.
+/// It is optional, and absent means the sweep is off.
 fn parse_thunderstore(lookup: EnvLookup) -> Result<Option<ThunderstoreMods>> {
     let file = optional(lookup, "SUPERVISOR_MODS_FILE");
     let community = optional(lookup, "SUPERVISOR_THUNDERSTORE_COMMUNITY");
@@ -489,12 +503,31 @@ fn parse_thunderstore(lookup: EnvLookup) -> Result<Option<ThunderstoreMods>> {
         Some(dir) => dir,
         None => DEFAULT_THUNDERSTORE_DIR.to_owned(),
     };
+    let config_dir = optional(lookup, "SUPERVISOR_THUNDERSTORE_CONFIG_DIR");
+    let config_keep = match optional(lookup, "SUPERVISOR_THUNDERSTORE_CONFIG_KEEP") {
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        None => Vec::new(),
+    };
+    if config_dir.is_none() && !config_keep.is_empty() {
+        warn!(
+            "SUPERVISOR_THUNDERSTORE_CONFIG_KEEP is set but \
+             SUPERVISOR_THUNDERSTORE_CONFIG_DIR is not; \
+             nothing sweeps mod settings for this game, so it protects nothing"
+        );
+    }
     Ok(Some(ThunderstoreMods {
         file,
         community,
         layout,
         provided,
         work_dir,
+        config_dir,
+        config_keep,
     }))
 }
 

@@ -6,7 +6,7 @@ annotations:
     tool result when import_profile or export_profile targets a server whose
     game does not use r2modman profile codes
   used_by:
-    - file: discord/gary/profiles.rs
+    - file: discord/gary/mod_list.rs
       function: target
   variables:
     server:
