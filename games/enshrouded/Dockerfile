@@ -54,6 +54,7 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly
 # it to root so the supervisor runs as PID 1 the way it does in every other game
 # image, and enshrouded-start.sh drops the server to steam itself.
 FROM sknnr/enshrouded-dedicated-server@sha256:c410b742812cc55723cdaa97950f94cdef1b1f8a332bceedce13da9b681c98ee
+# nosemgrep: dockerfile.security.last-user-is-root -- the supervisor is PID 1 as root in every game image; enshrouded-start.sh drops the server to steam.
 USER root
 # zstd backs the supervisor's whole-data archive routes (`tar --zstd`) for the S3
 # backup/archive/restore flows. tini reaps the Wine processes `proton run` orphans;
