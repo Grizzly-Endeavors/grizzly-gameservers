@@ -80,7 +80,7 @@ An operator that can be trusted here is an operator that can be trusted somewher
 
 ## Where it is now
 
-Live and running. Real friend groups, real servers, six games — Minecraft, Valheim, Palworld, Factorio, Terraria, Satisfactory. Adding a new game is a small, repeatable job rather than a rebuild.
+Live and running. Real friend groups, real servers, seven games — Minecraft, Valheim, Palworld, Factorio, Terraria, Satisfactory, Enshrouded. Adding a new game is a small, repeatable job rather than a rebuild.
 
 Built as a private service on personal hardware, which is the current limit — not the design.
 

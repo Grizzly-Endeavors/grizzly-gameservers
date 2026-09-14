@@ -149,7 +149,7 @@ Only two things — everything else is here:
 - ~~**Agones packaging**~~ — resolved: standalone gated HelmRelease ([ADR-001](../decisions/001-agones-packaging.md)).
 - ~~**NL front door**~~ — resolved: Gary, the `@mention`-triggered tool-calling LLM agent (`crates/bot/src/discord/gary/`), sits alongside the deterministic slash commands rather than replacing them.
 - ~~**Image admission carve-out**~~ — resolved for the current phase: bot-scoped gate enforcement ([ADR-003](../decisions/003-bot-scoped-gate-enforcement.md)); full-namespace enforcement is a documented follow-up.
-- ~~**Per-game catalog format**~~ — resolved: generalized into `games/_template/` (skeleton + security baseline) with a documented onboarding flow; six games now follow one `GameServer` + `Service` + PVC + `Dockerfile` shape.
+- ~~**Per-game catalog format**~~ — resolved: generalized into `games/_template/` (skeleton + security baseline) with a documented onboarding flow; every game follows one `GameServer` + `Service` + PVC + `Dockerfile` shape.
 
 ## Rejected alternatives (brief)
 
