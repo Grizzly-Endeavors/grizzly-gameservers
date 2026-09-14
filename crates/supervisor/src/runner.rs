@@ -19,7 +19,7 @@ use crate::control::{self, ControlReply, ControlRequest};
 use crate::heartbeat::Heartbeat;
 use crate::launch_log::{self, LaunchLog};
 use crate::logs::LogBuffer;
-use crate::occupancy::{OccupancyApi, OccupancySource, SatisfactoryApi, TshockApi};
+use crate::occupancy::{A2sQuery, OccupancyEndpoint, OccupancySource, SatisfactoryApi, TshockApi};
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 use crate::sdk::SdkClient;
@@ -68,19 +68,24 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         None => None,
     };
 
-    // Where the player count comes from. RCON for most games; Satisfactory has
-    // none and answers over its own HTTPS API instead. Absent both, occupancy is
+    // Where the player count comes from. RCON for most games; the games without a
+    // console name an alternate source instead. Absent both, occupancy is
     // permanently unknown and the game can't join update-on-empty.
-    let occupancy = match (cfg.occupancy_api_url.as_ref(), rcon.as_ref()) {
-        (Some(url), _) => Some(Arc::new(match cfg.occupancy_api {
-            OccupancyApi::Satisfactory => OccupancySource::SatisfactoryApi(Arc::new(
+    let occupancy = match (cfg.occupancy.as_ref(), rcon.as_ref()) {
+        (Some(OccupancyEndpoint::Satisfactory(url)), _) => {
+            Some(Arc::new(OccupancySource::SatisfactoryApi(Arc::new(
                 SatisfactoryApi::new(url.clone())
                     .context("failed to initialize the satisfactory occupancy client")?,
-            )),
-            OccupancyApi::Tshock => OccupancySource::TshockApi(Arc::new(
+            ))))
+        }
+        (Some(OccupancyEndpoint::Tshock(url)), _) => {
+            Some(Arc::new(OccupancySource::TshockApi(Arc::new(
                 TshockApi::new(url).context("failed to initialize the tshock occupancy client")?,
-            )),
-        })),
+            ))))
+        }
+        (Some(OccupancyEndpoint::A2s(port)), _) => Some(Arc::new(OccupancySource::A2s(Arc::new(
+            A2sQuery::new(*port),
+        )))),
         (None, Some(rcon)) => Some(Arc::new(OccupancySource::Rcon(Arc::clone(rcon)))),
         (None, None) => None,
     };

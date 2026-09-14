@@ -2,12 +2,12 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use tracing::warn;
 
 use crate::autoupdate::AutoUpdatePolicy;
 use crate::chat_watcher::ChatFormat;
-use crate::occupancy::OccupancyApi;
+use crate::occupancy::{OccupancyApi, OccupancyEndpoint};
 use crate::rcon::RconDialect;
 use crate::thunderstore::archive::PackageLayout;
 use crate::thunderstore::types::PackageId;
@@ -102,13 +102,12 @@ pub struct SupervisorConfig {
     pub crash_window: Duration,
     /// Crash count within `crash_window` that triggers escalation.
     pub crash_threshold: u32,
-    /// Base URL of the game's own occupancy API, or `None` for games that report
-    /// it over RCON. Its presence selects the alternate source, which is the only
-    /// way Satisfactory and Terraria get a player count at all — neither has a
-    /// console, and without a count neither can join update-on-empty.
-    pub occupancy_api_url: Option<String>,
-    /// Which API the URL above speaks. Ignored when there is no URL.
-    pub occupancy_api: OccupancyApi,
+    /// Where the game's player count comes from when it isn't RCON, or `None` for
+    /// games that report it over RCON (or not at all). Its presence selects the
+    /// alternate source, which is the only way Satisfactory, Terraria and
+    /// Enshrouded get a player count — none has a console, and without a count
+    /// none can join update-on-empty.
+    pub occupancy: Option<OccupancyEndpoint>,
     /// Localhost port the game's RCON listens on, or `None` when the per-game
     /// template doesn't enable RCON. Its presence turns on the `/command` route.
     pub rcon_port: Option<u16>,
@@ -158,8 +157,8 @@ pub struct SupervisorConfig {
     /// `SUPERVISOR_THUNDERSTORE_COMMUNITY` in the image).
     pub thunderstore: Option<ThunderstoreMods>,
     /// Whether the update-on-empty auto-updater runs. On by default; it only has
-    /// any effect when the game has an occupancy source (RCON, or the Satisfactory
-    /// API via `occupancy_api_url`), since the loop needs a player count to prove a
+    /// any effect when the game has an occupancy source (RCON, or an alternate
+    /// source via `occupancy`), since the loop needs a player count to prove a
     /// server is empty before bouncing it — a game with neither is reactive-only
     /// regardless. Set `SUPERVISOR_AUTO_UPDATE` to a falsy value to pin a server to
     /// its current build.
@@ -284,8 +283,7 @@ impl SupervisorConfig {
                 .unwrap_or(DEFAULT_GRACEFUL_TIMEOUT_SECS),
         );
         let control_token = optional(lookup, "SUPERVISOR_CONTROL_TOKEN");
-        let occupancy_api_url = optional(lookup, "SUPERVISOR_OCCUPANCY_API_URL");
-        let occupancy_api = parse_occupancy_api(lookup)?;
+        let occupancy = parse_occupancy(lookup)?;
         let crash_window = Duration::from_secs(
             optional_parse(lookup, "SUPERVISOR_CRASH_WINDOW_SECS")?
                 .unwrap_or(DEFAULT_CRASH_WINDOW_SECS),
@@ -343,8 +341,7 @@ impl SupervisorConfig {
             control_token,
             crash_window,
             crash_threshold,
-            occupancy_api_url,
-            occupancy_api,
+            occupancy,
             rcon_port,
             rcon_dialect,
             rcon_password_env,
@@ -367,18 +364,50 @@ impl SupervisorConfig {
 /// (`SUPERVISOR_AGENT_URL`) or the server identity (`SUPERVISOR_GAMESERVER_NAME`)
 /// is a hard error rather than a silent disable — a half-configured watcher would
 /// swallow every `@Gary` with no signal.
-/// Which occupancy API this image's `SUPERVISOR_OCCUPANCY_API_URL` speaks.
+/// Where this image's player count comes from, if not RCON.
 ///
-/// An unrecognised value is a hard error rather than a silent fallback: the two
-/// dialects are different protocols, so a typo that quietly picked the wrong one
-/// would leave the game reporting unknown occupancy forever with nothing pointing
-/// at the cause.
-fn parse_occupancy_api(lookup: EnvLookup) -> Result<OccupancyApi> {
-    match optional(lookup, "SUPERVISOR_OCCUPANCY_API") {
-        None => Ok(OccupancyApi::default()),
-        Some(raw) => OccupancyApi::parse(&raw).ok_or_else(|| {
-            anyhow!("SUPERVISOR_OCCUPANCY_API must be 'satisfactory' or 'tshock', got {raw:?}")
-        }),
+/// `SUPERVISOR_OCCUPANCY_API` names the protocol and defaults to Satisfactory's,
+/// for which a URL alone is enough. The HTTP APIs are addressed by
+/// `SUPERVISOR_OCCUPANCY_API_URL`; A2S is addressed by `SUPERVISOR_A2S_PORT` alone,
+/// because it is the game's query port — leased per instance on an advertised-port
+/// game, so it arrives as a bare number the provisioner injects rather than as a
+/// URL baked into the image.
+///
+/// Every half-configured combination is a hard error rather than a silent
+/// fallback: a source that quietly didn't assemble would leave the game reporting
+/// unknown occupancy forever with nothing pointing at the cause.
+fn parse_occupancy(lookup: EnvLookup) -> Result<Option<OccupancyEndpoint>> {
+    let api = match optional(lookup, "SUPERVISOR_OCCUPANCY_API") {
+        None => None,
+        Some(raw) => Some(OccupancyApi::parse(&raw).ok_or_else(|| {
+            anyhow!(
+                "SUPERVISOR_OCCUPANCY_API must be 'satisfactory', 'tshock' or 'a2s', got {raw:?}"
+            )
+        })?),
+    };
+    let url = optional(lookup, "SUPERVISOR_OCCUPANCY_API_URL");
+    let a2s_port = optional_parse::<u16>(lookup, "SUPERVISOR_A2S_PORT")?;
+
+    match (api, url, a2s_port) {
+        (Some(OccupancyApi::A2s), None, Some(port)) => Ok(Some(OccupancyEndpoint::A2s(port))),
+        (Some(OccupancyApi::A2s), None, None) => {
+            bail!("SUPERVISOR_OCCUPANCY_API is 'a2s' but SUPERVISOR_A2S_PORT is not set")
+        }
+        (Some(OccupancyApi::A2s), Some(_), _) => bail!(
+            "SUPERVISOR_OCCUPANCY_API is 'a2s', which is addressed by SUPERVISOR_A2S_PORT, \
+             but SUPERVISOR_OCCUPANCY_API_URL is set"
+        ),
+        (Some(OccupancyApi::Satisfactory | OccupancyApi::Tshock) | None, _, Some(_)) => {
+            bail!("SUPERVISOR_A2S_PORT is set but SUPERVISOR_OCCUPANCY_API is not 'a2s'")
+        }
+        (Some(OccupancyApi::Satisfactory) | None, Some(url), None) => {
+            Ok(Some(OccupancyEndpoint::Satisfactory(url)))
+        }
+        (Some(OccupancyApi::Tshock), Some(url), None) => Ok(Some(OccupancyEndpoint::Tshock(url))),
+        (Some(api @ (OccupancyApi::Satisfactory | OccupancyApi::Tshock)), None, None) => {
+            bail!("SUPERVISOR_OCCUPANCY_API is {api:?} but SUPERVISOR_OCCUPANCY_API_URL is not set")
+        }
+        (None, None, None) => Ok(None),
     }
 }
 

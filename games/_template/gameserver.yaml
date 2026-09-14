@@ -1,6 +1,6 @@
 # Skeleton for a new game. Copy this directory to games/<game>/ and replace the
 # REPLACE_* placeholders. The pod is hardened except for the two *rootless*
-# controls (runAsNonRoot / readOnlyRootFilesystem), matching all 6 current games:
+# controls (runAsNonRoot / readOnlyRootFilesystem), matching every current game:
 # their upstream bases bootstrap as root (chown the data dir, then drop
 # privileges) — see the pod-hardening comment below the labels. Seccomp, no
 # privilege escalation and a minimal capability set are applied and are not

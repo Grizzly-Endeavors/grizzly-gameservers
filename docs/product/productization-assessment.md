@@ -16,7 +16,7 @@ The reason to run it isn't the hosting business. It's that the thing being prove
 
 ## 1. What exists today
 
-A live, deployed LLM ops agent running real game servers for real friend groups across six games, reached through Discord and from inside the games themselves.
+A live, deployed LLM ops agent running real game servers for real friend groups across seven games, reached through Discord and from inside the games themselves.
 
 | Component | Productization read |
 |---|---|

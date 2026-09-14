@@ -1,0 +1,36 @@
+# On-demand NodePort template. The bot renders this per `/create`: it overrides
+# metadata.name, points the selector at the instance's GameServer, and replaces
+# the nodePort below with a port leased from the 7000-7099 edge-forwarded band
+# (the literal values here are only placeholders). externalTrafficPolicy: Cluster
+# is required so a node without the pod still forwards.
+#
+# Enshrouded uses one UDP port, its query port, for both the server browser and
+# gameplay. The client has no join-by-address field: a player adds the server to
+# Steam's favourites by address and query port, so the port they type has to be
+# the port the server binds. The annotations put the provisioner on the advertise
+# path with that single port — nodePort == targetPort, no remap — and inject the
+# leased number into the image's env: the start script writes it into
+# enshrouded_server.json as queryPort, and the supervisor queries player count on
+# it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: enshrouded
+  namespace: game-servers
+  annotations:
+    grizzly-gameservers.grizzly-endeavors.com/advertised-ports: "query"
+    grizzly-gameservers.grizzly-endeavors.com/friend-facing-port: "query"
+    grizzly-gameservers.grizzly-endeavors.com/port-env.query: "ENSHROUDED_QUERY_PORT,SUPERVISOR_A2S_PORT"
+spec:
+  type: NodePort
+  externalTrafficPolicy: Cluster
+  selector:
+    agones.dev/gameserver: enshrouded
+  ports:
+    # nodePort/port/targetPort are placeholders; the renderer sets all three to
+    # the leased band port.
+    - name: query
+      port: 15637
+      targetPort: 15637
+      nodePort: 7000
+      protocol: UDP

@@ -1,0 +1,117 @@
+# Enshrouded catalog entry — an on-demand GameServer template. The bot renders it
+# per `/create` into a uniquely-named instance (this name/labels are placeholders
+# the renderer overrides); nothing here runs until a friend asks for it.
+#
+# Enshrouded has no RCON or console of any kind, so no SUPERVISOR_RCON_PORT is set:
+# Gary operates it through enshrouded_server.json and restart, not live commands.
+# The supervisor still gets a player count, off the Steam query port.
+#
+# Single-port advertising game: the query port (UDP) carries both the server
+# browser and gameplay, and a player adds the server by it. The provisioner leases
+# one band port with nodePort == targetPort and injects it into the game's env (see
+# service.yaml); the port name here (`query`) is the join key to the Service
+# annotations that drive that, and the renderer rewrites the containerPort to the
+# leased number per instance.
+#
+# The image bakes in the grizzly supervisor as its entrypoint (games/enshrouded/
+# Dockerfile): it launches the server as a child, owns the Agones SDK lifecycle
+# (calls /ready once the server logs that its session is online, then keeps
+# /health pinged), and serves an in-pod control API on 9359 that the bot drives
+# for in-place stop/start/restart and Gary's file tools.
+#
+# portPolicy: None — reachability is via the NodePort Service the bot leases per
+# instance.
+apiVersion: agones.dev/v1
+kind: GameServer
+metadata:
+  name: enshrouded
+  namespace: game-servers
+spec:
+  container: enshrouded
+  ports:
+    - name: query
+      portPolicy: None
+      containerPort: 15637
+      protocol: UDP
+  health:
+    # The first boot downloads the ~8.8 GB server via SteamCMD before it starts.
+    # The supervisor pings /health from its own start regardless, so this only has
+    # to cover the supervisor coming up, but the room matches the other SteamCMD
+    # games.
+    initialDelaySeconds: 300
+    periodSeconds: 15
+    failureThreshold: 5
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: enshrouded
+    # runAsNonRoot / readOnlyRootFilesystem are the only two hardening controls this
+    # pod leaves unset, matching the other game pods (supervisor as PID 1; the start
+    # script chowns the data volume as root, then drops to the steam user). The rest
+    # of the baseline is applied below; see games/_template/gameserver.yaml.
+    # nosemgrep: yaml.kubernetes.security.run-as-non-root
+    spec:
+      # The runtime's own seccomp filter. Kubernetes leaves this Unconfined unless
+      # set; see games/_template/gameserver.yaml.
+      # nosemgrep: yaml.kubernetes.security.run-as-non-root-security-context-pod-level
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      # SIGKILL grace after SIGTERM. Must stay ≥ this game's graceful save window
+      # so the world-save finishes; see games/_template/gameserver.yaml.
+      terminationGracePeriodSeconds: 120
+      containers:
+        # nosemgrep: yaml.kubernetes.security.writable-filesystem-container
+        - name: enshrouded
+          # Composite image: grizzly supervisor (PID 1) wrapping the Proton-hosted
+          # Enshrouded server. CI replaces the tag with the gate-signed digest
+          # (ADR-020).
+          image: registry.registry.svc.cluster.local:5000/grizzly-gameservers-enshrouded:dev
+          # Dev-only: the mutable :dev tag means nodes would cache a stale image
+          # under the default IfNotPresent. Always re-pull so a fresh push lands.
+          # Superseded once CI pins a gate-signed digest (digests are immutable).
+          imagePullPolicy: Always
+          securityContext:
+            # The start script's privilege drop still works — no_new_privs blocks
+            # only the *gaining* of privilege. The capability set is the root
+            # bootstrap's working set: chown the data dir, become the game user,
+            # signal the child as PID 1. See games/_template/gameserver.yaml.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "KILL"]
+          ports:
+            - name: query
+              containerPort: 15637
+              protocol: UDP
+            # Pod-internal control API the bot reaches over the cluster network.
+            - name: control
+              containerPort: 9359
+              protocol: TCP
+          # Required on every call the bot makes to this pod's control API.
+          # Defence in depth behind the egress leash: optional, so an
+          # unprovisioned token leaves the pod on the NetworkPolicy-only posture
+          # rather than refusing every lifecycle action.
+          env:
+            - name: SUPERVISOR_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: grizzly-gameservers-control
+                  key: control_token
+                  optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /home/steam/enshrouded
+          resources:
+            # Enshrouded idles around 4-5 GiB and grows ~100 MiB per player toward
+            # 16 slots, and Wine adds its own overhead; size generously.
+            requests:
+              cpu: "2"
+              memory: 6Gi
+            limits:
+              cpu: "8"
+              memory: 12Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: enshrouded-data
