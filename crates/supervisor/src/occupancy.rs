@@ -1,34 +1,41 @@
 //! Where the live connected-player count comes from.
 //!
-//! Most games answer over RCON, so [`crate::rcon`] is the usual source. Satisfactory
-//! has no RCON at all — it exposes a dedicated-server HTTPS API instead — and
-//! without a count it can never join update-on-empty: the auto-updater only bounces
-//! a build it can prove nobody is playing, and Gary's check-before-restart shows
-//! `unknown` rather than a number.
+//! Most games answer over RCON, so [`crate::rcon`] is the usual source. The games
+//! without a console need another: Satisfactory exposes a dedicated-server HTTPS
+//! API, Terraria's `TShock` flavor a REST API, and Enshrouded only the Steam query
+//! port every Steam-listed server answers the browser on. Without a count a game
+//! can never join update-on-empty — the auto-updater only bounces a build it can
+//! prove nobody is playing — and Gary's check-before-restart shows `unknown`
+//! rather than a number.
 //!
-//! Both sources answer the same question the same way, including the failure mode:
+//! Every source answers the same question the same way, including the failure mode:
 //! `None` means **unknown**, never a definite zero. A caller that reads a failed
 //! probe as "empty" would restart a server with people on it.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::rcon::RconRuntime;
 
-/// Which occupancy API a game's URL speaks. Selected per image rather than
-/// sniffed: the two are different protocols at different paths, and guessing
-/// wrong would report every server as unknown-occupancy with no obvious cause.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Which occupancy protocol a game image names. Selected per image rather than
+/// sniffed: they are different protocols on different ports, and guessing wrong
+/// would report every server as unknown-occupancy with no obvious cause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OccupancyApi {
     /// Satisfactory's dedicated-server HTTPS API.
-    #[default]
     Satisfactory,
     /// `TShock`'s REST API, for Terraria.
     Tshock,
+    /// The Steam server query protocol, for Enshrouded.
+    A2s,
 }
 
 impl OccupancyApi {
@@ -38,9 +45,21 @@ impl OccupancyApi {
         match value.trim().to_ascii_lowercase().as_str() {
             "satisfactory" => Some(Self::Satisfactory),
             "tshock" => Some(Self::Tshock),
+            "a2s" => Some(Self::A2s),
             _ => None,
         }
     }
+}
+
+/// A fully-addressed non-RCON occupancy source, as the config layer assembles it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OccupancyEndpoint {
+    /// Satisfactory's API at this base URL.
+    Satisfactory(String),
+    /// `TShock`'s REST API at this base URL.
+    Tshock(String),
+    /// The Steam query protocol on this loopback port.
+    A2s(u16),
 }
 
 /// Privilege level requested from the Satisfactory API. `Client` is the lowest
@@ -58,6 +77,9 @@ pub enum OccupancySource {
     /// `TShock`'s REST API reports it, for Terraria — which has no console of its
     /// own on any flavor.
     TshockApi(Arc<TshockApi>),
+    /// The Steam query port reports it, for Enshrouded — which has no console and
+    /// no API of any other kind.
+    A2s(Arc<A2sQuery>),
 }
 
 impl OccupancySource {
@@ -68,7 +90,142 @@ impl OccupancySource {
             Self::Rcon(rcon) => rcon.player_count().await,
             Self::SatisfactoryApi(api) => api.player_count().await,
             Self::TshockApi(api) => api.player_count().await,
+            Self::A2s(query) => query.player_count().await,
         }
+    }
+}
+
+/// The `A2S_INFO` request: the simple-packet header, the query type, and the fixed
+/// payload string the protocol requires.
+const A2S_INFO_REQUEST: &[u8] = b"\xFF\xFF\xFF\xFFTSource Engine Query\0";
+
+/// The header that opens every single-packet A2S reply.
+const A2S_SIMPLE_HEADER: [u8; 4] = [0xFF; 4];
+
+/// How long to wait for each reply. The server is on loopback, so a reply that
+/// hasn't arrived in this long isn't coming — typically the world is still loading
+/// and the query port isn't answering yet.
+const A2S_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Client for the Steam server query protocol, scoped to `A2S_INFO`'s player count.
+///
+/// Queries the game over loopback inside this pod, on the same port the server
+/// browser queries it on from outside. Unauthenticated by design: `A2S_INFO` is
+/// what a Steam-listed server answers to anyone, so reading it mints and stores no
+/// credential.
+pub struct A2sQuery {
+    server: SocketAddr,
+}
+
+/// One reply to an `A2S_INFO` request.
+#[derive(Debug, PartialEq, Eq)]
+enum A2sInfoReply {
+    /// The server wants the request repeated with this challenge appended — the
+    /// protocol's guard against reflection floods, which Enshrouded enforces.
+    Challenge([u8; 4]),
+    /// The server's info, reduced to the one field the supervisor reads.
+    Players(u32),
+}
+
+impl A2sQuery {
+    /// Build a client for the query port `port` on loopback.
+    #[must_use]
+    pub fn new(port: u16) -> Self {
+        Self {
+            server: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        }
+    }
+
+    /// Players currently connected, or `None` when the query port couldn't be read.
+    pub async fn player_count(&self) -> Option<u32> {
+        match self.query_info().await {
+            Ok(count) => Some(count),
+            Err(err) => {
+                // Warn, not error: the port stays silent while the world loads, and
+                // the caller degrades to "unknown".
+                warn!(error = ?err, port = self.server.port(), "could not read a2s player count");
+                None
+            }
+        }
+    }
+
+    async fn query_info(&self) -> Result<u32> {
+        let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .context("failed to bind the a2s query socket")?;
+        socket
+            .connect(self.server)
+            .await
+            .with_context(|| format!("failed to address the a2s query to {}", self.server))?;
+
+        let mut request = A2S_INFO_REQUEST.to_vec();
+        // One challenge round at most: a server that challenges a request already
+        // carrying its challenge isn't going to answer a third time either.
+        for _ in 0..2 {
+            socket
+                .send(&request)
+                .await
+                .context("failed to send the a2s info request")?;
+            let mut buf = [0_u8; 1400];
+            let len = timeout(A2S_REPLY_TIMEOUT, socket.recv(&mut buf))
+                .await
+                .context("the a2s query port did not reply in time")?
+                .context("failed to receive the a2s reply")?;
+            let reply = buf
+                .get(..len)
+                .context("a2s reply length exceeds the buffer")?;
+            match parse_a2s_info_reply(reply)? {
+                A2sInfoReply::Players(count) => return Ok(count),
+                A2sInfoReply::Challenge(challenge) => {
+                    request = [A2S_INFO_REQUEST, &challenge].concat();
+                }
+            }
+        }
+        bail!("the a2s query port answered a challenged request with another challenge")
+    }
+}
+
+/// Parse one `A2S_INFO` reply datagram.
+///
+/// # Errors
+///
+/// Returns an error when the datagram isn't a single-packet reply, is of a type
+/// other than a challenge or an info reply, or ends before the player count.
+fn parse_a2s_info_reply(reply: &[u8]) -> Result<A2sInfoReply> {
+    let body = reply
+        .strip_prefix(&A2S_SIMPLE_HEADER)
+        .context("a2s reply is not a single-packet response")?;
+    let (&kind, rest) = body.split_first().context("a2s reply is empty")?;
+    match kind {
+        b'A' => {
+            let challenge = rest
+                .get(..4)
+                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+                .context("a2s challenge reply is shorter than its 4-byte challenge")?;
+            Ok(A2sInfoReply::Challenge(challenge))
+        }
+        b'I' => {
+            // A protocol-version byte, then four null-terminated strings (name,
+            // map, folder, game), then a two-byte app id, then the player count.
+            let mut fields = rest
+                .get(1..)
+                .context("a2s info reply ends before its fields")?;
+            for field in ["name", "map", "folder", "game"] {
+                let end = fields
+                    .iter()
+                    .position(|&byte| byte == 0)
+                    .with_context(|| format!("a2s info reply's {field} is unterminated"))?;
+                fields = fields
+                    .get(end + 1..)
+                    .with_context(|| format!("a2s info reply ends after its {field}"))?;
+            }
+            let players = fields
+                .get(2)
+                .copied()
+                .context("a2s info reply ends before its player count")?;
+            Ok(A2sInfoReply::Players(u32::from(players)))
+        }
+        other => bail!("unexpected a2s reply type {other:#04x}"),
     }
 }
 

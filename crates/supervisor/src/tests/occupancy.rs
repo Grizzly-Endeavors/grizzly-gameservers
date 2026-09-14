@@ -117,3 +117,121 @@ fn an_occupancy_api_is_selected_by_name() {
     assert_eq!(OccupancyApi::parse("tshcok"), None);
     assert_eq!(OccupancyApi::parse(""), None);
 }
+
+#[test]
+fn a2s_is_selected_by_name() {
+    assert_eq!(OccupancyApi::parse("a2s"), Some(OccupancyApi::A2s));
+    assert_eq!(OccupancyApi::parse(" A2S "), Some(OccupancyApi::A2s));
+}
+
+/// A challenge reply as a live Enshrouded server sent it.
+const ENSHROUDED_CHALLENGE: &str = "ffffffff41b99f9175";
+
+/// An info reply as a live Enshrouded server sent it once the challenge was
+/// repeated: an empty map string, no players, 16 slots. Pinned verbatim because
+/// the field layout is the contract with a server nothing here controls.
+const ENSHROUDED_INFO: &str = "ffffffff4911456e7368726f7564656420436f6e7461696e6572697a65640000456e7368726f7564656400456e7368726f75646564000000001000646c0000302e302e31352e3000b1153d16c426a3bfc84001313b313032343233333b303b303b313b303b303b303b3000a45d120000000000";
+
+fn hex(text: &str) -> Vec<u8> {
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect()
+}
+
+#[test]
+fn an_enshrouded_challenge_yields_its_four_bytes() {
+    assert_eq!(
+        parse_a2s_info_reply(&hex(ENSHROUDED_CHALLENGE)).unwrap(),
+        A2sInfoReply::Challenge([0xb9, 0x9f, 0x91, 0x75])
+    );
+}
+
+/// An empty server is the reading update-on-empty waits for, so it must parse as
+/// `0` — and the empty map string before it must not throw the field walk off.
+#[test]
+fn an_empty_enshrouded_server_parses_as_zero_players() {
+    assert_eq!(
+        parse_a2s_info_reply(&hex(ENSHROUDED_INFO)).unwrap(),
+        A2sInfoReply::Players(0)
+    );
+}
+
+fn info_reply(players: u8) -> Vec<u8> {
+    let mut reply = vec![0xFF, 0xFF, 0xFF, 0xFF, b'I', 0x11];
+    for field in ["Grizzly", "", "Enshrouded", "Enshrouded"] {
+        reply.extend_from_slice(field.as_bytes());
+        reply.push(0);
+    }
+    reply.extend_from_slice(&[0x00, 0x00, players, 16, 0]);
+    reply
+}
+
+#[test]
+fn an_info_reply_yields_its_player_count() {
+    assert_eq!(
+        parse_a2s_info_reply(&info_reply(3)).unwrap(),
+        A2sInfoReply::Players(3)
+    );
+}
+
+/// A truncated reply must fail rather than read some other byte as the count —
+/// a misread zero would let update-on-empty bounce a server with people on it.
+#[test]
+fn a_reply_that_ends_before_the_player_count_is_an_error() {
+    let mut reply = info_reply(3);
+    reply.truncate(reply.len() - 3);
+    assert!(parse_a2s_info_reply(&reply).is_err());
+}
+
+#[test]
+fn replies_that_are_not_single_packet_info_or_challenge_are_errors() {
+    let split_packet = [0xFF, 0xFF, 0xFF, 0xFE, b'I', 0x11];
+    let player_list = [0xFF, 0xFF, 0xFF, 0xFF, b'D', 0x00];
+    let short_challenge = [0xFF, 0xFF, 0xFF, 0xFF, b'A', 0x01, 0x02];
+    for reply in [
+        &split_packet[..],
+        &player_list[..],
+        &short_challenge[..],
+        &[],
+    ] {
+        assert!(parse_a2s_info_reply(reply).is_err(), "{reply:?}");
+    }
+}
+
+/// Serve `A2S_INFO` on loopback the way Enshrouded does: challenge a bare request,
+/// answer one that carries the challenge. Returns the port.
+async fn spawn_challenging_a2s_server(players: u8) -> u16 {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = socket.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let challenge = [0xb9, 0x9f, 0x91, 0x75];
+        let mut buf = [0_u8; 1400];
+        loop {
+            let (len, peer) = socket.recv_from(&mut buf).await.unwrap();
+            let request = buf.get(..len).unwrap();
+            let reply = if request == [A2S_INFO_REQUEST, &challenge].concat() {
+                info_reply(players)
+            } else {
+                [&[0xFF, 0xFF, 0xFF, 0xFF, b'A'][..], &challenge].concat()
+            };
+            socket.send_to(&reply, peer).await.unwrap();
+        }
+    });
+    port
+}
+
+#[tokio::test]
+async fn the_query_answers_the_challenge_and_reads_the_count() {
+    let port = spawn_challenging_a2s_server(5).await;
+    assert_eq!(A2sQuery::new(port).player_count().await, Some(5));
+}
+
+/// A silent query port — the world is still loading — is unknown occupancy, never
+/// an empty server.
+#[tokio::test]
+async fn a_silent_query_port_is_unknown_not_empty() {
+    let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    assert_eq!(A2sQuery::new(port).player_count().await, None);
+}

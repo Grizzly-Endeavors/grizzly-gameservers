@@ -500,3 +500,80 @@ fn the_working_directory_can_be_moved_off_its_default() {
         .expect("the reconciler is configured");
     assert_eq!(mods.work_dir, ".grizzly/ts");
 }
+
+#[test]
+fn occupancy_is_rcon_or_nothing_by_default() {
+    let config = SupervisorConfig::from_env_with(&lookup_from(&[])).unwrap();
+    assert_eq!(config.occupancy, None);
+}
+
+/// Satisfactory's image names only the URL, so a URL alone must keep selecting its API.
+#[test]
+fn a_url_alone_selects_the_satisfactory_api() {
+    let env = lookup_from(&[(
+        "SUPERVISOR_OCCUPANCY_API_URL",
+        "https://127.0.0.1:7777/api/v1",
+    )]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.occupancy,
+        Some(OccupancyEndpoint::Satisfactory(
+            "https://127.0.0.1:7777/api/v1".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn tshock_is_selected_by_name_with_its_url() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_OCCUPANCY_API", "tshock"),
+        ("SUPERVISOR_OCCUPANCY_API_URL", "http://127.0.0.1:7878"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(
+        config.occupancy,
+        Some(OccupancyEndpoint::Tshock(
+            "http://127.0.0.1:7878".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a2s_is_addressed_by_its_port() {
+    let env = lookup_from(&[
+        ("SUPERVISOR_OCCUPANCY_API", "a2s"),
+        ("SUPERVISOR_A2S_PORT", "7042"),
+    ]);
+    let config = SupervisorConfig::from_env_with(&env).unwrap();
+    assert_eq!(config.occupancy, Some(OccupancyEndpoint::A2s(7042)));
+}
+
+/// Each of these would otherwise leave a game reporting unknown occupancy forever
+/// with nothing pointing at why, so each refuses to start instead.
+#[test]
+fn a_half_configured_occupancy_source_is_an_error() {
+    let cases: [&[(&str, &str)]; 6] = [
+        &[("SUPERVISOR_OCCUPANCY_API", "a2s")],
+        &[
+            ("SUPERVISOR_OCCUPANCY_API", "a2s"),
+            ("SUPERVISOR_A2S_PORT", "7042"),
+            ("SUPERVISOR_OCCUPANCY_API_URL", "http://127.0.0.1:7042"),
+        ],
+        &[("SUPERVISOR_A2S_PORT", "7042")],
+        &[("SUPERVISOR_OCCUPANCY_API", "tshock")],
+        &[
+            ("SUPERVISOR_OCCUPANCY_API", "tshcok"),
+            ("SUPERVISOR_OCCUPANCY_API_URL", "http://127.0.0.1:7878"),
+        ],
+        &[
+            ("SUPERVISOR_OCCUPANCY_API", "a2s"),
+            ("SUPERVISOR_A2S_PORT", "not-a-port"),
+        ],
+    ];
+    for pairs in cases {
+        assert!(
+            SupervisorConfig::from_env_with(&lookup_from(pairs)).is_err(),
+            "{pairs:?} should be rejected"
+        );
+    }
+}
