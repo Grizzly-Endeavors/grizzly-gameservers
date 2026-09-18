@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use grizzly_agent::ToolDefinition;
 use tracing::{debug, error, warn};
 
 use super::IngameDeps;

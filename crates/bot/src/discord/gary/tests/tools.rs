@@ -1,5 +1,6 @@
 use crate::agones::ServerState;
 use crate::agones::{DestroyOutcome, EditOutcome, FsOutcome, ReadyWait, SupervisorOutcome};
+use grizzly_agent::ToolDefinition;
 use grizzly_control_api::{ReadResponse, ShellResponse};
 
 use super::*;

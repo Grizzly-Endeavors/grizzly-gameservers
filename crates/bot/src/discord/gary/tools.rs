@@ -3,6 +3,7 @@
 //! renders a compact text result for the model to relay. The results are plain
 //! text on purpose — Gary composes the friendly Discord reply himself.
 
+use grizzly_agent::ToolDefinition;
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
