@@ -4,7 +4,7 @@
 )]
 use std::path::Path;
 
-use grizzly_prompt_lib::verify_annotations;
+use grizzly_agent_prompts::verify_annotations;
 
 #[test]
 fn prompt_annotations_are_current() {

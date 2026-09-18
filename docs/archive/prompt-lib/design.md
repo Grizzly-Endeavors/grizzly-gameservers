@@ -1,5 +1,7 @@
 # Prompt Library — Design
 
+Status: superseded. The in-repo `prompt-lib` crate this document describes was deleted; the bot now builds its prompt tree on `grizzly-agent-prompts` (see the Prompt Library section of `CLAUDE.md`). Kept for history — the format and maintenance contract this document established carried over unchanged.
+
 > Systems level only. This document is the design of record for the `prompt-lib` workspace crate and for how the bot's model-visible text lives in it. Implementation happens in fresh sessions that have only this document, `phases.md`, and the codebase — it must stand on its own.
 
 ## Goal & context
