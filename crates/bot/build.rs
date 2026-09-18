@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-fn main() -> Result<(), grizzly_prompt_lib::PromptError> {
+fn main() -> Result<(), grizzly_agent_prompts::PromptError> {
     let prompts = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts");
-    grizzly_prompt_lib::emit(&prompts)
+    grizzly_agent_prompts::emit(&prompts)
 }

@@ -53,3 +53,6 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# grizzly-agent / grizzly-agent-prompts, pinned to a shared rev on the bot
+# crate's build, normal, and dev edges (see crates/bot/Cargo.toml).
+allow-git = ["https://github.com/Grizzly-Endeavors/grizzly-agent"]
