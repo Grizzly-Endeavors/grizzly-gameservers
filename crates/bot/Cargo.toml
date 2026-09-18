@@ -10,7 +10,7 @@ publish = false
 # Pinned to the same rev as the grizzly-agent and grizzly-agent-prompts edges below —
 # two copies of core would make generated ToolSpecs fail to type-check against the
 # facade's (design §"External touchpoints" / "Git dependency resolution").
-grizzly-agent-prompts = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "590f7acc3429136cb4a2a7b99c93511998eb1822", features = [
+grizzly-agent-prompts = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "947b35e5a3497d46730f14ea498aaf4b9191d78e", features = [
     "codegen",
 ] }
 
@@ -33,7 +33,7 @@ grizzly-control-api = { path = "../control-api", version = "0.1.0" }
 # ToolSpec, and this edge is also where a future move onto ToolSet/ToolHandler
 # would draw from. default-features stays empty: this crate is core alone, no
 # provider/skills/eval machinery.
-grizzly-agent = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "590f7acc3429136cb4a2a7b99c93511998eb1822", default-features = false }
+grizzly-agent = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "947b35e5a3497d46730f14ea498aaf4b9191d78e", default-features = false }
 k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
 # Langfuse turn telemetry. Only the trace signal and the primitive span types are
 # used: spans are built as `SpanData` literals and handed straight to a
@@ -145,7 +145,7 @@ lettre = { version = "0.11.23", default-features = false, features = [
 [dev-dependencies]
 # Verify face: the conventional annotations test (tests/prompt_annotations.rs)
 # cross-checks each prompt file's used_by entries against the source tree.
-grizzly-agent-prompts = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "590f7acc3429136cb4a2a7b99c93511998eb1822", features = [
+grizzly-agent-prompts = { git = "https://github.com/Grizzly-Endeavors/grizzly-agent", rev = "947b35e5a3497d46730f14ea498aaf4b9191d78e", features = [
     "verify",
 ] }
 # `testing` brings InMemorySpanExporter, which lets the turn-shape test assert a
