@@ -1,6 +1,6 @@
 # Prompt Library — Design Specification
 
-Status: superseded by `../design/prompt-lib/design.md` (the design of record, with implementation phases in `phases.md` alongside). Kept for history; the design pivoted from runtime file loading to full compile-time embedding, among other changes.
+Status: superseded by `prompt-lib/design.md` (with implementation phases in `prompt-lib/phases.md` alongside), itself superseded by the move onto `grizzly-agent-prompts` (see the Prompt Library section of `CLAUDE.md`). Kept for history; the design pivoted from runtime file loading to full compile-time embedding, among other changes.
 
 ## Problem
 

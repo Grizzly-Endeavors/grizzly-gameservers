@@ -10,7 +10,7 @@ See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architect
 
 Gary records what he does to two data planes — his turns to Langfuse, product usage to Postgres. [`docs/operations/data-collection.md`](docs/operations/data-collection.md) is how to get numbers out of them.
 
-A Cargo workspace with four crates: `crates/bot` (Gary's agent loop + the Discord shim he's reached through + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (the in-pod process supervisor baked into game images — Gary's hands inside a pod, binary `grizzly-supervisor`), `crates/control-api` (the wire contract shared by the two — request/response bodies plus the route-path constants and `CONTROL_PORT`, so neither side hardcodes a bare literal like `9359` or `/fs/read`), and `crates/prompt-lib` (build-time compiler that turns the bot's `prompts/` Markdown tree into typed Rust accessors).
+A Cargo workspace with three crates: `crates/bot` (Gary's agent loop + the Discord shim he's reached through + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (the in-pod process supervisor baked into game images — Gary's hands inside a pod, binary `grizzly-supervisor`), and `crates/control-api` (the wire contract shared by the two — request/response bodies plus the route-path constants and `CONTROL_PORT`, so neither side hardcodes a bare literal like `9359` or `/fs/read`). The bot's `prompts/` Markdown tree is compiled into typed Rust accessors by [`grizzly-agent-prompts`](https://github.com/Grizzly-Endeavors/grizzly-agent), a build/dev dependency rather than a workspace member.
 
 ## Build
 
