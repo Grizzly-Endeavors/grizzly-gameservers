@@ -239,7 +239,7 @@ case "$command" in
                  "--- tools ---\n" + ([$calls[] | "→ \(.name)(\(.arguments))\n  \(.result | gsub("\n"; "\n  "))"] | join("\n")) + "\n"
                else "" end)
             + "--- cost (\(.generations // [] | length) model calls, \(.latency_ms)ms) ---\n"
-            + "tokens: in \(.usage.prompt_tokens // "?"), out \(.usage.completion_tokens // "?"), total \(.usage.total_tokens // "?")\n"
+            + "tokens: in \(.usage.prompt_tokens // "?")\(if .usage.cached_tokens then " (\(.usage.cached_tokens) cached)" else "" end), out \(.usage.completion_tokens // "?"), total \(.usage.total_tokens // "?")\n"
             + "--- reply (rounds: \(.rounds)\(if .escalated then ", ESCALATED" else "" end)) ---\n"
             + .reply
         ' <<<"$payload"

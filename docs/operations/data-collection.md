@@ -144,24 +144,34 @@ A turn that dies on a hard model-endpoint failure exports its trace but **no sco
 
 Langfuse holds the price table; the bot never computes money. It ships token counts and the model name, and Langfuse multiplies.
 
-The active model is `glm-5.2` — the literal string the provider echoes back, which is what the price must match. The current definition:
+**The price matches the literal string the provider echoes back**, which for Ollama Cloud is the tag that was requested, verbatim — ask for `glm-5.3-flash:cloud` and that is what comes back, so every pattern here tolerates the optional `:cloud` suffix. A tag the pattern misses is not an error; it is a silent $0.
+
+Two definitions are entered, both priced from the model's page on ollama.com:
+
+| Model | Input | Cached input | Output |
+|---|---|---|---|
+| `glm-5.3-flash` | $0.15/M | $0.03/M | $0.50/M |
+| `glm-5.2` | $1.40/M | $0.26/M | $4.40/M |
 
 ```bash
 curl -u "$PUBLIC_KEY:$SECRET_KEY" -X POST "$LANGFUSE_HOST/api/public/models" \
   -H 'Content-Type: application/json' \
-  -d '{"modelName":"glm-5.2","matchPattern":"(?i)^(glm-5\\.2)$",
-       "unit":"TOKENS","inputPrice":0.00000140,"outputPrice":0.00000440}'
+  -d '{"modelName":"glm-5.3-flash","matchPattern":"(?i)^(glm-5\\.3-flash)(:cloud)?$","unit":"TOKENS",
+       "pricingTiers":[{"name":"Standard","isDefault":true,"priority":0,"conditions":[],
+         "prices":{"input":0.00000015,"output":0.00000050,"input_cached_tokens":0.00000003}}]}'
 ```
 
-$1.40/M input, $4.40/M output. Three things about that payload are easy to get wrong:
+Five things about that payload are easy to get wrong:
 
-- **`unit` is required**, and the write API takes **flat** `inputPrice`/`outputPrice`. The nested `prices` object you see on `GET` is a read-side projection; posting it returns `Must provide either flat prices ... OR pricingTiers`.
-- **Do not price `total`.** The bot reports `input`, `output` *and* `total` in usage details; a `totalPrice` would be added on top of the other two and roughly double every figure.
-- **Cached input is not broken out.** The provider prices cached input lower ($0.26/M) but the bot doesn't report cached tokens separately, so all input bills at the full rate. Cost figures are therefore a slight over-estimate, not an exact invoice.
+- **`unit` is required**, and a price for anything beyond input and output needs **`pricingTiers`**. The flat `inputPrice`/`outputPrice` fields only reach those two, and the nested `prices` object you see on `GET` is a read-side projection — posting it returns `Must provide either flat prices ... OR pricingTiers`.
+- **Cost is a plain sum over every usage key that has a matching price**, with no subtraction anywhere. That is why the bot ships `input` as the *uncached* remainder and the cache hits as `input_cached_tokens`: sending the provider's cache-inclusive `prompt_tokens` as `input` would bill each cache hit at both rates at once. The buckets have to be disjoint before they leave the bot ([ADR-042](../decisions/042-cached-input-is-its-own-bucket.md)).
+- **Do not price `total`.** The bot reports `input`, `output` *and* `total` in usage details; a `totalPrice` would be added on top of the others and roughly double every figure. Unpriced, `total` is what pins Langfuse's token count to the provider's own figure instead of the sum of the buckets.
+- **There is no `PUT`.** Editing a definition means `DELETE /api/public/models/{id}` then posting it again. Costs already ingested are untouched by that, so it is safe — but the new definition is a new row, and its id changes.
+- **Pricing is applied at ingestion, not at query time.** Defining or changing a price does not reprice observations that already landed — they keep whatever cost they were ingested with (zero, if no price existed). Expect a clean before/after boundary in the data rather than a retroactive correction, and read a `$0.0000` cost on old traces as "ingested before pricing", not "free".
 
-**Pricing is applied at ingestion, not at query time.** Defining or changing a price does not reprice observations that already landed — they keep whatever cost they were ingested with (zero, if no price existed). Expect a clean before/after boundary in the data rather than a retroactive correction, and read a `$0.0000` cost on old traces as "ingested before pricing", not "free".
+**Cache hits are a large share of what a Gary turn reads, and the rate gap is roughly 5×**, so whether they are broken out moves the cost figure a lot rather than a little: a turn's transcript is re-sent in full on every round, and `glm-5.2` reports nearly all of it served from cache by the second call. `glm-5.3-flash` reports `cached_tokens: 0` even on an identical repeated prompt, so on that model the split is recorded and prices at the full input rate — which is the honest reading of what the provider says it charged.
 
-To swap models: enter the new price in Langfuse (UI or the call above), and change `OLLAMA_MODEL`. No deploy is needed for the price, and no code change is needed for either.
+To swap models: enter the new price as above, and change the `gary.model` setting (admin panel) or `OLLAMA_MODEL`. No deploy is needed for the price, and no code change is needed for either.
 
 ## Database
 

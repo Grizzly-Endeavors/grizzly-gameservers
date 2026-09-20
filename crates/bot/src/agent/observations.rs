@@ -202,10 +202,18 @@ pub(crate) fn opening_input(sent: &[ChatMessage]) -> Option<String> {
 /// Langfuse's per-model cost table keys on these usage names. Built by
 /// insertion so a count the provider didn't report stays absent — a zero would
 /// claim the call was free.
+///
+/// `input` carries the *uncached* prompt tokens and `input_cached_tokens` the
+/// cache hits, because Langfuse prices every key it recognises and adds the
+/// results together — shipping the provider's cache-inclusive `prompt_tokens`
+/// as `input` would bill each cache hit at both rates at once.
 fn usage_details(usage: &TokenUsage) -> Option<String> {
     let mut details = serde_json::Map::new();
-    if let Some(count) = usage.prompt {
+    if let Some(count) = usage.uncached_prompt() {
         details.insert("input".to_owned(), count.into());
+    }
+    if let Some(count) = usage.cached_prompt() {
+        details.insert("input_cached_tokens".to_owned(), count.into());
     }
     if let Some(count) = usage.completion {
         details.insert("output".to_owned(), count.into());

@@ -14,7 +14,8 @@ pub(crate) mod store;
 pub(crate) mod turn;
 
 pub(crate) use llm::{
-    ChatMessage, Completion, OllamaConfig, Role, ToolCall, ToolDef, send_chat_completion,
+    ChatMessage, Completion, OllamaConfig, Role, TokenUsage, ToolCall, ToolDef,
+    send_chat_completion,
 };
 pub(crate) use recorder::TurnRecorder;
 pub(crate) use session::{
