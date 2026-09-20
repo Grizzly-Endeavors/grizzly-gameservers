@@ -33,8 +33,8 @@ use tracing::{error, info, warn};
 
 use crate::agent::commit_turn;
 use crate::agent::{
-    ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, ToolCall, ToolDef,
-    TurnEnding, TurnOrigin,
+    ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, TokenUsage,
+    ToolCall, ToolDef, TurnEnding, TurnOrigin,
 };
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
@@ -190,6 +190,10 @@ struct GaryResponse {
 struct GenerationTrace {
     model: String,
     prompt_tokens: Option<u32>,
+    /// How many of `prompt_tokens` the provider served from its cache. Reported
+    /// separately because it bills at a different rate, not as a slice to
+    /// subtract — `prompt_tokens` stays the whole prompt.
+    cached_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
     finish_reason: Option<String>,
@@ -200,6 +204,8 @@ struct GenerationTrace {
 struct UsageTotals {
     #[serde(rename = "prompt_tokens")]
     prompt: Option<u32>,
+    #[serde(rename = "cached_tokens")]
+    cached: Option<u32>,
     #[serde(rename = "completion_tokens")]
     completion: Option<u32>,
     #[serde(rename = "total_tokens")]
@@ -637,6 +643,7 @@ fn generation_trace(generation: &Generation) -> GenerationTrace {
     GenerationTrace {
         model: generation.model.clone(),
         prompt_tokens: usage.and_then(|usage| usage.prompt),
+        cached_tokens: usage.and_then(TokenUsage::cached_prompt),
         completion_tokens: usage.and_then(|usage| usage.completion),
         total_tokens: usage.and_then(|usage| usage.total),
         finish_reason: generation.finish_reason.clone(),
@@ -654,6 +661,7 @@ fn usage_totals(generations: &[Generation]) -> UsageTotals {
         .filter_map(|generation| generation.usage.as_ref())
     {
         accumulate(&mut totals.prompt, usage.prompt);
+        accumulate(&mut totals.cached, usage.cached_prompt());
         accumulate(&mut totals.completion, usage.completion);
         accumulate(&mut totals.total, usage.total);
     }

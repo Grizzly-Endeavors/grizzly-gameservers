@@ -187,6 +187,36 @@ pub(crate) struct TokenUsage {
     pub(crate) completion: Option<u32>,
     #[serde(default, rename = "total_tokens")]
     pub(crate) total: Option<u32>,
+    #[serde(default, rename = "prompt_tokens_details")]
+    pub(crate) prompt_details: Option<PromptTokenDetails>,
+}
+
+/// The provider's breakdown of what the prompt tokens were made of. Only the
+/// cache-hit count is modelled — it is the one that bills at a different rate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub(crate) struct PromptTokenDetails {
+    #[serde(default, rename = "cached_tokens")]
+    pub(crate) cached: Option<u32>,
+}
+
+impl TokenUsage {
+    /// Prompt tokens the provider served from its prefix cache, when it said so.
+    pub(crate) fn cached_prompt(&self) -> Option<u32> {
+        self.prompt_details
+            .as_ref()
+            .and_then(|details| details.cached)
+    }
+
+    /// Prompt tokens that were *not* cache hits — the count the full input rate
+    /// applies to.
+    ///
+    /// `prompt_tokens` is inclusive of the cache hits, so anything that prices
+    /// the two counts side by side has to subtract here or bill the cached
+    /// tokens twice.
+    pub(crate) fn uncached_prompt(&self) -> Option<u32> {
+        self.prompt
+            .map(|prompt| prompt.saturating_sub(self.cached_prompt().unwrap_or(0)))
+    }
 }
 
 /// One model call's full result: the assistant's message plus everything

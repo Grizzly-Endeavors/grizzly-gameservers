@@ -52,6 +52,7 @@ fn completion_costing(message: ChatMessage, prompt_tokens: u32) -> Completion {
             prompt: Some(prompt_tokens),
             completion: Some(2),
             total: Some(prompt_tokens + 2),
+            prompt_details: None,
         }),
         finish_reason: Some("stop".to_owned()),
         latency: Duration::from_millis(5),

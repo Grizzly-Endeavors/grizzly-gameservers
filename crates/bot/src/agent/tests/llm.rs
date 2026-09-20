@@ -83,6 +83,7 @@ fn parses_the_usage_and_finish_reason_the_provider_sends() {
             prompt: Some(1234),
             completion: Some(56),
             total: Some(1290),
+            prompt_details: None,
         }),
         "token usage is the cost signal; it must survive deserialization"
     );
@@ -93,6 +94,44 @@ fn parses_the_usage_and_finish_reason_the_provider_sends() {
             .and_then(|choice| choice.finish_reason.as_deref()),
         Some("stop")
     );
+}
+
+/// `prompt_tokens` counts the cache hits too, so the two are only usable side
+/// by side once the overlap is removed.
+#[test]
+fn a_cache_hit_is_readable_apart_from_the_prompt_it_is_part_of() {
+    let raw = serde_json::json!({
+        "choices": [{ "message": { "role": "assistant", "content": "done" } }],
+        "usage": {
+            "prompt_tokens": 4026, "completion_tokens": 2, "total_tokens": 4028,
+            "prompt_tokens_details": { "cached_tokens": 4025 }
+        }
+    });
+    let usage = serde_json::from_value::<ChatResponse>(raw)
+        .unwrap()
+        .usage
+        .unwrap();
+
+    assert_eq!(usage.cached_prompt(), Some(4025));
+    assert_eq!(usage.uncached_prompt(), Some(1));
+    assert_eq!(usage.prompt, Some(4026), "the whole prompt stays readable");
+}
+
+/// A provider that sends no detail block has not said the prompt was uncached —
+/// it has said nothing, and the full count is all that can be claimed.
+#[test]
+fn no_cache_detail_leaves_the_whole_prompt_uncached() {
+    let raw = serde_json::json!({
+        "choices": [{ "message": { "role": "assistant", "content": "done" } }],
+        "usage": { "prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105 }
+    });
+    let usage = serde_json::from_value::<ChatResponse>(raw)
+        .unwrap()
+        .usage
+        .unwrap();
+
+    assert_eq!(usage.cached_prompt(), None);
+    assert_eq!(usage.uncached_prompt(), Some(100));
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::agent::llm::PromptTokenDetails;
 use crate::agent::store::SessionId;
 use crate::agent::turn::{Environment, TurnOrigin};
 use crate::discord::AccessLevel;
@@ -161,12 +162,55 @@ fn a_generation_reports_the_counts_the_provider_sent() {
         prompt: Some(120),
         completion: Some(30),
         total: Some(150),
+        prompt_details: None,
     };
     let attributes = generation(&[], &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
         serde_json::json!({"input": 120, "output": 30, "total": 150})
+    );
+}
+
+/// Langfuse prices every key it recognises and sums the results, so the two
+/// input buckets have to be disjoint — `prompt_tokens` arrives cache-inclusive
+/// and the cache hits are subtracted back out of `input` before export.
+#[test]
+fn cache_hits_are_priced_as_their_own_bucket_not_twice() {
+    let usage = TokenUsage {
+        prompt: Some(120),
+        completion: Some(30),
+        total: Some(150),
+        prompt_details: Some(PromptTokenDetails { cached: Some(100) }),
+    };
+    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let details = text(&attributes, langfuse::USAGE_DETAILS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&details).unwrap(),
+        serde_json::json!({
+            "input": 20, "input_cached_tokens": 100, "output": 30, "total": 150
+        }),
+        "input must carry only the uncached remainder"
+    );
+}
+
+/// A provider that reports the detail block with no cache hits is saying zero,
+/// not saying nothing — the bucket ships so the turn reads as a genuine miss.
+#[test]
+fn a_reported_zero_cache_hit_still_ships_its_bucket() {
+    let usage = TokenUsage {
+        prompt: Some(120),
+        completion: Some(30),
+        total: Some(150),
+        prompt_details: Some(PromptTokenDetails { cached: Some(0) }),
+    };
+    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let details = text(&attributes, langfuse::USAGE_DETAILS);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&details).unwrap(),
+        serde_json::json!({
+            "input": 120, "input_cached_tokens": 0, "output": 30, "total": 150
+        })
     );
 }
 
@@ -178,6 +222,7 @@ fn an_unreported_count_is_omitted_rather_than_zeroed() {
         prompt: Some(120),
         completion: None,
         total: None,
+        prompt_details: None,
     };
     let attributes = generation(&[], &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);

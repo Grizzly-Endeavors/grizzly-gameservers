@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::llm::TokenUsage;
+use crate::agent::llm::{PromptTokenDetails, TokenUsage};
 
 /// The text of a rejection, so a test can assert the harness is *told* what to
 /// fix rather than just handed a status code.
@@ -263,6 +263,7 @@ fn each_model_call_is_reported_with_its_own_cost() {
                 prompt: Some(900),
                 completion: Some(40),
                 total: Some(940),
+                prompt_details: Some(PromptTokenDetails { cached: Some(700) }),
             }),
             1200,
         ),
@@ -272,6 +273,7 @@ fn each_model_call_is_reported_with_its_own_cost() {
                 prompt: Some(1100),
                 completion: Some(12),
                 total: Some(1112),
+                prompt_details: Some(PromptTokenDetails { cached: Some(900) }),
             }),
             800,
         ),
@@ -282,11 +284,17 @@ fn each_model_call_is_reported_with_its_own_cost() {
         traced.first().map(|trace| trace.prompt_tokens),
         Some(Some(900))
     );
+    assert_eq!(
+        traced.first().map(|trace| trace.cached_tokens),
+        Some(Some(700)),
+        "the cache split is what explains a turn costing less than its token count"
+    );
     assert_eq!(traced.first().map(|trace| trace.latency_ms), Some(1200));
     assert_eq!(
         usage_totals(&generations),
         UsageTotals {
             prompt: Some(2000),
+            cached: Some(1600),
             completion: Some(52),
             total: Some(2052),
         },
@@ -320,6 +328,7 @@ fn partial_reporting_sums_only_what_was_reported() {
                 prompt: Some(5),
                 completion: None,
                 total: None,
+                prompt_details: None,
             }),
             100,
         ),
@@ -329,6 +338,7 @@ fn partial_reporting_sums_only_what_was_reported() {
         usage_totals(&generations),
         UsageTotals {
             prompt: Some(5),
+            cached: None,
             completion: None,
             total: None,
         },

@@ -43,5 +43,6 @@ ADRs for grizzly-gameservers. Open decisions are tracked in `docs/design/00-over
 - [ADR-039 — A removed mod's settings are swept once the launch has proven good](039-sweep-orphaned-mod-settings.md)
 - [ADR-040 — A mod-list change says what it changed, and updating is one call](040-a-mod-list-change-is-legible.md)
 - [ADR-041 — The Valheim patcher ships as a committed binary](041-vendor-the-valheim-patcher.md)
+- [ADR-042 — Cached input is its own usage bucket, and `input` carries the remainder](042-cached-input-is-its-own-bucket.md)
 
 No open decisions currently tracked. The last one — the per-game catalog format — is resolved: generalized into `games/_template/` with a documented onboarding flow (see `docs/design/00-overview.md`).
