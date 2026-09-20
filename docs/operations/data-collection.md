@@ -169,7 +169,19 @@ Five things about that payload are easy to get wrong:
 - **There is no `PUT`.** Editing a definition means `DELETE /api/public/models/{id}` then posting it again. Costs already ingested are untouched by that, so it is safe — but the new definition is a new row, and its id changes.
 - **Pricing is applied at ingestion, not at query time.** Defining or changing a price does not reprice observations that already landed — they keep whatever cost they were ingested with (zero, if no price existed). Expect a clean before/after boundary in the data rather than a retroactive correction, and read a `$0.0000` cost on old traces as "ingested before pricing", not "free".
 
-**Cache hits are a large share of what a Gary turn reads, and the rate gap is roughly 5×**, so whether they are broken out moves the cost figure a lot rather than a little: a turn's transcript is re-sent in full on every round, and `glm-5.2` reports nearly all of it served from cache by the second call. `glm-5.3-flash` reports `cached_tokens: 0` even on an identical repeated prompt, so on that model the split is recorded and prices at the full input rate — which is the honest reading of what the provider says it charged.
+**Cache hits are a large share of what a Gary turn reads, and the rate gap is roughly 5×**, so whether they are broken out moves the cost figure a lot rather than a little — a turn's transcript is re-sent in full on every round, which is exactly the shape a prefix cache rewards.
+
+How much gets cached is per-model and has to be measured rather than assumed. Measured against Ollama Cloud on 2026-09-20, by sending the same prompt twice and reading `cached_tokens` off the second call:
+
+| Prompt size | `glm-5.2` | `glm-5.3-flash` |
+|---|---|---|
+| 4.5k – 8.5k | ~97–99% cached | **0** |
+| 9k | 99% | 50% |
+| 12k | — | 37% |
+| 16k | — | 56% |
+| 24k | — | 75% |
+
+`glm-5.3-flash` caches nothing at all below roughly **9k prompt tokens** and then covers only part of the prompt, where `glm-5.2` caches nearly everything from 4.5k up. The likely reason is architectural — flash is a hybrid sparse/linear-attention model with a much smaller KV cache — but the number that matters is the measurement, not the explanation. It is comfortably above the threshold in practice: Gary's production generations average **~22k input tokens** (p95 ~63k), so the cache does fire on real traffic. A short conversation may still price at the full rate, and that is the honest reading of what the provider reports.
 
 To swap models: enter the new price as above, and change the `gary.model` setting (admin panel) or `OLLAMA_MODEL`. No deploy is needed for the price, and no code change is needed for either.
 
