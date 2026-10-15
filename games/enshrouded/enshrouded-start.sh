@@ -4,7 +4,7 @@
 # The upstream jsknnr entrypoint can't be the child as-is, for three reasons this
 # wrapper exists to fix:
 #
-#   - `proton run` returns as soon as Wine has spawned the server, so the process
+#   - the `proton` launcher can return before the server it spawned exits, so the process
 #     the supervisor launched is not the one hosting the game. Upstream holds the
 #     container open by watching the query port and exits 0 when it closes, which
 #     would report a crash as a clean exit. This script waits on the server process
@@ -23,7 +23,7 @@
 # it hands the data volume to the steam user — a fresh PVC is root-owned, and a
 # restore or a file write through the supervisor lands files as root — then
 # re-executes itself under tini as steam. tini is a subreaper, so the Wine
-# processes `proton run` orphans are reaped inside this tree instead of piling up
+# processes the `proton` launcher orphans are reaped inside this tree instead of piling up
 # as zombies under a supervisor that only waits on its own child, and it forwards
 # the supervisor's SIGTERM to the second phase.
 #
@@ -40,7 +40,7 @@ if [ "$(id -u)" -eq 0 ]; then
     exec tini -s -- setpriv --reuid=steam --regid=steam --init-groups "$0" "$@"
 fi
 
-# Matched by process name, not command line: `proton run` carries the server's
+# Matched by process name, not command line: the `proton` launcher carries the server's
 # path in its arguments for the seconds it takes to spawn it, and a command-line
 # match would mistake that launcher for the server. Wine names the process after
 # the executable, truncated to the kernel's 15-character limit.
@@ -149,9 +149,19 @@ log_follower=$!
 trap 'kill "$log_follower" 2> /dev/null || true' EXIT
 
 export WINEDEBUG=-all
+proton="$STEAMCMD_PATH/compatibilitytools.d/GE-Proton$GE_PROTON_VERSION/proton"
+# The base sets UMU_ID, which GE-Proton 11 reads as "not a Steam game": `run` then
+# launches through umu.exe with the lsteamclient bridge disabled, and the server
+# hangs before writing a line. So the server is launched with `runinprefix`, which
+# hands the exe straight to wine with the bridge in place — but it never builds
+# the prefix, and the prefix lives in the container layer, so it is missing on
+# every fresh pod. `getcompatpath` runs the full session setup (building or
+# upgrading the prefix) and nothing else.
+unset UMU_ID
+echo "$(timestamp) grizzly: preparing the Proton prefix"
+run_interruptibly "$proton" getcompatpath "$ENSHROUDED_PATH" > /dev/null
 echo "$(timestamp) grizzly: starting the Enshrouded dedicated server"
-"$STEAMCMD_PATH/compatibilitytools.d/GE-Proton$GE_PROTON_VERSION/proton" \
-    run "$ENSHROUDED_PATH/enshrouded_server.exe" &
+"$proton" runinprefix "$ENSHROUDED_PATH/enshrouded_server.exe" &
 
 # The launcher can take several seconds to spawn the server. A stop that arrives
 # in that gap found nothing to signal, so it is re-sent once the server exists.
@@ -160,7 +170,7 @@ for _ in $(seq 1 120); do
     pause 1
 done
 if ! pgrep -x "$server_name" > /dev/null; then
-    echo "$(timestamp) grizzly: the server process never appeared after proton run" >&2
+    echo "$(timestamp) grizzly: the server process never appeared after the proton launch" >&2
     exit 1
 fi
 if [ "$stopping" -eq 1 ]; then
