@@ -4,7 +4,7 @@
 # Dockerfile for the worked reference.
 #
 # Enshrouded's server is a Windows binary with no Linux build, so it runs under
-# GE-Proton. The jsknnr image supplies the Proton build, steamcmd and the Wine
+# GE-Proton. The jsknnr image supplies steamcmd and the Wine
 # runtime libraries; its entrypoint is replaced by enshrouded-start.sh, which says
 # why.
 #
@@ -49,8 +49,8 @@ RUN cargo chef cook --release --locked --target x86_64-unknown-linux-musl \
 COPY . .
 RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p grizzly-supervisor
 
-# Upstream jsknnr enshrouded-server pinned by digest (tag: proton-v2.3.2, GE-Proton
-# 10-26 on debian:13-slim). The image sets USER steam (uid 10000); this one resets
+# Upstream jsknnr enshrouded-server pinned by digest (tag: proton-v2.3.2 on
+# debian:13-slim; its GE-Proton is replaced below). The image sets USER steam (uid 10000); this one resets
 # it to root so the supervisor runs as PID 1 the way it does in every other game
 # image, and enshrouded-start.sh drops the server to steam itself.
 FROM sknnr/enshrouded-dedicated-server@sha256:c410b742812cc55723cdaa97950f94cdef1b1f8a332bceedce13da9b681c98ee
@@ -61,8 +61,29 @@ USER root
 # see enshrouded-start.sh.
 # nosemgrep: dockerfile.best-practice.missing-package-version -- distro-pinned, base is digest-pinned.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini zstd \
+    && apt-get install -y --no-install-recommends tini zstd libvulkan1 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+# GE-Proton replaces the game's steamclient64.dll with its own lsteamclient bridge
+# onto the native steamclient.so, so the Steamworks interfaces the game can reach
+# are the ones that bridge knows. The base's Proton predates SteamUtils011, which
+# the server requires (build 25936466 on), and it fails Steamworks init with
+# "Version Mismatch" without it — so this image carries its own, checked for that
+# interface at build time. The native side needs no help: ~/.steam/sdk64 links to
+# steamcmd's own linux64, which steamcmd self-updates on every boot. GE-Proton 11
+# loads libvulkan.so.1 at startup, hence libvulkan1 above.
+ARG GE_PROTON_VERSION=11-9
+ARG GE_PROTON_SHA512=30160946a5e4ffdf1f29d6f83a3d27108f6aa71b6aa59095b2c2260fe3a003b62acf8fdcb02a3dfc602b28473f5679d8a3eaee5a8adb141c1dfa01c42888da2d
+RUN tools="$STEAMCMD_PATH/compatibilitytools.d" \
+    && curl -fsSL --retry 3 -o /tmp/ge-proton.tar.gz \
+        "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/GE-Proton${GE_PROTON_VERSION}/GE-Proton${GE_PROTON_VERSION}-x86_64.tar.gz" \
+    && echo "$GE_PROTON_SHA512  /tmp/ge-proton.tar.gz" | sha512sum -c - \
+    && rm -rf "$tools"/GE-Proton* \
+    && mkdir -p "$tools/GE-Proton$GE_PROTON_VERSION" \
+    && tar -xzf /tmp/ge-proton.tar.gz -C "$tools/GE-Proton$GE_PROTON_VERSION" --strip-components=1 \
+    && rm /tmp/ge-proton.tar.gz \
+    && grep -q SteamUtils011 "$tools/GE-Proton$GE_PROTON_VERSION/files/lib/wine/x86_64-unix/lsteamclient.so" \
+    && chown -R steam:steam "$tools"
+ENV GE_PROTON_VERSION=$GE_PROTON_VERSION
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/grizzly-supervisor \
      /usr/local/bin/grizzly-supervisor
 COPY games/enshrouded/enshrouded-start.sh /usr/local/bin/enshrouded-start
