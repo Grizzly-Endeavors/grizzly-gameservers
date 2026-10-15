@@ -57,7 +57,7 @@ FROM sknnr/enshrouded-dedicated-server@sha256:c410b742812cc55723cdaa97950f94cdef
 # nosemgrep: dockerfile.security.last-user-is-root -- the supervisor is PID 1 as root in every game image; enshrouded-start.sh drops the server to steam.
 USER root
 # zstd backs the supervisor's whole-data archive routes (`tar --zstd`) for the S3
-# backup/archive/restore flows. tini reaps the Wine processes `proton run` orphans;
+# backup/archive/restore flows. tini reaps the Wine processes the `proton` launcher orphans;
 # see enshrouded-start.sh.
 # nosemgrep: dockerfile.best-practice.missing-package-version -- distro-pinned, base is digest-pinned.
 RUN apt-get update \
