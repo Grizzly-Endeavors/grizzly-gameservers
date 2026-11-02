@@ -162,6 +162,65 @@ function statusAnswer(servers: OwnedServer[]): GaryResponse {
   };
 }
 
+/** Replay trace for a Discord friend request relayed from a bound server channel. */
+function discordFriendAnswer(serverId: string): GaryResponse {
+  return {
+    reply: `Whitelisted \`sara_v\` on **${serverId}** (13 members). Checked tick health: **20.0 TPS**, 0 lag spikes in the last 30m.`,
+    escalated: false,
+    escalation_kind: null,
+    escalation_reason: null,
+    rounds: 3,
+    generations: [
+      {
+        model: 'accounts/fireworks/models/glm-5p2',
+        prompt_tokens: 9120,
+        cached_tokens: 8832,
+        completion_tokens: 84,
+        total_tokens: 9204,
+        finish_reason: 'tool_calls',
+        latency_ms: 295,
+      },
+      {
+        model: 'accounts/fireworks/models/glm-5p2',
+        prompt_tokens: 9440,
+        cached_tokens: 9088,
+        completion_tokens: 72,
+        total_tokens: 9512,
+        finish_reason: 'tool_calls',
+        latency_ms: 280,
+      },
+      {
+        model: 'accounts/fireworks/models/glm-5p2',
+        prompt_tokens: 9780,
+        cached_tokens: 9344,
+        completion_tokens: 118,
+        total_tokens: 9898,
+        finish_reason: 'stop',
+        latency_ms: 310,
+      },
+    ],
+    usage: { prompt_tokens: 28340, cached_tokens: 27264, completion_tokens: 274, total_tokens: 28614 },
+    latency_ms: 885,
+    tool_calls: [
+      {
+        name: 'about_server',
+        arguments: JSON.stringify({ server: serverId }),
+        result: `${serverId}: state=running, players=4/20, tps=20.0, mspt=4.1ms, memory=3.4/8.0GB`,
+      },
+      {
+        name: 'send_command',
+        arguments: JSON.stringify({ server: serverId, command: 'whitelist add sara_v' }),
+        result: 'Added sara_v to the whitelist (13 whitelisted players)',
+      },
+      {
+        name: 'read_logs',
+        arguments: JSON.stringify({ server: serverId, lines: 40 }),
+        result: '[16:08:11] [Server thread/INFO]: Added sara_v to the whitelist\n[16:08:12] [Server thread/INFO]: Tick health nominal: 20.0 TPS, 0 overloaded warnings in last 30m',
+      },
+    ],
+  };
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [persona, setPersonaState] = useState<Persona>(() => (new URLSearchParams(location.search).get('as') === 'host' ? 'host' : 'customer'));
   const [screen, setScreen] = useState<Screen>(HOME[persona]);
@@ -249,7 +308,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const replay = useCallback(
     async (id: string, prompt: string) => {
       const sc = scenario ?? SCENARIOS.find((s) => s.prompt === prompt) ?? null;
-      const r = sc ? sc.response : statusAnswer(servers);
+      const isDiscordRelay = !sc && (prompt.includes('sara_v') || prompt.startsWith('[Discord'));
+      const r = sc ? sc.response : isDiscordRelay ? discordFriendAnswer(focus) : statusAnswer(servers);
       if (sc) setFocus(sc.server);
       await play(id, r);
       patch(id, (t) => ({
@@ -265,7 +325,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setScenario(null);
       }
     },
-    [play, patch, scenario, servers, setState],
+    [play, patch, scenario, servers, focus, setState],
   );
 
   const live = useCallback(

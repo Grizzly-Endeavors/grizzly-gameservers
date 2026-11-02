@@ -140,7 +140,7 @@ const SERVER_PROFILES: Record<string, ServerProfile> = {
       { key: 'wake-on-join', value: 'enabled (socket proxy)' },
     ],
     defaultLogs: [
-      '[02:14:00] Terraria Server v1.4.4.9 — last player disconnected.',
+      '[02:14:00] Terraria Server v1.4.4.9 · last player disconnected.',
       '[02:29:00] Idle timer reached (15m). Saving world CalamityLarge.wld...',
       '[02:29:02] Entering socket-activated sleep mode. Will wake on TCP:7777.',
     ],
@@ -152,8 +152,15 @@ const SERVER_PROFILES: Record<string, ServerProfile> = {
 
 export function GaryConsole() {
   const [rightTab, setRightTab] = useState<RightTab>('activity');
-  const { turns } = useStore();
+  const [discordOpen, setDiscordOpen] = useState(() => new URLSearchParams(location.search).has('discord'));
+  const [connectedChannels, setConnectedChannels] = useState<Record<string, string>>(() =>
+    new URLSearchParams(location.search).get('discord') === 'connected'
+      ? { 'mc-friends-smp': '#minecraft-smp' }
+      : ({} as Record<string, string>),
+  );
+  const { turns, servers, focus } = useStore();
   const prevTurnsLen = useRef(turns.length);
+  const activeServer = servers.find((x) => x.id === focus) ?? servers[0];
 
   // Whenever a new turn starts, make sure the Gary Activity tab is visible so the user sees him work.
   useEffect(() => {
@@ -169,9 +176,22 @@ export function GaryConsole() {
       <FaultAlertBar onEngage={() => setRightTab('activity')} />
       <DispatchBar onDispatch={() => setRightTab('activity')} />
       <div className="cx-workbench">
-        <ServerDashboard onOpenTab={setRightTab} />
+        <ServerDashboard
+          onOpenTab={setRightTab}
+          connectedChannel={connectedChannels[activeServer.id]}
+          onOpenDiscord={() => setDiscordOpen(true)}
+        />
         <InspectorPanel tab={rightTab} setTab={setRightTab} />
       </div>
+      {discordOpen && (
+        <DiscordBotDrawer
+          server={activeServer}
+          connectedChannel={connectedChannels[activeServer.id]}
+          onConnect={(channel) => setConnectedChannels((prev) => ({ ...prev, [activeServer.id]: channel }))}
+          onClose={() => setDiscordOpen(false)}
+          onOpenActivity={() => setRightTab('activity')}
+        />
+      )}
     </div>
   );
 }
@@ -317,7 +337,15 @@ function DispatchBar({ onDispatch }: { onDispatch: () => void }) {
  * Replaces the old "demo scenario list" with real server vitals, player roster,
  * installed runtime/mods, config summary, and direct actions.
  */
-function ServerDashboard({ onOpenTab }: { onOpenTab: (t: RightTab) => void }) {
+function ServerDashboard({
+  onOpenTab,
+  connectedChannel,
+  onOpenDiscord,
+}: {
+  onOpenTab: (t: RightTab) => void;
+  connectedChannel?: string;
+  onOpenDiscord: () => void;
+}) {
   const { servers, focus, ask, busy, showToast } = useStore();
   const active: OwnedServer = servers.find((x) => x.id === focus) ?? servers[0];
   const st = active.state;
@@ -351,6 +379,25 @@ function ServerDashboard({ onOpenTab }: { onOpenTab: (t: RightTab) => void }) {
         </div>
 
         <div className="cx-srv-controls">
+          {connectedChannel ? (
+            <button
+              type="button"
+              className="cx-discord-pill"
+              onClick={onOpenDiscord}
+            >
+              <span className="lamp lamp-ok" aria-hidden="true" />
+              <span>Discord: {connectedChannel} · Connected</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-secondary btn-small cx-discord-trigger"
+              onClick={onOpenDiscord}
+            >
+              <DiscordGlyph size={14} />
+              Invite Gary to Discord
+            </button>
+          )}
           {isCrashed ? (
             <button
               type="button"
@@ -754,6 +801,9 @@ function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number;
   const parent = turns[runNumber - 2];
   const isPendingApproval = turn.approval?.state === 'pending';
   const isEscalated = turn.response?.escalated;
+  const discordMatch = turn.prompt.match(/^\[Discord\s+([^\]]+)\]\s*(.*)$/);
+  const discordOrigin = discordMatch ? discordMatch[1] : null;
+  const displayPrompt = discordMatch ? discordMatch[2] : turn.prompt;
 
   const statusBadge =
     turn.status === 'running' ? (
@@ -774,9 +824,17 @@ function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number;
         <div className="cx-run-meta">
           <span className="mono cx-run-id">RUN #{runNumber}</span>
           {statusBadge}
+          {discordOrigin && (
+            <span className="cx-discord-origin">
+              <DiscordGlyph size={12} />
+              <span>Discord · {discordOrigin}</span>
+            </span>
+          )}
           <ServerTags turn={turn} />
         </div>
-        <span className="cx-run-kind muted">{turn.followUp ? 'Follow-up' : 'Stateless dispatch'}</span>
+        <span className="cx-run-kind muted">
+          {discordOrigin ? 'Discord friend relay' : turn.followUp ? 'Follow-up' : 'Stateless dispatch'}
+        </span>
       </div>
 
       <div className="cx-run-prompt">
@@ -785,9 +843,11 @@ function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number;
             Follow-up to run #{runNumber - 1} · {parent.prompt}
           </span>
         ) : (
-          <span className="cx-run-prompt-label muted">Dispatched instruction</span>
+          <span className="cx-run-prompt-label muted">
+            {discordOrigin ? `Relayed from Discord (${discordOrigin})` : 'Dispatched instruction'}
+          </span>
         )}
-        <p>{turn.prompt}</p>
+        <p>{displayPrompt}</p>
       </div>
 
       <div className="cx-gary-body">
@@ -1108,6 +1168,397 @@ function SnapshotsTab({ onSendToGary }: { onSendToGary: () => void }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+const DISCORD_CHANNELS = ['#minecraft-smp', '#valheim-lodge', '#server-status'] as const;
+
+function defaultDiscordChannel(serverId: string): string {
+  if (serverId.startsWith('valheim')) return '#valheim-lodge';
+  if (serverId.startsWith('terraria')) return '#server-status';
+  return '#minecraft-smp';
+}
+
+function DiscordGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8.5 5.5c2.2-.6 4.8-.6 7 0 1.8 1.5 3.1 4.4 3.5 8.5-1.4 1.5-3 2.5-4.8 3l-.9-1.7" />
+      <path d="M15.5 5.5c-2.2-.6-4.8-.6-7 0C6.7 7 5.4 9.9 5 14c1.4 1.5 3 2.5 4.8 3l.9-1.7" />
+      <path d="M9.2 15.2c1.8.5 3.8.5 5.6 0" />
+      <circle cx="9.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+      <circle cx="14.5" cy="11.5" r="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/**
+ * 1-Click "Invite Gary to Discord" slide-over drawer.
+ * Lets the server owner drop a server-bound Gary operator into their Discord
+ * server with scoped friend permissions while destructive actions still require
+ * owner approval.
+ */
+function DiscordBotDrawer({
+  server,
+  connectedChannel,
+  onConnect,
+  onClose,
+  onOpenActivity,
+}: {
+  server: OwnedServer;
+  connectedChannel?: string;
+  onConnect: (channel: string) => void;
+  onClose: () => void;
+  onOpenActivity: () => void;
+}) {
+  const { ask, busy, showToast } = useStore();
+  const [channel, setChannel] = useState<string>(() => connectedChannel ?? defaultDiscordChannel(server.id));
+  const [copied, setCopied] = useState(false);
+  const [authorized, setAuthorized] = useState<boolean>(Boolean(connectedChannel));
+  const [connecting, setConnecting] = useState(false);
+  const [connected, setConnected] = useState<boolean>(Boolean(connectedChannel));
+  const [perms, setPerms] = useState({
+    status: true,
+    whitelist: true,
+    tuning: true,
+  });
+
+  const inviteUrl = `https://discord.com/oauth2/authorize?client_id=1294810294810294&scope=bot+applications.commands&permissions=2147601408&guild_select=true&state=${server.id}`;
+
+  const drawerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (drawerRef.current && !drawerRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('mousedown', onDown);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('mousedown', onDown);
+    };
+  }, [onClose]);
+
+  const handleCopyInvite = () => {
+    void navigator.clipboard?.writeText(inviteUrl);
+    setCopied(true);
+    showToast(`Copied Discord OAuth2 invite URL for ${server.id}`);
+    window.setTimeout(() => setCopied(false), 2400);
+  };
+
+  const handleAuthorize = () => {
+    setAuthorized(true);
+    showToast(`Authorized Gary · ${server.id} (app_9841204192841) on Discord`);
+  };
+
+  const handleConnect = () => {
+    setConnecting(true);
+    setAuthorized(true);
+    window.setTimeout(() => {
+      setConnecting(false);
+      setConnected(true);
+      onConnect(channel);
+      showToast(`Connected Gary to ${channel} · Test handshake verified`);
+    }, 180);
+  };
+
+  const handleSimulateToActivity = () => {
+    const boundChannel = connected ? channel : defaultDiscordChannel(server.id);
+    if (!connected) {
+      setConnected(true);
+      onConnect(boundChannel);
+    }
+    onOpenActivity();
+    onClose();
+    ask(`[Discord ${boundChannel} · @kyle_m] hey @Gary server feels laggy and can you whitelist @sara_v?`);
+    showToast(`Relayed @kyle_m request from ${boundChannel} to Gary Activity`);
+  };
+
+  return (
+    <div
+      className="cx-drawer-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Invite Gary to Discord for ${server.id}`}
+    >
+      <aside ref={drawerRef} className="cx-discord-drawer">
+        <header className="cx-dc-head">
+          <div className="cx-dc-title-wrap">
+            <div className="cx-dc-scope">
+              <DiscordGlyph size={15} />
+              <span>Discord Bot Bridge · {server.id}</span>
+              {connected && (
+                <span className="badge badge-ok">
+                  <span className="lamp lamp-ok" aria-hidden="true" />
+                  {channel} · Connected
+                </span>
+              )}
+            </div>
+            <strong className="cx-dc-title">Invite Gary to Discord</strong>
+            <p className="muted">
+              Drop a pre-bound Gary bot into your Discord channel so friends can check server health, ask about lag, or get whitelisted at 11 PM without waking you.
+            </p>
+          </div>
+          <button type="button" className="icon-btn" aria-label="Close Discord drawer" onClick={onClose}>
+            <Icon name="close" size={16} />
+          </button>
+        </header>
+
+        <div className="cx-dc-body">
+          <div className="cx-dc-col">
+            {/* Step 1: Instant Bot Provisioning */}
+            <section className="cx-dc-step">
+              <div className="cx-dc-step-head">
+                <span className="cx-dc-step-num">Step 1 · Instant Bot Provisioning</span>
+                <span className="mono muted">app_9841204192841</span>
+              </div>
+
+              <div className="cx-dc-bot-card">
+                <div className="cx-dc-bot-id">
+                  <GaryMark size={24} />
+                  <div className="cx-dc-bot-meta">
+                    <div className="cx-dc-bot-name-row">
+                      <strong>Gary · {server.id}</strong>
+                      <span className="cx-dc-bot-tag">BOT</span>
+                      <span className="badge">{server.game}</span>
+                      {authorized && (
+                        <span className="badge badge-ok">
+                          <Icon name="check" size={11} />
+                          Authorized
+                        </span>
+                      )}
+                    </div>
+                    <span className="muted">
+                      Pre-bound to <span className="mono">{server.id}</span> · Slash commands and <span className="mono">@Gary</span> mentions
+                    </span>
+                  </div>
+                </div>
+                <div className="cx-dc-oauth-actions">
+                  <button type="button" className="btn btn-secondary btn-small" onClick={handleCopyInvite}>
+                    {copied ? 'Copied Invite Link' : 'Copy Invite Link'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-small ${authorized ? 'btn-secondary' : 'btn-primary'}`}
+                    onClick={handleAuthorize}
+                  >
+                    <Icon name="check" size={13} />
+                    {authorized ? 'Authorized on Discord' : '1-Click Authorize on Discord'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="cx-dc-oauth-url mono" title={inviteUrl}>
+                {inviteUrl}
+              </div>
+            </section>
+
+            {/* Step 2: Friend Permission Guardrails */}
+            <section className="cx-dc-step">
+              <div className="cx-dc-step-head">
+                <span className="cx-dc-step-num">Step 2 · Friend Permission Guardrails</span>
+                <span className="muted">Scoped channel access</span>
+              </div>
+
+              <ul className="cx-dc-perms">
+                <li className="cx-dc-perm-row">
+                  <div className="cx-dc-perm-info">
+                    <strong>Server status, TPS &amp; log checks</strong>
+                    <span className="muted">Anyone in channel · Read-only tools</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={perms.status}
+                    className={`cx-dc-toggle ${perms.status ? 'is-on' : ''}`}
+                    onClick={() => setPerms((p) => ({ ...p, status: !p.status }))}
+                  >
+                    <span className="cx-dc-toggle-knob" />
+                    <span>{perms.status ? 'Enabled' : 'Off'}</span>
+                  </button>
+                </li>
+
+                <li className="cx-dc-perm-row">
+                  <div className="cx-dc-perm-info">
+                    <strong>Whitelist friends &amp; player roster</strong>
+                    <span className="muted">
+                      <span className="mono">@trusted-friends</span> role · Console whitelist
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={perms.whitelist}
+                    className={`cx-dc-toggle ${perms.whitelist ? 'is-on' : ''}`}
+                    onClick={() => setPerms((p) => ({ ...p, whitelist: !p.whitelist }))}
+                  >
+                    <span className="cx-dc-toggle-knob" />
+                    <span>{perms.whitelist ? 'Enabled' : 'Off'}</span>
+                  </button>
+                </li>
+
+                <li className="cx-dc-perm-row">
+                  <div className="cx-dc-perm-info">
+                    <strong>Safe config tuning &amp; restarts</strong>
+                    <span className="muted">Snapshots automatically before any edit</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={perms.tuning}
+                    className={`cx-dc-toggle ${perms.tuning ? 'is-on' : ''}`}
+                    onClick={() => setPerms((p) => ({ ...p, tuning: !p.tuning }))}
+                  >
+                    <span className="cx-dc-toggle-knob" />
+                    <span>{perms.tuning ? 'Enabled' : 'Off'}</span>
+                  </button>
+                </li>
+
+                <li className="cx-dc-perm-row is-locked">
+                  <div className="cx-dc-perm-info">
+                    <strong>World restore, wipe, or mod removal</strong>
+                    <span className="muted">Destructive actions escalate to owner</span>
+                  </div>
+                  <span className="cx-dc-lock-badge">
+                    <Icon name="lock" size={12} />
+                    Always requires Owner Approval
+                  </span>
+                </li>
+              </ul>
+            </section>
+          </div>
+
+          <div className="cx-dc-col">
+            {/* Step 3: Channel Binding & Live Handshake Test */}
+            <section className="cx-dc-step cx-dc-step-right">
+              <div className="cx-dc-step-head">
+                <span className="cx-dc-step-num">Step 3 · Channel Binding &amp; Handshake Test</span>
+                <span className="muted">Target Discord channel</span>
+              </div>
+
+              <div className="cx-dc-channel-row">
+                <div className="cx-dc-channels" role="radiogroup" aria-label="Target Discord channel">
+                  {DISCORD_CHANNELS.map((ch) => (
+                    <button
+                      key={ch}
+                      type="button"
+                      role="radio"
+                      aria-checked={channel === ch}
+                      className={`cx-dc-ch-pill mono ${channel === ch ? 'is-on' : ''}`}
+                      onClick={() => {
+                        setChannel(ch);
+                        if (connected) onConnect(ch);
+                      }}
+                    >
+                      {ch}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-primary cx-dc-connect-btn"
+                  disabled={connecting}
+                  onClick={handleConnect}
+                >
+                  <Icon name="check" size={14} />
+                  {connecting
+                    ? 'Connecting…'
+                    : connected
+                      ? `Connected to ${channel} · Re-send Handshake`
+                      : 'Connect & Send Test Handshake'}
+                </button>
+              </div>
+
+              {connected ? (
+                <div className="cx-dc-preview" aria-live="polite">
+                  <div className="cx-dc-preview-head">
+                    <div className="cx-dc-preview-title">
+                      <span className="lamp lamp-ok" aria-hidden="true" />
+                      <strong>Discord Channel Preview · {channel}</strong>
+                      <span className="muted">· Handshake verified</span>
+                    </div>
+                    <span className="mono muted">Bound to {server.id}</span>
+                  </div>
+
+                  <div className="cx-dc-messages">
+                    <div className="cx-dc-msg">
+                      <span className="cx-dc-avatar">KM</span>
+                      <div className="cx-dc-msg-body">
+                        <div className="cx-dc-msg-meta">
+                          <strong className="cx-dc-author">@kyle_m</strong>
+                          <span className="cx-dc-role mono">@trusted-friends</span>
+                          <span className="muted">in {channel} · 11:14 PM</span>
+                        </div>
+                        <p>
+                          hey <span className="cx-dc-mention">@Gary</span> server feels laggy and can you whitelist{' '}
+                          <span className="cx-dc-mention">@sara_v</span>?
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="cx-dc-msg is-bot">
+                      <span className="cx-dc-bot-avatar">
+                        <GaryMark size={18} />
+                      </span>
+                      <div className="cx-dc-msg-body">
+                        <div className="cx-dc-msg-meta">
+                          <strong className="cx-dc-author">Gary · {server.id}</strong>
+                          <span className="cx-dc-bot-tag">BOT</span>
+                          <span className="muted">Verified operator · 11:14 PM</span>
+                        </div>
+                        <p>
+                          Whitelisted <code className="mono">sara_v</code> on <code className="mono">{server.id}</code> (13 members). Checked tick health: <strong>20.0 TPS</strong>, 0 lag spikes in the last 30m.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="cx-dc-preview-foot">
+                    <span className="muted">
+                      Relay this friend request live into the console inspector:
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      disabled={busy}
+                      onClick={handleSimulateToActivity}
+                    >
+                      <Icon name="send" size={13} />
+                      Send a simulated friend request to Gary Activity
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="cx-dc-preview-idle">
+                  <DiscordGlyph size={20} />
+                  <div>
+                    <strong>Ready to bind {channel} to {server.id}</strong>
+                    <p className="muted">
+                      Click <strong>Connect &amp; Send Test Handshake</strong> above to bind the channel and run a live friend request simulation.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      </aside>
     </div>
   );
 }
