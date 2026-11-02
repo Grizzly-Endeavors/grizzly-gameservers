@@ -38,6 +38,13 @@ bot:
   # an absent key disables Gary). Override the model here without a rebuild.
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
+  # Per-guild cap defaults: server count, summed CPU limits, summed memory
+  # limits (Kubernetes quantities). The namespace ResourceQuota stays the
+  # hardware ceiling behind them.
+  guildLimits:
+    servers: 40
+    cpu: 120000m
+    memory: 240Gi
   # Super-admin web panel (ADR-026). Its own port, its own Service, and its own
   # Ingress: the agent port above must stay reachable by game pods, while this
   # one is reachable only by ingress-nginx — the CiliumNetworkPolicy in

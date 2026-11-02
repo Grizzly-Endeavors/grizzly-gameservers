@@ -9,7 +9,11 @@
 //!   result is deterministic and costs nothing — this is the ordinary path.
 //! - `POST /operator/gary` runs a full model turn and returns the reply along
 //!   with a trace of every tool the model called and what each returned, plus
-//!   what the turn cost in tokens and latency.
+//!   what the turn cost in tokens and latency. Two optional body fields shape
+//!   the turn: `model_profile` (`{"provider": "fireworks" | "ollama", "model",
+//!   "max_tokens"?}`) picks the model provider for that turn alone, and
+//!   `memory: false` runs it without the saved-notes block or the
+//!   `remember`/`forget` tools.
 //! - `GET /operator/tools` lists the tools a tier may call, with their schemas.
 //!
 //! Both POST routes take the access tier as a parameter. That is deliberate: it
@@ -31,6 +35,7 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::agent::OllamaConfig;
 use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, EscalationReason, Generation, Role, SessionKey, SessionOutcome, TokenUsage,
@@ -39,8 +44,8 @@ use crate::agent::{
 use crate::agones::ServerScope;
 use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
 use crate::discord::gary::{
-    GaryTurn, build_system_prompt, framed_turn, game_catalog_list, replace_system_prompt,
-    run_gary_turn,
+    GaryTurn, build_system_prompt_with_memory, framed_turn, game_catalog_list,
+    replace_system_prompt, run_gary_turn,
 };
 use crate::discord::{AccessLevel, Data};
 use crate::domain::{GuildId, InstanceName};
@@ -144,8 +149,107 @@ struct GaryRequest {
     /// Start a fresh conversation instead of continuing this channel/user's.
     #[serde(default)]
     new_session: bool,
+    /// Model provider for this turn alone. Omitted means the live settings'
+    /// model, the same as a Discord turn.
+    #[serde(default)]
+    model_profile: Option<ModelProfile>,
+    /// Whether this turn sees Gary's saved notes and may call `remember` /
+    /// `forget`. Omitted means yes; `false` runs the turn with memory off.
+    #[serde(default = "memory_on")]
+    memory: bool,
     #[serde(flatten)]
     caller: Caller,
+}
+
+fn memory_on() -> bool {
+    true
+}
+
+/// A per-turn model selection: which provider, which model tag, and an optional
+/// completion ceiling.
+#[derive(Deserialize)]
+struct ModelProfile {
+    /// `fireworks` or `ollama`.
+    provider: String,
+    model: String,
+    #[serde(default)]
+    max_tokens: Option<u32>,
+}
+
+/// Fireworks' OpenAI-compatible endpoint, ending before `/chat/completions`.
+const FIREWORKS_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
+
+/// The override connection for a request, refusing outright when the turn would
+/// have no model at all (no profile and no Ollama key).
+fn turn_connection(
+    data: &Data,
+    profile: Option<&ModelProfile>,
+) -> Result<Option<OllamaConfig>, OperatorError> {
+    let connection = resolve_connection(
+        profile,
+        data.ollama_now().as_ref(),
+        data.fireworks_api_key.as_deref(),
+    )?;
+    if connection.is_none() && data.ollama.is_none() {
+        return Err(OperatorError::Unavailable(
+            "Gary has no model configured (OLLAMA_API_KEY unset), so there is no turn to run. \
+             POST /operator/tool still works — it needs no model."
+                .to_owned(),
+        ));
+    }
+    Ok(connection)
+}
+
+/// The connection a turn runs on, or `None` for the live settings' model.
+///
+/// `ollama_now` is the connection Discord turns would use; the `ollama`
+/// provider reuses its key and base URL with the requested model.
+fn resolve_connection(
+    profile: Option<&ModelProfile>,
+    ollama_now: Option<&OllamaConfig>,
+    fireworks_api_key: Option<&str>,
+) -> Result<Option<OllamaConfig>, OperatorError> {
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    let model = profile.model.trim();
+    if model.is_empty() {
+        return Err(OperatorError::BadRequest(
+            "model_profile.model is empty; name the model id to run".to_owned(),
+        ));
+    }
+    match profile.provider.trim() {
+        "fireworks" => {
+            let api_key = fireworks_api_key.ok_or_else(|| {
+                OperatorError::BadRequest(
+                    "model_profile.provider is fireworks but FIREWORKS_API_KEY is not set on the bot"
+                        .to_owned(),
+                )
+            })?;
+            Ok(Some(OllamaConfig {
+                api_key: api_key.to_owned(),
+                base_url: FIREWORKS_BASE_URL.to_owned(),
+                model: model.to_owned(),
+                max_tokens: profile.max_tokens,
+            }))
+        }
+        "ollama" => {
+            let base = ollama_now.ok_or_else(|| {
+                OperatorError::BadRequest(
+                    "model_profile.provider is ollama but OLLAMA_API_KEY is not set on the bot"
+                        .to_owned(),
+                )
+            })?;
+            Ok(Some(OllamaConfig {
+                model: model.to_owned(),
+                max_tokens: profile.max_tokens,
+                ..base.clone()
+            }))
+        }
+        other => Err(OperatorError::BadRequest(format!(
+            "unknown model_profile.provider \"{other}\"; use \"fireworks\" or \"ollama\""
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -327,13 +431,7 @@ async fn run_gary(
     axum::Json(request): axum::Json<GaryRequest>,
 ) -> Result<axum::Json<GaryResponse>, OperatorError> {
     let data = &deps.data;
-    if data.ollama.is_none() {
-        return Err(OperatorError::Unavailable(
-            "Gary has no model configured (OLLAMA_API_KEY unset), so there is no turn to run. \
-             POST /operator/tool still works — it needs no model."
-                .to_owned(),
-        ));
-    }
+    let connection = turn_connection(data, request.model_profile.as_ref())?;
     if request.prompt.trim().is_empty() {
         return Err(OperatorError::BadRequest(
             "prompt is empty; send what you'd type to Gary".to_owned(),
@@ -352,7 +450,7 @@ async fn run_gary(
     }
     let games = game_catalog_list(data);
     let memories = data.memory.render_for_prompt().await;
-    let system = build_system_prompt(acting.access, &games, &memories);
+    let system = build_system_prompt_with_memory(acting.access, &games, &memories, request.memory);
     let session = data
         .sessions
         .checkout(key, std::time::Instant::now(), || system.clone());
@@ -382,6 +480,8 @@ async fn run_gary(
         access: acting.access,
         scope: acting.scope,
         confirmations: acting.confirmations,
+        connection,
+        memory_tools: request.memory,
     };
     info!(access = ?acting.access, "operator harness: running a gary turn");
     let outcome = run_gary_turn(&turn, &mut messages).await.map_err(|err| {
