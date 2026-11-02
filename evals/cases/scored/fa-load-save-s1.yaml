@@ -1,0 +1,21 @@
+id: fa-load-save-s1
+scenario: fa-load-save
+split: scored
+game: factorio
+kind: world
+task_area: config
+prompt: just put my old save spaghetti on the server, i want to keep building on it with friends
+setup:
+- pod_put:
+    src: evals/fixtures/factorio/singleplayer-save.zip
+    dst: /factorio/saves/spaghetti.zip
+- pod_exec: sh -c 'chown factorio:factorio /factorio/saves/spaghetti.zip && touch -d "2026-09-01 10:00:00" /factorio/saves/spaghetti.zip'
+- restart: true
+- wait: log
+  pattern: Loading map /factorio/saves/_autosave
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: grep -q 'Loading map /factorio/saves/spaghetti.zip' /factorio/factorio-current.log
+  expect_exit: 0

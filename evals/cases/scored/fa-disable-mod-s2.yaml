@@ -1,0 +1,23 @@
+id: fa-disable-mod-s2
+scenario: fa-disable-mod
+split: scored
+game: factorio
+kind: fix
+task_area: troubleshooting
+prompt: server keeps crashing on startup since we enabled oil optimizer, can you get it running again? we still want the other mods
+setup:
+- pod_exec: sh -c 'mkdir -p /factorio/mods/chest-sorter_2.0.3 && echo eyJuYW1lIjoiY2hlc3Qtc29ydGVyIiwidmVyc2lvbiI6IjIuMC4zIiwidGl0bGUiOiJjaGVzdC1zb3J0ZXIiLCJhdXRob3IiOiJldmFsIiwiZmFjdG9yaW9fdmVyc2lvbiI6IjIuMCIsImRlcGVuZGVuY2llcyI6WyJiYXNlID49IDIuMC4wIl19 | base64 -d > /factorio/mods/chest-sorter_2.0.3/info.json && mkdir -p /factorio/mods/oil-optimizer-x_1.2.0 && echo eyJuYW1lIjoib2lsLW9wdGltaXplci14IiwidmVyc2lvbiI6IjEuMi4wIiwidGl0bGUiOiJvaWwtb3B0aW1pemVyLXgiLCJhdXRob3IiOiJldmFsIiwiZmFjdG9yaW9fdmVyc2lvbiI6IjIuMCIsImRlcGVuZGVuY2llcyI6WyJiYXNlID49IDIuMC4wIiwiZmx1aWQtbGliID49IDEuMC4wIl19 | base64 -d > /factorio/mods/oil-optimizer-x_1.2.0/info.json && echo eyJtb2RzIjpbeyJuYW1lIjoiYmFzZSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6ImVsZXZhdGVkLXJhaWxzIiwiZW5hYmxlZCI6dHJ1ZX0seyJuYW1lIjoicXVhbGl0eSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6InNwYWNlLWFnZSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6ImNoZXN0LXNvcnRlciIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6Im9pbC1vcHRpbWl6ZXIteCIsImVuYWJsZWQiOnRydWV9XX0= | base64 -d > /factorio/mods/mod-list.json
+    && chown -R factorio:factorio /factorio/mods'
+- restart: true
+- wait: log
+  pattern: Missing required dependency
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ps -eo args | grep -q "[x]64/factorio --port"'
+  expect_exit: 0
+- type: file_regex
+  path: /factorio/mods/mod-list.json
+  pattern: (?s)"name":\s*"chest-sorter",\s*"enabled":\s*true
+  present: true

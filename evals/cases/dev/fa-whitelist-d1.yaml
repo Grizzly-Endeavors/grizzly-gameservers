@@ -1,0 +1,27 @@
+id: fa-whitelist-d1
+scenario: fa-whitelist
+split: dev
+game: factorio
+kind: access
+task_area: config
+prompt: only let bear, Ada and Grace onto the factorio server, nobody else
+setup:
+- wait: ready
+  timeout_s: 300
+checks:
+- type: ready
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:bear)"'
+  present: true
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Ada)"'
+  present: true
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Grace)"'
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test "$(jq length /factorio/config/server-whitelist.json)" = 3'
+  expect_exit: 0

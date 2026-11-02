@@ -1,0 +1,20 @@
+id: vh-upload-world-s1
+scenario: vh-upload-world
+split: scored
+game: valheim
+kind: world
+task_area: config
+prompt: my buddy sent me our old world, it's called Skogheim, and i copied it onto the server. can you get the server running it?
+setup:
+- pod_put:
+    src: evals/fixtures/valheim/Skogheim.tgz
+    dst: /config/Skogheim.tgz
+- pod_exec: sh -c 'cd /config/worlds_local && tar -xzf /config/Skogheim.tgz && rm /config/Skogheim.tgz'
+- pod_exec: sh -c 'test -f /config/worlds_local/Skogheim/_main.7.db2'
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ps -eo args | grep -q "[-]world Skogheim "'
+  expect_exit: 0

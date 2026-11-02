@@ -1,0 +1,24 @@
+id: vh-admin-d1
+scenario: vh-admin
+split: dev
+game: valheim
+kind: access
+task_area: config
+prompt: make me admin on the valheim server, my steam id is 76561198012345678
+setup:
+- tool: write_file
+  args:
+    path: adminlist.txt
+    content: '// List admin players ID  ONE per line
+
+      76561198000000001
+
+      '
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /config/adminlist.txt
+  pattern: (?m)^76561198012345678\s*$
+  present: true

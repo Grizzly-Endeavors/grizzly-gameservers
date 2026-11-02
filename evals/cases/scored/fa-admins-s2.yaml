@@ -1,0 +1,23 @@
+id: fa-admins-s2
+scenario: fa-admins
+split: scored
+game: factorio
+kind: access
+task_area: config
+prompt: i need Gearhead_Gus to be an admin, he keeps asking me to do stuff for him
+setup:
+- tool: write_file
+  args:
+    path: config/server-adminlist.json
+    content: '["Hopper"]
+
+      '
+- restart: true
+- wait: ready
+  timeout_s: 300
+checks:
+- type: ready
+- type: file_regex
+  path: /factorio/config/server-adminlist.json
+  pattern: '"Gearhead_Gus"'
+  present: true
