@@ -115,6 +115,12 @@ export type SafetyStage = 'snapshot' | 'apply' | 'verify' | 'done';
 export interface SafetyState {
   /** False when the turn only read: the stepper shows "No change needed". */
   mutated: boolean;
+  /**
+   * True when the only changes were live console commands: nothing on disk changed, so
+   * there is no snapshot to take and no restart to verify, and the stepper would
+   * wrongly read as a fix left half done.
+   */
+  consoleOnly: boolean;
   reached: SafetyStage[];
   outcome: 'healthy' | 'rolled_back' | 'pending' | null;
 }
@@ -130,12 +136,13 @@ export function safetyOf(r: GaryResponse | undefined): SafetyState {
   const text = calls.map((t) => t.result).join('\n');
   const rolledBack = /rolled back|rollback/i.test(text);
   const healthy = /healthy|ready|back up|came back/i.test(text);
-  if (!writes.length && !restarted) return { mutated: false, reached: [], outcome: null };
+  if (!writes.length && !restarted) return { mutated: false, consoleOnly: false, reached: [], outcome: null };
+  if (!restarted && writes.every((t) => t.name === 'send_command')) return { mutated: true, consoleOnly: true, reached: [], outcome: null };
   const reached: SafetyStage[] = [];
   if (writes.length) reached.push('snapshot', 'apply');
   if (restarted) reached.push('verify');
   if (rolledBack || healthy) reached.push('done');
-  return { mutated: true, reached, outcome: rolledBack ? 'rolled_back' : healthy ? 'healthy' : 'pending' };
+  return { mutated: true, consoleOnly: false, reached, outcome: rolledBack ? 'rolled_back' : healthy ? 'healthy' : 'pending' };
 }
 
 /** USD for one turn, from per-generation usage and the shared rate table. Null if unpriced. */

@@ -393,7 +393,14 @@ function ActionLog() {
         <p className="muted cx-log-empty">Every step Gary takes shows up here, with the exact command and what came back.</p>
       ) : (
         <>
-          {safety.mutated ? (
+          {safety.consoleOnly ? (
+            turn.status === 'done' && (
+              <div className="cx-nochange">
+                <Icon name="check" size={15} />
+                Fixed live from the console. No files changed, no restart needed.
+              </div>
+            )
+          ) : safety.mutated ? (
             <ol className="cx-stepper" aria-label="Safety loop">
               {STAGES.map((s) => {
                 const done = safety.reached.includes(s.key);
