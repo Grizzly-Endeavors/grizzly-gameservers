@@ -54,57 +54,58 @@
 
 ---
 
-### Slide 2: Why Generic AI Breaks the Math
+### Slide 2: Why Claude Opus in Claude Code Fails on Live Game Containers
 
 **On Screen:**
-- **Generic Frontier Agent (Claude Code in a container):**
-  `Guess from training data` -> `Fail` -> `Search filesystem` -> `Read logs` -> `Guess again`
-- **The Cost of Trial and Error:**
-  - **10 to 20 turns** of frontier tokens burned hunting for config paths and mod rules
-  - **30 to 60+ seconds** of player wait time
-  - **Zero safety net** when an unverified edit corrupts a live player world
+- **Claude Opus 5.5 in Claude Code (Generalist Baseline):**
+  `Guess from training data` -> `Hit state trap` -> `Hunt filesystem` -> `Vanishes on restart`
+- **Two Concrete Container State Traps from Our Benchmark:**
+  - **Trap 1 · Ephemeral Commands (`smoke-mc-pvp-d1`):** Opus ran an in-game `/pvp` command and declared victory. When the scorer restarted the container, the fix vanished.
+  - **Trap 2 · Shutdown Config Overwrites (`Palworld`):** Palworld's binary overwrites its own `.ini` file on shutdown. Editing while the server is running wipes the fix on restart.
+  - **10.4 turns & $41.35 / 1k incidents:** Far too slow (37.9s p50) and expensive to run on a $12 server.
 
 **Spoken Script (15 sec):**
-> "If you drop a frontier model in a generic coding harness into a broken server, it tries from training memory, fails, hunts around the filesystem, and tries again. Burning ten to fifteen turns of frontier tokens on trial and error is slow, unsafe on live data, and far too expensive to run on every $12 server."
+> "Even when you give Claude Opus in Claude Code the exact same container tools, it falls into live state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Burning ten turns of frontier tokens on trial and error breaks the math on a $12 server."
 
 ---
 
-### Slide 3: Gary: An Operator, Not a Chatbot (System Diagram)
+### Slide 3: Creating Our Domain Frontier: The 4-Layer Architecture (System Diagram)
 
 **On Screen (Visual System & Closed-Loop Flywheel Diagram):**
 
 ```text
-                       GARY SPECIALIZED OPERATOR HARNESS (K8s + Agones)
+                  GARY 4-LAYER DOMAIN FRONTIER HARNESS (K8s + Agones)
                      +-------------------------------------------------------+
-                     |  [2. Per-Game RAG (7 Games)]  [3. Compounding Memory] |
-                     |   Schemas, paths, mod rules    Write-once, fleet knows|
+                     |  [Layer 2: Invariant Priming] [Layer 4: Memory + SFT] |
+                     |   game_guide + catalog rules   Fleet memory +         |
+                     |   (e.g. Palworld stop->edit)   export_sft.py JSONL    |
                      |               |                          |            |
-[Gary Web Console]   |               v                          v            |
+[Web Console + Bot]  |               v                          v            |
 "Crash after Iris" ->|  +-------------------------------------------------+  |   Destructive?
-"Double Pal spawns"  |  | 4. Fireworks AI Open Model (GLM-5.3-Flash)      |->|-> [Human Approval]
-                     |  | ~4.7 turns | 1.9s p50 | $0.00074 / incident     |  |
+"Double Pal spawns"  |  | Layer 1: Typed Operator Surface on Fireworks AI |->|-> [Human Approval]
+"@Gary whitelist"    |  | GLM-5.3-Flash | ~4.7 turns | 1.9s | $0.00074    |  |
                      |  +-------------------------------------------------+  |
                      |            |                                          |
                      |            v                                          |
-                     |  [Step 1: Snapshot] -> [Step 2: Apply] -> [Step 3: Probe Readiness]
+                     |  Layer 3: [Snapshot] -> [Apply Fix] -> [Post-Restart Probe]
                      |            ^                                    |     |
                      |            +--- Auto-Rollback if Unhealthy <----+     |
                      +-------------------------------------------------|-----+
                                                                        | Healthy
                                                                        v
-                                                       [Verified Server Ready + Reply]
+                                                       [Survives Restart Probe + Reply]
                                                                        |
-                                                                       +--> Writes new quirk back
-                                                                            to Compounding Memory
+                                                                       +--> Exports verified dev traces
+                                                                            to Fireworks SFT (export_sft.py)
 ```
 
-1. **Specialized Harness:** Bounded tools with an automatic SRE safety loop (`Snapshot` -> `Apply Change` -> `Verify Health` -> `Auto-Rollback if Unhealthy`).
-2. **RAG / Knowledge Base:** Pre-loaded per-game config layouts, mod loaders, and startup quirks across 7 games.
-3. **Compounding Memory:** When Gary solves a new quirk once, he writes it down. One server's fix becomes fleet-wide knowledge.
-4. **Fireworks Open Models:** Because the harness and memory carry the context, an open model on Fireworks executes the fix in a few turns for fractions of a cent.
+1. **Layer 1 — Typed Operator Surface on Fireworks (`GLM-5.3-Flash`):** Bounded container tools (`about_server`, `game_guide`, `edit_file`, `restart_server`, `backup_server`) rather than raw unconstrained bash.
+2. **Layer 2 — Pre-Turn Invariant Priming (`game_guide` + catalog annotations):** Injects per-game operational rules up front (e.g. `config-rewritten-on-shutdown` for Palworld: *stop first, edit second, start third*; `/data/server.properties` for Minecraft).
+3. **Layer 3 — Closed-Loop Post-Restart Verification (`Snapshot` -> `Apply` -> `Restart & Readiness Probe`):** Fixes must survive a container restart and pass Agones readiness, or the harness auto-rolls back.
+4. **Layer 4 — Compounding Memory + Fireworks SFT Flywheel (`export_sft.py`):** Solved quirks write back to fleet memory AND verified dev-split traces export straight into Fireworks fine-tuning JSONL.
 
 **Spoken Script (15 sec):**
-> "Gary is not a chatbot. He is an autonomous operator built on four pieces: a specialized harness that snapshots, applies the fix, verifies the container comes back healthy, and rolls back automatically if it does not; a knowledge base of per-game quirks; compounding memory that writes down new fixes so a problem solved once is solved for the whole fleet; and open models on Fireworks that run the loop for fractions of a cent."
+> "To beat Claude Code with GLM 5.3 Flash on Fireworks, we built a four-layer domain frontier harness: first, a typed operator tool surface; second, pre-turn invariant priming so the model knows each game's persistence rules up front; third, a snapshot, apply, and post-restart readiness probe loop; and fourth, compounding fleet memory that exports verified dev traces straight into Fireworks fine-tuning."
 
 ---
 
@@ -157,7 +158,7 @@ Per the Fireworks Deploy rules on pre-existing repositories:
   1. **Fireworks Open-Model Integration:** Pointed Gary's operator loop and evaluation profiles at `accounts/fireworks/models/glm-5p3-flash` on Fireworks AI.
   2. **4-Way Held-Out Benchmark & MCP Bridge (`evals/`):** Built `gary_mcp.py` (exposing Gary's exact operator tools to Claude Code over MCP for an un-weakened baseline and ablation), `scenarios.yaml`, and deterministic container state grading in `score.py`.
   3. **Gary Web Console, Host Triage Workbench & 1-Click Discord Bot (`web/`):** Built the complete React/Vite customer console, host incident & benchmark views, and the 1-Click Friend Discord Bot provisioning workflow.
-  4. **54-Second Demo Video Script ("Ask Gary", Chris VO):**
+  4. **57-Second Demo Video Script ("Ask Gary", Chris VO):**
      - **Beat 1 — Problem (0:00–0:11):** *"Game hosts sell four-gigabyte servers for twelve dollars a month. One human support ticket costs fifteen. And a generic frontier agent burns forty cents guessing at config files."*
-     - **Beat 2 — Approach (0:11–0:39):** *"I am Gary, an operator harness running GLM 5.3 Flash on Fireworks. Before I touch a container, I read the game guide, take a snapshot, apply the fix, and verify the readiness probe. Destructive actions stay gated on owner approval. With one click, the owner drops me into their friends' Discord so players handle whitelists and settings themselves, letting hosts hold fifteen-dollar pricing instead of discounting to twelve."*
-     - **Beat 3 — Measured Result (0:39–0:54):** *"Across our held-out benchmark against Claude Opus in Claude Code, I match frontier resolution at one-fiftieth the cost and twenty times the speed. Where a single pass fails verification, I auto-rollback and escalate."*
+     - **Beat 2 — Creating Our Domain Frontier (0:11–0:39):** *"To beat Claude Opus in Claude Code with GLM 5.3 Flash on Fireworks, we moved the frontier from model size into the operator harness. In Claude Code, even Opus falls into game state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Gary primes the model with per-game invariants, snapshots the container, edits persistent state, and verifies readiness after restart, while a one-click Discord bot lets players self-serve."*
+     - **Beat 3 — Measured Result & SFT Flywheel (0:39–0:57):** *"Across one hundred and one held-out tickets spanning six games, every system gets the exact same MCP tools and must survive a post-fix restart probe. Gary matches frontier resolution at one-fiftieth the cost and twenty times the speed, while exporting verified dev traces straight into Fireworks fine-tuning."*

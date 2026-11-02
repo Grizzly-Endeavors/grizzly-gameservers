@@ -629,62 +629,62 @@
     <section class="slide" data-index="1">
       <div class="slide-header">
         <span class="kicker">02 / Why Generic AI Breaks the Math</span>
-        <h1>Why You Can't Just Drop a Frontier Agent into the Container</h1>
-        <p class="subtitle">Pointing a generalist coding agent at a game server burns expensive turns rediscovering game layouts from scratch on every incident.</p>
+        <h1>Why Claude Opus in Claude Code Fails on Live Game Containers</h1>
+        <p class="subtitle">Even given the exact same MCP tools, a generalist coding harness burns expensive turns and falls into container state traps that wipe its fixes on restart.</p>
       </div>
 
       <div class="grid-2">
         <div class="card bad-card">
-          <div class="stat-label" style="color:var(--bad);">Generic Frontier Agent (e.g. Claude Code in Container)</div>
-          <p class="stat-meta">Relies on pretraining memory, guesses the wrong path or mod loader rule, fails, searches the filesystem, and tries again:</p>
+          <div class="stat-label" style="color:var(--bad);">Claude Opus 5.5 in Claude Code (Generalist Baseline)</div>
+          <p class="stat-meta">Hunts from pretraining memory, burns 10+ turns on discovery, and falls into live stateful container traps:</p>
           <div class="loop-track">
             <span class="step-chip bad">1. Guess from training data</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">2. Edit fails</span>
+            <span class="step-chip bad">2. Hit state trap</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">3. Search filesystem</span>
+            <span class="step-chip bad">3. Hunt filesystem</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">4. Read logs</span>
-            <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">5. Retry</span>
+            <span class="step-chip bad">4. Vanishes on restart</span>
           </div>
           <ul class="bullet-list">
-            <li><span class="dot bad"></span><span><strong>10 to 20 turns per fix:</strong> Burns thousands of frontier tokens discovering where Valheim, Palworld, or Fabric stores configs.</span></li>
-            <li><span class="dot bad"></span><span><strong>35 to 60s+ latency:</strong> Players sit waiting while the generalist agent explores directories.</span></li>
-            <li><span class="dot bad"></span><span><strong>No SRE guardrail:</strong> Mutates live world state directly with no automatic snapshot or health-verified rollback.</span></li>
+            <li><span class="dot bad"></span><span><strong>State Trap 1 &middot; Ephemeral Commands (<code>smoke-mc-pvp-d1</code>):</strong> Opus ran an in-game <code>/pvp</code> command and declared victory. When our scorer restarted the container, the fix vanished.</span></li>
+            <li><span class="dot bad"></span><span><strong>State Trap 2 &middot; Shutdown Overwrites (<code>Palworld</code>):</strong> Palworld's binary overwrites its own <code>.ini</code> on shutdown. Editing while running wipes the fix on restart.</span></li>
+            <li><span class="dot bad"></span><span><strong>10.4 turns &amp; $41.35 / 1k incidents:</strong> Far too slow (37.9s p50) and expensive to bundle on a $12 server.</span></li>
           </ul>
         </div>
 
         <div class="card highlight">
-          <div class="stat-label" style="color:var(--brand-500);">What the Economics Actually Require</div>
-          <p class="stat-meta">To run an autonomous operator on every $12/month server, you have to eliminate the discovery turns:</p>
+          <div class="stat-label" style="color:var(--brand-500);">How We Created Our Own Domain Frontier</div>
+          <p class="stat-meta">Instead of paying for a massive generalist model to rediscover game rules on every ticket, we moved the frontier into a 4-layer operator harness around <code>GLM-5.3-Flash</code>:</p>
           <div class="loop-track">
-            <span class="step-chip ok">1. Know the game layout up front</span>
+            <span class="step-chip ok">1. Typed Tools</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip ok">2. Snapshot</span>
+            <span class="step-chip ok">2. Invariant Priming</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip ok">3. Apply &amp; Verify</span>
+            <span class="step-chip ok">3. Restart Probe</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip ok">4. SFT Flywheel</span>
           </div>
           <ul class="bullet-list">
-            <li><span class="dot ok"></span><span><strong>Zero discovery tax:</strong> The harness already knows each game's config files, mod APIs, and startup checks.</span></li>
-            <li><span class="dot ok"></span><span><strong>2 to 5 turns on an open model:</strong> When the harness supplies domain structure, a fast open model on Fireworks solves the ticket in seconds.</span></li>
-            <li><span class="dot ok"></span><span><strong>Sub-cent unit cost:</strong> Drops inference cost per incident below <strong>$0.001</strong> so hosts can bundle it on every server.</span></li>
+            <li><span class="dot ok"></span><span><strong>Pre-turn operational invariants (<code>game_guide</code>):</strong> Tells the model up front: edit <code>/data/server.properties</code> for Minecraft; <em>stop &rarr; edit &rarr; start</em> for Palworld.</span></li>
+            <li><span class="dot ok"></span><span><strong>Post-restart verification loop:</strong> Snapshot state, apply edit, restart container, verify readiness probe, or auto-rollback.</span></li>
+            <li><span class="dot ok"></span><span><strong>Compounding memory + Fireworks SFT export (<code>export_sft.py</code>):</strong> Verified dev traces export directly to Fireworks fine-tuning JSONL.</span></li>
           </ul>
         </div>
       </div>
 
       <div class="banner">
-        <span>The bottleneck isn't raw reasoning IQ. It's domain structure, memory, and safe execution at open-model speed.</span>
-        <span class="badge measured">Measured in Our Ablation</span>
+        <span>We didn't beat Claude Code with a bigger model. We beat it by moving container invariants and verification into the harness.</span>
+        <span class="badge measured">+27.5 pt Harness Lift in Ablation</span>
       </div>
     </section>
 
     <!-- SLIDE 3: GARY ARCHITECTURE (VISUAL SYSTEM DIAGRAM) -->
     <section class="slide" data-index="2">
       <div class="slide-header">
-        <span class="kicker">03 / Architecture &amp; Compounding Moat</span>
-        <h1>Gary: Domain Harness + Memory + Fireworks Open Models</h1>
-        <p class="subtitle">Because the harness, RAG, and compounding memory supply the game context and safety loop, an open model on Fireworks solves incidents in ~4 turns for $0.0007.</p>
+        <span class="kicker">03 / Creating Our Domain Frontier: The 4-Layer Architecture</span>
+        <h1>How GLM-5.3-Flash on Fireworks Beats a Frontier Generalist</h1>
+        <p class="subtitle">Four compounding layers turn a fast open model on Fireworks into a domain frontier operator (~4.7 turns, 1.9s p50, $0.00074/incident).</p>
       </div>
 
       <div class="card" style="padding: 18px 22px; overflow: hidden;">
@@ -719,7 +719,7 @@
 
           <!-- OUTER HARNESS BOUNDARY -->
           <rect x="240" y="12" width="665" height="406" class="svg-zone" />
-          <text x="258" y="34" class="svg-kicker">GARY SPECIALIZED OPERATOR HARNESS (KUBERNETES + AGONES SIDECAR)</text>
+          <text x="258" y="34" class="svg-kicker">GARY 4-LAYER DOMAIN FRONTIER HARNESS (KUBERNETES + AGONES SIDECAR)</text>
 
           <!-- 1. LEFT INPUT: PLAYER / HOST REQUEST -->
           <rect x="14" y="142" width="195" height="146" class="svg-box" />
@@ -735,30 +735,30 @@
           <!-- Arrow: Input -> Fireworks Engine -->
           <line x1="209" y1="215" x2="262" y2="215" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
 
-          <!-- 2. TOP CONTEXT LAYER: RAG + COMPOUNDING MEMORY -->
-          <!-- Per-Game Knowledge Base (RAG) -->
+          <!-- 2. TOP CONTEXT LAYER: INVARIANT PRIMING + SFT FLYWHEEL -->
+          <!-- Layer 2: Pre-Turn Invariant Priming -->
           <rect x="266" y="48" width="295" height="84" class="svg-box" />
-          <text x="284" y="70" class="svg-kicker">2. PER-GAME KNOWLEDGE BASE (RAG)</text>
-          <text x="284" y="91" class="svg-title">7 Games Pre-Indexed</text>
-          <text x="284" y="110" class="svg-sub">Config schemas, file paths, Modrinth &amp;</text>
-          <text x="284" y="124" class="svg-sub">Thunderstore dependency graphs</text>
+          <text x="284" y="70" class="svg-kicker">LAYER 2 &middot; PRE-TURN INVARIANT PRIMING</text>
+          <text x="284" y="91" class="svg-title">game_guide + Catalog Rules</text>
+          <text x="284" y="110" class="svg-sub">Stop-before-edit on Palworld; persistent</text>
+          <text x="284" y="124" class="svg-sub">paths &amp; mod dependency graphs across 7 games</text>
 
-          <!-- Compounding Fleet Memory -->
+          <!-- Layer 4: Compounding Memory & Fireworks SFT -->
           <rect x="585" y="48" width="296" height="84" class="svg-box-brand" />
-          <text x="603" y="70" class="svg-kicker">3. COMPOUNDING FLEET MEMORY</text>
-          <text x="603" y="91" class="svg-title">Write-Once, Fleet Knows Forever</text>
-          <text x="603" y="110" class="svg-sub">New game/mod quirks solved on one server</text>
-          <text x="603" y="124" class="svg-sub">are written down &amp; injected on future turns</text>
+          <text x="603" y="70" class="svg-kicker">LAYER 4 &middot; MEMORY + FIREWORKS SFT</text>
+          <text x="603" y="91" class="svg-title">Fleet Memory &amp; export_sft.py</text>
+          <text x="603" y="110" class="svg-sub">Solved quirks write to memory &amp; export</text>
+          <text x="603" y="124" class="svg-sub">verified dev traces to Fireworks SFT JSONL</text>
 
-          <!-- Arrows: RAG & Memory -> Fireworks Open Model -->
+          <!-- Arrows: Priming & Memory -> Fireworks Open Model -->
           <line x1="414" y1="132" x2="414" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
           <line x1="700" y1="132" x2="660" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
 
-          <!-- 3. CENTER ENGINE: FIREWORKS OPEN MODEL -->
+          <!-- 3. CENTER ENGINE: LAYER 1 TYPED SURFACE + FIREWORKS OPEN MODEL -->
           <rect x="266" y="166" width="440" height="96" class="svg-box-brand" />
-          <text x="286" y="190" class="svg-kicker">4. FIREWORKS AI INFERENCE ENGINE</text>
-          <text x="286" y="214" class="svg-title" style="font-size:17px;">Open Model on Fireworks (GLM-5.3-Flash)</text>
-          <text x="286" y="235" class="svg-sub" style="fill:var(--ink-strong);">Zero cold discovery turns &middot; Bounded domain tool calls</text>
+          <text x="286" y="190" class="svg-kicker">LAYER 1 &middot; TYPED OPERATOR SURFACE ON FIREWORKS AI</text>
+          <text x="286" y="214" class="svg-title" style="font-size:17px;">GLM-5.3-Flash + Bounded Container Tools</text>
+          <text x="286" y="235" class="svg-sub" style="fill:var(--ink-strong);">about_server &middot; game_guide &middot; edit_file &middot; restart_server &middot; backup_server</text>
           <text x="286" y="251" class="svg-sub" style="fill:var(--brand-500);font-weight:700;">~4.7 turns &middot; 1.9s p50 latency &middot; $0.00074 / incident</text>
 
           <!-- Approval Gate Box (Right of Engine) -->
@@ -767,16 +767,16 @@
           <text x="742" y="211" class="svg-title" style="font-size:13px;">Destructive Tools</text>
           <text x="742" y="229" class="svg-sub">World restore / wipe</text>
           <text x="742" y="244" class="svg-sub">halts for 1-click</text>
-          <text x="742" y="257" class="svg-sub">human confirmation</text>
+          <text x="742" y="257" class="svg-sub">owner confirmation</text>
           <line x1="706" y1="214" x2="724" y2="214" stroke="var(--warn)" stroke-width="1.8" marker-end="url(#arr-warn)" />
 
           <!-- Arrow: Fireworks Engine -> Step A Snapshot -->
           <line x1="340" y1="262" x2="340" y2="296" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
 
-          <!-- 4. BOTTOM SRE SAFETY LOOP -->
+          <!-- 4. BOTTOM LAYER 3: CLOSED-LOOP POST-RESTART VERIFICATION -->
           <!-- Step A: Snapshot -->
           <rect x="266" y="300" width="142" height="76" class="svg-box" />
-          <text x="280" y="322" class="svg-kicker">STEP 1</text>
+          <text x="280" y="322" class="svg-kicker">LAYER 3 &middot; STEP 1</text>
           <text x="280" y="342" class="svg-title">Snapshot State</text>
           <text x="280" y="360" class="svg-sub">Save clean config/world</text>
 
@@ -784,38 +784,38 @@
 
           <!-- Step B: Apply Fix -->
           <rect x="436" y="300" width="150" height="76" class="svg-box" />
-          <text x="450" y="322" class="svg-kicker">STEP 2</text>
-          <text x="450" y="342" class="svg-title">Apply Change</text>
-          <text x="450" y="360" class="svg-sub">Typed config / mod edit</text>
+          <text x="450" y="322" class="svg-kicker">LAYER 3 &middot; STEP 2</text>
+          <text x="450" y="342" class="svg-title">Apply Persistent Fix</text>
+          <text x="450" y="360" class="svg-sub">Typed file / mod edit</text>
 
           <line x1="586" y1="338" x2="610" y2="338" stroke="var(--muted)" stroke-width="2" marker-end="url(#arr-muted)" />
 
           <!-- Step C: Restart & Probe -->
           <rect x="614" y="300" width="160" height="76" class="svg-box" />
-          <text x="628" y="322" class="svg-kicker">STEP 3</text>
-          <text x="628" y="342" class="svg-title">Verify Readiness</text>
-          <text x="628" y="360" class="svg-sub">Restart &amp; Agones probe</text>
+          <text x="628" y="322" class="svg-kicker">LAYER 3 &middot; STEP 3</text>
+          <text x="628" y="342" class="svg-title">Post-Restart Probe</text>
+          <text x="628" y="360" class="svg-sub">Survives restart + Ready</text>
 
           <!-- Auto-Rollback Feedback Arc (Unhealthy -> Snapshot) -->
           <path d="M 694 376 L 694 402 L 337 402 L 337 380" fill="none" stroke="var(--warn)" stroke-width="2" class="svg-flow-anim" marker-end="url(#arr-warn)" />
-          <text x="445" y="397" class="svg-sub" style="fill:var(--warn);font-weight:700;">If Probe Fails &rarr; Deterministic Auto-Rollback to Step 1 Snapshot</text>
+          <text x="425" y="397" class="svg-sub" style="fill:var(--warn);font-weight:700;">If Probe Fails &rarr; Auto-Rollback Snapshot &amp; Escalate Cleanly</text>
 
-          <!-- 5. RIGHT OUTPUT: HEALTHY CONTAINER + MEMORY WRITEBACK -->
+          <!-- 5. RIGHT OUTPUT: HEALTHY CONTAINER + MEMORY/SFT WRITEBACK -->
           <line x1="774" y1="338" x2="926" y2="338" stroke="var(--ok)" stroke-width="2.4" marker-end="url(#arr-ok)" />
           <text x="815" y="328" class="svg-sub" style="fill:var(--ok);font-weight:700;">Healthy</text>
 
           <rect x="930" y="274" width="216" height="114" class="svg-box-ok" />
           <text x="948" y="298" class="svg-kicker" style="fill:var(--ok);">VERIFIED OUTCOME</text>
-          <text x="948" y="320" class="svg-title" style="font-size:16px;">Server Healthy &amp; Ready</text>
-          <text x="948" y="342" class="svg-sub" style="fill:var(--ink-strong);">&bull; Intended change verified</text>
+          <text x="948" y="320" class="svg-title" style="font-size:16px;">Survives Restart Probe</text>
+          <text x="948" y="342" class="svg-sub" style="fill:var(--ink-strong);">&bull; State probe verified</text>
           <text x="948" y="359" class="svg-sub" style="fill:var(--ink-strong);">&bull; Plain-English reply posted</text>
-          <text x="948" y="376" class="svg-sub" style="fill:var(--ok);font-weight:700;">&bull; New quirk saved to memory</text>
+          <text x="948" y="376" class="svg-sub" style="fill:var(--ok);font-weight:700;">&bull; Exported to SFT / Memory</text>
 
           <!-- Compounding Memory Write-Back Arc (Verified Outcome -> Fleet Memory) -->
           <path d="M 1038 274 L 1038 90 L 886 90" fill="none" stroke="var(--brand-500)" stroke-width="2.2" class="svg-flow-anim" marker-end="url(#arr-brand)" />
           <rect x="922" y="148" width="224" height="54" class="svg-box" />
-          <text x="936" y="169" class="svg-kicker">COMPOUNDING FLYWHEEL</text>
-          <text x="936" y="189" class="svg-sub" style="fill:var(--ink-strong);">Fix logged once &rarr; Fleet knows it</text>
+          <text x="936" y="169" class="svg-kicker">LAYER 4 FLYWHEEL</text>
+          <text x="936" y="189" class="svg-sub" style="fill:var(--ink-strong);">Dev traces &rarr; export_sft.py JSONL</text>
         </svg>
       </div>
     </section>
@@ -1001,11 +1001,11 @@
       },
       {
         timing: "Slide 2 (15s)",
-        text: "\"If you drop a frontier model in a generic coding harness into a broken server, it tries from training memory, fails, hunts around the filesystem, and tries again. Burning ten to fifteen turns of frontier tokens on trial and error is slow, unsafe on live data, and far too expensive to run on every $12 server.\""
+        text: "\"Even when you give Claude Opus in Claude Code the exact same container tools, it falls into live state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Burning ten turns of frontier tokens on trial and error breaks the math on a $12 server.\""
       },
       {
         timing: "Slide 3 (15s)",
-        text: "\"Gary is not a chatbot. He is an autonomous operator built on four pieces: a specialized harness that snapshots, applies the fix, verifies the container comes back healthy, and rolls back automatically if it does not; a knowledge base of per-game quirks; compounding memory that writes down new fixes so a problem solved once is solved for the whole fleet; and open models on Fireworks that run the loop for fractions of a cent.\""
+        text: "\"To beat Claude Code with GLM 5.3 Flash on Fireworks, we built a four-layer domain frontier harness: first, a typed operator tool surface; second, pre-turn invariant priming so the model knows each game's persistence rules up front; third, a snapshot, apply, and post-restart readiness probe loop; and fourth, compounding fleet memory that exports verified dev traces straight into Fireworks fine-tuning.\""
       },
       {
         timing: "Slide 4 (20s)",
