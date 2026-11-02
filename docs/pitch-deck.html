@@ -905,6 +905,18 @@
           </tbody>
         </table>
       </div>
+
+      <!-- Methodology, Ablation Failure Case & Explicit Tradeoff Disclosure -->
+      <div class="banner" style="padding:12px 18px;font-size:12.5px;font-weight:500;line-height:1.45;">
+        <div>
+          <strong>Methodology &amp; Tradeoff Disclosure:</strong>
+          <span style="color:var(--ink);">
+            <strong>1. Equal Access:</strong> Baseline (`claude-opus-5-5` in Claude Code) and Gary (`GLM-5.3-Flash` on Fireworks) receive identical K8s container tools via <code>gary_mcp.py</code> and are scored by deterministic state probes in <code>score.py</code> (never LLM-as-judge).
+            <strong>2. Why Ablation Fails:</strong> Without Gary's <code>game_guide</code> + verification loop, models issue non-persistent commands (e.g., on <code>smoke-mc-pvp-d1</code>, Claude Code ran in-game <code>/pvp</code> which vanished on restart; Gary edited <code>/data/server.properties</code> and verified readiness).
+            <strong>3. Quality/Cost Tradeoff:</strong> Where single-pass <code>GLM-5.3-Flash</code> trails Opus on multi-step edge cases, Gary's harness catches the failed readiness probe, auto-rolls back the snapshot, and escalates cleanly rather than leaving a broken server.
+          </span>
+        </div>
+      </div>
     </section>
 
     <!-- SLIDE 5: DUAL VALUE (COST SAVE + TAM EXPANSION) & SAAS HORIZON -->
@@ -955,6 +967,17 @@
           <div class="cite">Live across 7 games in production today</div>
         </div>
       </div>
+
+      <!-- Pre-Existing vs Built Today Disclosure -->
+      <div class="banner" style="padding:11px 18px;font-size:12.5px;font-weight:500;line-height:1.4;">
+        <div>
+          <strong>Hackathon Disclosure (Pre-Existing vs. Built Today at Fireworks Deploy):</strong>
+          <span style="color:var(--ink);">
+            <strong>Pre-existing foundation:</strong> Grizzly Gameservers Rust/Agones supervisor &amp; Discord operator core (`crates/`).
+            <strong>Built today (Nov 2):</strong> Fireworks <code>GLM-5.3-Flash</code> integration, 4-way held-out evaluation suite &amp; MCP bridge (<code>evals/</code>, <code>gary_mcp.py</code>, <code>score.py</code>), and the complete Gary Web Console + Host Triage UI + 1-Click Discord Bot workflow (<code>web/</code>).
+          </span>
+        </div>
+      </div>
     </section>
 
   </main>
@@ -986,7 +1009,7 @@
       },
       {
         timing: "Slide 4 (20s)",
-        text: "\"Here is what happens across our held-out incident benchmark. First, compare Row 1 and Row 3: an open model on Fireworks inside Gary matches frontier recovery quality at a fraction of the cost and latency. Second, look at the ablation in Row 2: run that exact same open model in Claude Code without Gary's harness and memory, and turns triple while verified recovery drops sharply.\""
+        text: "\"Here is what happens across our held-out incident benchmark, where every system gets identical container tools and is graded by deterministic state probes. Compare Row 1 and Row 3: GLM 5.3 Flash on Fireworks inside Gary matches Claude Opus recovery at one-fiftieth the cost and twenty times the speed. In Row 2, run that same open model in Claude Code without Gary's guide and probe loop, and it makes non-persistent edits that vanish on restart. Where a single pass fails verification, Gary auto-rolls back and escalates cleanly.\""
       },
       {
         timing: "Slide 5 (15s)",

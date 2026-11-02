@@ -8,7 +8,7 @@
  */
 import type { GaryResponse, GenerationTrace, ToolTrace } from '../gary/types';
 
-export const GARY_MODEL = 'accounts/fireworks/models/glm-5p2';
+export const GARY_MODEL = 'accounts/fireworks/models/glm-5p3-flash';
 export const FRONTIER_MODEL = 'claude-opus-5-5';
 
 export type ServerStatus = 'Running' | 'Starting' | 'Stopped' | 'Crashed';

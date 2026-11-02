@@ -138,7 +138,7 @@ function statusAnswer(servers: OwnedServer[]): GaryResponse {
     rounds: 2,
     generations: [
       {
-        model: 'accounts/fireworks/models/glm-5p2',
+        model: 'accounts/fireworks/models/glm-5p3-flash',
         prompt_tokens: 9010,
         cached_tokens: 8704,
         completion_tokens: 61,
@@ -147,7 +147,7 @@ function statusAnswer(servers: OwnedServer[]): GaryResponse {
         latency_ms: 318,
       },
       {
-        model: 'accounts/fireworks/models/glm-5p2',
+        model: 'accounts/fireworks/models/glm-5p3-flash',
         prompt_tokens: 9230,
         cached_tokens: 8960,
         completion_tokens: 132,
@@ -172,7 +172,7 @@ function discordFriendAnswer(serverId: string): GaryResponse {
     rounds: 3,
     generations: [
       {
-        model: 'accounts/fireworks/models/glm-5p2',
+        model: 'accounts/fireworks/models/glm-5p3-flash',
         prompt_tokens: 9120,
         cached_tokens: 8832,
         completion_tokens: 84,
@@ -181,7 +181,7 @@ function discordFriendAnswer(serverId: string): GaryResponse {
         latency_ms: 295,
       },
       {
-        model: 'accounts/fireworks/models/glm-5p2',
+        model: 'accounts/fireworks/models/glm-5p3-flash',
         prompt_tokens: 9440,
         cached_tokens: 9088,
         completion_tokens: 72,
@@ -190,7 +190,7 @@ function discordFriendAnswer(serverId: string): GaryResponse {
         latency_ms: 280,
       },
       {
-        model: 'accounts/fireworks/models/glm-5p2',
+        model: 'accounts/fireworks/models/glm-5p3-flash',
         prompt_tokens: 9780,
         cached_tokens: 9344,
         completion_tokens: 118,
