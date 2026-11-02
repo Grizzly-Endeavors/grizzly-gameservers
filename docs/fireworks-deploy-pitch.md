@@ -17,7 +17,7 @@
    - **Fireworks Open Models:** Because the harness, knowledge base, and memory carry the domain structure, a fast open model on Fireworks executes the fix in a few turns for fractions of a cent.
 4. **Dual Value (Margin Protection + TAM Expansion) & SaaS Expansion:**
    - **Margin Protection (Cost Save):** Deflects $13.50 to $16.13 Tier 1 and Tier 2 tickets for under $0.10 per server per month in Fireworks inference.
-   - **TAM Expansion (Revenue Growth):** In single-player games, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into raw `.ini`, `.json`, and `.properties` files. Gary turns server customization back into plain English requests in Discord or in-game chat, lowering the barrier to entry so non-technical friend groups can rent servers without a sysadmin.
+   - **TAM Expansion (Revenue Growth):** In single-player games, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into raw `.ini`, `.json`, and `.properties` files. Gary turns server customization back into plain English requests in the Gary Web Console, lowering the barrier to entry so non-technical friend groups can rent servers without a sysadmin.
    - **Expansion Beyond Gaming:** Multiplayer game hosting is a **$2.05B market growing at 11.1% CAGR** and the ultimate stress test of messy configs and live state. The same architecture expands to **autonomous configuration and L1/L2 operations for any containerized SaaS business**.
 
 ---
@@ -77,9 +77,9 @@
                      |  [2. Per-Game RAG (7 Games)]  [3. Compounding Memory] |
                      |   Schemas, paths, mod rules    Write-once, fleet knows|
                      |               |                          |            |
-[Player / Host]      |               v                          v            |
+[Gary Web Console]   |               v                          v            |
 "Crash after Iris" ->|  +-------------------------------------------------+  |   Destructive?
-"Double Pal spawns"  |  | 4. Fireworks AI Open Model (GLM-5.2)            |->|-> [Human Approval]
+"Double Pal spawns"  |  | 4. Fireworks AI Open Model (GLM-5.3-Flash)      |->|-> [Human Approval]
                      |  | ~4.7 turns | 1.9s p50 | $0.00074 / incident     |  |
                      |  +-------------------------------------------------+  |
                      |            |                                          |
