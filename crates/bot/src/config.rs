@@ -201,6 +201,9 @@ pub struct BotConfig {
     /// mentions are answered with a "not configured" reply, slash commands still
     /// work. Sourced from the `ollama-api` Secret's `api_key` in-cluster.
     pub(crate) ollama_api_key: Option<String>,
+    /// Fireworks API key, used only when an operator-harness turn selects the
+    /// `fireworks` provider. Absent means that selection is refused.
+    pub(crate) fireworks_api_key: Option<String>,
     /// Base URL for the agent's `OpenAI`-compatible chat-completions endpoint.
     pub(crate) ollama_base_url: String,
     /// Model tag the agent drives.
@@ -449,6 +452,7 @@ impl BotConfig {
         let community_url = optional(lookup, "GAMESERVERS_COMMUNITY_URL").unwrap_or_default();
 
         let ollama_api_key = optional(lookup, "OLLAMA_API_KEY").filter(|key| !key.is_empty());
+        let fireworks_api_key = optional(lookup, "FIREWORKS_API_KEY").filter(|key| !key.is_empty());
         let ollama_base_url = optional(lookup, "OLLAMA_BASE_URL")
             .unwrap_or_else(|| DEFAULT_OLLAMA_BASE_URL.to_owned());
         let ollama_model =
@@ -495,6 +499,7 @@ impl BotConfig {
             community_url,
             throttle,
             ollama_api_key,
+            fireworks_api_key,
             ollama_base_url,
             ollama_model,
             db,

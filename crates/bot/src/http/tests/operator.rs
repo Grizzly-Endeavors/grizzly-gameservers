@@ -387,3 +387,92 @@ fn tool_tiers_widen_with_access() {
     );
     assert!(admin.contains(&"destroy_server".to_owned()));
 }
+
+fn profile(provider: &str, model: &str, max_tokens: Option<u32>) -> ModelProfile {
+    ModelProfile {
+        provider: provider.to_owned(),
+        model: model.to_owned(),
+        max_tokens,
+    }
+}
+
+fn settings_connection() -> OllamaConfig {
+    OllamaConfig {
+        api_key: "ollama-key".to_owned(),
+        base_url: "https://ollama.example/v1".to_owned(),
+        model: "settings-model".to_owned(),
+        max_tokens: None,
+    }
+}
+
+#[test]
+fn an_absent_model_profile_keeps_the_settings_model() {
+    let resolved = resolve_connection(None, Some(&settings_connection()), Some("fw-key")).unwrap();
+    assert!(resolved.is_none(), "no profile means the default path");
+}
+
+#[test]
+fn fireworks_without_a_key_is_refused_naming_the_key() {
+    let err = resolve_connection(Some(&profile("fireworks", "m", None)), None, None).unwrap_err();
+    assert!(reason(err).contains("FIREWORKS_API_KEY"));
+}
+
+#[test]
+fn fireworks_uses_its_endpoint_key_and_token_ceiling() {
+    let resolved = resolve_connection(
+        Some(&profile(
+            "fireworks",
+            "accounts/fireworks/models/x",
+            Some(2048),
+        )),
+        None,
+        Some("fw-key"),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.api_key, "fw-key");
+    assert_eq!(resolved.base_url, FIREWORKS_BASE_URL);
+    assert_eq!(resolved.model, "accounts/fireworks/models/x");
+    assert_eq!(resolved.max_tokens, Some(2048));
+}
+
+#[test]
+fn ollama_profile_reuses_the_settings_key_and_endpoint_with_its_own_model() {
+    let resolved = resolve_connection(
+        Some(&profile("ollama", "other-model", None)),
+        Some(&settings_connection()),
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.api_key, "ollama-key");
+    assert_eq!(resolved.base_url, "https://ollama.example/v1");
+    assert_eq!(resolved.model, "other-model");
+}
+
+#[test]
+fn unknown_providers_and_empty_models_are_bad_requests() {
+    let unknown = resolve_connection(Some(&profile("openai", "m", None)), None, Some("k"));
+    assert!(reason(unknown.unwrap_err()).contains("openai"));
+    let empty = resolve_connection(Some(&profile("fireworks", "  ", None)), None, Some("k"));
+    assert!(reason(empty.unwrap_err()).contains("model"));
+}
+
+#[test]
+fn gary_request_defaults_to_memory_on_and_no_profile() {
+    let body = r#"{"prompt": "hi", "channel": "1"}"#;
+    let request: GaryRequest = serde_json::from_str(body).unwrap();
+    assert!(request.memory);
+    assert!(request.model_profile.is_none());
+}
+
+#[test]
+fn gary_request_parses_profile_and_memory_off() {
+    let body = r#"{"prompt": "hi", "channel": "1", "memory": false,
+        "model_profile": {"provider": "fireworks", "model": "m", "max_tokens": 512}}"#;
+    let request: GaryRequest = serde_json::from_str(body).unwrap();
+    assert!(!request.memory);
+    let profile = request.model_profile.unwrap();
+    assert_eq!(profile.provider, "fireworks");
+    assert_eq!(profile.max_tokens, Some(512));
+}

@@ -20,6 +20,8 @@ pub(crate) struct OllamaConfig {
     /// Base URL ending before `/chat/completions` (e.g. `https://ollama.com/v1`).
     pub(crate) base_url: String,
     pub(crate) model: String,
+    /// Completion ceiling sent as `max_tokens`; `None` leaves the provider's default.
+    pub(crate) max_tokens: Option<u32>,
 }
 
 /// Who authored a message in the conversation.
@@ -156,6 +158,8 @@ struct ChatRequest<'a> {
     tools: &'a [ToolDef],
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,6 +258,7 @@ pub(crate) async fn send_chat_completion(
         messages,
         tools,
         tool_choice: (!tools.is_empty()).then_some("auto"),
+        max_tokens: cfg.max_tokens,
     };
 
     let started = Instant::now();

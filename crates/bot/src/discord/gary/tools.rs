@@ -366,6 +366,15 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
         .collect()
 }
 
+/// [`available_tools`], minus `remember`/`forget` when `memory_tools` is false.
+pub(crate) fn available_tools_for(access: AccessLevel, memory_tools: bool) -> Vec<ToolDef> {
+    let mut defs = available_tools(access);
+    if !memory_tools {
+        defs.retain(|tool| ![Remember::NAME, Forget::NAME].contains(&tool.function.name.as_str()));
+    }
+    defs
+}
+
 /// The lowest tier that may call `name`, or `None` if it isn't a tool at all.
 fn tier_of(name: &str) -> Option<AccessLevel> {
     tool_table()
