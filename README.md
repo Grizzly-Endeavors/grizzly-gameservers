@@ -62,7 +62,7 @@ Via `just` (convenience, not required):
 
 ## Git Hooks
 
-Install once per clone with `just hooks` (or `./.githooks/install.sh`). Every push to `main` deploys, so the hooks are the check before code goes live:
+Install once per clone with `just hooks` (or `./.githooks/install.sh`). A push to `main` deploys the bot only when it touches an input of the bot image (`crates/` outside `tests/`, `games/`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `Dockerfile`, `.dockerignore`, or `deploy.yml`; the `paths:` filter in `.github/workflows/deploy.yml`), so docs, evals, web, cluster, scripts and test-only pushes leave the live pod alone. The hooks are the check before code goes live:
 
 - **pre-commit** (a few seconds): `cargo fmt --check`, clippy, and no `dbg!` or `#[allow]` in staged Rust.
 - **pre-push**: the tests of the crates the pushed commits touch (`.githooks/lib/select-checks.sh` maps paths to crates), plus offline `cargo deny` when dependencies change. Docs-only pushes run nothing.
