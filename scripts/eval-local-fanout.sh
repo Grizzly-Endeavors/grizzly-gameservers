@@ -5,7 +5,8 @@
 # concurrency. Each host runs `evals/harness/run.py --local` on its shard with
 # the Docker backend, and every host's records are merged into OUT_DIR, which
 # is then scored. A failing host is reported and does not stop the others.
-# Ctrl-C kills the remote runs and removes the containers they started.
+# Ctrl-C stops the runs with SIGINT, so each harness sweeps its own containers,
+# then removes whatever containers its run prefix still names.
 #
 # Usage: scripts/eval-local-fanout.sh [options] CASES_DIR OUT_DIR
 set -euo pipefail
@@ -144,9 +145,8 @@ for i in "${!ids[@]}"; do
 done
 
 run_id="gfan-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-# Cleanup patterns carry a bracketed first letter so a `pkill -f` or docker
-# name filter run from a shell whose own command text names this run cannot
-# match itself.
+# The pattern for pkill and pgrep carries a bracketed first letter, so a shell
+# whose own command text names this run cannot match itself.
 kill_pattern="[${run_id:0:1}]${run_id:1}"
 stage="$out_dir/.staging/$run_id"
 
@@ -165,6 +165,10 @@ fi
 
 bin="$repo_root/target/release/grizzly-gameservers"
 
+case_count() {
+    grep -c . <<<"${shard[$1]:-}" || true
+}
+
 exec_or_show() {
     if ((dry_run)); then
         printf '      %q ' "$@"
@@ -177,7 +181,7 @@ exec_or_show() {
 # Runs a bash script on a host. The script travels base64-encoded so the
 # remote login shell (bash or fish) never has to parse it.
 remote_bash() {
-    local host="$1" script="$2" encoded
+    local host="$1" script="$2" encoded line
     if ((dry_run)); then
         printf '      ssh %s bash -c <<script\n' "$host"
         while IFS= read -r line; do
@@ -191,54 +195,42 @@ remote_bash() {
     ssh "${SSH_OPTS[@]}" "$host" "bash -c \"\$(echo $encoded | base64 -d)\"" </dev/null
 }
 
-host_case_args() {
-    local host="$1" id
-    case_args=()
-    while IFS= read -r id; do
-        if [[ -n "$id" ]]; then
-            case_args+=(--case "$id")
-        fi
-    done <<<"${shard[$host]:-}"
-}
-
 run_remote_host() {
     local host="$1" workers="${weight[$1]}"
-    host_case_args "$host"
     note "$host: preflight"
     remote_bash "$host" '
 command -v docker >/dev/null || { echo "docker is not on PATH" >&2; exit 1; }
 command -v rsync >/dev/null || { echo "rsync is not on PATH" >&2; exit 1; }
 python3 -c "import yaml" || { echo "python3 cannot import yaml (PyYAML is missing)" >&2; exit 1; }
 '
-    note "$host: syncing repo, release binary and .env"
-    remote_bash "$host" "mkdir -p \"\$HOME/grizzly-eval/bin\" \"\$HOME/grizzly-eval/runs\""
+    note "$host: syncing repo, release binary, .env and shard"
+    remote_bash "$host" "mkdir -p \"\$HOME/grizzly-eval/bin\" \"\$HOME/grizzly-eval/runs\" \"\$HOME/grizzly-eval/shards\""
     exec_or_show rsync -a --exclude=/target/ --exclude=/evals/results/ --exclude=/.env --exclude=/.git \
         -e "$RSYNC_SSH" "$repo_root/" "$host:$REMOTE_ROOT/"
     exec_or_show rsync -a -e "$RSYNC_SSH" "$bin" "$host:$REMOTE_ROOT/bin/grizzly-gameservers"
     exec_or_show rsync -a --chmod=F600 -e "$RSYNC_SSH" "$env_file" "$host:$REMOTE_ROOT/.env"
     remote_bash "$host" "chmod 600 \"\$HOME/grizzly-eval/.env\""
+    exec_or_show rsync -a -e "$RSYNC_SSH" "$stage/$host.shard" "$host:$REMOTE_ROOT/shards/$run_id.shard"
 
     local run_script
     run_script="$(printf '%s\n' \
         "cd \"\$HOME/grizzly-eval\" || exit 1" \
         "export GARY_LOCAL_BIN=\"\$HOME/grizzly-eval/bin/grizzly-gameservers\"" \
-        "export EVAL_RUN_PREFIX='$run_id-'" \
-        "exec python3 evals/harness/run.py --local --cases $(printf '%q' "$cases_rel") --systems gary-fw-local --concurrency $workers --out \"\$HOME/grizzly-eval/runs/$run_id\" $(printf '%q ' "${case_args[@]}")")"
-    note "$host: running ${#case_args[@]} case flags at concurrency $workers"
+        "exec python3 evals/harness/run.py --local --cases $(printf '%q' "$cases_rel") --systems gary-fw-local --concurrency $workers --case-file \"\$HOME/grizzly-eval/shards/$run_id.shard\" --out \"\$HOME/grizzly-eval/runs/$run_id\"")"
+    note "$host: running $(case_count "$host") case(s) at concurrency $workers"
     remote_bash "$host" "$run_script"
 }
 
 run_local_host() {
     local workers="${weight[local]}"
-    host_case_args local
     command -v docker >/dev/null || die "docker is not on PATH"
     python3 -P -c "import yaml" || die "python3 cannot import yaml (PyYAML is missing)"
-    note "local: running ${#case_args[@]} case flags at concurrency $workers"
+    note "local: running $(case_count local) case(s) at concurrency $workers"
     (
         cd "$repo_root"
-        exec_or_show env GARY_LOCAL_BIN="$bin" EVAL_RUN_PREFIX="$run_id-" \
+        exec_or_show env GARY_LOCAL_BIN="$bin" \
             python3 evals/harness/run.py --local --cases "$cases_rel" --systems gary-fw-local \
-            --concurrency "$workers" --out "$stage/local" "${case_args[@]}" </dev/null
+            --concurrency "$workers" --case-file "$stage/local.shard" --out "$stage/local" </dev/null
     )
 }
 
@@ -288,38 +280,52 @@ print(sum(counts.values()), " ".join(f"{k}={v}" for k, v in sorted(counts.items(
 ' "$1"
 }
 
-cleanup_script="docker ps -aq --filter 'name=^${kill_pattern}-' | xargs -r docker rm -f >/dev/null 2>&1; pkill -f -- '${kill_pattern}' >/dev/null 2>&1; true"
+# The harness prints its container prefix before the first job; a run that never
+# got that far left no containers, so an empty result is fine.
+prefix_of() {
+    sed -n 's/^local run: containers prefixed \([^,]*\),.*/\1/p' "$stage/$1.log" 2>/dev/null | head -1 || true
+}
+
+# SIGINT lets the harness's own finally block sweep its containers and volumes.
+# The docker lines are the backstop for anything it could not remove.
+stop_script() {
+    local prefix="$1"
+    printf '%s\n' \
+        "pkill -INT -f -- '$kill_pattern' >/dev/null 2>&1 || true" \
+        "for _ in \$(seq 1 120); do pgrep -f -- '$kill_pattern' >/dev/null 2>&1 || break; sleep 1; done"
+    if [[ -n "$prefix" ]]; then
+        printf '%s\n' \
+            "docker ps -aq --filter 'name=^$prefix-' | xargs -r docker rm -f >/dev/null 2>&1 || true" \
+            "docker volume ls -q --filter 'label=grizzly-eval.run=$prefix' | xargs -r docker volume rm -f >/dev/null 2>&1 || true"
+    fi
+}
 
 launched=()
 declare -A pid_of=()
 
 on_interrupt() {
     trap - INT TERM
-    note "interrupted: stopping runs for $run_id and removing their containers"
-    local host
+    note "interrupted: stopping runs for $run_id"
+    local host script
     for host in "${launched[@]}"; do
+        script="$(stop_script "$(prefix_of "$host")")"
         if [[ "$host" == local ]]; then
-            bash -c "$cleanup_script" || true
+            bash -c "$script" || note "local: stop did not complete"
         else
-            remote_bash "$host" "$cleanup_script" || note "$host: cleanup did not complete"
+            remote_bash "$host" "$script" || note "$host: stop did not complete"
         fi
-    done
-    local pid
-    for pid in "${pid_of[@]}"; do
-        kill "$pid" 2>/dev/null || true
     done
     wait 2>/dev/null || true
     exit 130
 }
 
-note "run $run_id: ${#ids[@]} cases across ${#active[@]} host(s)"
+note "run $run_id: ${#ids[@]} case(s) across ${#active[@]} host(s)"
 for host in "${active[@]}"; do
     if [[ -z "${shard[$host]:-}" ]]; then
         note "$host: no cases in its shard, idle"
         continue
     fi
-    count=$(grep -c . <<<"${shard[$host]}")
-    note "$host: $count case(s), concurrency ${weight[$host]}"
+    note "$host: $(case_count "$host") case(s), concurrency ${weight[$host]}"
 done
 
 if ((dry_run)); then
@@ -350,6 +356,10 @@ for host in "${active[@]}"; do
     printf '%s' "${shard[$host]}" >"$stage/$host.shard"
 done
 
+# Without job control bash starts background jobs with SIGINT ignored, and the local
+# harness would inherit that and ignore the stop signal. Job control gives each job its
+# own process group and leaves SIGINT alone.
+set -m
 trap on_interrupt INT TERM
 for host in "${active[@]}"; do
     [[ -n "${shard[$host]:-}" ]] || continue
@@ -386,7 +396,7 @@ for host in "${launched[@]}"; do
     read -r records outcomes <<<"$(count_records "$stage/$host" 2>/dev/null || echo "0 unreadable")"
     total_records=$((total_records + ${records:-0}))
     printf '  %-7s %-7s cases=%-4s records=%-4s %s\n' "$host" "$status" \
-        "$(grep -c . <<<"${shard[$host]}")" "${records:-0}" "${outcomes:-}"
+        "$(case_count "$host")" "${records:-0}" "${outcomes:-}"
 done
 note "total records: $total_records"
 
