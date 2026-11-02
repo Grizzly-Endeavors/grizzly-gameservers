@@ -1,0 +1,16 @@
+id: tr-settings-s6
+scenario: tr-settings
+split: scored
+game: terraria
+kind: config
+task_area: config
+prompt: fewer monsters at once please, 3 max
+setup:
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: json_equals
+  path: /data/config/config.json
+  key: Settings.DefaultMaximumSpawns
+  equals: 3
