@@ -468,6 +468,26 @@ def parse_claude_stream(raw: str) -> tuple[list[dict[str, Any]], dict[str, Any]]
     return events, parse_claude_result(json.dumps(final))
 
 
+ESCALATE_TOOL_SUFFIX = "escalate"
+
+
+def stream_escalated(events: list[dict[str, Any]]) -> bool:
+    """True when the stream contains a tool_use of Gary's `escalate` tool (MCP names end in it)."""
+    for event in events:
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and str(block.get("name") or "").endswith(ESCALATE_TOOL_SUFFIX)
+            ):
+                return True
+    return False
+
+
 class RealExecutor:
     """Hands the customer message to a system on the live bot."""
 
@@ -533,6 +553,8 @@ class RealExecutor:
         usage = response.get("usage") or {}
         run.reply = str(response.get("reply") or "")
         run.claimed_done = not response.get("escalated")
+        if response.get("escalated"):
+            run.notes["escalated"] = True
         run.turns = int(response.get("rounds") or 0)
         run.tool_calls = [call["name"] for call in response.get("tool_calls") or []]
         run.prompt_tokens = int(usage.get("prompt_tokens") or 0)
@@ -648,7 +670,10 @@ class RealExecutor:
         run.cached_tokens = parsed["cached_tokens"]
         run.completion_tokens = parsed["completion_tokens"]
         run.model_ms = parsed["model_ms"]
-        run.claimed_done = done.returncode == 0 and not parsed["is_error"]
+        escalated = stream_escalated(events)
+        run.claimed_done = done.returncode == 0 and not parsed["is_error"] and not escalated
+        if escalated:
+            run.notes["escalated"] = True
         run.notes["subtype"] = parsed["subtype"]
         if parsed["is_error"] and parsed["prompt_tokens"] == 0 and AUTH_FAILURE.search(run.reply):
             run.notes["auth_rejected"] = True

@@ -281,6 +281,27 @@ class ClaudeStreamTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run.parse_claude_stream(json.dumps({"type": "system"}))
 
+    def test_escalate_tool_use_is_detected(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__gary__escalate", "input": {"reason": "needs a human"}},
+            ]}},
+            CLAUDE_FIXTURE,
+        ]
+        raw = "\n".join(json.dumps(e) for e in events)
+        got, _ = run.parse_claude_stream(raw)
+        self.assertTrue(run.stream_escalated(got))
+
+    def test_stream_without_escalate_is_not_escalated(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__gary__read_file"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "escalate"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "escalate"}]}},
+            CLAUDE_FIXTURE,
+        ]
+        self.assertFalse(run.stream_escalated(events))
+
 
 class ManifestTests(unittest.TestCase):
     def test_dry_run_writes_manifest_without_secrets(self):
