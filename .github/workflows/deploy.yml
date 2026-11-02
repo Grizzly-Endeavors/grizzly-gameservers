@@ -9,6 +9,7 @@ on:
     # top-level path deploys by default rather than being silently skipped.
     paths-ignore:
       - "docs/**"
+      - "web/**"
       - "cluster/**"
       - "deploy/**"
       - "scripts/**"
