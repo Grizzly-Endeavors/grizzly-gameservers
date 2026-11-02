@@ -1,0 +1,22 @@
+id: tr-settings-s1
+scenario: tr-settings
+split: scored
+game: terraria
+kind: config
+task_area: config
+prompt: 16 players max
+setup:
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: any_of
+  checks:
+  - type: file_regex
+    path: /data/config/serverconfig.txt
+    pattern: (?m)^maxplayers=16\s*$
+    present: true
+  - type: json_equals
+    path: /data/config/config.json
+    key: Settings.MaxSlots
+    equals: 16

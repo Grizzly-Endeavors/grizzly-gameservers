@@ -1,0 +1,25 @@
+id: tr-config-broken-d1
+scenario: tr-config-broken
+split: dev
+game: terraria
+kind: fix
+task_area: troubleshooting
+prompt: it was working until I changed a setting
+setup:
+- pod_exec: sed -i -E 's/(DefaultMaximumSpawns[^0-9]*)5,/\1 12/' /data/config/config.json
+- restart: true
+- wait: log
+  pattern: Server started
+  timeout_s: 600
+checks:
+- type: ready
+- type: pod_exec
+  cmd: jq -e type /data/config/config.json
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e .Settings.RestApiEnabled==true /data/config/config.json
+  expect_exit: 0
+- type: json_equals
+  path: /data/config/config.json
+  key: Settings.DefaultMaximumSpawns
+  equals: 12

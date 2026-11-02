@@ -1,0 +1,22 @@
+id: tr-custom-world-d1
+scenario: tr-custom-world
+split: dev
+game: terraria
+kind: world
+task_area: config
+prompt: I put my world file 'Corruption Run' in, use that one
+setup:
+- pod_put:
+    src: evals/fixtures/terraria/small-world.wld
+    dst: /data/worlds/Corruption Run.wld
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/config/serverconfig.txt
+  pattern: (?m)^world=.*Corruption Run\.wld\s*$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -s /data/worlds/grizzly.wld'
+  expect_exit: 0
