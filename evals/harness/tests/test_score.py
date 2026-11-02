@@ -208,6 +208,25 @@ class ExclusionTest(unittest.TestCase):
         self.assertEqual(results["summary"]["systems"][0]["n_cases"], 1)
         self.assertEqual(results["summary"]["systems"][0]["verified_success_rate"], 1.0)
 
+    def test_headline_uses_first_repeat_when_runner_counts_from_one(self) -> None:
+        records = [
+            make_record(case_id="c1", repeat=1, outcome="pass"),
+            make_record(case_id="c1", repeat=2, outcome="fail"),
+        ]
+        results = score.build_results(records, RATES, generated_at="t")
+        self.assertEqual(results["summary"]["systems"][0]["n_cases"], 1)
+        self.assertEqual(results["summary"]["systems"][0]["verified_success_rate"], 1.0)
+
+    def test_catalog_reads_runner_case_file_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "c1.yaml").write_text(
+                "id: c1\nsplit: scored\ngame: minecraft\nkind: mods\ntask_area: config\nprompt: add lithium\n",
+                encoding="utf-8",
+            )
+            catalog = score.load_catalog(Path(tmp))
+        self.assertEqual(catalog["c1"]["case_id"], "c1")
+        self.assertEqual(catalog["c1"]["category"], "mods")
+
     def test_duplicate_record_is_rejected(self) -> None:
         records = [make_record(case_id="c1"), make_record(case_id="c1")]
         with self.assertRaises(ValueError):

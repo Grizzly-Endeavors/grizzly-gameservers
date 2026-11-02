@@ -226,6 +226,21 @@ def load_rates(path: Path) -> dict[str, dict[str, float]]:
     return rates
 
 
+def normalize_case_entry(entry: object) -> object:
+    """Map the runner's case-file schema (evals/cases/README.md) onto the scorer's field names.
+
+    A case file names its id `id` and its category `kind`; run.py writes them into
+    run records as `case_id` and `category`, so the catalog must resolve the same way.
+    """
+    if not isinstance(entry, dict):
+        return entry
+    normalized = dict(entry)
+    normalized.setdefault("case_id", entry.get("id"))
+    if not normalized.get("category"):
+        normalized["category"] = entry.get("kind", "")
+    return normalized
+
+
 def load_catalog(cases_dir: Path) -> dict[str, dict]:
     """Read case files (JSON or YAML; a file holds one case or a list) keyed by case_id."""
     catalog: dict[str, dict] = {}
@@ -233,7 +248,8 @@ def load_catalog(cases_dir: Path) -> dict[str, dict]:
     for path in paths:
         content = read_structured(path)
         entries = content if isinstance(content, list) else [content]
-        for entry in entries:
+        for raw in entries:
+            entry = normalize_case_entry(raw)
             if not isinstance(entry, dict) or not isinstance(entry.get("case_id"), str):
                 raise ValueError(f"case file {path} has an entry without a case_id")
             missing = [field for field in CASE_FIELDS if field not in entry]
@@ -577,22 +593,23 @@ def build_results(
             )
         )
 
-    # The scored case set: the catalog when one is given, else every repeat-0 case any system ran.
-    expected = (
-        sorted(catalog)
-        if catalog is not None
-        else sorted({r.case_id for r in scored if r.repeat == 0})
-    )
+    # The headline run of each (system, case) is its first repeat, whatever the runner numbers it from.
+    first_repeat: dict[tuple[str, str], Row] = {}
+    for r in scored:
+        key = (r.system_id, r.case_id)
+        if key not in first_repeat or r.repeat < first_repeat[key].repeat:
+            first_repeat[key] = r
+    # The scored case set: the catalog when one is given, else every case any system ran.
+    expected = sorted(catalog) if catalog is not None else sorted({case_id for _, case_id in first_repeat})
     system_order = unique_in_order(r.system_id for r in scored)
     scored_by_system = {sid: [r for r in scored if r.system_id == sid] for sid in system_order}
-    repeat_zero = {(r.system_id, r.case_id): r for r in scored if r.repeat == 0}
 
     headline_by_case: dict[str, dict[str, Row]] = {}
     for sid in system_order:
         identity = scored_by_system[sid][0]
         staged: dict[str, Row] = {}
         for case_id in expected:
-            row = repeat_zero.get((sid, case_id))
+            row = first_repeat.get((sid, case_id))
             if row is None:
                 staged[case_id] = missing_row(identity, case_id, case_meta[case_id])
             elif row.outcome != "staging_error":
