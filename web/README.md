@@ -31,6 +31,14 @@ kubectl -n game-servers port-forward svc/grizzly-gameservers-agent 19360:9360
 
 Then put the operator token and a channel id in `web/.env` (see `.env.example`), or in the repo-root `.env` that `scripts/operator.sh` already uses, and run `npm run dev`. A turn can run for minutes; the UI waits up to 15, the same as the operator script.
 
+## Deployed
+
+The console is served at <https://gameservers.grizzly-endeavors.com> behind HTTP basic auth. The username and password are in 1Password, `grizzly-platform/gameservers-web-demo` (`username`, `password`; the `htpasswd` field is what the Ingress checks).
+
+Every push to `main` that touches `web/` (outside `web/deploy/`) runs `.github/workflows/web.yml`: it builds `web/Dockerfile` (Vite build served by nginx), pushes it to the in-cluster registry, and pins the digest in `web/deploy/kustomization.yaml`. A Flux Kustomization (`grizzly-gameservers-web`, registered in grizzly-platform) applies `web/deploy/` into its own `gary-web` namespace. None of this shares a trigger, image, pin file or namespace with the bot, so a web push never redeploys the bot and a bot push never redeploys the console. Watch a rollout with `gh run list --workflow web.yml`.
+
+The deployed console is replay-only: the operator harness token is admin-level, so nginx never proxies `/operator`, and choosing Live there reports that the harness isn't reachable.
+
 ## Where the numbers come from
 
 Every number is labelled with where it came from:

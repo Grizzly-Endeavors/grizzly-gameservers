@@ -1,0 +1,16 @@
+# The web console's deployment, rendered by its own Flux Kustomization
+# (grizzly-gameservers-web in grizzly-platform), separate from the bot's
+# HelmRelease. .github/workflows/web.yml pins the image digest below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gary-web
+resources:
+  - namespace.yaml
+  - externalsecret.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+images:
+  - name: gary-web
+    newName: registry.registry.svc.cluster.local:5000/gary-web
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
