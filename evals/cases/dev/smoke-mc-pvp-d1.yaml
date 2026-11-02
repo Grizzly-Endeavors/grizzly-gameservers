@@ -9,7 +9,4 @@ setup:
   - {wait: ready, timeout_s: 400}
 checks:
   - {type: ready}
-  - type: any_of
-    checks:
-      - {type: file_regex, path: "/data/server.properties", pattern: "(?m)^pvp=false$", present: true}
-      - {type: tool_regex, tool: send_command, args: {command: "gamerule pvp"}, pattern: "(?i)false"}
+  - {type: tool_regex, tool: send_command, args: {command: "gamerule pvp"}, pattern: "(?i)false"}
