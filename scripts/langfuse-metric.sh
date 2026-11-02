@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run a derivation-layer metric against Langfuse (see docs/operations/data-collection.md).
+# Run a derivation-layer metric against Langfuse (see docs/operations/data-collection.md on the pre-hackathon branch).
 #
 # The metrics API takes its query as a URL-encoded JSON blob, which is miserable
 # to assemble in a shell by hand — that assembly is the whole point of this

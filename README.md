@@ -8,7 +8,7 @@ Game servers are the domain, not the point — they're a proving ground for safe
 
 See [`docs/design/00-overview.md`](docs/design/00-overview.md) for the architecture, [`docs/product/what-this-is.md`](docs/product/what-this-is.md) for the plain-language version, and [`CLAUDE.md`](CLAUDE.md) for working conventions. **Status: live.** Gary, the in-pod process supervisor, and the Discord shim are all deployed and gate-signed via CI; see [`docs/activation-status.md`](docs/activation-status.md) for what's verified.
 
-Gary records what he does to two data planes — his turns to Langfuse, product usage to Postgres. [`docs/operations/data-collection.md`](docs/operations/data-collection.md) is how to get numbers out of them.
+Gary records what he does to two data planes — his turns to Langfuse, product usage to Postgres. [`docs/operations/data-collection.md`](https://github.com/Grizzly-Endeavors/grizzly-gameservers/blob/pre-hackathon/docs/operations/data-collection.md) is how to get numbers out of them.
 
 A Cargo workspace with three crates: `crates/bot` (Gary's agent loop + the Discord shim he's reached through + Agones client, binary `grizzly-gameservers`), `crates/supervisor` (the in-pod process supervisor baked into game images — Gary's hands inside a pod, binary `grizzly-supervisor`), and `crates/control-api` (the wire contract shared by the two — request/response bodies plus the route-path constants and `CONTROL_PORT`, so neither side hardcodes a bare literal like `9359` or `/fs/read`). The bot's `prompts/` Markdown tree is compiled into typed Rust accessors by [`grizzly-agent-prompts`](https://github.com/Grizzly-Endeavors/grizzly-agent), a build/dev dependency rather than a workspace member.
 
