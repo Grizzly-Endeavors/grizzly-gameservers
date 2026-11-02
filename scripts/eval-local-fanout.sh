@@ -22,6 +22,7 @@ Options:
   --case-list FILE    case ids to run, one per line ('#' comments allowed);
                       default: every case in CASES_DIR
   --concurrency MAP   per-host concurrency (default: "local=3 gs66=3 tk-dev=2").
+  --systems LIST      comma-separated system ids (default: gary-fw-local).
                       Hosts left out of the map are not used; a host set to 0 is skipped.
   --dry-run           print the shards and every command; run nothing
 USAGE
@@ -45,10 +46,12 @@ note() {
 case_list=""
 concurrency_map="local=3 gs66=3 tk-dev=2"
 dry_run=0
+systems="gary-fw-local"
 while (($#)); do
     case "$1" in
         --case-list) case_list="${2:?--case-list needs a file}"; shift 2 ;;
         --concurrency) concurrency_map="${2:?--concurrency needs a map}"; shift 2 ;;
+        --systems) systems="${2:?--systems needs a list}"; shift 2 ;;
         --dry-run) dry_run=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) usage; die "unknown option $1" ;;
@@ -216,7 +219,7 @@ python3 -c "import yaml" || { echo "python3 cannot import yaml (PyYAML is missin
     run_script="$(printf '%s\n' \
         "cd \"\$HOME/grizzly-eval\" || exit 1" \
         "export GARY_LOCAL_BIN=\"\$HOME/grizzly-eval/bin/grizzly-gameservers\"" \
-        "exec python3 evals/harness/run.py --local --cases $(printf '%q' "$cases_rel") --systems gary-fw-local --concurrency $workers --case-file \"\$HOME/grizzly-eval/shards/$run_id.shard\" --out \"\$HOME/grizzly-eval/runs/$run_id\"")"
+        "exec python3 evals/harness/run.py --local --cases $(printf '%q' "$cases_rel") --systems $(printf '%q' "$systems") --concurrency $workers --case-file \"\$HOME/grizzly-eval/shards/$run_id.shard\" --out \"\$HOME/grizzly-eval/runs/$run_id\"")"
     note "$host: running $(case_count "$host") case(s) at concurrency $workers"
     remote_bash "$host" "$run_script"
 }
@@ -229,7 +232,7 @@ run_local_host() {
     (
         cd "$repo_root"
         exec_or_show env GARY_LOCAL_BIN="$bin" \
-            python3 evals/harness/run.py --local --cases "$cases_rel" --systems gary-fw-local \
+            python3 evals/harness/run.py --local --cases "$cases_rel" --systems "$systems" \
             --concurrency "$workers" --case-file "$stage/local.shard" --out "$stage/local" </dev/null
     )
 }

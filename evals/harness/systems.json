@@ -9,6 +9,16 @@
     }
   },
   {
+    "system_id": "cc-opus-generic",
+    "label": "Claude Opus 5.5 in Claude Code, generic shell access",
+    "harness": "claude_code",
+    "backend": "docker",
+    "model": "claude-opus-5-5",
+    "env": {
+      "ANTHROPIC_API_KEY": "$ANTHROPIC_API_KEY"
+    }
+  },
+  {
     "system_id": "gary-fw",
     "label": "GLM 5.3 Flash on Fireworks in Gary",
     "harness": "gary",

@@ -534,11 +534,22 @@ def gary_run(response: dict[str, Any], run: SystemRun | None = None) -> SystemRu
     return run
 
 
+# What the generic-access baseline is told about its access, and nothing about the game's layout.
+GENERIC_ACCESS_PROMPT = (
+    "You are handling a support ticket for a hosted game server. The customer's server runs in the "
+    "Docker container `{container}`. Run commands inside it with `docker exec {container} <command>` "
+    "(use `sh -c '...'` for pipes or redirects), read its output with `docker logs {container}`, and "
+    "restart the whole server with `docker restart {container}`. No other commands are available. "
+    "Fix what the customer asks for, make sure the server is running afterwards, then reply to the customer."
+)
+
+
 class LocalGaryExecutor:
     """Runs one Gary turn per case through the gary-local binary, over the case's container."""
 
-    def __init__(self, cluster: DockerCluster) -> None:
+    def __init__(self, cluster: DockerCluster, env_file: dict[str, str] | None = None) -> None:
         self.cluster = cluster
+        self.env_file = env_file or {}
 
     def execute(self, system: dict[str, Any], case: dict[str, Any], name: str) -> SystemRun:
         started = time.monotonic()
@@ -547,6 +558,8 @@ class LocalGaryExecutor:
         return run
 
     def _turn(self, system: dict[str, Any], text: str, name: str) -> SystemRun:
+        if system["harness"] == "claude_code":
+            return self._generic_claude_code(system, text, name)
         if system["harness"] != "gary":
             return SystemRun(infra_error=f"the docker backend cannot run the {system['harness']} harness")
         try:
@@ -558,6 +571,37 @@ class LocalGaryExecutor:
         if "error" in response and "reply" not in response:
             return SystemRun(infra_error=f"gary-local turn failed: {str(response['error'])[:300]}")
         return gary_run(response)
+
+
+    def _generic_claude_code(self, system: dict[str, Any], text: str, name: str) -> SystemRun:
+        """Claude Code with its own shell, scoped to this server's container, and none of Gary's tools."""
+        try:
+            env_extra = resolve_env(system.get("env") or {}, self.env_file)
+        except ValueError as err:
+            return SystemRun(infra_error=str(err))
+        container = self.cluster.container_name(name)
+        with tempfile.TemporaryDirectory(prefix="eval-ccgen-") as scratch:
+            root = Path(scratch)
+            workdir, config_dir = root / "work", root / "config"
+            workdir.mkdir()
+            config_dir.mkdir()
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("ANTHROPIC_", "CLAUDE_"))}
+            env.update(
+                CLAUDE_CONFIG_DIR=str(config_dir),
+                CLAUDE_CODE_DISABLE_CLAUDE_MDS="1",
+                CLAUDE_CODE_DISABLE_AUTO_MEMORY="1",
+            )
+            env.update(env_extra)
+            flags = [
+                "--strict-mcp-config",
+                "--tools", "Bash",
+                "--allowedTools", f"Bash(docker exec {container} *)", f"Bash(docker exec -i {container} *)",
+                f"Bash(docker restart {container})", f"Bash(docker logs {container}*)",
+                "--append-system-prompt", GENERIC_ACCESS_PROMPT.format(container=container),
+            ]
+            run = claude_once(system, text, workdir, env, flags, None, True)
+            run.notes["access"] = "generic-shell"
+            return run
 
 
 class RealExecutor:
@@ -670,72 +714,89 @@ class RealExecutor:
                 CLAUDE_CODE_DISABLE_AUTO_MEMORY="1",
             )
             env.update(env_extra)
+            mcp_flags = [
+                "--strict-mcp-config", "--mcp-config", str(mcp_config),
+                "--tools", "",
+                "--permission-mode", "bypassPermissions",
+            ]
             use_bare = self._bare.get(system["system_id"], True)
-            run = self._claude_once(system, text, workdir, mcp_config, env, tool_log, use_bare)
+            run = claude_once(system, text, workdir, env, mcp_flags, tool_log, use_bare)
             if use_bare and run.notes.get("auth_rejected"):
                 self._bare[system["system_id"]] = False
                 tool_log.unlink(missing_ok=True)
-                run = self._claude_once(system, text, workdir, mcp_config, env, tool_log, False)
+                run = claude_once(system, text, workdir, env, mcp_flags, tool_log, False)
             run.notes["mode"] = "bare" if self._bare.get(system["system_id"], True) else "no_bare"
             return run
 
-    def _claude_once(
-        self,
-        system: dict[str, Any],
-        text: str,
-        workdir: Path,
-        mcp_config: Path,
-        env: dict[str, str],
-        tool_log: Path,
-        bare: bool,
-    ) -> SystemRun:
-        command = ["claude", "-p", text]
-        if bare:
-            command.append("--bare")
-        command += [
-            "--output-format", "stream-json", "--verbose",
-            "--model", system["model"],
-            "--strict-mcp-config", "--mcp-config", str(mcp_config),
-            "--tools", "",
-            "--max-turns", str(MAX_MODEL_CALLS),
-            "--permission-mode", "bypassPermissions",
-        ]
-        run = SystemRun()
-        try:
-            done = subprocess.run(
-                command, cwd=workdir, env=env, capture_output=True, text=True, timeout=WALL_CLOCK_S
-            )
-        except subprocess.TimeoutExpired:
-            run.notes["budget_exceeded"] = "wall clock"
-            run.tool_calls = _read_tool_log(tool_log)
-            return run
-        except OSError as err:
-            run.infra_error = f"could not start claude: {err}"
-            return run
-        run.tool_calls = _read_tool_log(tool_log)
-        try:
-            events, parsed = parse_claude_stream(done.stdout)
-        except ValueError as err:
-            combined = (done.stderr + done.stdout)[-400:]
-            run.notes["auth_rejected"] = bool(AUTH_FAILURE.search(combined))
-            run.infra_error = f"claude exit {done.returncode} with unreadable output ({err}): {combined}"
-            return run
-        run.reply = parsed["reply"]
-        run.turns = parsed["turns"]
-        run.prompt_tokens = parsed["prompt_tokens"]
-        run.cached_tokens = parsed["cached_tokens"]
-        run.completion_tokens = parsed["completion_tokens"]
-        run.model_ms = parsed["model_ms"]
-        escalated = stream_escalated(events)
-        run.claimed_done = done.returncode == 0 and not parsed["is_error"] and not escalated
-        if escalated:
-            run.notes["escalated"] = True
-        run.notes["subtype"] = parsed["subtype"]
-        if parsed["is_error"] and parsed["prompt_tokens"] == 0 and AUTH_FAILURE.search(run.reply):
-            run.notes["auth_rejected"] = True
-            run.infra_error = f"claude rejected the credentials: {run.reply[:200]}"
-        run.transcript = {"events": events, "stderr": done.stderr[-2000:]}
+def claude_once(
+    system: dict[str, Any],
+    text: str,
+    workdir: Path,
+    env: dict[str, str],
+    tool_flags: list[str],
+    tool_log: Path | None,
+    bare: bool,
+) -> SystemRun:
+    """One headless `claude -p` run; `tool_flags` decide what the agent may touch."""
+    command = ["claude", "-p", text]
+    if bare:
+        command.append("--bare")
+    command += [
+        "--output-format", "stream-json", "--verbose",
+        "--model", system["model"],
+        *tool_flags,
+        "--max-turns", str(MAX_MODEL_CALLS),
+    ]
+    run = SystemRun()
+    try:
+        done = subprocess.run(
+            command, cwd=workdir, env=env, capture_output=True, text=True, timeout=WALL_CLOCK_S
+        )
+    except subprocess.TimeoutExpired:
+        run.notes["budget_exceeded"] = "wall clock"
+        run.tool_calls = _read_tool_log(tool_log) if tool_log else []
         return run
+    except OSError as err:
+        run.infra_error = f"could not start claude: {err}"
+        return run
+    run.tool_calls = _read_tool_log(tool_log) if tool_log else []
+    try:
+        events, parsed = parse_claude_stream(done.stdout)
+    except ValueError as err:
+        combined = (done.stderr + done.stdout)[-400:]
+        run.notes["auth_rejected"] = bool(AUTH_FAILURE.search(combined))
+        run.infra_error = f"claude exit {done.returncode} with unreadable output ({err}): {combined}"
+        return run
+    run.reply = parsed["reply"]
+    run.turns = parsed["turns"]
+    run.prompt_tokens = parsed["prompt_tokens"]
+    run.cached_tokens = parsed["cached_tokens"]
+    run.completion_tokens = parsed["completion_tokens"]
+    run.model_ms = parsed["model_ms"]
+    escalated = stream_escalated(events)
+    run.claimed_done = done.returncode == 0 and not parsed["is_error"] and not escalated
+    if escalated:
+        run.notes["escalated"] = True
+    run.notes["subtype"] = parsed["subtype"]
+    if parsed["is_error"] and parsed["prompt_tokens"] == 0 and AUTH_FAILURE.search(run.reply):
+        run.notes["auth_rejected"] = True
+        run.infra_error = f"claude rejected the credentials: {run.reply[:200]}"
+    if tool_log is None:
+        run.tool_calls = stream_tool_names(events)
+    run.transcript = {"events": events, "stderr": done.stderr[-2000:]}
+    return run
+
+
+def stream_tool_names(events: list[dict[str, Any]]) -> list[str]:
+    """The tool_use names in a claude stream, in order."""
+    names = []
+    for event in events:
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                names.append(str(block.get("name")))
+    return names
 
 
 def _read_tool_log(path: Path) -> list[str]:
@@ -1033,7 +1094,7 @@ def check_backend(systems: list[dict[str, Any]], local: bool) -> None:
         docker_only = system.get("backend") == DOCKER_BACKEND
         if docker_only and not local:
             raise ValueError(f"{system['system_id']} runs on the docker backend; pass --local")
-        if local and system["harness"] != "gary":
+        if local and system["harness"] != "gary" and not docker_only:
             raise ValueError(f"{system['system_id']} uses the {system['harness']} harness, which --local cannot run")
 
 
@@ -1243,7 +1304,7 @@ def run_local(
     aborted = threading.Event()
     try:
         records = run_all(
-            cluster, LocalGaryExecutor(cluster), systems, cases, args.repeats, args.concurrency, out_dir, caps,
+            cluster, LocalGaryExecutor(cluster, read_env_file(find_env_file())), systems, cases, args.repeats, args.concurrency, out_dir, caps,
             args.force, known, args.rerun_outcomes, aborted, build_manifest(raw_args, False, binary),
         )
     finally:
