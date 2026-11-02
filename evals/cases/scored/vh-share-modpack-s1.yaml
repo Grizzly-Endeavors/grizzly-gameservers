@@ -1,0 +1,23 @@
+id: vh-share-modpack-s1
+scenario: vh-share-modpack
+split: scored
+game: valheim
+kind: mods
+task_area: config
+prompt: my cousin can't get on our server, which mods does he need on his side?
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/mods
+    content: 'Vapok-AdventureBackpacks-2.4.6
+
+      OdinPlus-QuickTeleport-2.0.7
+
+      '
+- restart: true
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: reply_regex
+  pattern: (?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b

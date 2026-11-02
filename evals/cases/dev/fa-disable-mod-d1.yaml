@@ -1,0 +1,23 @@
+id: fa-disable-mod-d1
+scenario: fa-disable-mod
+split: dev
+game: factorio
+kind: fix
+task_area: troubleshooting
+prompt: the factorio server crashed right after we turned on a new mod and won't start now
+setup:
+- pod_exec: sh -c 'mkdir -p /factorio/mods/tidy-signs_0.4.1 && echo eyJuYW1lIjoidGlkeS1zaWducyIsInZlcnNpb24iOiIwLjQuMSIsInRpdGxlIjoidGlkeS1zaWducyIsImF1dGhvciI6ImV2YWwiLCJmYWN0b3Jpb192ZXJzaW9uIjoiMi4wIiwiZGVwZW5kZW5jaWVzIjpbImJhc2UgPj0gMi4wLjAiXX0= | base64 -d > /factorio/mods/tidy-signs_0.4.1/info.json && mkdir -p /factorio/mods/belt-planner-plus_1.2.0 && echo eyJuYW1lIjoiYmVsdC1wbGFubmVyLXBsdXMiLCJ2ZXJzaW9uIjoiMS4yLjAiLCJ0aXRsZSI6ImJlbHQtcGxhbm5lci1wbHVzIiwiYXV0aG9yIjoiZXZhbCIsImZhY3RvcmlvX3ZlcnNpb24iOiIyLjAiLCJkZXBlbmRlbmNpZXMiOlsiYmFzZSA+PSAyLjAuMCIsImJlbHQtcGxhbm5lci1saWIgPj0gMS4wLjAiXX0= | base64 -d > /factorio/mods/belt-planner-plus_1.2.0/info.json && echo eyJtb2RzIjpbeyJuYW1lIjoiYmFzZSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6ImVsZXZhdGVkLXJhaWxzIiwiZW5hYmxlZCI6dHJ1ZX0seyJuYW1lIjoicXVhbGl0eSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6InNwYWNlLWFnZSIsImVuYWJsZWQiOnRydWV9LHsibmFtZSI6InRpZHktc2lnbnMiLCJlbmFibGVkIjp0cnVlfSx7Im5hbWUiOiJiZWx0LXBsYW5uZXItcGx1cyIsImVuYWJsZWQiOnRydWV9XX0= | base64 -d > /factorio/mods/mod-list.json
+    && chown -R factorio:factorio /factorio/mods'
+- restart: true
+- wait: log
+  pattern: Missing required dependency
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ps -eo args | grep -q "[x]64/factorio --port"'
+  expect_exit: 0
+- type: file_regex
+  path: /factorio/mods/mod-list.json
+  pattern: (?s)"name":\s*"tidy-signs",\s*"enabled":\s*true
+  present: true

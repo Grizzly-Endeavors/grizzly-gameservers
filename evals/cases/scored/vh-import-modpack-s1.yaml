@@ -1,0 +1,28 @@
+id: vh-import-modpack-s1
+scenario: vh-import-modpack
+split: scored
+game: valheim
+kind: mods
+task_area: config
+prompt: my friend built a mod profile in r2modman and sent me this code 01a19dfd-180d-a733-48eb-8dff8c631762. can we run that on the server?
+setup:
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /config/.grizzly/thunderstore/resolved
+  pattern: (?m)^Vapok-AdventureBackpacks-2\.4\.6$
+  present: true
+- type: file_regex
+  path: /config/.grizzly/thunderstore/resolved
+  pattern: (?m)^OdinPlus-QuickTeleport-2\.0\.7$
+  present: true
+- type: file_regex
+  path: /config/.grizzly/thunderstore/resolved
+  pattern: (?m)^ValheimModding-Jotunn-
+  present: true
+- type: file_regex
+  path: /config/.grizzly/thunderstore/resolved
+  pattern: Stonaar-ValheimBuildCamera
+  present: false

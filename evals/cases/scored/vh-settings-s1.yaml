@@ -1,0 +1,23 @@
+id: vh-settings-s1
+scenario: vh-settings
+split: scored
+game: valheim
+kind: config
+task_area: config
+prompt: rename the server to Skald's Rest please
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'SERVER_NAME=Grizzly Valheim
+
+      '
+- restart: true
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /config/.grizzly/env
+  pattern: (?m)^SERVER_NAME=Skald's Rest$
+  present: true
