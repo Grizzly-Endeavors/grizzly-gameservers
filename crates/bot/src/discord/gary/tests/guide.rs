@@ -232,3 +232,44 @@ fn an_unknown_game_is_still_only_the_correction() {
     assert!(!rendered.contains(".grizzly/env"), "{rendered}");
     assert!(!rendered.contains("browse_files"), "{rendered}");
 }
+
+fn catalog_overlay(game: &str) -> EnvOverlay {
+    let yaml = std::fs::read_to_string(format!(
+        "{}/../../games/{game}/gameserver.yaml",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    crate::agones::parse_env_overlay_from_template(&yaml)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn the_valheim_guide_names_the_world_switch_key() {
+    let overlay = catalog_overlay("valheim");
+    let rendered = render_guide(
+        "valheim",
+        &GuideSubject::Registry(&thunderstore()),
+        Some(&overlay),
+        CATALOG,
+    );
+    assert!(rendered.contains("WORLD_NAME"), "{rendered}");
+}
+
+#[test]
+fn the_factorio_guide_takes_the_overlay_branch_and_names_the_save_keys() {
+    let overlay = catalog_overlay("factorio");
+    let rendered = render_guide(
+        "factorio",
+        &GuideSubject::NoRegistry,
+        Some(&overlay),
+        CATALOG,
+    );
+    assert!(rendered.contains(".grizzly/env"), "{rendered}");
+    assert!(rendered.contains("LOAD_LATEST_SAVE"), "{rendered}");
+    assert!(rendered.contains("SAVE_NAME"), "{rendered}");
+    assert!(
+        rendered.contains("not stored in any config file"),
+        "{rendered}"
+    );
+}

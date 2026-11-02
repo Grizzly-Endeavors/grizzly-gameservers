@@ -89,6 +89,20 @@ spec:
                   name: grizzly-gameservers-control
                   key: control_token
                   optional: true
+            # Per-instance settings overlay (ADR-012). Which save the server
+            # loads at launch is env-only: the image's entrypoint reads
+            # LOAD_LATEST_SAVE (newest save by mtime) and SAVE_NAME (a named
+            # save, file name without .zip) at each start, and no file on the
+            # PVC holds either. The allowlist is the whole mutable surface:
+            #   LOAD_LATEST_SAVE  true loads the newest save, false loads SAVE_NAME
+            #   SAVE_NAME         which save under /factorio/saves to load
+            # Declared here rather than in the Dockerfile because an allowlist
+            # is per-game policy: widening it is a reviewable catalog edit that
+            # lands on the next cold start, not an image rebuild.
+            - name: SUPERVISOR_CHILD_ENV_FILE
+              value: ".grizzly/env"
+            - name: SUPERVISOR_CHILD_ENV_ALLOWLIST
+              value: "LOAD_LATEST_SAVE,SAVE_NAME"
           volumeMounts:
             - name: data
               mountPath: /factorio
