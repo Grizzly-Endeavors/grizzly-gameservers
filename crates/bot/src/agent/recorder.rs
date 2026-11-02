@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime};
 use opentelemetry::trace::{SpanId, Status, TraceId};
 use tracing::trace;
 
-use super::llm::{ChatMessage, Completion};
+use super::llm::{ChatMessage, Completion, ToolDef};
 use super::observations;
 use super::session::{EscalationReason, SessionOutcome};
 use super::store::SessionId;
@@ -123,8 +123,15 @@ impl TurnRecorder {
         );
     }
 
-    /// One model call: what was sent, what came back, and what it cost.
-    pub(crate) fn record_generation(&self, sent: &[ChatMessage], completion: &Completion) {
+    /// One model call: what was sent (messages and advertised tools), what came
+    /// back, and what it cost. The full tools array is recorded on the first
+    /// call only; every call carries its hash.
+    pub(crate) fn record_generation(
+        &self,
+        sent: &[ChatMessage],
+        tools: &[ToolDef],
+        completion: &Completion,
+    ) {
         let round = self.rounds.fetch_add(1, Ordering::Relaxed) as usize + 1;
         if round == 1
             && let Some(opening) = observations::opening_input(sent)
@@ -145,7 +152,14 @@ impl TurnRecorder {
             GENERATION_SPAN_NAME.into(),
             completion.latency,
             Status::Ok,
-            observations::generation(sent, completion, round),
+            observations::generation(
+                sent,
+                tools,
+                self.identity.access.as_str(),
+                round == 1,
+                completion,
+                round,
+            ),
         );
     }
 

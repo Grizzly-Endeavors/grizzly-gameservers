@@ -27,6 +27,7 @@ fn assistant_calling(calls: &[(&str, &str, &str)]) -> ChatMessage {
                 .collect(),
         ),
         tool_call_id: None,
+        reasoning_content: None,
     }
 }
 
@@ -146,6 +147,7 @@ fn a_turn_with_no_tools_traces_empty() {
             content: Some("All three are up.".to_owned()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         },
     ];
     assert!(tool_trace(&slice).is_empty());
@@ -163,6 +165,7 @@ fn a_single_call_traces_with_its_result() {
             content: Some("mc is up.".to_owned()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         },
     ];
     assert_eq!(
@@ -475,4 +478,47 @@ fn gary_request_parses_profile_and_memory_off() {
     let profile = request.model_profile.unwrap();
     assert_eq!(profile.provider, "fireworks");
     assert_eq!(profile.max_tokens, Some(512));
+}
+
+#[test]
+fn turn_transcript_keeps_system_user_and_everything_after_in_order() {
+    let mut reasoning_turn = assistant_calling(&[("c1", "list_servers", "{}")]);
+    reasoning_turn.reasoning_content = Some("check the servers".to_owned());
+    let mut closing = ChatMessage::assistant("mc is up.");
+    closing.reasoning_content = Some("all good".to_owned());
+    let messages = vec![
+        ChatMessage::system("you are gary"),
+        ChatMessage::user("earlier question"),
+        ChatMessage::assistant("earlier answer"),
+        ChatMessage::user("how are the servers?"),
+        reasoning_turn,
+        ChatMessage::tool_result("c1", "mc - Ready"),
+        closing,
+    ];
+
+    let transcript = turn_transcript(&messages, 4);
+
+    let roles: Vec<Role> = transcript.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        [
+            Role::System,
+            Role::User,
+            Role::Assistant,
+            Role::Tool,
+            Role::Assistant
+        ],
+        "prior-turn history is left out"
+    );
+    let wire = serde_json::to_value(&transcript).unwrap();
+    assert_eq!(
+        wire.pointer("/2/reasoning_content").unwrap(),
+        "check the servers"
+    );
+    assert_eq!(
+        wire.pointer("/2/tool_calls/0/function/name").unwrap(),
+        "list_servers"
+    );
+    assert_eq!(wire.pointer("/3/tool_call_id").unwrap(), "c1");
+    assert_eq!(wire.pointer("/3/role").unwrap(), "tool");
 }

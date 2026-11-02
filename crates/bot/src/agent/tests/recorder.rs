@@ -26,6 +26,7 @@ fn assistant(text: &str) -> ChatMessage {
         content: Some(text.to_owned()),
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
     }
 }
 
@@ -63,9 +64,9 @@ fn attribute(span: &SpanData, key: &str) -> Option<Value> {
 fn simple_turn(recorder: &TurnRecorder) {
     let sent = vec![ChatMessage::system("sys"), ChatMessage::user("restart mc")];
     recorder.turn_started();
-    recorder.record_generation(&sent, &completion());
+    recorder.record_generation(&sent, &[], &completion());
     recorder.record_tool("restart_server", "{}", "restarted", Duration::from_secs(1));
-    recorder.record_generation(&sent, &completion());
+    recorder.record_generation(&sent, &[], &completion());
     recorder.turn_finished(&SessionOutcome {
         reply: "done".to_owned(),
         ending: TurnEnding::Answered,
@@ -148,7 +149,7 @@ fn a_tool_span_is_named_for_its_tool() {
 fn a_failed_turn_still_exports_its_partial_trace() {
     let spans = exported(|recorder| {
         recorder.turn_started();
-        recorder.record_generation(&[ChatMessage::user("hi")], &completion());
+        recorder.record_generation(&[ChatMessage::user("hi")], &[], &completion());
         recorder.turn_failed(&anyhow::anyhow!("model endpoint unreachable"));
     });
     assert_eq!(spans.len(), 2, "the generation survives the failure");

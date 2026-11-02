@@ -6,8 +6,9 @@
 //! stamped on every observation of a turn, not just its root.
 
 use opentelemetry::{Array, KeyValue, Value};
+use sha2::{Digest, Sha256};
 
-use super::llm::{ChatMessage, Completion, Role, TokenUsage};
+use super::llm::{ChatMessage, Completion, Role, TokenUsage, ToolDef};
 use super::session::{EscalationReason, SessionOutcome, TurnEnding};
 use super::turn::{TurnActor, TurnIdentity};
 use crate::telemetry::{Level, ObservationType, langfuse};
@@ -135,10 +136,32 @@ pub(crate) fn failed_root(input: Option<&str>, error: &str) -> Vec<KeyValue> {
     attributes
 }
 
+/// Stable fingerprint of a tools array: sha256 of its JSON serialization, hex.
+/// Two generations with the same hash were offered byte-identical tools.
+pub(crate) fn tools_hash(tools: &[ToolDef]) -> Option<String> {
+    let encoded = serde_json::to_vec(tools).ok()?;
+    let digest = Sha256::digest(&encoded);
+    Some(
+        digest
+            .iter()
+            .flat_map(|byte| [byte >> 4, byte & 0x0f])
+            .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
+            .collect(),
+    )
+}
+
 /// One model call. `sent` is the exact message array the request carried, which
 /// is what makes a trace replayable rather than a summary of one.
+///
+/// `tools` is what the request advertised and `access` the caller's tier. The
+/// tools array is large and identical across a turn's rounds, so the full array
+/// rides only on the round that sets `include_tools` while every generation
+/// carries its hash.
 pub(crate) fn generation(
     sent: &[ChatMessage],
+    tools: &[ToolDef],
+    access: &str,
+    include_tools: bool,
     completion: &Completion,
     round: usize,
 ) -> Vec<KeyValue> {
@@ -150,7 +173,18 @@ pub(crate) fn generation(
         KeyValue::new(langfuse::MODEL_NAME, completion.model.clone()),
         KeyValue::new(langfuse::LEVEL, Level::Default.as_str()),
         metadata(langfuse::OBSERVATION_METADATA, "round", round.to_string()),
+        metadata(langfuse::OBSERVATION_METADATA, "access", access.to_owned()),
     ];
+    if let Some(hash) = tools_hash(tools) {
+        attributes.push(metadata(
+            langfuse::OBSERVATION_METADATA,
+            "tools_sha256",
+            hash,
+        ));
+    }
+    if include_tools && let Ok(encoded) = serde_json::to_string(tools) {
+        attributes.push(metadata(langfuse::OBSERVATION_METADATA, "tools", encoded));
+    }
     // `ChatMessage` already serializes in the OpenAI wire format, which is what
     // Langfuse's chat renderer reads — so the trace shows a conversation rather
     // than a blob.

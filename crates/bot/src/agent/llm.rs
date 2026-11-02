@@ -46,6 +46,11 @@ pub(crate) struct ChatMessage {
     pub(crate) tool_calls: Option<Vec<ToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) tool_call_id: Option<String>,
+    /// The model's reasoning text, when the provider returns it. Kept in the
+    /// transcript and traces for training-data capture, but never echoed back:
+    /// [`send_chat_completion`] strips it from every message it sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -70,6 +75,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            reasoning_content: None,
         }
     }
 
@@ -79,6 +85,7 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -237,6 +244,18 @@ pub(crate) struct Completion {
     pub(crate) latency: Duration,
 }
 
+/// The transcript as the provider should receive it: reasoning text stays in the
+/// recorded copy but is never echoed back.
+fn without_reasoning(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    messages
+        .iter()
+        .map(|message| ChatMessage {
+            reasoning_content: None,
+            ..message.clone()
+        })
+        .collect()
+}
+
 /// Send one chat-completion turn and return the assistant message with the call's
 /// usage, finish reason, and measured latency. Advertises `tools` (with
 /// `tool_choice: auto`) when any are supplied.
@@ -253,9 +272,10 @@ pub(crate) async fn send_chat_completion(
     tools: &[ToolDef],
 ) -> Result<Completion> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let outbound = without_reasoning(messages);
     let request = ChatRequest {
         model: &cfg.model,
-        messages,
+        messages: &outbound,
         tools,
         tool_choice: (!tools.is_empty()).then_some("auto"),
         max_tokens: cfg.max_tokens,
