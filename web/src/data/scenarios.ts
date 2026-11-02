@@ -126,15 +126,15 @@ export const SCENARIOS: Scenario[] = [
     response: respond(
       "**mc-friends-smp** crashed on startup because Iris needs **Fabric API**, which wasn't installed. I added Fabric API to your mod list, restarted the server, and it came back online in 48 seconds. Nothing else changed.",
       [
-        t('read_logs', { server: 'mc-friends-smp', lines: 120 }, "Mod 'Iris' (iris) 1.8.1 requires any version of mod 'fabric-api', which is missing!\n[main/INFO]: Stopping server"),
+        t('read_logs', { name: 'mc-friends-smp', lines: 120 }, "Mod 'Iris' (iris) 1.8.1 requires any version of mod 'fabric-api', which is missing!\n[main/INFO]: Stopping server"),
         t('mod_info', { game: 'minecraft', slug: 'fabric-api' }, 'Fabric API (fabric-api) · Modrinth · latest 0.116.6+1.21.1 · loader: fabric · server-side: required'),
-        t('read_file', { server: 'mc-friends-smp', path: '.grizzly/env' }, '1 MODRINTH_PROJECTS=lithium,iris,sodium\n2 MAX_MEMORY=4G\n(2 lines)'),
+        t('read_file', { name: 'mc-friends-smp', path: '.grizzly/env' }, '1 MODRINTH_PROJECTS=lithium,iris,sodium\n2 MAX_MEMORY=4G\n(2 lines)'),
         t(
           'edit_file',
-          { server: 'mc-friends-smp', path: '.grizzly/env', find: 'MODRINTH_PROJECTS=lithium,iris,sodium', replace: 'MODRINTH_PROJECTS=lithium,iris,sodium,fabric-api' },
+          { name: 'mc-friends-smp', path: '.grizzly/env', old_text: 'MODRINTH_PROJECTS=lithium,iris,sodium', new_text: 'MODRINTH_PROJECTS=lithium,iris,sodium,fabric-api' },
           'Saved a snapshot of .grizzly/env, then edited it (1 line changed).',
         ),
-        t('restart_server', { server: 'mc-friends-smp' }, 'Restarted. The server reported ready after 48 s and is healthy.'),
+        t('restart_server', { name: 'mc-friends-smp' }, 'Restarted. The server reported ready after 48 s and is healthy.'),
       ],
       [gen(9120, 8704, 96, 412), gen(9384, 9088, 71, 288), gen(9560, 9344, 88, 301), gen(9810, 9536, 142, 377), gen(10020, 9792, 64, 266), gen(10210, 9984, 118, 352, 'stop')],
     ),
@@ -196,10 +196,10 @@ export const SCENARIOS: Scenario[] = [
     response: respond(
       "The server was falling behind because about **9,400 dropped items** piled up near spawn (it looks like a farm overflowing). I cleared the dropped items with a console command; ticks are back to normal. Nobody was disconnected. If it comes back, the farm near spawn needs a collection hopper.",
       [
-        t('server_resources', { server: 'mc-friends-smp' }, 'CPU 1.92 / 2.00 cores · memory 3.8 / 4.0 GiB'),
-        t('read_logs', { server: 'mc-friends-smp', lines: 80 }, "Can't keep up! Is the server overloaded? Running 4127ms or 82 ticks behind (x14 in the last 5 min)"),
-        t('send_command', { server: 'mc-friends-smp', command: 'execute if entity @e[type=item]' }, 'Test passed, count: 9412'),
-        t('send_command', { server: 'mc-friends-smp', command: 'kill @e[type=item]' }, 'Killed 9412 entities'),
+        t('server_resources', { name: 'mc-friends-smp' }, 'CPU 1.92 / 2.00 cores · memory 3.8 / 4.0 GiB'),
+        t('read_logs', { name: 'mc-friends-smp', lines: 80 }, "Can't keep up! Is the server overloaded? Running 4127ms or 82 ticks behind (x14 in the last 5 min)"),
+        t('send_command', { name: 'mc-friends-smp', command: 'execute if entity @e[type=item]' }, 'Test passed, count: 9412'),
+        t('send_command', { name: 'mc-friends-smp', command: 'kill @e[type=item]' }, 'Killed 9412 entities'),
       ],
       [gen(9010, 8704, 84, 351), gen(9240, 8960, 66, 270), gen(9420, 9216, 73, 284), gen(9590, 9344, 59, 262), gen(9700, 9472, 131, 398, 'stop')],
     ),
@@ -261,9 +261,9 @@ export const SCENARIOS: Scenario[] = [
     response: respond(
       "The world file for one area near spawn (`region/r.0.-1.mca`) was cut off mid-save, so the server can't load it. The cleanest fix is to restore this morning's **10:00** backup, which loses about **22 minutes** of play. I need your OK before I touch the world.",
       [
-        t('read_logs', { server: 'mc-friends-smp', lines: 120 }, 'java.io.EOFException: region/r.0.-1.mca: unexpected end of file\nFailed to read chunk [12, -7]'),
-        t('run_shell', { server: 'mc-friends-smp', command: 'ls -l world/region | sort -k5 -n | head -3' }, '-rw-r--r-- 1 game game     4096 Nov  2 10:21 r.0.-1.mca\n-rw-r--r-- 1 game game  1847296 Nov  2 10:22 r.0.0.mca'),
-        t('list_backups', { server: 'mc-friends-smp' }, '2026-11-02T10:00Z (22 min ago, 412 MB)\n2026-11-01T22:00Z (12 h ago, 409 MB)'),
+        t('read_logs', { name: 'mc-friends-smp', lines: 120 }, 'java.io.EOFException: region/r.0.-1.mca: unexpected end of file\nFailed to read chunk [12, -7]'),
+        t('run_shell', { name: 'mc-friends-smp', command: 'ls -l world/region | sort -k5 -n | head -3' }, '-rw-r--r-- 1 game game     4096 Nov  2 10:21 r.0.-1.mca\n-rw-r--r-- 1 game game  1847296 Nov  2 10:22 r.0.0.mca'),
+        t('list_backups', { name: 'mc-friends-smp' }, '2026-11-02T10:00Z (22 min ago, 412 MB)\n2026-11-01T22:00Z (12 h ago, 409 MB)'),
       ],
       [gen(9160, 8704, 90, 402), gen(9410, 9088, 112, 341), gen(9640, 9344, 77, 288), gen(9880, 9600, 156, 421, 'stop')],
     ),
@@ -275,8 +275,8 @@ export const SCENARIOS: Scenario[] = [
       approved: respond(
         'Restored the 10:00 backup and kept the broken world as its own backup in case you want anything from it. The server loaded cleanly and has been healthy for a minute.',
         [
-          t('backup_server', { server: 'mc-friends-smp', label: 'pre-restore' }, 'Backup saved: 2026-11-02T10:22Z (pre-restore)'),
-          t('restore_server', { server: 'mc-friends-smp', backup: '2026-11-02T10:00Z', confirm: true }, 'Restored 2026-11-02T10:00Z. Restarted; ready after 52 s and healthy.'),
+          t('backup_server', { name: 'mc-friends-smp', label: 'pre-restore' }, 'Backup saved: 2026-11-02T10:22Z (pre-restore)'),
+          t('restore_server', { name: 'mc-friends-smp', backup: '2026-11-02T10:00Z', confirm: true }, 'Restored 2026-11-02T10:00Z. Restarted; ready after 52 s and healthy.'),
         ],
         [gen(10110, 9856, 70, 296), gen(10290, 10112, 64, 274), gen(10420, 10240, 98, 331, 'stop')],
       ),
@@ -337,8 +337,8 @@ export const SCENARIOS: Scenario[] = [
     response: respond(
       "**mc-creative** is fine: it's up, 2 players are on, and nothing in the logs points to a problem. Your friend's game is on **1.21.3**, but the server runs **1.21.1**, and their launcher shows that as a timeout. They should pick the 1.21.1 profile in their launcher. I didn't change anything.",
       [
-        t('about_server', { server: 'mc-creative' }, 'mc-creative · Running · 2/8 players · Vanilla 1.21.1 · up 3 h 12 m'),
-        t('read_logs', { server: 'mc-creative', lines: 60 }, 'Disconnecting /203.0.113.24: Outdated server! I\'m still on 1.21.1 (client 1.21.3)'),
+        t('about_server', { name: 'mc-creative' }, 'mc-creative · Running · 2/8 players · Vanilla 1.21.1 · up 3 h 12 m'),
+        t('read_logs', { name: 'mc-creative', lines: 60 }, 'Disconnecting /203.0.113.24: Outdated server! I\'m still on 1.21.1 (client 1.21.3)'),
       ],
       [gen(9020, 8704, 79, 334), gen(9210, 8960, 68, 262), gen(9390, 9216, 124, 377, 'stop')],
     ),
@@ -388,6 +388,8 @@ export interface OwnedServer {
   id: string;
   game: string;
   state: ServerState;
+  /** From the live harness: only name, game, state and address are known. */
+  live?: boolean;
 }
 
 export const SERVERS: OwnedServer[] = [

@@ -67,19 +67,51 @@ function SuccessChart({ systems }: { systems: EvalSystem[] }) {
   );
 }
 
+/** Log-axis bounds padded by half a decade each way, so no point sits on an edge. */
+function logDomain(values: number[]): [number, number] {
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  return [lo / Math.sqrt(10), hi * Math.sqrt(10)];
+}
+
+/** Ticks at round values inside a log domain: powers of ten, or the given candidates. */
+function logTicks([lo, hi]: [number, number], candidates?: number[]): number[] {
+  if (candidates) return candidates.filter((v) => v >= lo && v <= hi);
+  const out: number[] = [];
+  for (let k = Math.ceil(Math.log10(lo)); 10 ** k <= hi; k++) out.push(10 ** k);
+  return out;
+}
+
+const SECONDS = [1, 10, 60, 600, 3600, 36_000, 86_400];
+
 function CostLatencyChart({ systems }: { systems: EvalSystem[] }) {
   const points = systems.map((s) => ({ name: shortLabel(s), x: s.latency_p50_ms / 1000, y: s.cost_per_1k_usd, fill: colorOf(s) }));
+  const xd = logDomain(points.map((p) => p.x));
+  const yd = logDomain(points.map((p) => p.y));
+  const maxX = Math.max(...points.map((p) => p.x));
+  // One line per label, beside its dot; the right-most point's label sits on its left so it never runs off the chart.
+  const label = (props: { x?: number | string; y?: number | string; value?: unknown; index?: number }) => {
+    const p = points[props.index ?? 0];
+    const right = p?.x === maxX;
+    return (
+      <text x={Number(props.x) + (right ? -12 : 12)} y={Number(props.y) + 4} textAnchor={right ? 'end' : 'start'} fill="var(--ink)" fontSize={12}>
+        {String(props.value)}
+      </text>
+    );
+  };
   return (
     <div className="ev-chart" style={{ height: 300 }}>
       <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart margin={{ top: 16, right: 32, bottom: 20, left: 8 }}>
+        <ScatterChart margin={{ top: 16, right: 24, bottom: 20, left: 8 }}>
           <CartesianGrid stroke="var(--line-soft)" />
           <XAxis
             type="number"
             dataKey="x"
             name="p50 latency"
             scale="log"
-            domain={['auto', 'auto']}
+            domain={xd}
+            ticks={logTicks(xd, SECONDS)}
+            allowDataOverflow
             tickFormatter={(v: number) => dur(v * 1000)}
             stroke="var(--faint)"
             tick={{ fill: 'var(--muted)', fontSize: 12 }}
@@ -90,7 +122,9 @@ function CostLatencyChart({ systems }: { systems: EvalSystem[] }) {
             dataKey="y"
             name="Cost per 1,000"
             scale="log"
-            domain={['auto', 'auto']}
+            domain={yd}
+            ticks={logTicks(yd)}
+            allowDataOverflow
             tickFormatter={(v: number) => usd(v)}
             stroke="var(--faint)"
             tick={{ fill: 'var(--muted)', fontSize: 12 }}
@@ -105,7 +139,7 @@ function CostLatencyChart({ systems }: { systems: EvalSystem[] }) {
             {points.map((p) => (
               <Cell key={p.name} fill={p.fill} />
             ))}
-            <LabelList dataKey="name" position="top" offset={10} style={{ fill: 'var(--ink)', fontSize: 12 }} />
+            <LabelList dataKey="name" content={label} />
           </Scatter>
         </ScatterChart>
       </ResponsiveContainer>

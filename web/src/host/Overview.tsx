@@ -17,7 +17,7 @@ function meanGaryCost(): number | null {
 }
 
 export function Overview() {
-  const { go } = useStore();
+  const { go, openIncident } = useStore();
   const resolved = TODAY.tickets - TODAY.escalated;
   const garyCost = meanGaryCost();
   const escalations = INCIDENTS.filter((i) => i.outcome === 'escalated');
@@ -70,7 +70,7 @@ export function Overview() {
                 </div>
                 <p className="host-esc-reason">{i.escalationReason}</p>
                 <div>
-                  <button type="button" className="btn btn-secondary btn-small" onClick={() => go('incidents')}>
+                  <button type="button" className="btn btn-secondary btn-small" onClick={() => openIncident(i.id)}>
                     Open
                   </button>
                 </div>

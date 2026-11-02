@@ -100,7 +100,8 @@ export function describeTool(t: ToolTrace): string {
 export function serversTouched(calls: ToolTrace[]): string[] {
   const seen: string[] = [];
   for (const t of calls) {
-    const s = str(args(t).server);
+    const a = args(t);
+    const s = str(a.name ?? a.server);
     if (s && !seen.includes(s)) seen.push(s);
   }
   return seen;

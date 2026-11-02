@@ -3,7 +3,8 @@
  * one-line story a lead needs; opened, it shows exactly what Gary did, what he told the
  * customer, and what it cost, so a host can audit him the way it would audit a hire.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useStore } from '../app/store';
 import { describeTool, fmtMs, fmtTokens, fmtUsd, isMutating, shortModel, turnCost } from '../gary/derive';
 import { Icon } from '../app/icons';
 import { Card, Provenance } from '../ui/ui';
@@ -101,8 +102,15 @@ function IncidentRow({ inc, open, onToggle }: { inc: Incident; open: boolean; on
 }
 
 export function Incidents() {
+  const { incident, openIncident } = useStore();
   const [filter, setFilter] = useState<Filter>('all');
-  const [open, setOpen] = useState<string | null>(null);
+  // Arriving from "Open" elsewhere: start with that incident expanded and in view.
+  const [open, setOpen] = useState<string | null>(incident);
+  useEffect(() => {
+    if (!incident) return;
+    document.getElementById(`${incident}-detail`)?.closest('li')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    openIncident(null);
+  }, [incident, openIncident]);
   const rows = INCIDENTS.filter((i) => filter === 'all' || i.outcome === filter);
 
   return (

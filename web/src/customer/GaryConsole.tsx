@@ -36,7 +36,7 @@ export function GaryConsole() {
 }
 
 function ConsoleHeader() {
-  const { breakServer, resetDemo, busy, scenario, turns, servers } = useStore();
+  const { breakServer, resetDemo, busy, scenario, turns, servers, mode } = useStore();
   const down = servers.filter((x) => x.state.status === 'Crashed').length;
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
@@ -61,10 +61,19 @@ function ConsoleHeader() {
         </span>
       </div>
       <div className="cx-demo" ref={menu}>
-        <button type="button" className="btn btn-secondary btn-small" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(!open)}>
-          <Icon name="bolt" size={15} />
-          Break the server
-        </button>
+        {mode === 'replay' && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-small"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            disabled={busy}
+            onClick={() => setOpen(!open)}
+          >
+            <Icon name="bolt" size={15} />
+            Break the server
+          </button>
+        )}
         {open && (
           <div className="cx-menu" role="menu">
             <div className="cx-menu-note">Demo: stage a known failure</div>
@@ -113,7 +122,10 @@ function Conversation() {
           <div className="cx-empty">
             <GaryMark size={40} />
             <h2>Hi, I&rsquo;m Gary.</h2>
-            <p>I look after all of your servers. Tell me what&rsquo;s wrong in plain English and I&rsquo;ll work out which server, read its logs, fix it, and check it came back healthy. I ask before touching a world.</p>
+            <p>
+              I look after all of your servers. Tell me what&rsquo;s wrong in plain English and I&rsquo;ll work out which server, read its logs, fix it, and
+              check it came back healthy. I ask before touching a world.
+            </p>
             <div className="cx-starters">
               {STARTERS.map((s) => (
                 <button key={s} type="button" className="chip" onClick={() => ask(s)}>
@@ -264,7 +276,9 @@ function Approval({ turn }: { turn: Turn }) {
           </button>
         </div>
       ) : (
-        <div className={`cx-approval-done ${state === 'approved' ? 'is-ok' : ''}`}>{state === 'approved' ? 'You approved this.' : 'You said no. Nothing was touched.'}</div>
+        <div className={`cx-approval-done ${state === 'approved' ? 'is-ok' : ''}`}>
+          {state === 'approved' ? 'You approved this.' : 'You said no. Nothing was touched.'}
+        </div>
       )}
     </div>
   );
@@ -322,30 +336,32 @@ function ServerRow({ server: x, open, onOpen }: { server: OwnedServer; open: boo
       </button>
       {open && (
         <div className="cx-srv-body">
-          <div className="cx-srv-detail">{st.detail}</div>
-          <dl className="cx-stats">
-            <div>
-              <dt>Players</dt>
-              <dd>
-                {st.players[0]}
-                <span className="muted"> / {st.players[1]}</span>
-              </dd>
-            </div>
-            <div>
-              <dt>Memory</dt>
-              <dd>
-                {st.memory[0].toFixed(1)}
-                <span className="muted"> / {st.memory[1]} GB</span>
-              </dd>
-              <div className="cx-bar" aria-hidden="true">
-                <span style={{ width: `${mem * 100}%` }} className={mem > 0.9 ? 'is-hot' : ''} />
+          <div className="cx-srv-detail">{x.live ? `Players connect at ${st.detail}` : st.detail}</div>
+          {!x.live && (
+            <dl className="cx-stats">
+              <div>
+                <dt>Players</dt>
+                <dd>
+                  {st.players[0]}
+                  <span className="muted"> / {st.players[1]}</span>
+                </dd>
               </div>
-            </div>
-            <div>
-              <dt>Restarts</dt>
-              <dd>{st.restarts}</dd>
-            </div>
-          </dl>
+              <div>
+                <dt>Memory</dt>
+                <dd>
+                  {st.memory[0].toFixed(1)}
+                  <span className="muted"> / {st.memory[1]} GB</span>
+                </dd>
+                <div className="cx-bar" aria-hidden="true">
+                  <span style={{ width: `${mem * 100}%` }} className={mem > 0.9 ? 'is-hot' : ''} />
+                </div>
+              </div>
+              <div>
+                <dt>Restarts</dt>
+                <dd>{st.restarts}</dd>
+              </div>
+            </dl>
+          )}
           {st.logTail && st.status !== 'Running' && (
             <pre className="cx-log" aria-label="Latest log lines">
               {st.logTail.join('\n')}

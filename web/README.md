@@ -21,7 +21,15 @@ npm run dev        # http://localhost:5190
 
 **Recorded replay** (the default) plays bundled `GaryResponse` traces from `src/data/scenarios.ts`, so the demo runs offline. Use **Break the server** in the owner's view to stage one of the four scenarios.
 
-**Live cluster** posts to Gary's operator harness (`POST /operator/gary`, see `crates/bot/src/http/operator.rs`) through the Vite dev proxy, which adds the bearer token server-side. Copy `.env.example` to `.env` and fill it in.
+**Live cluster** posts to Gary's operator harness (`POST /operator/gary`, see `crates/bot/src/http/operator.rs`) through the Vite dev proxy, which adds the bearer token server-side. Switching to Live first calls `list_servers`, so the owner's server list shows the real servers; if the harness can't be reached, the app says so and stays on Replay.
+
+To run live, from a machine with access to the cluster:
+
+```bash
+kubectl -n game-servers port-forward svc/grizzly-gameservers-agent 19360:9360
+```
+
+Then put the operator token and a channel id in `web/.env` (see `.env.example`), or in the repo-root `.env` that `scripts/operator.sh` already uses, and run `npm run dev`. A turn can run for minutes; the UI waits up to 15, the same as the operator script.
 
 ## Where the numbers come from
 

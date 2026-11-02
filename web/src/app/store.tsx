@@ -8,7 +8,7 @@
  * to Gary's operator harness through the dev-server proxy (see vite.config.ts).
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { SCENARIOS, SERVERS, type OwnedServer, type Scenario, type ServerState } from '../data/scenarios';
+import { SCENARIOS, SERVERS, type OwnedServer, type Scenario, type ServerState, type ServerStatus } from '../data/scenarios';
 import { serversTouched } from '../gary/derive';
 import type { GaryRequest, GaryResponse, ToolTrace } from '../gary/types';
 
@@ -54,6 +54,9 @@ interface Store {
   decide: (turnId: string, approve: boolean) => void;
   toast: string | null;
   showToast: (s: string) => void;
+  /** The incident the Incidents screen should open with, set by "Open" elsewhere. */
+  incident: string | null;
+  openIncident: (id: string | null) => void;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -61,7 +64,51 @@ const Ctx = createContext<Store | null>(null);
 const HOME: Record<Persona, Screen> = { host: 'overview', customer: 'gary' };
 const CHANNEL = import.meta.env.VITE_GARY_CHANNEL ?? '';
 const LIVE_SLOW_MS = 15_000;
-const LIVE_TIMEOUT_MS = 120_000;
+/** Same ceiling as scripts/operator.sh: a 16-round turn can legitimately run for minutes. */
+const LIVE_TIMEOUT_MS = 900_000;
+
+/**
+ * POST to Gary's operator harness. A 503 means the bot's Discord gateway is still
+ * connecting after a rollout, which clears in seconds, so it is retried like the
+ * operator script does.
+ */
+async function harness<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+    if (res.status === 503 && attempt < 3) {
+      await sleep(3000);
+      continue;
+    }
+    const json: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((json as { error?: string } | null)?.error ?? `Gary's harness answered ${res.status}`);
+    return json as T;
+  }
+}
+
+const LIVE_STATUS: Record<string, ServerStatus> = {
+  running: 'Running',
+  ready: 'Running',
+  starting: 'Starting',
+  stopped: 'Stopped',
+  paused: 'Stopped',
+  crashed: 'Crashed',
+  unhealthy: 'Crashed',
+};
+
+/** Parse list_servers' "{name} (game: {game}, state: {state}, address: {address})" lines. */
+export function parseServerList(text: string): OwnedServer[] {
+  const out: OwnedServer[] = [];
+  for (const m of text.matchAll(/^\W*(\S+) \(game: ([^,]+), state: ([^,]+), address: ([^)]+)\)/gm)) {
+    const [, id, game, state, address] = m;
+    out.push({
+      id,
+      game,
+      live: true,
+      state: { status: LIVE_STATUS[state.trim().toLowerCase()] ?? 'Stopped', detail: address.trim(), players: [0, 0], memory: [0, 0], restarts: 0 },
+    });
+  }
+  return out;
+}
 
 let seq = 0;
 const nextId = () => `t${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -71,7 +118,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function statusAnswer(servers: OwnedServer[]): GaryResponse {
   const up = servers.filter((x) => x.state.status === 'Running');
   const line = (x: OwnedServer) => `${x.id} · ${x.state.status} · ${x.state.players[0]}/${x.state.players[1]} players · ${x.state.detail}`;
-  const lines = servers.map((x) => `- **${x.id}**: ${x.state.status.toLowerCase()}${x.state.status === 'Running' ? `, ${x.state.players[0]} of ${x.state.players[1]} players on` : ''}`);
+  const lines = servers.map(
+    (x) => `- **${x.id}**: ${x.state.status.toLowerCase()}${x.state.status === 'Running' ? `, ${x.state.players[0]} of ${x.state.players[1]} players on` : ''}`,
+  );
   return {
     reply: `${up.length} of your ${servers.length} servers are running and nothing in the recent logs needs attention.\n\n${lines.join('\n')}`,
     escalated: false,
@@ -79,8 +128,24 @@ function statusAnswer(servers: OwnedServer[]): GaryResponse {
     escalation_reason: null,
     rounds: 2,
     generations: [
-      { model: 'accounts/fireworks/models/glm-5p2', prompt_tokens: 9010, cached_tokens: 8704, completion_tokens: 61, total_tokens: 9071, finish_reason: 'tool_calls', latency_ms: 318 },
-      { model: 'accounts/fireworks/models/glm-5p2', prompt_tokens: 9230, cached_tokens: 8960, completion_tokens: 132, total_tokens: 9362, finish_reason: 'stop', latency_ms: 341 },
+      {
+        model: 'accounts/fireworks/models/glm-5p2',
+        prompt_tokens: 9010,
+        cached_tokens: 8704,
+        completion_tokens: 61,
+        total_tokens: 9071,
+        finish_reason: 'tool_calls',
+        latency_ms: 318,
+      },
+      {
+        model: 'accounts/fireworks/models/glm-5p2',
+        prompt_tokens: 9230,
+        cached_tokens: 8960,
+        completion_tokens: 132,
+        total_tokens: 9362,
+        finish_reason: 'stop',
+        latency_ms: 341,
+      },
     ],
     usage: { prompt_tokens: 18240, cached_tokens: 17664, completion_tokens: 193, total_tokens: 18433 },
     latency_ms: 659,
@@ -98,6 +163,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [draft, setDraft] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [incident, setIncident] = useState<string | null>(null);
   const toastTimer = useRef<number>();
   const busy = turns.some((t) => t.status === 'running');
 
@@ -114,6 +180,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     u.searchParams.set('as', p);
     history.replaceState(null, '', u);
   }, []);
+
+  /** Live mode shows the real servers Gary can see, not the demo set. */
+  const loadLiveServers = useCallback(async (): Promise<boolean> => {
+    try {
+      const r = await harness<{ result: string }>('/operator/tool', { tool: 'list_servers', arguments: {}, channel: CHANNEL, access: 'manager' });
+      const list = parseServerList(r.result);
+      if (list.length) {
+        setServers(list);
+        setFocus((f) => (list.some((x) => x.id === f) ? f : list[0].id));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const changeMode = useCallback(
+    (m: Mode) => {
+      if (m === 'replay') {
+        setMode('replay');
+        setServers(SERVERS);
+        setFocus(SERVERS[0].id);
+        return;
+      }
+      if (!CHANNEL) {
+        showToast('Live mode needs Gary’s harness details in web/.env. See web/README.md.');
+        return;
+      }
+      void loadLiveServers().then((ok) => {
+        if (ok) {
+          setMode('live');
+          setScenario(null);
+        } else showToast('Couldn’t reach Gary’s harness. Staying on Replay.');
+      });
+    },
+    [loadLiveServers, showToast],
+  );
 
   const setState = useCallback((id: string, state: ServerState) => setServers((xs) => xs.map((x) => (x.id === id ? { ...x, state } : x))), []);
 
@@ -156,27 +259,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const live = useCallback(
     async (id: string, prompt: string, confirm = false) => {
-      const body: GaryRequest = { prompt, new_session: false, channel: CHANNEL, access: 'manager', confirm };
+      // `confirm` pre-approves a destructive tool and the harness only accepts it at admin.
+      const body: GaryRequest = { prompt, new_session: false, channel: CHANNEL, access: confirm ? 'admin' : 'manager', confirm };
       const ctl = new AbortController();
       const slow = window.setTimeout(() => showToast('Gary is still working. Switch to Replay from the top bar if the network is the problem.'), LIVE_SLOW_MS);
       const kill = window.setTimeout(() => ctl.abort(), LIVE_TIMEOUT_MS);
       try {
-        const res = await fetch('/operator/gary', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctl.signal });
-        const json: unknown = await res.json().catch(() => null);
-        if (!res.ok) throw new Error((json as { error?: string } | null)?.error ?? `Gary's harness answered ${res.status}`);
-        const r = json as GaryResponse;
+        const r = await harness<GaryResponse>('/operator/gary', body, ctl.signal);
         patch(id, (t) => ({ ...t, status: 'done', steps: r.tool_calls, response: r }));
         const touched = serversTouched(r.tool_calls);
         if (touched.length) setFocus(touched[touched.length - 1]);
+        void loadLiveServers();
       } catch (e) {
-        const msg = ctl.signal.aborted ? 'Gary took longer than two minutes.' : e instanceof Error ? e.message : String(e);
+        const msg = ctl.signal.aborted ? 'Gary took longer than 15 minutes.' : e instanceof Error ? e.message : String(e);
         patch(id, (t) => ({ ...t, status: 'error', error: msg }));
       } finally {
         window.clearTimeout(slow);
         window.clearTimeout(kill);
       }
     },
-    [patch, showToast],
+    [patch, showToast, loadLiveServers],
   );
 
   const ask = useCallback(
@@ -239,11 +341,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setDraft('');
   }, []);
 
+  const openIncident = useCallback((id: string | null) => {
+    setIncident(id);
+    if (id) setScreen('incidents');
+  }, []);
+
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
   return (
     <Ctx.Provider
-      value={{ persona, setPersona, screen, go: setScreen, mode, setMode, servers, focus, setFocus, scenario, breakServer, resetDemo, draft, setDraft, turns, busy, ask, decide, toast, showToast }}
+      value={{
+        persona,
+        setPersona,
+        screen,
+        go: setScreen,
+        mode,
+        setMode: changeMode,
+        servers,
+        focus,
+        setFocus,
+        scenario,
+        breakServer,
+        resetDemo,
+        draft,
+        setDraft,
+        turns,
+        busy,
+        ask,
+        decide,
+        toast,
+        showToast,
+        incident,
+        openIncident,
+      }}
     >
       {children}
     </Ctx.Provider>
