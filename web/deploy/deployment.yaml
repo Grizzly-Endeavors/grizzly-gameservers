@@ -21,6 +21,9 @@ spec:
       containers:
         - name: web
           image: gary-web
+          envFrom:
+            - secretRef:
+                name: gary-web-live
           ports:
             - name: http
               containerPort: 8080
@@ -44,6 +47,11 @@ spec:
             # nginx writes its pid and temp files here.
             - name: tmp
               mountPath: /tmp
+            # The image renders its nginx config here from the template at start.
+            - name: conf
+              mountPath: /etc/nginx/conf.d
       volumes:
         - name: tmp
+          emptyDir: {}
+        - name: conf
           emptyDir: {}
