@@ -1,7 +1,7 @@
 //! The bot's client for the supervisor's filesystem, logs, and command routes —
 //! the transport behind Gary's attach/inspect/edit and run-command tools. Each
 //! call runs the same existence/managed/pod-IP gate as the lifecycle actions (via
-//! [`resolve_managed_pod`]) and then issues one HTTP request to the in-pod
+//! [`Servers::locate`]) and then issues one HTTP request to the in-pod
 //! control API, mapping the reply to a [`FsOutcome`] the tool layer renders as
 //! plain text.
 
@@ -15,12 +15,12 @@ use grizzly_control_api::{
     OccupancyResponse, PathQuery, ReadQuery, ReadResponse, RestoreRequest, RestoreResponse,
     SHELL_PATH, ShellRequest, ShellResponse, WriteRequest, WriteResponse,
 };
-use kube::Client;
 use serde::de::DeserializeOwned;
 use tracing::{debug, warn};
 
 use super::control_client::ControlClient;
-use super::supervisor::{PodTarget, resolve_managed_pod};
+use super::directory::Servers;
+use super::supervisor::PodTarget;
 
 /// Per-request timeout for the filesystem/logs calls. These touch only the PVC
 /// or an in-memory buffer, so they're fast; this is a guard against a wedged pod,
@@ -58,18 +58,16 @@ pub(crate) enum FsOutcome<T> {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_list_files(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     path: &str,
 ) -> Result<FsOutcome<Vec<DirEntry>>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{FS_LIST_PATH}");
+    let url = format!("{base}{FS_LIST_PATH}");
     let response = http
         .get(&url)
         .query(&PathQuery {
@@ -103,19 +101,17 @@ pub(crate) enum ReadWindow {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_file(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     path: &str,
     window: ReadWindow,
 ) -> Result<FsOutcome<ReadResponse>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{FS_READ_PATH}");
+    let url = format!("{base}{FS_READ_PATH}");
     let query = match window {
         ReadWindow::Whole => ReadQuery {
             path: path.to_owned(),
@@ -143,19 +139,17 @@ pub(crate) async fn supervisor_read_file(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_write_file(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     path: &str,
     content: &str,
 ) -> Result<FsOutcome<WriteResponse>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{FS_WRITE_PATH}");
+    let url = format!("{base}{FS_WRITE_PATH}");
     let response = http
         .post(&url)
         .json(&WriteRequest {
@@ -206,11 +200,9 @@ pub(crate) struct Replacement<'a> {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_edit_file(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     path: &str,
     edit: Replacement<'_>,
 ) -> Result<EditOutcome> {
@@ -224,11 +216,11 @@ pub(crate) async fn supervisor_edit_file(
         return Ok(EditOutcome::NoMatch);
     }
 
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(into_unserved::<()>(not_ready.into_outcome())),
     };
-    let url = format!("http://{pod_ip}:{control_port}{FS_EDIT_PATH}");
+    let url = format!("{base}{FS_EDIT_PATH}");
     let response = http
         .post(&url)
         .json(&EditRequest {
@@ -297,18 +289,16 @@ fn into_unserved<T>(outcome: FsOutcome<T>) -> EditOutcome {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_restore_file(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     path: &str,
 ) -> Result<FsOutcome<RestoreResponse>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{FS_RESTORE_PATH}");
+    let url = format!("{base}{FS_RESTORE_PATH}");
     let response = http
         .post(&url)
         .json(&RestoreRequest {
@@ -326,18 +316,16 @@ pub(crate) async fn supervisor_restore_file(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_logs(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     lines: Option<usize>,
 ) -> Result<FsOutcome<Vec<String>>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{LOGS_PATH}");
+    let url = format!("{base}{LOGS_PATH}");
     let response = http
         .get(&url)
         .query(&LogsQuery { lines })
@@ -356,18 +344,16 @@ pub(crate) async fn supervisor_read_logs(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_send_command(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     command: &str,
 ) -> Result<FsOutcome<CommandResponse>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{COMMAND_PATH}");
+    let url = format!("{base}{COMMAND_PATH}");
     let response = http
         .post(&url)
         .json(&CommandRequest {
@@ -397,18 +383,16 @@ pub(crate) async fn supervisor_send_command(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_run_shell(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     command: &str,
 ) -> Result<FsOutcome<Option<ShellResponse>>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{SHELL_PATH}");
+    let url = format!("{base}{SHELL_PATH}");
     let response = http
         .post(&url)
         .json(&ShellRequest {
@@ -439,17 +423,15 @@ pub(crate) async fn supervisor_run_shell(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_occupancy(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<FsOutcome<Option<u32>>> {
-    let pod_ip = match target_pod(client, namespace, instance).await? {
-        Ok(pod_ip) => pod_ip,
+    let base = match target_pod(servers, instance).await? {
+        Ok(base) => base,
         Err(not_ready) => return Ok(not_ready.into_outcome()),
     };
-    let url = format!("http://{pod_ip}:{control_port}{OCCUPANCY_PATH}");
+    let url = format!("{base}{OCCUPANCY_PATH}");
     let response = http.get(&url).timeout(FS_TIMEOUT).send().await;
     let outcome: FsOutcome<OccupancyResponse> = finish(response, &url).await;
     Ok(map_payload(outcome, |occupancy| occupancy.players))
@@ -461,15 +443,13 @@ pub(crate) async fn supervisor_occupancy(
 /// logged and swallowed rather than propagated. A paused or RCON-less server
 /// simply gets no broadcast.
 pub(crate) async fn supervisor_announce(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     message: &str,
 ) {
-    let pod_ip = match resolve_managed_pod(client, namespace, instance).await {
-        Ok(PodTarget::Ready(pod_ip)) => pod_ip,
+    let base = match servers.locate(instance).await {
+        Ok(PodTarget::Ready(base)) => base,
         Ok(_) => {
             debug!(instance, "skipping in-game announce; pod not ready");
             return;
@@ -479,7 +459,7 @@ pub(crate) async fn supervisor_announce(
             return;
         }
     };
-    let url = format!("http://{pod_ip}:{control_port}{ANNOUNCE_PATH}");
+    let url = format!("{base}{ANNOUNCE_PATH}");
     match http
         .post(&url)
         .json(&AnnounceRequest {
@@ -513,15 +493,14 @@ impl Unavailable {
     }
 }
 
-/// Resolve the instance's pod IP, or the reason it isn't reachable.
+/// Resolve the instance's control-API base URL, or the reason it isn't reachable.
 async fn target_pod(
-    client: &Client,
-    namespace: &str,
+    servers: Servers<'_>,
     instance: &str,
 ) -> Result<std::result::Result<String, Unavailable>> {
-    let target = resolve_managed_pod(client, namespace, instance).await?;
+    let target = servers.locate(instance).await?;
     Ok(match target {
-        PodTarget::Ready(pod_ip) => Ok(pod_ip),
+        PodTarget::Ready(base) => Ok(base),
         PodTarget::NotFound => Err(Unavailable::NotFound),
         PodTarget::NotManaged => Err(Unavailable::NotManaged),
         PodTarget::PodNotReady => Err(Unavailable::PodNotReady),

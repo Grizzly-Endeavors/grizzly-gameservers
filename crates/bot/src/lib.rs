@@ -20,6 +20,7 @@ mod ingame;
 mod interrupt;
 mod kv;
 mod limits;
+mod local;
 mod mail;
 mod memory;
 mod modrinth;
@@ -37,6 +38,7 @@ mod untrusted;
 mod watchdog;
 
 pub use config::BotConfig;
+pub use local::run_gary_local;
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
@@ -171,6 +173,7 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
         namespace,
         domain,
         control_port,
+        directory: agones::ServerDirectory::Cluster,
         catalog,
         provision_lock,
         operator_ids,

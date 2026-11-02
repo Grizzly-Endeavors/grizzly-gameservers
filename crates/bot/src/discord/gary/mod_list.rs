@@ -152,11 +152,9 @@ pub(crate) async fn exec_import_profile(ctx: &ToolCtx<'_>, server: &str, code: &
     let diff = diff_import(&current, &plan);
 
     match supervisor_write_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         &target.mods_file,
         &plan.render(),
     )
@@ -234,11 +232,9 @@ pub(crate) async fn exec_update_mods(ctx: &ToolCtx<'_>, server: &str, apply: boo
     }
 
     match supervisor_write_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         &target.mods_file,
         &plan.text,
     )
@@ -425,11 +421,9 @@ pub(super) async fn read_text(
     path: &str,
 ) -> Result<Option<String>, String> {
     match supervisor_read_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         path,
         // Whole file, in bytes: this is parsed, not read, so a line window would
         // silently hand the parser a prefix of a long mod list.
@@ -468,11 +462,9 @@ async fn store_code(
         entries: fingerprint(mods),
     };
     match supervisor_write_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         path,
         &cached.render(),
     )

@@ -30,6 +30,7 @@ use super::auth::{AccessLevel, Speaker, access_level_for};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
 use crate::agent::OllamaConfig;
+use crate::agent::ProgressFn;
 use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, Role, SessionCallbacks, SessionEvent, SessionId,
@@ -42,6 +43,7 @@ use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 use crate::throttle::{TurnRefusal, TurnSubject};
+use tokio_util::sync::CancellationToken;
 
 /// How often the typing indicator is refreshed while a session runs. Discord's
 /// indicator lasts ~10s, so 8s keeps it lit without a visible gap.
@@ -364,13 +366,10 @@ pub(crate) async fn run_gary_turn(
             generations: Vec::new(),
         });
     };
-    let ollama = &connection;
-    let max_rounds = turn.data.settings.snapshot().gary_max_rounds;
-
     let tool_defs = tools::available_tools_for(turn.access, turn.memory_tools);
     let tool_ctx = tools::ToolCtx {
         data: turn.data,
-        serenity: turn.ctx,
+        serenity: Some(turn.ctx),
         origin: turn.origin,
         channel_id: turn.channel_id,
         guild: turn.guild,
@@ -382,19 +381,8 @@ pub(crate) async fn run_gary_turn(
         guardrail: std::sync::Mutex::new(None),
         escalation: std::sync::Mutex::new(None),
     };
-    // Capture only Copy references (`&`), so each closure stays `Fn` — the session
-    // may call them across several rounds.
-    let http = &turn.data.http;
     let ctx = turn.ctx;
     let channel_id = turn.channel_id;
-    let tool_ctx = &tool_ctx;
-    let complete = move |transcript: Vec<ChatMessage>, defs: Vec<ToolDef>| {
-        Box::pin(async move { send_chat_completion(http, ollama, &transcript, &defs).await })
-            as CompleteFuture<'_>
-    };
-    let dispatch = move |call| {
-        Box::pin(async move { tools::dispatch(tool_ctx, &call).await }) as DispatchFuture<'_>
-    };
     // Post interim narration inline, before its tool calls run, so "I'll delete
     // minecraft — confirm below" lands ahead of the tool's own side effects.
     let progress = move |event: SessionEvent| {
@@ -405,38 +393,21 @@ pub(crate) async fn run_gary_turn(
         }) as ProgressFuture<'_>
     };
 
-    // The escalation tool records into the tool context; the loop reads it here
-    // and stops, which is what stops Gary paging an operator and then carrying
-    // on with the same problem.
-    let escalation_requested = move || tool_ctx.escalation_request();
-
-    let recorder = TurnRecorder::new(turn.identity(), Arc::clone(&turn.data.telemetry));
     // Registered for the whole run and deregistered by the guard on the way out,
     // so `/gary-stop` in this channel reaches this turn and nothing else.
     let (cancel, _interrupt) = turn.data.interrupts.register(turn.channel_id.get());
     let typing = start_typing(turn.ctx, turn.channel_id);
-    let outcome = run_session(
-        messages,
+    let outcome = drive_turn(
+        &tool_ctx,
+        turn.identity(),
+        &connection,
         tool_defs,
-        max_rounds,
-        &recorder,
-        &SessionCallbacks {
-            complete: &complete,
-            dispatch: &dispatch,
-            progress: &progress,
-            escalation_requested: &escalation_requested,
-            cancel: &cancel,
-        },
+        messages,
+        &progress,
+        &cancel,
     )
     .await;
     drop(typing);
-
-    // The restart guardrail's verdict is reached inside a tool, so the loop only
-    // ever saw it as result prose. Score it here, where both the tool context and
-    // the recorder are still in scope.
-    if let Some(verdict) = tool_ctx.guardrail_verdict() {
-        recorder.record_guardrail(verdict);
-    }
 
     match &outcome {
         Ok(SessionOutcome { reply, .. }) => send_chunks(turn.ctx, turn.channel_id, reply).await,
@@ -449,6 +420,69 @@ pub(crate) async fn run_gary_turn(
             )
             .await;
         }
+    }
+    outcome
+}
+
+/// The model loop behind a Gary turn, with no delivery surface of its own: run
+/// the session against `tool_ctx`'s tools, recording it under `identity`, and
+/// score the restart guardrail's verdict once it returns. `progress` is where
+/// interim narration goes; `cancel` is what stops the turn.
+///
+/// Every surface that runs Gary's full tool set comes through here, so the loop,
+/// the round budget, the escalation exit and the telemetry are the same whether
+/// the reply then lands in Discord or on stdout.
+///
+/// # Errors
+///
+/// Returns an error only if the model call itself fails; tool failures are
+/// surfaced to the model as text, not propagated.
+pub(crate) async fn drive_turn<'f>(
+    tool_ctx: &'f tools::ToolCtx<'f>,
+    identity: TurnIdentity,
+    connection: &'f OllamaConfig,
+    tool_defs: Vec<ToolDef>,
+    messages: &mut Vec<ChatMessage>,
+    progress: &ProgressFn<'f>,
+    cancel: &CancellationToken,
+) -> Result<SessionOutcome> {
+    let max_rounds = tool_ctx.data.settings.snapshot().gary_max_rounds;
+    // Capture only Copy references (`&`), so each closure stays `Fn` — the session
+    // may call them across several rounds.
+    let http = &tool_ctx.data.http;
+    let complete = move |transcript: Vec<ChatMessage>, defs: Vec<ToolDef>| {
+        Box::pin(async move { send_chat_completion(http, connection, &transcript, &defs).await })
+            as CompleteFuture<'_>
+    };
+    let dispatch = move |call| {
+        Box::pin(async move { tools::dispatch(tool_ctx, &call).await }) as DispatchFuture<'_>
+    };
+    // The escalation tool records into the tool context; the loop reads it here
+    // and stops, which is what stops Gary paging an operator and then carrying
+    // on with the same problem.
+    let escalation_requested = move || tool_ctx.escalation_request();
+
+    let recorder = TurnRecorder::new(identity, Arc::clone(&tool_ctx.data.telemetry));
+    let outcome = run_session(
+        messages,
+        tool_defs,
+        max_rounds,
+        &recorder,
+        &SessionCallbacks {
+            complete: &complete,
+            dispatch: &dispatch,
+            progress,
+            escalation_requested: &escalation_requested,
+            cancel,
+        },
+    )
+    .await;
+
+    // The restart guardrail's verdict is reached inside a tool, so the loop only
+    // ever saw it as result prose. Score it here, where both the tool context and
+    // the recorder are still in scope.
+    if let Some(verdict) = tool_ctx.guardrail_verdict() {
+        recorder.record_guardrail(verdict);
     }
     outcome
 }

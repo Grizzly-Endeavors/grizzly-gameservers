@@ -433,14 +433,7 @@ async fn perform(
     let data = &deps.data;
     match action {
         InstanceAction::Stop => {
-            let outcome = supervisor_stop(
-                &data.kube_client,
-                &data.control_http,
-                &data.namespace,
-                name,
-                data.control_port,
-            )
-            .await?;
+            let outcome = supervisor_stop(data.servers(), &data.control_http, name).await?;
             Ok((
                 mapping::supervisor(&outcome),
                 format!("Stopped {name} — its pod stays up, so starting it again is instant."),
@@ -448,14 +441,7 @@ async fn perform(
         }
         InstanceAction::Start => start(deps, name).await,
         InstanceAction::Restart => {
-            let outcome = supervisor_restart(
-                &data.kube_client,
-                &data.control_http,
-                &data.namespace,
-                name,
-                data.control_port,
-            )
-            .await?;
+            let outcome = supervisor_restart(data.servers(), &data.control_http, name).await?;
             Ok((mapping::supervisor(&outcome), format!("Restarted {name}.")))
         }
         InstanceAction::Shutdown => {
@@ -492,14 +478,7 @@ async fn perform(
 /// not a side effect of starting a server from here.
 async fn start(deps: &AdminDeps, name: &str) -> anyhow::Result<(&'static str, String)> {
     let data = &deps.data;
-    let warm = supervisor_start(
-        &data.kube_client,
-        &data.control_http,
-        &data.namespace,
-        name,
-        data.control_port,
-    )
-    .await?;
+    let warm = supervisor_start(data.servers(), &data.control_http, name).await?;
     // A pod that isn't there can't be resumed in place; every other outcome is
     // an answer about the warm path and stands on its own.
     if !matches!(

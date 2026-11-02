@@ -8,6 +8,7 @@ mod capacity;
 mod catalog;
 mod client;
 mod control_client;
+mod directory;
 mod env_overlay;
 mod instance;
 mod labels;
@@ -26,6 +27,7 @@ mod types;
 pub(crate) use catalog::{GameCatalog, load_catalog};
 pub(crate) use client::{LiveInstance, guild_usage, list_active_servers, list_live_instances};
 pub(crate) use control_client::ControlClient;
+pub(crate) use directory::{FixedServer, FixedServers, ServerDirectory, Servers};
 pub(crate) use env_overlay::EnvOverlay;
 pub(crate) use instance::catalog_sizing;
 pub(crate) use labels::{
@@ -47,13 +49,12 @@ pub(crate) use provision::{
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
 pub(crate) use resize::{ResizeOutcome, resize_instance};
-pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope, owner_of, verify_scope};
+pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope, owner_in_cluster};
 pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, StatusPoll, SupervisorOutcome,
-    instance_runtime_state, resolve_managed_pod, supervisor_restart, supervisor_start,
-    supervisor_status, supervisor_stop, wait_for_control_reachable, wait_for_ready,
-    wait_for_ready_within,
+    instance_runtime_state, supervisor_restart, supervisor_start, supervisor_status,
+    supervisor_stop, wait_for_control_reachable, wait_for_ready, wait_for_ready_within,
 };
 // Only the drift guard in `crate::tests::config` reads this — the runtime callers
 // are inside `supervisor` itself — so exporting it unconditionally would be an

@@ -105,6 +105,9 @@ pub(crate) struct Data {
     pub(crate) domain: String,
     /// Port the supervisor's control API listens on inside each game pod.
     pub(crate) control_port: u16,
+    /// Where the servers this process operates live: the cluster for the
+    /// deployed bot, a fixed set for `gary-local`. Read through [`Self::servers`].
+    pub(crate) directory: crate::agones::ServerDirectory,
     pub(crate) catalog: Arc<GameCatalog>,
     /// Serializes the port-lease→Service-create critical section across
     /// concurrent `/create`s so two friends can't claim the same `NodePort`.
@@ -202,6 +205,18 @@ impl Data {
     /// person as Gary changing his mind about what he is.
     pub(crate) fn ollama_now(&self) -> Option<OllamaConfig> {
         ollama_now(self.ollama.as_ref(), &self.settings)
+    }
+
+    /// Where this process finds a server's supervisor, for every control call.
+    pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
+        match &self.directory {
+            crate::agones::ServerDirectory::Cluster => crate::agones::Servers::Cluster {
+                client: &self.kube_client,
+                namespace: &self.namespace,
+                control_port: self.control_port,
+            },
+            crate::agones::ServerDirectory::Fixed(fixed) => crate::agones::Servers::Fixed(fixed),
+        }
     }
 }
 
@@ -372,8 +387,7 @@ pub(crate) async fn cold_start_refusal(
     data: &Data,
     instance: &str,
 ) -> anyhow::Result<Option<crate::limits::LimitRefusal>> {
-    let Some(owner) = crate::agones::owner_of(&data.kube_client, &data.namespace, instance).await?
-    else {
+    let Some(owner) = data.servers().owner_of(instance).await? else {
         return Ok(None);
     };
     let Some(guild) = owner.guild else {

@@ -76,7 +76,7 @@ const OPERATOR_CALL_ID: &str = "operator";
 /// telemetry environment and the event log's surface. Provenance lives there,
 /// where it cannot be talked around, rather than in a word the model has to
 /// interpret.
-const OPERATOR_SPEAKER: &str = "the operator";
+pub(crate) const OPERATOR_SPEAKER: &str = "the operator";
 
 /// Cloneable state the operator routes share with the rest of the bot. `Data`
 /// already carries the gateway handle, so this is just the command state.
@@ -171,7 +171,7 @@ fn memory_on() -> bool {
 /// A per-turn model selection: which provider, which model tag, and an optional
 /// completion ceiling.
 #[derive(Deserialize)]
-struct ModelProfile {
+pub(crate) struct ModelProfile {
     /// `fireworks` or `ollama`.
     provider: String,
     model: String,
@@ -207,7 +207,7 @@ fn turn_connection(
 ///
 /// `ollama_now` is the connection Discord turns would use; the `ollama`
 /// provider reuses its key and base URL with the requested model.
-fn resolve_connection(
+pub(crate) fn resolve_connection(
     profile: Option<&ModelProfile>,
     ollama_now: Option<&OllamaConfig>,
     fireworks_api_key: Option<&str>,
@@ -261,15 +261,18 @@ struct ToolsQuery {
     access: Option<String>,
 }
 
+/// The body of `POST /operator/tool`, and of a `gary-local` tool request.
 #[derive(Serialize)]
-struct ToolResponse {
-    tool: String,
+pub(crate) struct ToolResponse {
+    pub(crate) tool: String,
     /// The dispatcher's text, byte-identical to what the model would have read.
-    result: String,
+    pub(crate) result: String,
 }
 
+/// The body of `POST /operator/gary`, and of a `gary-local` turn request. One
+/// type for both, so a harness that parses one parses the other.
 #[derive(Serialize)]
-struct GaryResponse {
+pub(crate) struct GaryResponse {
     reply: String,
     /// Whether Gary escalated rather than finishing the request himself.
     escalated: bool,
@@ -340,7 +343,7 @@ struct ToolTrace {
 /// Why an operator request couldn't be served. Each maps to a status the harness
 /// can act on: fix the request, or wait and retry.
 #[derive(Debug)]
-enum OperatorError {
+pub(crate) enum OperatorError {
     /// The request itself is wrong — an unknown tool, a bad tier, a missing id.
     BadRequest(String),
     /// The bot isn't ready to serve this yet (gateway still connecting, or Gary
@@ -353,6 +356,14 @@ enum OperatorError {
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
+}
+
+impl std::fmt::Display for OperatorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadRequest(error) | Self::Unavailable(error) => f.write_str(error),
+        }
+    }
 }
 
 impl IntoResponse for OperatorError {
@@ -407,7 +418,7 @@ async fn run_tool(
 
     let tool_ctx = ToolCtx {
         data,
-        serenity: &serenity_ctx,
+        serenity: Some(&serenity_ctx),
         origin: TurnOrigin::Operator,
         channel_id: acting.channel_id,
         guild: acting.guild,
@@ -503,52 +514,55 @@ async fn run_gary(
 
     // Read off before the turn's fields are moved out below.
     let (actor, guild) = (acting.author_id, acting.guild);
-    let committed = outcome.clone();
-    let SessionOutcome {
-        reply,
-        ending,
-        generations,
-    } = outcome;
-    let escalation = match &ending {
-        TurnEnding::Escalated(reason) => Some(reason),
-        TurnEnding::Answered | TurnEnding::Cancelled => None,
-    };
-    let escalation_kind = escalation.map(EscalationReason::as_str);
-    let escalation_reason = match escalation {
-        Some(EscalationReason::AgentRequested { reason, .. }) => Some(reason.clone()),
-        Some(EscalationReason::RoundBudget) | None => None,
-    };
-    if let Some(reason) = escalation {
+    if let Some(reason) = outcome.escalation() {
         record_harness_escalation(data, actor, guild, reason).await;
     }
-    let transcript = turn_transcript(&messages, mark);
-    let turn_slice = messages.get(mark..).unwrap_or_default();
-    let tool_calls = tool_trace(turn_slice);
-    let rounds = rounds(turn_slice);
+    let response = GaryResponse::from_turn(
+        &outcome,
+        &messages,
+        mark,
+        available_tools_for(acting.access, request.memory),
+    );
     // Commit last: it moves the transcript the trace was read from.
     let limits = data.settings.snapshot().transcript_limits();
-    commit_turn(
-        &data.sessions,
-        key,
-        session.id,
-        messages,
-        &committed,
-        limits,
-    );
+    commit_turn(&data.sessions, key, session.id, messages, &outcome, limits);
+    Ok(axum::Json(response))
+}
 
-    Ok(axum::Json(GaryResponse {
-        reply,
-        escalated: escalation.is_some(),
-        escalation_kind,
-        escalation_reason,
-        rounds,
-        usage: usage_totals(&generations),
-        latency_ms: generations.iter().map(|g| millis(g.latency)).sum(),
-        generations: generations.iter().map(generation_trace).collect(),
-        tool_calls,
-        messages: transcript,
-        tools: available_tools_for(acting.access, request.memory),
-    }))
+impl GaryResponse {
+    /// The response for a turn that just ran: `messages` is its whole transcript,
+    /// `mark` where this turn's additions start (one past its user message), and
+    /// `tools` what the model was offered.
+    pub(crate) fn from_turn(
+        outcome: &SessionOutcome,
+        messages: &[ChatMessage],
+        mark: usize,
+        tools: Vec<ToolDef>,
+    ) -> Self {
+        let escalation = match &outcome.ending {
+            TurnEnding::Escalated(reason) => Some(reason),
+            TurnEnding::Answered | TurnEnding::Cancelled => None,
+        };
+        let escalation_reason = match escalation {
+            Some(EscalationReason::AgentRequested { reason, .. }) => Some(reason.clone()),
+            Some(EscalationReason::RoundBudget) | None => None,
+        };
+        let turn_slice = messages.get(mark..).unwrap_or_default();
+        let generations = &outcome.generations;
+        Self {
+            reply: outcome.reply.clone(),
+            escalated: escalation.is_some(),
+            escalation_kind: escalation.map(EscalationReason::as_str),
+            escalation_reason,
+            rounds: rounds(turn_slice),
+            usage: usage_totals(generations),
+            latency_ms: generations.iter().map(|g| millis(g.latency)).sum(),
+            generations: generations.iter().map(generation_trace).collect(),
+            tool_calls: tool_trace(turn_slice),
+            messages: turn_transcript(messages, mark),
+            tools,
+        }
+    }
 }
 
 /// Record an operator-harness escalation as a product event.
@@ -675,7 +689,7 @@ fn parse_id(raw: &str, field: &str) -> Result<u64, OperatorError> {
 /// Parse the requested access tier. An unrecognized value is an error rather
 /// than a fall back to the weakest tier: silently downgrading would make a
 /// failed admin test read as a passing read-only one.
-fn parse_access(raw: Option<&str>) -> Result<AccessLevel, OperatorError> {
+pub(crate) fn parse_access(raw: Option<&str>) -> Result<AccessLevel, OperatorError> {
     match raw.map(str::trim) {
         None | Some("admin") => Ok(AccessLevel::Admin),
         Some("manager") => Ok(AccessLevel::Manager),

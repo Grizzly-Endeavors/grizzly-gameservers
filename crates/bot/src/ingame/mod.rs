@@ -64,6 +64,16 @@ pub(crate) struct IngameDeps {
 }
 
 impl IngameDeps {
+    /// The cluster, as the supervisor calls address it. In-game triggers come
+    /// only from the deployed bot's own servers.
+    pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
+        crate::agones::Servers::Cluster {
+            client: &self.client,
+            namespace: &self.namespace,
+            control_port: self.control_port,
+        }
+    }
+
     /// Carve the endpoint's handles out of the command `Data`, so both halves of
     /// the bot share one cluster client, catalog, and session store.
     pub(crate) fn from_data(data: &crate::discord::Data) -> Self {

@@ -50,7 +50,7 @@ pub(crate) enum ScopeVerdict {
 /// # Errors
 ///
 /// Returns an error if the Service cannot be read from the Kubernetes API.
-pub(crate) async fn verify_scope(
+pub(super) async fn verify_scope_in_cluster(
     client: &Client,
     namespace: &str,
     instance: &str,
@@ -90,7 +90,7 @@ pub(crate) struct InstanceOwner {
 /// # Errors
 ///
 /// Returns an error if the Service cannot be read from the Kubernetes API.
-pub(crate) async fn owner_of(
+pub(crate) async fn owner_in_cluster(
     client: &Client,
     namespace: &str,
     instance: &str,

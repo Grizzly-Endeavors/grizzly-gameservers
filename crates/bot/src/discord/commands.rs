@@ -418,15 +418,7 @@ pub(crate) async fn stop(
             "Saving the world and pausing…",
         )))
         .await?;
-    match supervisor_stop(
-        &data.kube_client,
-        &data.control_http,
-        &data.namespace,
-        &server,
-        data.control_port,
-    )
-    .await
-    {
+    match supervisor_stop(data.servers(), &data.control_http, &server).await {
         Ok(outcome) => {
             reply
                 .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
@@ -514,15 +506,7 @@ pub(crate) async fn restart(
             "Bouncing it…",
         )))
         .await?;
-    match supervisor_restart(
-        &data.kube_client,
-        &data.control_http,
-        &data.namespace,
-        &server,
-        data.control_port,
-    )
-    .await
-    {
+    match supervisor_restart(data.servers(), &data.control_http, &server).await {
         Ok(outcome) => {
             reply
                 .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))
@@ -570,15 +554,7 @@ pub(crate) async fn start(
     match instance_runtime_state(&data.kube_client, &data.namespace, &server).await {
         Ok(RuntimeState::PodUp) => {
             // Warm path: the pod is alive, just resume the process in place.
-            match supervisor_start(
-                &data.kube_client,
-                &data.control_http,
-                &data.namespace,
-                &server,
-                data.control_port,
-            )
-            .await
-            {
+            match supervisor_start(data.servers(), &data.control_http, &server).await {
                 Ok(outcome) => {
                     reply
                         .edit(ctx, cleared(supervisor_result_embed(&outcome, &server)))

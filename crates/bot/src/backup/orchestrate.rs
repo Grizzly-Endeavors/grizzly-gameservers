@@ -19,14 +19,13 @@ use super::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupCtx, BackupOutcome, BackupService,
     BootState, RecoverOutcome, RestoreOutcome, SafetyBackup,
 };
+use crate::agones::InstanceOwner;
 use crate::agones::{
     ControlReady, DestroyOutcome, LiveInstance, PodTarget, ProvisionOutcome, ProvisionSpec,
     ReadyWait, RuntimeState, ServerScope, StartBegin, SupervisorOutcome, begin_start,
     destroy_instance, instance_runtime_state, list_live_instances, provision_paused_instance,
-    resolve_managed_pod, supervisor_start, supervisor_stop, wait_for_control_reachable,
-    wait_for_ready,
+    supervisor_start, supervisor_stop, wait_for_control_reachable, wait_for_ready,
 };
-use crate::agones::{InstanceOwner, owner_of};
 use crate::config::{DbConfig, S3Config};
 use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::{Attribution, EventKind, ProductEvent, mapping};
@@ -301,7 +300,7 @@ impl BackupService {
     /// resolves to the empty string, which [`backup_prefix`] maps to its reserved
     /// unscoped segment rather than treating as "no owner".
     async fn owning_guild(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<Option<String>> {
-        let owner = owner_of(ctx.client, ctx.namespace, instance).await?;
+        let owner = ctx.servers().owner_of(instance).await?;
         Ok(owner.map(|owner| owner.guild.map(GuildId::into_string).unwrap_or_default()))
     }
 
@@ -976,15 +975,7 @@ impl BackupService {
         tarball_key: &str,
         address: String,
     ) -> Result<RecoverOutcome> {
-        match wait_for_control_reachable(
-            ctx.client,
-            ctx.http,
-            ctx.namespace,
-            name,
-            ctx.control_port,
-        )
-        .await?
-        {
+        match wait_for_control_reachable(ctx.servers(), ctx.http, name).await? {
             ControlReady::Reachable => {}
             ControlReady::NotFound | ControlReady::NotManaged => {
                 return Ok(RecoverOutcome::Failed(
@@ -1127,13 +1118,13 @@ impl BackupService {
         instance: &str,
         quiesce: bool,
     ) -> Result<ArchiveSource> {
-        let pod_ip = match resolve_managed_pod(ctx.client, ctx.namespace, instance).await? {
-            PodTarget::Ready(pod_ip) => pod_ip,
+        let base = match ctx.servers().locate(instance).await? {
+            PodTarget::Ready(base) => base,
             PodTarget::NotFound => return Ok(ArchiveSource::NotFound),
             PodTarget::NotManaged => return Ok(ArchiveSource::NotManaged),
             PodTarget::PodNotReady => return Ok(ArchiveSource::PodNotReady),
         };
-        let url = format!("http://{pod_ip}:{}{ARCHIVE_PATH}", ctx.control_port);
+        let url = format!("{base}{ARCHIVE_PATH}");
         match self
             .archive_http
             .get(&url)
@@ -1163,13 +1154,13 @@ impl BackupService {
         purge: bool,
         source: reqwest::Response,
     ) -> Result<ExtractResult> {
-        let pod_ip = match resolve_managed_pod(ctx.client, ctx.namespace, instance).await? {
-            PodTarget::Ready(pod_ip) => pod_ip,
+        let base = match ctx.servers().locate(instance).await? {
+            PodTarget::Ready(base) => base,
             PodTarget::NotFound => return Ok(ExtractResult::NotFound),
             PodTarget::NotManaged => return Ok(ExtractResult::NotManaged),
             PodTarget::PodNotReady => return Ok(ExtractResult::PodNotReady),
         };
-        let url = format!("http://{pod_ip}:{}{ARCHIVE_PATH}", ctx.control_port);
+        let url = format!("{base}{ARCHIVE_PATH}");
         let body = reqwest::Body::wrap_stream(source.bytes_stream());
         match self
             .archive_http
@@ -1194,15 +1185,7 @@ impl BackupService {
 
     /// Warm-start a server and wait for it to accept players again.
     async fn start_and_wait(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<StartResult> {
-        match supervisor_start(
-            ctx.client,
-            ctx.http,
-            ctx.namespace,
-            instance,
-            ctx.control_port,
-        )
-        .await?
-        {
+        match supervisor_start(ctx.servers(), ctx.http, instance).await? {
             SupervisorOutcome::Resumed | SupervisorOutcome::AlreadyRunning => {}
             SupervisorOutcome::Failed(reason) => return Ok(StartResult::Failed(reason)),
             SupervisorOutcome::Paused
@@ -1217,15 +1200,7 @@ impl BackupService {
                 ));
             }
         }
-        let boot = match wait_for_ready(
-            ctx.client,
-            ctx.http,
-            ctx.namespace,
-            instance,
-            ctx.control_port,
-        )
-        .await?
-        {
+        let boot = match wait_for_ready(ctx.servers(), ctx.http, instance).await? {
             ReadyWait::Ready => BootState::Ready,
             ReadyWait::Crashed => BootState::Crashed,
             ReadyWait::Stopped => BootState::Stopped,
@@ -1282,15 +1257,7 @@ impl BackupService {
             }
         }
         Ok(
-            match wait_for_control_reachable(
-                ctx.client,
-                ctx.http,
-                ctx.namespace,
-                instance,
-                ctx.control_port,
-            )
-            .await?
-            {
+            match wait_for_control_reachable(ctx.servers(), ctx.http, instance).await? {
                 ControlReady::Reachable => EnsurePod::Ready,
                 ControlReady::NotFound => EnsurePod::NotFound,
                 ControlReady::NotManaged => EnsurePod::NotManaged,
@@ -1342,7 +1309,7 @@ enum StartResult {
 /// object those labels live on. Best-effort by design: a failed lookup costs the
 /// event its tenant columns, never the action its result.
 async fn owner_before(ctx: &BackupCtx<'_>, instance: &str) -> InstanceOwner {
-    match owner_of(ctx.client, ctx.namespace, instance).await {
+    match ctx.servers().owner_of(instance).await {
         Ok(Some(owner)) => owner,
         Ok(None) => InstanceOwner::default(),
         Err(err) => {
@@ -1354,15 +1321,7 @@ async fn owner_before(ctx: &BackupCtx<'_>, instance: &str) -> InstanceOwner {
 
 async fn stop_for_snapshot(ctx: &BackupCtx<'_>, instance: &str) -> Result<Option<StopBlock>> {
     Ok(
-        match supervisor_stop(
-            ctx.client,
-            ctx.http,
-            ctx.namespace,
-            instance,
-            ctx.control_port,
-        )
-        .await?
-        {
+        match supervisor_stop(ctx.servers(), ctx.http, instance).await? {
             SupervisorOutcome::Paused | SupervisorOutcome::AlreadyStopped => None,
             SupervisorOutcome::NotFound => Some(StopBlock::NotFound),
             SupervisorOutcome::NotManaged => Some(StopBlock::NotManaged),

@@ -63,6 +63,17 @@ pub(crate) struct SamplerCtx<'a> {
     pub(crate) events: &'a EventLog,
 }
 
+impl SamplerCtx<'_> {
+    /// The cluster, as the supervisor calls address it.
+    fn servers(&self) -> crate::agones::Servers<'_> {
+        crate::agones::Servers::Cluster {
+            client: self.client,
+            namespace: self.namespace,
+            control_port: self.control_port,
+        }
+    }
+}
+
 /// Sample every running instance once and append the tick, returning a
 /// watchdog observation for every *listed* instance (running, paused, or
 /// condemned). Never fails: a listing error is logged and the tick skipped, an
@@ -87,30 +98,19 @@ pub(crate) async fn run_occupancy_cycle(ctx: &SamplerCtx<'_>) -> Vec<StatusObser
             observations.push(observation(instance, PollObservation::GameServerUnhealthy));
             continue;
         }
-        let status =
-            match supervisor_status(ctx.client, ctx.http, ctx.namespace, name, ctx.control_port)
-                .await
-            {
-                Ok(status) => status,
-                Err(err) => {
-                    error!(error = ?err, instance = name, "occupancy sampler: status read failed");
-                    observations.push(observation(instance, PollObservation::ReadFailed));
-                    continue;
-                }
-            };
+        let status = match supervisor_status(ctx.servers(), ctx.http, name).await {
+            Ok(status) => status,
+            Err(err) => {
+                error!(error = ?err, instance = name, "occupancy sampler: status read failed");
+                observations.push(observation(instance, PollObservation::ReadFailed));
+                continue;
+            }
+        };
         observations.push(observation(instance, poll_of(&status)));
         if !instance.running {
             continue;
         }
-        let occupancy = match supervisor_occupancy(
-            ctx.client,
-            ctx.http,
-            ctx.namespace,
-            name,
-            ctx.control_port,
-        )
-        .await
-        {
+        let occupancy = match supervisor_occupancy(ctx.servers(), ctx.http, name).await {
             Ok(occupancy) => occupancy,
             Err(err) => {
                 error!(error = ?err, instance = name, "occupancy sampler: occupancy read failed");
