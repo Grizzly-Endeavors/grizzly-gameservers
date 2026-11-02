@@ -10,6 +10,7 @@ use kube::{Api, Client};
 use tracing::{debug, warn};
 
 use super::control_client::ControlClient;
+use super::directory::Servers;
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::provision::{DeletionState, deletion_state};
 use super::types::GameServer;
@@ -86,21 +87,11 @@ pub(crate) enum SupervisorOutcome {
 ///
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_stop(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<SupervisorOutcome> {
-    supervisor_action(
-        client,
-        http,
-        namespace,
-        instance,
-        control_port,
-        ControlCommand::Stop,
-    )
-    .await
+    supervisor_action(servers, http, instance, ControlCommand::Stop).await
 }
 
 /// Start the game process in place on a still-running pod (the warm `/start`).
@@ -109,21 +100,11 @@ pub(crate) async fn supervisor_stop(
 ///
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_start(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<SupervisorOutcome> {
-    supervisor_action(
-        client,
-        http,
-        namespace,
-        instance,
-        control_port,
-        ControlCommand::Start,
-    )
-    .await
+    supervisor_action(servers, http, instance, ControlCommand::Start).await
 }
 
 /// Bounce the game process in place.
@@ -132,21 +113,11 @@ pub(crate) async fn supervisor_start(
 ///
 /// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_restart(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<SupervisorOutcome> {
-    supervisor_action(
-        client,
-        http,
-        namespace,
-        instance,
-        control_port,
-        ControlCommand::Restart,
-    )
-    .await
+    supervisor_action(servers, http, instance, ControlCommand::Restart).await
 }
 
 /// Classify an instance as warm (pod up), on its way down, cold (shut down), or
@@ -193,7 +164,8 @@ pub(crate) async fn instance_runtime_state(
 /// Shared by the lifecycle actions here and the filesystem client so both run the
 /// same existence/managed/pod-IP gate before issuing an HTTP request.
 pub(crate) enum PodTarget {
-    /// The pod is up with an IP; its control API is at this address.
+    /// The server is up; its control API is at this base URL (`http://host:port`,
+    /// no trailing slash), ready for a route path to be appended.
     Ready(String),
     /// No `GameServer` by that name.
     NotFound,
@@ -203,15 +175,17 @@ pub(crate) enum PodTarget {
     PodNotReady,
 }
 
-/// Validate that `instance` is a shim-managed `GameServer` and resolve its pod IP.
+/// Validate that `instance` is a shim-managed `GameServer` and resolve the base
+/// URL of its pod's control API.
 ///
 /// # Errors
 ///
 /// Returns an error if the cluster can't be queried for the gameserver or pod.
-pub(crate) async fn resolve_managed_pod(
+pub(super) async fn locate_in_cluster(
     client: &Client,
     namespace: &str,
     instance: &str,
+    control_port: u16,
 ) -> Result<PodTarget> {
     let gameservers: Api<GameServer> = Api::namespaced(client.clone(), namespace);
     let Some(gameserver) = gameservers
@@ -225,27 +199,25 @@ pub(crate) async fn resolve_managed_pod(
         return Ok(PodTarget::NotManaged);
     }
     match gameserver_pod_ip(client, namespace, instance).await? {
-        Some(pod_ip) => Ok(PodTarget::Ready(pod_ip)),
+        Some(pod_ip) => Ok(PodTarget::Ready(format!("http://{pod_ip}:{control_port}"))),
         None => Ok(PodTarget::PodNotReady),
     }
 }
 
 async fn supervisor_action(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     command: ControlCommand,
 ) -> Result<SupervisorOutcome> {
-    let pod_ip = match resolve_managed_pod(client, namespace, instance).await? {
-        PodTarget::Ready(pod_ip) => pod_ip,
+    let base = match servers.locate(instance).await? {
+        PodTarget::Ready(base) => base,
         PodTarget::NotFound => return Ok(SupervisorOutcome::NotFound),
         PodTarget::NotManaged => return Ok(SupervisorOutcome::NotManaged),
         PodTarget::PodNotReady => return Ok(SupervisorOutcome::PodNotReady),
     };
 
-    let url = format!("http://{pod_ip}:{control_port}{}", command.path());
+    let url = format!("{base}{}", command.path());
     match http
         .post(&url)
         .timeout(CONTROL_MUTATION_TIMEOUT)
@@ -365,21 +337,11 @@ pub(crate) enum StatusPoll {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<ReadyWait> {
-    wait_for_ready_within(
-        client,
-        http,
-        namespace,
-        instance,
-        control_port,
-        READY_WAIT_TIMEOUT,
-    )
-    .await
+    wait_for_ready_within(servers, http, instance, READY_WAIT_TIMEOUT).await
 }
 
 /// [`wait_for_ready`] with a caller-chosen ceiling. The interactive tools use the
@@ -391,11 +353,9 @@ pub(crate) async fn wait_for_ready(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready_within(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
     timeout: Duration,
 ) -> Result<ReadyWait> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -403,7 +363,7 @@ pub(crate) async fn wait_for_ready_within(
 
     loop {
         ticker.tick().await;
-        match supervisor_status(client, http, namespace, instance, control_port).await? {
+        match supervisor_status(servers, http, instance).await? {
             StatusPoll::Ok(status) => match status.process {
                 ProcessPhase::Running => return Ok(ReadyWait::Ready),
                 ProcessPhase::Crashed => return Ok(ReadyWait::Crashed),
@@ -446,18 +406,16 @@ pub(crate) enum ControlReady {
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_control_reachable(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<ControlReady> {
     let deadline = tokio::time::Instant::now() + READY_WAIT_TIMEOUT;
     let mut ticker = tokio::time::interval(READY_POLL_INTERVAL);
 
     loop {
         ticker.tick().await;
-        match supervisor_status(client, http, namespace, instance, control_port).await? {
+        match supervisor_status(servers, http, instance).await? {
             StatusPoll::Ok(_) => return Ok(ControlReady::Reachable),
             StatusPoll::NotFound => return Ok(ControlReady::NotFound),
             StatusPoll::NotManaged => return Ok(ControlReady::NotManaged),
@@ -482,22 +440,17 @@ pub(crate) async fn wait_for_control_reachable(
 ///
 /// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_status(
-    client: &Client,
+    servers: Servers<'_>,
     http: &ControlClient,
-    namespace: &str,
     instance: &str,
-    control_port: u16,
 ) -> Result<StatusPoll> {
-    let pod_ip = match resolve_managed_pod(client, namespace, instance).await? {
-        PodTarget::Ready(pod_ip) => pod_ip,
+    let base = match servers.locate(instance).await? {
+        PodTarget::Ready(base) => base,
         PodTarget::NotFound => return Ok(StatusPoll::NotFound),
         PodTarget::NotManaged => return Ok(StatusPoll::NotManaged),
         PodTarget::PodNotReady => return Ok(StatusPoll::PodNotReady),
     };
-    let url = format!(
-        "http://{pod_ip}:{control_port}{}",
-        ControlCommand::Status.path()
-    );
+    let url = format!("{base}{}", ControlCommand::Status.path());
     match http.get(&url).timeout(STATUS_TIMEOUT).send().await {
         Ok(response) if response.status().is_success() => {
             match response.json::<StatusResponse>().await {

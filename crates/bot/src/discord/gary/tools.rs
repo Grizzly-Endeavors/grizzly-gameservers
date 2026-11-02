@@ -37,14 +37,14 @@ use crate::agones::{
     DestroyOutcome, EditOutcome, FsOutcome, ProvisionOutcome, ProvisionSpec, ReadWindow, ReadyWait,
     Replacement, ResizeOutcome, RuntimeState, ScopeVerdict, ServerScope, ServerSummary,
     ShutdownOutcome, StartBegin, StatusPoll, SupervisorOutcome, begin_start, build_instance_name,
-    catalog_sizing, destroy_instance, instance_runtime_state, list_active_servers, now_entropy,
-    provision_instance, resize_instance, shutdown_instance, supervisor_announce,
-    supervisor_edit_file, supervisor_list_files, supervisor_occupancy, supervisor_read_file,
-    supervisor_read_logs, supervisor_restart, supervisor_restore_file, supervisor_run_shell,
-    supervisor_send_command, supervisor_start, supervisor_status, supervisor_stop,
-    supervisor_write_file, verify_scope, wait_for_instance_ready, wait_for_ready,
+    catalog_sizing, destroy_instance, instance_runtime_state, now_entropy, provision_instance,
+    resize_instance, shutdown_instance, supervisor_announce, supervisor_edit_file,
+    supervisor_list_files, supervisor_occupancy, supervisor_read_file, supervisor_read_logs,
+    supervisor_restart, supervisor_restore_file, supervisor_run_shell, supervisor_send_command,
+    supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file,
+    wait_for_instance_ready, wait_for_ready,
 };
-use crate::agones::{InstanceOwner, ModRegistry, guild_usage, owner_of};
+use crate::agones::{InstanceOwner, ModRegistry, ServerDirectory, guild_usage};
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
@@ -105,7 +105,10 @@ pub(crate) enum ConfirmMode {
 /// (so mutating tools can refuse at execution time as defense in depth).
 pub(crate) struct ToolCtx<'a> {
     pub(crate) data: &'a Data,
-    pub(crate) serenity: &'a serenity::Context,
+    /// The live gateway, for the confirmation cards and `run_when`. `None` on a
+    /// surface with no Discord channel (`gary-local`), where every tool that
+    /// needs it refuses rather than running unconfirmed.
+    pub(crate) serenity: Option<&'a serenity::Context>,
     /// Which entry point these tools are running under. Carried so the audit
     /// trail names the real surface instead of deducing one from `confirmations`.
     pub(crate) origin: TurnOrigin,
@@ -240,13 +243,11 @@ impl ToolCtx<'_> {
     /// only conventionally prefixed with its game, and treating that convention
     /// as a fact would quietly answer the wrong game's question.
     pub(crate) async fn game_of(&self, server: &str) -> Result<Option<String>, String> {
-        let summaries = match list_active_servers(
-            self.data.kube_client.clone(),
-            &self.data.namespace,
-            &self.data.domain,
-            &self.scope,
-        )
-        .await
+        let summaries = match self
+            .data
+            .servers()
+            .list(&self.data.control_http, &self.data.domain, &self.scope)
+            .await
         {
             Ok(summaries) => summaries,
             Err(err) => {
@@ -375,6 +376,46 @@ pub(crate) fn available_tools_for(access: AccessLevel, memory_tools: bool) -> Ve
     defs
 }
 
+/// The tools that reach nothing but a server's supervisor, the game catalog and
+/// the public mod registries — what `gary-local` can offer, since it has no
+/// cluster, database, object store, queue or Discord channel behind it. A tool
+/// left off here isn't offered there at all, rather than offered and failing.
+const SUPERVISOR_ONLY_TOOLS: &[&str] = &[
+    ListServers::NAME,
+    AboutServer::NAME,
+    ExportProfile::NAME,
+    Escalate::NAME,
+    StopServer::NAME,
+    RestartServer::NAME,
+    BrowseFiles::NAME,
+    ReadFile::NAME,
+    ReadLogs::NAME,
+    RunShell::NAME,
+    EditFile::NAME,
+    WriteFile::NAME,
+    RestoreFile::NAME,
+    GameGuide::NAME,
+    SearchMods::NAME,
+    ModInfo::NAME,
+    ImportProfile::NAME,
+    UpdateMods::NAME,
+    SendCommand::NAME,
+];
+
+/// Whether `name` runs with only a supervisor behind it; see
+/// [`SUPERVISOR_ONLY_TOOLS`].
+pub(crate) fn needs_only_supervisor(name: &str) -> bool {
+    SUPERVISOR_ONLY_TOOLS.contains(&name)
+}
+
+/// [`available_tools`] narrowed to [`SUPERVISOR_ONLY_TOOLS`], in table order.
+pub(crate) fn supervisor_only_tools(access: AccessLevel) -> Vec<ToolDef> {
+    available_tools(access)
+        .into_iter()
+        .filter(|tool| needs_only_supervisor(&tool.function.name))
+        .collect()
+}
+
 /// The lowest tier that may call `name`, or `None` if it isn't a tool at all.
 fn tier_of(name: &str) -> Option<AccessLevel> {
     tool_table()
@@ -412,6 +453,17 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     match tier_of(call.function.name.as_str()) {
         Some(required) if ctx.access < required => {
             return tier_refusal(call.function.name.as_str());
+        }
+        // A fixed directory has nothing behind it but supervisors, so a tool that
+        // needs more was never offered there and reads as unknown if called.
+        Some(_)
+            if matches!(ctx.data.directory, ServerDirectory::Fixed(_))
+                && !needs_only_supervisor(call.function.name.as_str()) =>
+        {
+            return prompts::UnknownTool {
+                name: &call.function.name,
+            }
+            .render();
         }
         Some(_) => {}
         None => {
@@ -774,14 +826,7 @@ fn targets_existing_server(tool: &str) -> bool {
 /// back to the model instead of running the tool. A foreign server is reported
 /// as missing, identically to one that truly doesn't exist.
 async fn scope_refusal(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
-    match verify_scope(
-        &ctx.data.kube_client,
-        &ctx.data.namespace,
-        server,
-        &ctx.scope,
-    )
-    .await
-    {
+    match ctx.data.servers().verify_scope(server, &ctx.scope).await {
         Ok(ScopeVerdict::InScope) => None,
         Ok(ScopeVerdict::Foreign | ScopeVerdict::Absent) => Some(no_such(server)),
         Err(err) => {
@@ -792,13 +837,11 @@ async fn scope_refusal(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
 }
 
 async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
-    match list_active_servers(
-        ctx.data.kube_client.clone(),
-        &ctx.data.namespace,
-        &ctx.data.domain,
-        &ctx.scope,
-    )
-    .await
+    match ctx
+        .data
+        .servers()
+        .list(&ctx.data.control_http, &ctx.data.domain, &ctx.scope)
+        .await
     {
         Ok(summaries) => format_server_list(&summaries),
         Err(err) => {
@@ -809,13 +852,11 @@ async fn exec_list_servers(ctx: &ToolCtx<'_>) -> String {
 }
 
 async fn exec_about_server(ctx: &ToolCtx<'_>, server: &str) -> String {
-    let summaries = match list_active_servers(
-        ctx.data.kube_client.clone(),
-        &ctx.data.namespace,
-        &ctx.data.domain,
-        &ctx.scope,
-    )
-    .await
+    let summaries = match ctx
+        .data
+        .servers()
+        .list(&ctx.data.control_http, &ctx.data.domain, &ctx.scope)
+        .await
     {
         Ok(summaries) => summaries,
         Err(err) => {
@@ -854,14 +895,7 @@ const LAST_ACTION_KINDS: &[EventKind] = &[
 /// from the Agones state the listing shows: a server crash-looping every few
 /// minutes is `Ready` in every listing between relaunches.
 async fn process_line(ctx: &ToolCtx<'_>, server: &str) -> String {
-    let status = supervisor_status(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await;
+    let status = supervisor_status(ctx.data.servers(), &ctx.data.control_http, server).await;
     let rendered = match status {
         Ok(StatusPoll::Ok(status)) => prompts::AboutServerProcess {
             uptime: &format_uptime(status.uptime_seconds),
@@ -950,29 +984,22 @@ fn format_uptime(seconds: u64) -> String {
 /// live RCON read; games with no RCON (or a console that isn't up yet) report
 /// `unknown`, which means "can't confirm it's empty" — never treat it as empty.
 async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
-    let reason = match supervisor_occupancy(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await
-    {
-        Ok(FsOutcome::Ok(Some(count))) => {
-            let count = count.to_string();
-            // The leading newline separates this from the summary line above; the
-            // separator is owned here, so the prompt body carries no leading space.
-            return format!("\n{}", prompts::OccupancyKnown { count: &count }.render());
-        }
-        Ok(FsOutcome::Ok(None)) => prompts::OccupancyReasonNoCount::render(),
-        Ok(FsOutcome::PodNotReady) => prompts::OccupancyReasonNotUp::render(),
-        Ok(_) => prompts::OccupancyReasonNoConsole::render(),
-        Err(err) => {
-            error!(error = ?err, %server, "agent: occupancy lookup failed");
-            prompts::OccupancyReasonUnread::render()
-        }
-    };
+    let reason =
+        match supervisor_occupancy(ctx.data.servers(), &ctx.data.control_http, server).await {
+            Ok(FsOutcome::Ok(Some(count))) => {
+                let count = count.to_string();
+                // The leading newline separates this from the summary line above; the
+                // separator is owned here, so the prompt body carries no leading space.
+                return format!("\n{}", prompts::OccupancyKnown { count: &count }.render());
+            }
+            Ok(FsOutcome::Ok(None)) => prompts::OccupancyReasonNoCount::render(),
+            Ok(FsOutcome::PodNotReady) => prompts::OccupancyReasonNotUp::render(),
+            Ok(_) => prompts::OccupancyReasonNoConsole::render(),
+            Err(err) => {
+                error!(error = ?err, %server, "agent: occupancy lookup failed");
+                prompts::OccupancyReasonUnread::render()
+            }
+        };
     format!(
         "\n{}",
         prompts::OccupancyUnknown { reason: &reason }.render()
@@ -1248,7 +1275,7 @@ async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> S
     // and the watchdog's unattended turns hit the same bound as a friend in the
     // guild (ADR-022). Usage excludes the target so the proposal replaces its
     // current figures instead of stacking onto them.
-    match owner_of(&ctx.data.kube_client, &ctx.data.namespace, &params.name).await {
+    match ctx.data.servers().owner_of(&params.name).await {
         Ok(Some(InstanceOwner {
             guild: Some(guild), ..
         })) => {
@@ -1573,15 +1600,7 @@ async fn exec_forget(ctx: &ToolCtx<'_>, id: i64) -> String {
 }
 
 async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
-    match supervisor_stop(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await
-    {
+    match supervisor_stop(ctx.data.servers(), &ctx.data.control_http, server).await {
         Ok(outcome) => {
             ctx.record_action(
                 EventKind::ServerStopped,
@@ -1601,14 +1620,7 @@ async fn exec_stop(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
-    let outcome = match supervisor_restart(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await
+    let outcome = match supervisor_restart(ctx.data.servers(), &ctx.data.control_http, server).await
     {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -1659,14 +1671,7 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
     let server = change.server.as_str();
     let mut rollback_spent = false;
     loop {
-        let outcome = match wait_for_ready(
-            &ctx.data.kube_client,
-            &ctx.data.control_http,
-            &ctx.data.namespace,
-            server,
-            ctx.data.control_port,
-        )
-        .await
+        let outcome = match wait_for_ready(ctx.data.servers(), &ctx.data.control_http, server).await
         {
             Ok(outcome) => outcome,
             Err(err) => {
@@ -1745,11 +1750,9 @@ fn crash_evidence_note() -> String {
 async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), String> {
     let server = change.server.as_str();
     let restore = supervisor_restore_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         &change.path,
     )
     .await;
@@ -1770,15 +1773,7 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
             return Err(rollback_failed(ctx, server, &change.path).await);
         }
     }
-    match supervisor_restart(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await
-    {
+    match supervisor_restart(ctx.data.servers(), &ctx.data.control_http, server).await {
         Ok(SupervisorOutcome::Restarted) => Ok(()),
         Ok(
             SupervisorOutcome::Paused
@@ -1842,31 +1837,25 @@ async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
 /// address and lets the user poll status.
 async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, server).await {
-        Ok(RuntimeState::PodUp) => match supervisor_start(
-            &ctx.data.kube_client,
-            &ctx.data.control_http,
-            &ctx.data.namespace,
-            server,
-            ctx.data.control_port,
-        )
-        .await
-        {
-            Ok(outcome) => {
-                ctx.record_action(
-                    EventKind::ServerStarted,
-                    server,
-                    mapping::supervisor(&outcome),
-                )
-                .await;
-                format_supervisor(server, &outcome)
-            }
-            Err(err) => {
-                error!(error = ?err, %server, "agent: warm start failed");
-                ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+        Ok(RuntimeState::PodUp) => {
+            match supervisor_start(ctx.data.servers(), &ctx.data.control_http, server).await {
+                Ok(outcome) => {
+                    ctx.record_action(
+                        EventKind::ServerStarted,
+                        server,
+                        mapping::supervisor(&outcome),
+                    )
                     .await;
-                cluster_error()
+                    format_supervisor(server, &outcome)
+                }
+                Err(err) => {
+                    error!(error = ?err, %server, "agent: warm start failed");
+                    ctx.record_action(EventKind::ServerStarted, server, mapping::FAILED)
+                        .await;
+                    cluster_error()
+                }
             }
-        },
+        }
         Ok(RuntimeState::Down) => exec_cold_start(ctx, server).await,
         Ok(RuntimeState::Terminating) => prompts::StartStillStopping { server }.render(),
         Ok(RuntimeState::Absent) => no_such(server),
@@ -2108,7 +2097,8 @@ async fn await_approval(
     message_id: serenity::MessageId,
     required: AccessLevel,
 ) -> Option<serenity::ComponentInteraction> {
-    let mut clicks = ComponentInteractionCollector::new(ctx.serenity)
+    let discord = ctx.serenity?;
+    let mut clicks = ComponentInteractionCollector::new(discord)
         .message_id(message_id)
         .timeout(COMPONENT_TIMEOUT)
         .stream();
@@ -2122,7 +2112,7 @@ async fn await_approval(
                 .map(|member| member.roles.iter().map(|role| role.get()).collect())
                 .unwrap_or_default(),
         };
-        if access_level_for(ctx.serenity, ctx.data, &clicker).await >= required {
+        if access_level_for(discord, ctx.data, &clicker).await >= required {
             return Some(interaction);
         }
         refuse_approval(ctx, &interaction, required).await;
@@ -2138,6 +2128,9 @@ async fn refuse_approval(
     interaction: &serenity::ComponentInteraction,
     required: AccessLevel,
 ) {
+    let Some(discord) = ctx.serenity else {
+        return;
+    };
     let notice = format!(
         "You need {} access to answer this one. Ask {} in this channel to confirm it.",
         required.as_str(),
@@ -2148,7 +2141,7 @@ async fn refuse_approval(
     );
     if let Err(err) = interaction
         .create_response(
-            ctx.serenity,
+            discord,
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .content(notice)
@@ -2164,6 +2157,9 @@ async fn refuse_approval(
 /// Post the Danger/Cancel buttons and wait for a click from anyone who may
 /// approve a destroy.
 async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
+    let Some(discord) = ctx.serenity else {
+        return prompts::DestroyNoConfirmChannel::render();
+    };
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new("gary_destroy_confirm")
             .label("Delete it")
@@ -2175,7 +2171,7 @@ async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
     let prompt = match ctx
         .channel_id
         .send_message(
-            ctx.serenity,
+            discord,
             CreateMessage::new()
                 .embed(destroy_confirm_embed(server))
                 .components(vec![buttons]),
@@ -2217,9 +2213,10 @@ async fn finish_destroy(
         .render();
     };
 
-    if let Err(err) = interaction
-        .create_response(ctx.serenity, CreateInteractionResponse::Acknowledge)
-        .await
+    if let Some(discord) = ctx.serenity
+        && let Err(err) = interaction
+            .create_response(discord, CreateInteractionResponse::Acknowledge)
+            .await
     {
         warn!(error = ?err, "agent: failed to acknowledge destroy interaction");
     }
@@ -2281,9 +2278,12 @@ async fn edit_prompt(
     prompt: &mut serenity::Message,
     embed: serenity::CreateEmbed,
 ) {
+    let Some(discord) = ctx.serenity else {
+        return;
+    };
     if let Err(err) = prompt
         .edit(
-            ctx.serenity,
+            discord,
             EditMessage::new().embed(embed).components(Vec::new()),
         )
         .await
@@ -2293,16 +2293,7 @@ async fn edit_prompt(
 }
 
 async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
-    match supervisor_list_files(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-        path,
-    )
-    .await
-    {
+    match supervisor_list_files(ctx.data.servers(), &ctx.data.control_http, server, path).await {
         Ok(outcome) => match fs_result(server, outcome) {
             Ok(entries) => format_entries(path, &entries),
             Err(problem) => problem,
@@ -2316,11 +2307,9 @@ async fn exec_browse_files(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 
 async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str, window: ReadWindow) -> String {
     match supervisor_read_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         path,
         window,
     )
@@ -2342,16 +2331,7 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str, window: Rea
 /// here: a command that tries to write is refused by the kernel, and the refusal
 /// arrives as ordinary stderr the model can read and respond to.
 async fn exec_run_shell(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
-    match supervisor_run_shell(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-        command,
-    )
-    .await
-    {
+    match supervisor_run_shell(ctx.data.servers(), &ctx.data.control_http, server, command).await {
         Ok(outcome) => match fs_result(server, outcome) {
             Ok(Some(result)) => format_shell(server, command, &result),
             Ok(None) => prompts::ShellUnsupported::render(),
@@ -2412,16 +2392,7 @@ fn format_shell(server: &str, command: &str, result: &ShellResponse) -> String {
 }
 
 async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -> String {
-    match supervisor_read_logs(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-        lines,
-    )
-    .await
-    {
+    match supervisor_read_logs(ctx.data.servers(), &ctx.data.control_http, server, lines).await {
         Ok(outcome) => match fs_result(server, outcome) {
             Ok(log_lines) => format_logs(server, &log_lines),
             Err(problem) => problem,
@@ -2435,11 +2406,9 @@ async fn exec_read_logs(ctx: &ToolCtx<'_>, server: &str, lines: Option<usize>) -
 
 async fn exec_write_file(ctx: &ToolCtx<'_>, server: &str, path: &str, content: &str) -> String {
     match supervisor_write_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         path,
         content,
     )
@@ -2469,11 +2438,9 @@ async fn exec_edit_file(
     new_text: &str,
 ) -> String {
     match supervisor_edit_file(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         path,
         Replacement {
             old: old_text,
@@ -2498,16 +2465,7 @@ async fn exec_edit_file(
 }
 
 async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
-    match supervisor_restore_file(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-        path,
-    )
-    .await
-    {
+    match supervisor_restore_file(ctx.data.servers(), &ctx.data.control_http, server, path).await {
         Ok(outcome) => match fs_result(server, outcome) {
             Ok(result) => {
                 ctx.drop_pending_change(server, &result.path);
@@ -2523,15 +2481,7 @@ async fn exec_restore_file(ctx: &ToolCtx<'_>, server: &str, path: &str) -> Strin
 }
 
 async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
-    match supervisor_send_command(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-        command,
-    )
-    .await
+    match supervisor_send_command(ctx.data.servers(), &ctx.data.control_http, server, command).await
     {
         Ok(outcome) => match fs_result(server, outcome) {
             Ok(result) => {
@@ -2559,9 +2509,9 @@ async fn exec_run_when(
     condition: Condition,
     task: &str,
 ) -> String {
-    if !ctx.data.defer.is_enabled() {
+    let Some(discord) = ctx.serenity.filter(|_| ctx.data.defer.is_enabled()) else {
         return prompts::RunWhenQueueUnavailable::render();
-    }
+    };
     if matches!(condition, Condition::Empty | Condition::Idle)
         && let Some(refusal) = empty_condition_feasibility(ctx, server).await
     {
@@ -2572,7 +2522,7 @@ async fn exec_run_when(
     match ctx
         .data
         .defer
-        .enqueue_and_watch(ctx.data, ctx.serenity, server, condition, &record)
+        .enqueue_and_watch(ctx.data, discord, server, condition, &record)
         .await
     {
         Ok(()) => prompts::RunWhenScheduled {
@@ -2593,15 +2543,7 @@ async fn exec_run_when(
 /// (`Ok(None)`) is a hard refusal; a transient not-ready/unreachable is allowed
 /// through — the watcher polls until the count is readable.
 async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
-    match supervisor_occupancy(
-        &ctx.data.kube_client,
-        &ctx.data.control_http,
-        &ctx.data.namespace,
-        server,
-        ctx.data.control_port,
-    )
-    .await
-    {
+    match supervisor_occupancy(ctx.data.servers(), &ctx.data.control_http, server).await {
         Ok(FsOutcome::Ok(None)) => Some(prompts::RunWhenCantWatchEmpty { server }.render()),
         // A real count, or a transient state — let it queue; the watcher handles it.
         Ok(
@@ -3014,6 +2956,10 @@ async fn post_preapproval_audit(
     action: &str,
     card: serenity::CreateEmbed,
 ) -> Option<serenity::Message> {
+    let Some(discord) = ctx.serenity else {
+        error!(%server, action, "agent: no discord channel to post the pre-approval audit line; refusing the action");
+        return None;
+    };
     warn!(
         %server,
         action,
@@ -3025,7 +2971,7 @@ async fn post_preapproval_audit(
     match ctx
         .channel_id
         .send_message(
-            ctx.serenity,
+            discord,
             CreateMessage::new()
                 .content(PREAPPROVED_AUDIT_LINE)
                 .embed(card),
@@ -3067,6 +3013,9 @@ async fn confirm_destructive(
                 );
         }
     }
+    let Some(discord) = ctx.serenity else {
+        return Confirm::Declined(prompts::ConfirmNoChannel::render());
+    };
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new(confirm_id)
             .label("Do it")
@@ -3078,7 +3027,7 @@ async fn confirm_destructive(
     let mut prompt_msg = match ctx
         .channel_id
         .send_message(
-            ctx.serenity,
+            discord,
             CreateMessage::new().embed(prompt).components(vec![buttons]),
         )
         .await
@@ -3101,7 +3050,7 @@ async fn confirm_destructive(
         return Confirm::Declined(timeout_line);
     };
     if let Err(err) = interaction
-        .create_response(ctx.serenity, CreateInteractionResponse::Acknowledge)
+        .create_response(discord, CreateInteractionResponse::Acknowledge)
         .await
     {
         warn!(error = ?err, "agent: failed to acknowledge backup interaction");
@@ -3126,11 +3075,9 @@ async fn confirm_destructive(
 /// unaffected.
 async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
     supervisor_announce(
-        &ctx.data.kube_client,
+        ctx.data.servers(),
         &ctx.data.control_http,
-        &ctx.data.namespace,
         server,
-        ctx.data.control_port,
         &format!("Gary: {phrase}"),
     )
     .await;

@@ -15,7 +15,7 @@ use super::condition::{Condition, compose_batch_prompt, next_empty_since, wait_k
 use super::task::DeferredTask;
 use crate::agent::{ChatMessage, SessionOutcome, TurnEnding, TurnOrigin};
 use crate::agones::{
-    FsOutcome, ReadyWait, ServerScope, owner_of, supervisor_occupancy, wait_for_ready_within,
+    FsOutcome, ReadyWait, ServerScope, supervisor_occupancy, wait_for_ready_within,
 };
 use crate::discord::gary::{
     ConfirmMode, GaryTurn, build_system_prompt, game_catalog_list, run_gary_turn, send_chunks,
@@ -107,16 +107,7 @@ async fn wait_for_condition(data: &Data, server: &str, condition: Condition) -> 
 /// is terminal and maps to a note; a cluster error can't be watched through, so it
 /// too resolves to a note rather than hanging.
 async fn wait_startup(data: &Data, server: &str) -> String {
-    match wait_for_ready_within(
-        &data.kube_client,
-        &data.control_http,
-        &data.namespace,
-        server,
-        data.control_port,
-        STARTUP_CEILING,
-    )
-    .await
-    {
+    match wait_for_ready_within(data.servers(), &data.control_http, server, STARTUP_CEILING).await {
         Ok(ReadyWait::Ready) => prompts::StartupReady::render(),
         Ok(ReadyWait::Crashed) => prompts::StartupCrashed::render(),
         Ok(ReadyWait::Stopped) => prompts::StartupStopped::render(),
@@ -143,15 +134,7 @@ async fn wait_occupancy(
     let deadline = Instant::now() + OCCUPANCY_CEILING;
     let mut empty_since: Option<Instant> = None;
     loop {
-        match supervisor_occupancy(
-            &data.kube_client,
-            &data.control_http,
-            &data.namespace,
-            server,
-            data.control_port,
-        )
-        .await
-        {
+        match supervisor_occupancy(data.servers(), &data.control_http, server).await {
             Ok(FsOutcome::Ok(reading)) => match grace {
                 None => {
                     if reading == Some(0) {
@@ -219,7 +202,7 @@ async fn run_batch(
     // Scope the batch to the server's own guild (the enqueue was already gated on
     // the caller's scope), running at the manager tier per the shared-queue design.
     // The same read carries the game, which the turn stamps on its telemetry.
-    let owner = match owner_of(&data.kube_client, &data.namespace, server).await {
+    let owner = match data.servers().owner_of(server).await {
         Ok(owner) => owner.unwrap_or_default(),
         Err(err) => {
             error!(error = ?err, server = %server, "deferred batch: failed to resolve guild scope");

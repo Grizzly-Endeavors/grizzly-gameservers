@@ -78,6 +78,18 @@ pub(crate) struct BackupCtx<'a> {
     pub(crate) guild_limits: &'a crate::limits::GuildLimits,
 }
 
+impl BackupCtx<'_> {
+    /// The cluster, as the supervisor calls address it. Backups run only against
+    /// the deployed bot's own servers, so this is never a fixed directory.
+    pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
+        crate::agones::Servers::Cluster {
+            client: self.client,
+            namespace: self.namespace,
+            control_port: self.control_port,
+        }
+    }
+}
+
 /// Outcome of a manual or scheduled backup of a live server.
 #[derive(Debug)]
 pub(crate) enum BackupOutcome {

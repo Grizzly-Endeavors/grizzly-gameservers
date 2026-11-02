@@ -26,9 +26,7 @@ use crate::agent::{
     ToolCall, ToolDef, TurnActor, TurnIdentity, TurnOrigin, TurnRecorder, run_session,
     send_chat_completion,
 };
-use crate::agones::{
-    ServerScope, ServerSummary, list_active_servers, owner_of, supervisor_announce,
-};
+use crate::agones::{ServerScope, ServerSummary, list_active_servers, supervisor_announce};
 use crate::discord::AccessLevel;
 use crate::domain::{GameId, GuildId};
 use crate::events::{Actor, Attribution, Surface, mapping};
@@ -54,7 +52,7 @@ type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 /// to whoever typed in chat. Every such case is logged, since the player just
 /// sees silence.
 async fn resolve_scope(deps: &IngameDeps, server: &str) -> Option<(String, Option<GameId>)> {
-    let owner = match owner_of(&deps.client, &deps.namespace, server).await {
+    let owner = match deps.servers().owner_of(server).await {
         Ok(Some(owner)) => owner,
         Ok(None) => {
             warn!(server, "in-game trigger for an unknown server; ignoring");
@@ -187,11 +185,9 @@ pub(crate) async fn handle_ingame_question(
     };
 
     supervisor_announce(
-        &deps.client,
+        deps.servers(),
         &deps.control_http,
-        &deps.namespace,
         server,
-        deps.control_port,
         &format!("Gary: {}", truncate(&reply, MAX_REPLY_CHARS)),
     )
     .await;

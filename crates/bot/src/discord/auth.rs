@@ -3,7 +3,7 @@ use tracing::error;
 
 use super::render::guild_required_embed;
 use super::{Context, Data, Error};
-use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
+use crate::agones::{ScopeVerdict, ServerScope};
 use crate::store::GrantSet;
 
 /// A caller's access tier in one guild. Ordered low→high so `>=` expresses "at
@@ -269,7 +269,7 @@ pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
         .await?;
         return Ok(false);
     };
-    match verify_scope(&data.kube_client, &data.namespace, server, &scope).await {
+    match data.servers().verify_scope(server, &scope).await {
         Ok(ScopeVerdict::InScope) => Ok(true),
         Ok(ScopeVerdict::Foreign | ScopeVerdict::Absent) => {
             deny(ctx, &format!(
