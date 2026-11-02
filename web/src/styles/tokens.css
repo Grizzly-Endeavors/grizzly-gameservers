@@ -1,0 +1,279 @@
+/**
+ * Design tokens. A screen never names a hex: it names one of these, and dark mode is
+ * the same names redefined under `.dark` on <html>.
+ *
+ * Typeface: Inter, self-hosted, with tabular figures for every number.
+ *
+ * Colour: one violet accent for anything you can act on (white text on it). Status
+ * colours are kept apart from it on purpose: green means healthy, amber means
+ * "needs you", red means down. Gary's own work wears the accent's tint.
+ */
+@import '@fontsource-variable/inter/wght.css';
+
+:root {
+  color-scheme: light;
+
+  --font-body: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-head: var(--font-body);
+
+  /* surfaces: paper → surface → raised */
+  --bg: #f6f7f8;
+  --paper-light: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f1f3f5;
+  --well: #e9ecef;
+  --raised: #ffffff;
+  --hover: #eef0f0;
+
+  /* ink */
+  --ink: #3f4245;
+  --ink-strong: #26282b;
+  --muted: #717174;
+  --faint: #a3a8ad;
+
+  /* lines */
+  --line: #dadee2;
+  --line-soft: #e9ecee;
+  --line-strong: #cfd3d7;
+
+  /* accent · violet */
+  --brand-50: #f1edff;
+  --brand-100: #e2d9ff;
+  --brand-500: #7c5cff;
+  --brand-600: #6847f0;
+  --brand-700: #5236c9;
+  --primary-bg: #6d4dfa;
+  --primary-hover: #7c5fff;
+  --primary-ink: #ffffff;
+  --link: #5a3de0;
+  --focus: #6847f0;
+
+  /* status */
+  --ok: #41823c;
+  --ok-tint: #eef7e9;
+  --warn: #94590b;
+  --warn-tint: #fff4dd;
+  --warn-line: #f1c97a;
+  --bad: #b0272b;
+  --bad-tint: #fbecec;
+  --bad-fill: #b0272b;
+  --attn: #d98a1f; /* the "needs you" lamp and ping ring; never text */
+  --tint: #eef0f0;
+  --tint-line: #e1e4e7;
+  --tag-bg: #eef0f0;
+  --tag-ink: #5d6166;
+
+  --conf-high: #41823c;
+  --conf-med: #717174;
+  --conf-low: #d98a1f;
+  --evidence-rule: #7c5cff;
+  --evidence-bg: #f1edff;
+  --lamp-ok: #3fb950;
+  --lamp-warn: #e9a23b;
+  --lamp-bad: #d6453f;
+  --toast-bg: #26282b;
+  --toast-ink: #f1f2f3;
+
+  /* radius: control, panel, shell */
+  --radius-sm: 4px;
+  --radius-btn: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-tag: 6px;
+
+  /* elevation: two depths */
+  --shadow-card: 0 1px 2px rgba(38, 40, 43, 0.05), 0 12px 28px -18px rgba(38, 40, 43, 0.22);
+  --shadow-lift: 0 2px 6px rgba(38, 40, 43, 0.06), 0 26px 54px -28px rgba(38, 40, 43, 0.3);
+
+  /* motion · the house ease and three durations */
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-swoop: cubic-bezier(0.34, 1.28, 0.5, 1);
+  --dur-fast: 130ms;
+  --dur-base: 190ms;
+  --dur-slow: 280ms;
+
+  /* tracking, keyed to size */
+  --tracking-display: -0.02em;
+  --tracking-title: -0.016em;
+  --tracking-heading: -0.012em;
+
+  --h1: 26px;
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #141517;
+  --paper-light: #1a1c1e;
+  --surface: #1c1e21;
+  --surface-2: #232529;
+  --well: #17181b;
+  --raised: #3b3e44;
+  --hover: #282a2e;
+
+  --ink: #c6c9cd;
+  --ink-strong: #f1f2f3;
+  --muted: #8e9297;
+  --faint: #5d6166;
+
+  --line: #2e3135;
+  --line-soft: #26282c;
+  --line-strong: #3c4045;
+
+  --brand-50: #1c1733;
+  --brand-100: #251d47;
+  --brand-500: #8f74ff;
+  --brand-600: #9a82ff;
+  --brand-700: #b8a6ff;
+  --link: #b3a1ff;
+  --focus: #9a82ff;
+
+  --ok: #8fcf6b;
+  --ok-tint: #13220f;
+  --warn: #ffbb42;
+  --warn-tint: #2a2110;
+  --warn-line: #5b4417;
+  --bad: #f09a9f;
+  --bad-tint: #2c1618;
+  --bad-fill: #c2373b;
+  --attn: #ffb23e;
+  --tint: #24262a;
+  --tint-line: #303337;
+  --tag-bg: #26292d;
+  --tag-ink: #a9adb2;
+
+  --conf-high: #8fcf6b;
+  --conf-med: #8e9297;
+  --conf-low: #ffb23e;
+  --evidence-bg: #1a1630;
+  --primary-bg: #7457ff;
+  --primary-hover: #8468ff;
+  --toast-bg: #f1f2f3;
+  --toast-ink: #26282b;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 36px -20px rgba(0, 0, 0, 0.6);
+  --shadow-lift: 0 2px 8px rgba(0, 0, 0, 0.4), 0 34px 70px -30px rgba(0, 0, 0, 0.7);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+html,
+body {
+  overscroll-behavior: none;
+}
+
+/* ── motion · keyframes ─────────────────────────────────────────────────── */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+/* A feed row arriving: it makes its own room, then fades up into it. */
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+    max-height: 0;
+  }
+  40% {
+    opacity: 0;
+    max-height: 160px;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    max-height: 160px;
+  }
+}
+/* The wash a fresh row wears for a few seconds, then lets go of. */
+@keyframes fresh-wash {
+  from {
+    background-color: var(--brand-50);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@keyframes ping-in {
+  from {
+    opacity: 0;
+    transform: translateY(-18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--attn) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+@keyframes beat {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes drain {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@keyframes slide-in-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+/* ── reduced motion · one global floor ─────────────────────────────────────
+ * Anyone who asks for less motion gets essentially none, including the rail
+ * collapse, the feed and the ping. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

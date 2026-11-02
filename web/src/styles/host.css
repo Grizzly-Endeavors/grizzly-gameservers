@@ -1,0 +1,345 @@
+/* The hosting team's operations screens: Overview, Servers, Incidents (src/host). */
+
+.host-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.host-head .prov {
+  margin-top: 6px;
+}
+
+/* ── overview ──────────────────────────────────────────────────────────── */
+.host-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.host-kpis .kpi-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.host-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 20px;
+  align-items: start;
+}
+.host-list {
+  display: grid;
+}
+.host-list > li + li {
+  border-top: 1px solid var(--line-soft);
+}
+
+.host-esc {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+}
+.host-esc:first-child {
+  padding-top: 2px;
+}
+.host-esc-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.host-esc-top strong {
+  color: var(--ink-strong);
+}
+.host-ago {
+  margin-left: auto;
+  font-size: 13px;
+}
+.host-esc-reason {
+  color: var(--ink);
+  font-size: 14px;
+  max-width: 62ch;
+}
+
+.host-inc {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px 0;
+}
+.host-inc:first-child {
+  padding-top: 2px;
+}
+.host-inc .lamp {
+  margin-top: 6px;
+}
+.host-inc-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: baseline;
+}
+.host-inc-line strong {
+  color: var(--ink-strong);
+}
+.host-inc-line .muted {
+  font-size: 13px;
+}
+.host-inc-diag {
+  font-size: 14px;
+  margin-top: 2px;
+}
+.host-inc-side {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.host-cost {
+  font-variant-numeric: tabular-nums;
+  color: var(--link);
+  font-weight: 600;
+}
+
+/* ── servers ───────────────────────────────────────────────────────────── */
+.host-fleet {
+  min-width: 860px;
+}
+.host-cell-main {
+  color: var(--ink-strong);
+  font-weight: 550;
+}
+.host-cell-sub {
+  font-size: 13px;
+  margin-top: 1px;
+}
+.host-row-attn td:first-child {
+  box-shadow: inset 3px 0 0 var(--attn);
+}
+.host-mem {
+  display: grid;
+  gap: 4px;
+  min-width: 120px;
+}
+.host-mem-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--well);
+  overflow: hidden;
+}
+.host-mem-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease-out-soft);
+}
+.host-mem-ok {
+  background: var(--lamp-ok);
+}
+.host-mem-warn {
+  background: var(--lamp-warn);
+}
+.host-mem-bad {
+  background: var(--lamp-bad);
+}
+.host-mem-text {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ── incidents ─────────────────────────────────────────────────────────── */
+.host-ir-card {
+  padding: 6px 8px;
+}
+.host-ir-list {
+  display: grid;
+}
+.host-ir + .host-ir {
+  border-top: 1px solid var(--line-soft);
+}
+.host-ir-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 12px;
+  border: 0;
+  background: none;
+  text-align: left;
+  border-radius: var(--radius);
+  transition: background-color var(--dur-fast) var(--ease-out-soft);
+}
+.host-ir-head:hover {
+  background: var(--hover);
+}
+.host-ir-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.host-ir-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: baseline;
+}
+.host-ir-line strong {
+  color: var(--ink-strong);
+}
+.host-ir-line .muted {
+  font-size: 13px;
+}
+.host-ir-diag {
+  font-size: 14px;
+}
+.host-ir-side {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+.host-ir-ago {
+  font-size: 12.5px;
+}
+.host-ir-chev {
+  color: var(--muted);
+  display: inline-flex;
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+.host-ir.is-open .host-ir-chev {
+  transform: rotate(90deg);
+}
+.host-ir-body {
+  padding: 4px 12px 18px 35px;
+  animation: rise var(--dur-base) var(--ease-out-soft) both;
+}
+.host-ir-esc {
+  margin-bottom: 14px;
+  display: block;
+  font-size: 14px;
+}
+.host-ir-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+.host-ir-h {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.host-steps {
+  display: grid;
+  gap: 8px;
+}
+.host-steps li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 14px;
+}
+.host-step-n {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 650;
+  background: var(--tint);
+  color: var(--muted);
+}
+.host-steps li.is-write .host-step-n {
+  background: var(--brand-50);
+  color: var(--link);
+}
+.host-step-text {
+  display: block;
+  color: var(--ink-strong);
+}
+.host-step-result {
+  display: block;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.host-reply {
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 10px 14px;
+  border-left: 3px solid var(--evidence-rule);
+  background: var(--evidence-bg);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.host-reply code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px;
+}
+.host-ir-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── smaller screens ───────────────────────────────────────────────────── */
+@media (max-width: 1100px) {
+  .host-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 900px) {
+  .host-pair,
+  .host-ir-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 767px) {
+  .host-head {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .host-kpis {
+    gap: 10px;
+  }
+  .host-kpis .kpi-value {
+    font-size: 23px;
+  }
+  .host-ir-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 12px 6px;
+  }
+  .host-ir-side {
+    grid-column: 2;
+    grid-row: 2;
+    justify-items: start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .host-ir-chev {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .host-ir-body {
+    padding: 4px 6px 16px;
+  }
+}
+@media (max-width: 480px) {
+  .host-kpis {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

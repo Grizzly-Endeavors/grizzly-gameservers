@@ -1,0 +1,7 @@
+# Its own namespace so the console shares nothing with game-servers: none of
+# the agent guardrails' NetworkPolicies or quota apply to it, and nothing it
+# does can touch them.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gary-web

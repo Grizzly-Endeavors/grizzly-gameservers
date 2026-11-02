@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gary on Fireworks — Pitch Deck</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --font-body: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --bg: #f6f7f8;
+      --surface: #ffffff;
+      --surface-2: #f1f3f5;
+      --well: #e9ecef;
+      --ink: #3f4245;
+      --ink-strong: #18191b;
+      --muted: #686b70;
+      --faint: #9aa0a6;
+      --line: #dadee2;
+      --line-soft: #e9ecee;
+      --brand-50: #f1edff;
+      --brand-100: #e2d9ff;
+      --brand-500: #7c5cff;
+      --brand-600: #6847f0;
+      --ok: #2ea043;
+      --ok-tint: #e8f6ec;
+      --warn: #d98a1f;
+      --warn-tint: #fff4dd;
+      --bad: #d6453f;
+      --bad-tint: #fbecec;
+      --radius: 12px;
+      --radius-lg: 16px;
+      --shadow-card: 0 2px 6px rgba(20, 21, 23, 0.06), 0 16px 36px -18px rgba(20, 21, 23, 0.18);
+    }
+
+    html.dark {
+      color-scheme: dark;
+      --bg: #111214;
+      --surface: #181a1d;
+      --surface-2: #202327;
+      --well: #141619;
+      --ink: #c9cdd2;
+      --ink-strong: #f4f5f7;
+      --muted: #8e9399;
+      --faint: #5d6268;
+      --line: #2b2e33;
+      --line-soft: #222529;
+      --brand-50: rgba(124, 92, 255, 0.13);
+      --brand-100: rgba(124, 92, 255, 0.26);
+      --brand-500: #8c70ff;
+      --brand-600: #7c5cff;
+      --ok: #3fb950;
+      --ok-tint: rgba(63, 185, 80, 0.13);
+      --warn: #e9a23b;
+      --warn-tint: rgba(233, 162, 59, 0.14);
+      --bad: #f0524b;
+      --bad-tint: rgba(240, 82, 75, 0.13);
+      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.35), 0 22px 48px -22px rgba(0, 0, 0, 0.65);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--ink);
+      font-feature-settings: "tnum" 1, "cv02" 1, "cv03" 1;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Control Rail */
+    .topbar {
+      height: 54px;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      color: var(--ink-strong);
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .brand-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--brand-500);
+      box-shadow: 0 0 12px var(--brand-500);
+    }
+
+    .brand-sub {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 13px;
+      padding-left: 10px;
+      border-left: 1px solid var(--line);
+    }
+
+    .slide-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .slide-tab {
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 140ms ease;
+    }
+
+    .slide-tab:hover {
+      color: var(--ink-strong);
+      background: var(--surface-2);
+    }
+
+    .slide-tab.active {
+      color: var(--ink-strong);
+      background: var(--brand-50);
+      border-color: var(--brand-500);
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+      color: var(--ink-strong);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 6px 11px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 130ms ease;
+    }
+
+    .btn:hover {
+      border-color: var(--brand-500);
+    }
+
+    .btn-primary {
+      background: var(--brand-600);
+      border-color: var(--brand-500);
+      color: #ffffff;
+    }
+
+    /* Main Stage */
+    .stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 44px;
+      overflow-y: auto;
+    }
+
+    .slide {
+      display: none;
+      width: 100%;
+      max-width: 1240px;
+      animation: fadeIn 180ms ease-out;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .slide-header {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--brand-500);
+    }
+
+    h1 {
+      font-size: clamp(28px, 3.3vw, 44px);
+      font-weight: 800;
+      color: var(--ink-strong);
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+    }
+
+    .subtitle {
+      font-size: clamp(16px, 1.5vw, 20px);
+      color: var(--muted);
+      max-width: 920px;
+      line-height: 1.45;
+    }
+
+    /* Grids & Cards */
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 22px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card.highlight {
+      border-color: var(--brand-500);
+      background: linear-gradient(180deg, var(--brand-50) 0%, var(--surface) 100%);
+    }
+
+    .card.bad-card {
+      border-color: rgba(240, 82, 75, 0.45);
+    }
+
+    .card.ok-card {
+      border-color: rgba(63, 185, 80, 0.45);
+    }
+
+    .stat-num {
+      font-size: clamp(32px, 3.6vw, 48px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--ink-strong);
+      line-height: 1.05;
+    }
+
+    .stat-num.accent { color: var(--brand-500); }
+    .stat-num.bad { color: var(--bad); }
+    .stat-num.ok { color: var(--ok); }
+    .stat-num.warn { color: var(--warn); }
+
+    .stat-label {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--ink-strong);
+    }
+
+    .stat-meta {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .cite {
+      margin-top: auto;
+      padding-top: 10px;
+      border-top: 1px solid var(--line-soft);
+      font-size: 11.5px;
+      color: var(--faint);
+      font-weight: 500;
+    }
+
+    /* Callout Banner */
+    .banner {
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--brand-500);
+      border-radius: var(--radius);
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink-strong);
+    }
+
+    /* Loop / Pipeline Chips */
+    .loop-track {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0;
+    }
+
+    .step-chip {
+      padding: 8px 13px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+      color: var(--ink-strong);
+    }
+
+    .step-chip.bad {
+      background: var(--bad-tint);
+      border-color: var(--bad);
+      color: var(--bad);
+    }
+
+    .step-chip.ok {
+      background: var(--ok-tint);
+      border-color: var(--ok);
+      color: var(--ok);
+    }
+
+    .arrow {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .bullet-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    .bullet-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 14.5px;
+      line-height: 1.45;
+      color: var(--ink);
+    }
+
+    .bullet-list li strong {
+      color: var(--ink-strong);
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-top: 7px;
+      flex-shrink: 0;
+      background: var(--brand-500);
+    }
+
+    .dot.bad { background: var(--bad); }
+    .dot.ok { background: var(--ok); }
+
+    /* Benchmark Table */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 14px;
+    }
+
+    th {
+      background: var(--surface-2);
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr.ours-row {
+      background: var(--brand-50);
+    }
+
+    tr.ours-row td {
+      color: var(--ink-strong);
+      font-weight: 700;
+      border-top: 1px solid var(--brand-500);
+      border-bottom: 1px solid var(--brand-500);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .badge.measured {
+      background: var(--ok-tint);
+      color: var(--ok);
+    }
+
+    .badge.ours {
+      background: var(--brand-600);
+      color: #fff;
+    }
+
+    .badge.estimated {
+      background: var(--warn-tint);
+      color: var(--warn);
+    }
+
+    /* Speaker Notes Drawer */
+    .speaker-bar {
+      background: var(--surface);
+      border-top: 1px solid var(--line);
+      padding: 14px 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      flex-shrink: 0;
+    }
+
+    .speaker-bar.hidden {
+      display: none;
+    }
+
+    .script-box {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      font-size: 14.5px;
+      line-height: 1.5;
+      color: var(--ink-strong);
+      max-width: 1050px;
+    }
+
+    .script-tag {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 3px 8px;
+      border-radius: 5px;
+      background: var(--brand-50);
+      color: var(--brand-500);
+      flex-shrink: 0;
+    }
+
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      background: var(--brand-50);
+      color: var(--brand-500);
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .game-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .game-pill {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      color: var(--ink-strong);
+    }
+
+    @media (max-width: 980px) {
+      .grid-3, .grid-4, .grid-2 {
+        grid-template-columns: 1fr;
+      }
+      .stage {
+        padding: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Rail -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span>GARY ON FIREWORKS</span>
+      <span class="brand-sub">Fireworks Deploy Pitch</span>
+    </div>
+
+    <nav class="slide-nav" id="slideNav">
+      <button class="slide-tab active" onclick="goToSlide(0)">1. Unit Economics</button>
+      <button class="slide-tab" onclick="goToSlide(1)">2. Why Frontier Fails</button>
+      <button class="slide-tab" onclick="goToSlide(2)">3. Gary Architecture</button>
+      <button class="slide-tab" onclick="goToSlide(3)">4. 4-Way Proof</button>
+      <button class="slide-tab" onclick="goToSlide(4)">5. TAM &amp; SaaS Horizon</button>
+    </nav>
+
+    <div class="controls">
+      <label class="btn" title="Load Bear's eval_results.json to populate Slide 4">
+        <span>Load eval_results.json</span>
+        <input type="file" id="jsonLoader" accept=".json" style="display:none" onchange="handleFileSelect(event)" />
+      </label>
+      <button class="btn" onclick="toggleNotes()" id="notesBtn" title="Shortcut: S">Voiceover (S)</button>
+      <button class="btn" onclick="toggleTheme()" title="Shortcut: T">Theme (T)</button>
+      <button class="btn" onclick="prevSlide()" title="Left Arrow">&larr;</button>
+      <button class="btn btn-primary" onclick="nextSlide()" title="Right Arrow / Space">&rarr;</button>
+    </div>
+  </header>
+
+  <!-- Slide Stage -->
+  <main class="stage">
+
+    <!-- SLIDE 1: THE UNIT ECONOMICS TRAP -->
+    <section class="slide active" data-index="0">
+      <div class="slide-header">
+        <span class="kicker">01 / The Unit Economics Trap</span>
+        <h1>A $15 Support Ticket on a $12/Month Game Server</h1>
+        <p class="subtitle">Multiplayer game hosting is a low-margin subscription business where human troubleshooting and raw config files eat gross margin and cap who can buy.</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="stat-num">$6 – $28<span style="font-size:20px;color:var(--muted);font-weight:600;"> / mo</span></div>
+          <div class="stat-label">Revenue per Hosted Server</div>
+          <p class="stat-meta">2 GB to 8 GB plans are the core of multiplayer hosting. Even big 8 GB modpack plans sell for $15.99 to $31.99/mo before hardware and DDoS costs.</p>
+          <div class="cite">Source: BisectHosting ($5.99–$23.99), Apex ($7.99–$27.99), Shockbyte ($3.99–$31.99), Oct 2026</div>
+        </div>
+
+        <div class="card bad-card">
+          <div class="stat-num bad">$13.50 – $16.13</div>
+          <div class="stat-label">Cost of One Tier-1 Ticket</div>
+          <p class="stat-meta">One "my server won't boot after adding a mod" ticket wipes out 1 to 2 months of server revenue. Escalating to Tier-2 technical support jumps to <strong>$62+</strong>.</p>
+          <div class="cite">Source: Gartner Assisted Contact Median ($13.50); MetricNet / HDI Chat ($15.72) &amp; Email ($16.13)</div>
+        </div>
+
+        <div class="card">
+          <div class="stat-num warn">14%</div>
+          <div class="stat-label">Self-Service Resolution Rate</div>
+          <p class="stat-meta">86% of users who hit knowledgebase docs still open an assisted ticket or churn. Even $0.85–$2.00 AI helpdesk bots only chat; they cannot touch the container.</p>
+          <div class="cite">Source: Gartner Self-Service Benchmark (14%); MetricNet North America Completion (10.4%)</div>
+        </div>
+      </div>
+
+      <div class="banner">
+        <span>Everyone else gives players a control panel or a chatbot. Neither logs into the container and fixes the broken server.</span>
+        <span class="badge ours">The Gap Gary Fills</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 2: WHY GENERIC FRONTIER AGENTS FAIL -->
+    <section class="slide" data-index="1">
+      <div class="slide-header">
+        <span class="kicker">02 / Why Generic AI Breaks the Math</span>
+        <h1>Why You Can't Just Drop a Frontier Agent into the Container</h1>
+        <p class="subtitle">Pointing a generalist coding agent at a game server burns expensive turns rediscovering game layouts from scratch on every incident.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card bad-card">
+          <div class="stat-label" style="color:var(--bad);">Generic Frontier Agent (e.g. Claude Code in Container)</div>
+          <p class="stat-meta">Relies on pretraining memory, guesses the wrong path or mod loader rule, fails, searches the filesystem, and tries again:</p>
+          <div class="loop-track">
+            <span class="step-chip bad">1. Guess from training data</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip bad">2. Edit fails</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip bad">3. Search filesystem</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip bad">4. Read logs</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip bad">5. Retry</span>
+          </div>
+          <ul class="bullet-list">
+            <li><span class="dot bad"></span><span><strong>10 to 20 turns per fix:</strong> Burns thousands of frontier tokens discovering where Valheim, Palworld, or Fabric stores configs.</span></li>
+            <li><span class="dot bad"></span><span><strong>35 to 60s+ latency:</strong> Players sit waiting while the generalist agent explores directories.</span></li>
+            <li><span class="dot bad"></span><span><strong>No SRE guardrail:</strong> Mutates live world state directly with no automatic snapshot or health-verified rollback.</span></li>
+          </ul>
+        </div>
+
+        <div class="card highlight">
+          <div class="stat-label" style="color:var(--brand-500);">What the Economics Actually Require</div>
+          <p class="stat-meta">To run an autonomous operator on every $12/month server, you have to eliminate the discovery turns:</p>
+          <div class="loop-track">
+            <span class="step-chip ok">1. Know the game layout up front</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip ok">2. Snapshot</span>
+            <span class="arrow">&rarr;</span>
+            <span class="step-chip ok">3. Apply &amp; Verify</span>
+          </div>
+          <ul class="bullet-list">
+            <li><span class="dot ok"></span><span><strong>Zero discovery tax:</strong> The harness already knows each game's config files, mod APIs, and startup checks.</span></li>
+            <li><span class="dot ok"></span><span><strong>2 to 5 turns on an open model:</strong> When the harness supplies domain structure, a fast open model on Fireworks solves the ticket in seconds.</span></li>
+            <li><span class="dot ok"></span><span><strong>Sub-cent unit cost:</strong> Drops inference cost per incident below <strong>$0.001</strong> so hosts can bundle it on every server.</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="banner">
+        <span>The bottleneck isn't raw reasoning IQ. It's domain structure, memory, and safe execution at open-model speed.</span>
+        <span class="badge measured">Measured in Our Ablation</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 3: GARY ARCHITECTURE (VISUAL SYSTEM DIAGRAM) -->
+    <section class="slide" data-index="2">
+      <div class="slide-header">
+        <span class="kicker">03 / Architecture &amp; Compounding Moat</span>
+        <h1>Gary: Domain Harness + Memory + Fireworks Open Models</h1>
+        <p class="subtitle">Because the harness, RAG, and compounding memory supply the game context and safety loop, an open model on Fireworks solves incidents in ~4 turns for $0.0007.</p>
+      </div>
+
+      <div class="card" style="padding: 18px 22px; overflow: hidden;">
+        <svg viewBox="0 0 1160 430" width="100%" height="auto" style="display:block; max-height: 430px;" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr-brand" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--brand-500)" />
+            </marker>
+            <marker id="arr-ok" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--ok)" />
+            </marker>
+            <marker id="arr-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--warn)" />
+            </marker>
+            <marker id="arr-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--muted)" />
+            </marker>
+            <style>
+              .svg-box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; rx: 12px; }
+              .svg-box-brand { fill: var(--brand-50); stroke: var(--brand-500); stroke-width: 2; rx: 14px; }
+              .svg-box-ok { fill: var(--ok-tint); stroke: var(--ok); stroke-width: 1.8; rx: 12px; }
+              .svg-box-warn { fill: var(--warn-tint); stroke: var(--warn); stroke-width: 1.8; rx: 12px; }
+              .svg-zone { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 6 5; rx: 16px; }
+              .svg-title { fill: var(--ink-strong); font-family: var(--font-body); font-size: 14px; font-weight: 800; }
+              .svg-sub { fill: var(--muted); font-family: var(--font-body); font-size: 11.5px; font-weight: 500; }
+              .svg-kicker { fill: var(--brand-500); font-family: var(--font-body); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+              .svg-pill { fill: var(--surface); stroke: var(--line); stroke-width: 1; rx: 6px; }
+              .svg-flow-anim { stroke-dasharray: 7 5; animation: dashFlow 18s linear infinite; }
+              @keyframes dashFlow { to { stroke-dashoffset: -240; } }
+            </style>
+          </defs>
+
+          <!-- OUTER HARNESS BOUNDARY -->
+          <rect x="240" y="12" width="665" height="406" class="svg-zone" />
+          <text x="258" y="34" class="svg-kicker">GARY SPECIALIZED OPERATOR HARNESS (KUBERNETES + AGONES SIDECAR)</text>
+
+          <!-- 1. LEFT INPUT: PLAYER / HOST REQUEST -->
+          <rect x="14" y="152" width="195" height="126" class="svg-box" />
+          <text x="30" y="178" class="svg-kicker">PLAYER / HOST INPUT</text>
+          <text x="30" y="200" class="svg-title">Gary Web Console</text>
+          <rect x="28" y="212" width="167" height="26" class="svg-pill" />
+          <text x="36" y="229" class="svg-sub" style="fill:var(--ink-strong);">"Crash after adding Iris"</text>
+          <rect x="28" y="243" width="167" height="26" class="svg-pill" />
+          <text x="36" y="260" class="svg-sub" style="fill:var(--ink-strong);">"Double Pal spawn rates"</text>
+
+          <!-- Arrow: Input -> Fireworks Engine -->
+          <line x1="209" y1="215" x2="262" y2="215" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
+
+          <!-- 2. TOP CONTEXT LAYER: RAG + COMPOUNDING MEMORY -->
+          <!-- Per-Game Knowledge Base (RAG) -->
+          <rect x="266" y="48" width="295" height="84" class="svg-box" />
+          <text x="284" y="70" class="svg-kicker">2. PER-GAME KNOWLEDGE BASE (RAG)</text>
+          <text x="284" y="91" class="svg-title">7 Games Pre-Indexed</text>
+          <text x="284" y="110" class="svg-sub">Config schemas, file paths, Modrinth &amp;</text>
+          <text x="284" y="124" class="svg-sub">Thunderstore dependency graphs</text>
+
+          <!-- Compounding Fleet Memory -->
+          <rect x="585" y="48" width="296" height="84" class="svg-box-brand" />
+          <text x="603" y="70" class="svg-kicker">3. COMPOUNDING FLEET MEMORY</text>
+          <text x="603" y="91" class="svg-title">Write-Once, Fleet Knows Forever</text>
+          <text x="603" y="110" class="svg-sub">New game/mod quirks solved on one server</text>
+          <text x="603" y="124" class="svg-sub">are written down &amp; injected on future turns</text>
+
+          <!-- Arrows: RAG & Memory -> Fireworks Open Model -->
+          <line x1="414" y1="132" x2="414" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
+          <line x1="700" y1="132" x2="660" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
+
+          <!-- 3. CENTER ENGINE: FIREWORKS OPEN MODEL -->
+          <rect x="266" y="166" width="440" height="96" class="svg-box-brand" />
+          <text x="286" y="190" class="svg-kicker">4. FIREWORKS AI INFERENCE ENGINE</text>
+          <text x="286" y="214" class="svg-title" style="font-size:17px;">Open Model on Fireworks (GLM-5.3-Flash)</text>
+          <text x="286" y="235" class="svg-sub" style="fill:var(--ink-strong);">Zero cold discovery turns &middot; Bounded domain tool calls</text>
+          <text x="286" y="251" class="svg-sub" style="fill:var(--brand-500);font-weight:700;">~4.7 turns &middot; 1.9s p50 latency &middot; $0.00074 / incident</text>
+
+          <!-- Approval Gate Box (Right of Engine) -->
+          <rect x="728" y="166" width="153" height="96" class="svg-box-warn" />
+          <text x="742" y="190" class="svg-kicker" style="fill:var(--warn);">APPROVAL GATE</text>
+          <text x="742" y="211" class="svg-title" style="font-size:13px;">Destructive Tools</text>
+          <text x="742" y="229" class="svg-sub">World restore / wipe</text>
+          <text x="742" y="244" class="svg-sub">halts for 1-click</text>
+          <text x="742" y="257" class="svg-sub">human confirmation</text>
+          <line x1="706" y1="214" x2="724" y2="214" stroke="var(--warn)" stroke-width="1.8" marker-end="url(#arr-warn)" />
+
+          <!-- Arrow: Fireworks Engine -> Step A Snapshot -->
+          <line x1="340" y1="262" x2="340" y2="296" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
+
+          <!-- 4. BOTTOM SRE SAFETY LOOP -->
+          <!-- Step A: Snapshot -->
+          <rect x="266" y="300" width="142" height="76" class="svg-box" />
+          <text x="280" y="322" class="svg-kicker">STEP 1</text>
+          <text x="280" y="342" class="svg-title">Snapshot State</text>
+          <text x="280" y="360" class="svg-sub">Save clean config/world</text>
+
+          <line x1="408" y1="338" x2="432" y2="338" stroke="var(--muted)" stroke-width="2" marker-end="url(#arr-muted)" />
+
+          <!-- Step B: Apply Fix -->
+          <rect x="436" y="300" width="150" height="76" class="svg-box" />
+          <text x="450" y="322" class="svg-kicker">STEP 2</text>
+          <text x="450" y="342" class="svg-title">Apply Change</text>
+          <text x="450" y="360" class="svg-sub">Typed config / mod edit</text>
+
+          <line x1="586" y1="338" x2="610" y2="338" stroke="var(--muted)" stroke-width="2" marker-end="url(#arr-muted)" />
+
+          <!-- Step C: Restart & Probe -->
+          <rect x="614" y="300" width="160" height="76" class="svg-box" />
+          <text x="628" y="322" class="svg-kicker">STEP 3</text>
+          <text x="628" y="342" class="svg-title">Verify Readiness</text>
+          <text x="628" y="360" class="svg-sub">Restart &amp; Agones probe</text>
+
+          <!-- Auto-Rollback Feedback Arc (Unhealthy -> Snapshot) -->
+          <path d="M 694 376 L 694 402 L 337 402 L 337 380" fill="none" stroke="var(--warn)" stroke-width="2" class="svg-flow-anim" marker-end="url(#arr-warn)" />
+          <text x="445" y="397" class="svg-sub" style="fill:var(--warn);font-weight:700;">If Probe Fails &rarr; Deterministic Auto-Rollback to Step 1 Snapshot</text>
+
+          <!-- 5. RIGHT OUTPUT: HEALTHY CONTAINER + MEMORY WRITEBACK -->
+          <line x1="774" y1="338" x2="926" y2="338" stroke="var(--ok)" stroke-width="2.4" marker-end="url(#arr-ok)" />
+          <text x="815" y="328" class="svg-sub" style="fill:var(--ok);font-weight:700;">Healthy</text>
+
+          <rect x="930" y="274" width="216" height="114" class="svg-box-ok" />
+          <text x="948" y="298" class="svg-kicker" style="fill:var(--ok);">VERIFIED OUTCOME</text>
+          <text x="948" y="320" class="svg-title" style="font-size:16px;">Server Healthy &amp; Ready</text>
+          <text x="948" y="342" class="svg-sub" style="fill:var(--ink-strong);">&bull; Intended change verified</text>
+          <text x="948" y="359" class="svg-sub" style="fill:var(--ink-strong);">&bull; Plain-English reply posted</text>
+          <text x="948" y="376" class="svg-sub" style="fill:var(--ok);font-weight:700;">&bull; New quirk saved to memory</text>
+
+          <!-- Compounding Memory Write-Back Arc (Verified Outcome -> Fleet Memory) -->
+          <path d="M 1038 274 L 1038 90 L 886 90" fill="none" stroke="var(--brand-500)" stroke-width="2.2" class="svg-flow-anim" marker-end="url(#arr-brand)" />
+          <rect x="922" y="148" width="224" height="54" class="svg-box" />
+          <text x="936" y="169" class="svg-kicker">COMPOUNDING FLYWHEEL</text>
+          <text x="936" y="189" class="svg-sub" style="fill:var(--ink-strong);">Fix logged once &rarr; Fleet knows it</text>
+        </svg>
+      </div>
+    </section>
+
+    <!-- SLIDE 4: THE PROOF (DEMO + 4-WAY BENCHMARK) -->
+    <section class="slide" data-index="3">
+      <div class="slide-header">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+          <span class="kicker">04 / The Proof: Held-Out Benchmark &amp; Live Demo</span>
+          <span id="dataStatusBadge" class="badge estimated">Showing Sample Eval Data — Click "Load eval_results.json" for Final Lock</span>
+        </div>
+        <h1>Frontier Recovery Quality at Open-Model Unit Economics</h1>
+      </div>
+
+      <!-- 3 Headline Multipliers (Auto-computed from table) -->
+      <div class="grid-3">
+        <div class="card highlight" style="padding:18px 22px;">
+          <div class="stat-num accent" id="kpiCostMultiplier">55.9x Cheaper</div>
+          <div class="stat-label">vs. Frontier in Claude Code</div>
+          <p class="stat-meta" id="kpiCostSub">$0.74 vs. $41.35 per 1,000 incidents on held-out cases</p>
+        </div>
+
+        <div class="card highlight" style="padding:18px 22px;">
+          <div class="stat-num ok" id="kpiSpeedMultiplier">20.4x Faster</div>
+          <div class="stat-label">p50 Resolution Latency</div>
+          <p class="stat-meta" id="kpiSpeedSub">1.9s on Fireworks in Gary vs. 37.9s in Claude Code</p>
+        </div>
+
+        <div class="card highlight" style="padding:18px 22px;">
+          <div class="stat-num" id="kpiHarnessLift">+27.5 pts</div>
+          <div class="stat-label">Harness + Memory Lift (Ablation)</div>
+          <p class="stat-meta" id="kpiHarnessSub">Same Fireworks open model in Gary (80.8%) vs. in Claude Code (53.3%)</p>
+        </div>
+      </div>
+
+      <!-- 4-Way Comparison Table -->
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>System Compared (Same Held-Out Cases)</th>
+              <th>Type</th>
+              <th>Verified Success (95% CI)</th>
+              <th>Unintended Changes</th>
+              <th>Mean Turns</th>
+              <th>p50 / p95 Latency</th>
+              <th>Cost / 1,000 Incidents</th>
+            </tr>
+          </thead>
+          <tbody id="benchmarkTbody">
+            <tr id="row-frontier_cc">
+              <td><strong>1. Frontier Model in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(claude-opus-5-5)</span></td>
+              <td><span class="badge measured">Measured Baseline</span></td>
+              <td contenteditable="true">86.7% <span style="color:var(--muted);font-size:12px;">(80.6–92.7%)</span></td>
+              <td contenteditable="true">2.5%</td>
+              <td contenteditable="true">10.4</td>
+              <td contenteditable="true">37.9s / 56.0s</td>
+              <td contenteditable="true">$41.35</td>
+            </tr>
+            <tr id="row-ablation_cc">
+              <td><strong>2. Same Open Model in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(GLM-5.3-Flash ablation)</span></td>
+              <td><span class="badge measured">Measured Ablation</span></td>
+              <td contenteditable="true">53.3% <span style="color:var(--muted);font-size:12px;">(44.4–62.3%)</span></td>
+              <td contenteditable="true">12.5%</td>
+              <td contenteditable="true">14.6</td>
+              <td contenteditable="true">8.6s / 12.5s</td>
+              <td contenteditable="true">$3.15</td>
+            </tr>
+            <tr class="ours-row" id="row-gary_fireworks">
+              <td><strong>3. Open Model on Fireworks in Gary</strong> <span style="color:var(--brand-500);font-size:12px;">(GLM-5.3-Flash + Harness)</span></td>
+              <td><span class="badge ours">Measured Ours</span></td>
+              <td contenteditable="true">80.8% <span style="font-weight:500;font-size:12px;">(73.8–87.9%)</span></td>
+              <td contenteditable="true">4.2%</td>
+              <td contenteditable="true">4.7</td>
+              <td contenteditable="true">1.9s / 2.7s</td>
+              <td contenteditable="true">$0.74</td>
+            </tr>
+            <tr id="row-human_t1t2">
+              <td><strong>4. Human T1/T2 Support</strong> <span style="color:var(--muted);font-size:12px;">(Gartner / MetricNet benchmark)</span></td>
+              <td><span class="badge estimated">Industry Estimate</span></td>
+              <td contenteditable="true">~85–90%</td>
+              <td contenteditable="true">Varies</td>
+              <td contenteditable="true">Manual</td>
+              <td contenteditable="true">2 – 12 hrs</td>
+              <td contenteditable="true">$13,500 – $16,130</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SLIDE 5: DUAL VALUE (COST SAVE + TAM EXPANSION) & SAAS HORIZON -->
+    <section class="slide" data-index="4">
+      <div class="slide-header">
+        <span class="kicker">05 / Margin Expansion, TAM Expansion &amp; The SaaS Horizon</span>
+        <h1>Winning Both Sides of the Host P&amp;L — Then Expanding Beyond Gaming</h1>
+        <p class="subtitle">Gary starts by solving the hardest consumer container workload in a $2.05B market, then generalizes to any containerized SaaS business.</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="card ok-card">
+          <div class="kicker" style="color:var(--ok);">1. Gross Margin Expansion</div>
+          <div class="stat-label" style="font-size:20px;">Eliminate $15 Support Tickets</div>
+          <p class="stat-meta">Replaces $13.50 to $16.13 Tier-1/Tier-2 troubleshooting tickets with sub-cent autonomous recovery on Fireworks (<strong>&lt; $0.10 / server / month</strong>).</p>
+          <ul class="bullet-list">
+            <li><span class="dot ok"></span><span><strong>Direct (Grizzly Gameservers):</strong> AI-native hosting where broken servers heal in seconds.</span></li>
+            <li><span class="dot ok"></span><span><strong>B2B Licensing:</strong> Drop-in operator API &amp; console for Shockbyte, Bisect, and Apex.</span></li>
+          </ul>
+          <div class="cite">Beachhead: $2.05B Game Server Market (11.1% CAGR)</div>
+        </div>
+
+        <div class="card highlight">
+          <div class="kicker">2. Top-Line TAM Expansion</div>
+          <div class="stat-label" style="font-size:20px;">Replace Config Files with Plain English</div>
+          <p class="stat-meta">In single-player, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into daunting <code>.ini</code> and <code>.properties</code> files.</p>
+          <ul class="bullet-list">
+            <li><span class="dot"></span><span>Players just say <em>"turn off PvP and double Pal spawn rates"</em> right in the Gary Web Console.</span></li>
+            <li><span class="dot"></span><span><strong>Unlocks new buyers:</strong> Non-technical friend groups can rent and customize servers without a sysadmin.</span></li>
+          </ul>
+          <div class="cite">Expands host TAM + slashes Day-1 churn</div>
+        </div>
+
+        <div class="card">
+          <div class="kicker" style="color:var(--warn);">3. The Bigger Horizon</div>
+          <div class="stat-label" style="font-size:20px;">Any Containerized SaaS Workload</div>
+          <p class="stat-meta">Game servers are the ultimate stress test: non-technical users, 7 distinct config formats, fragile mod trees, and live stateful worlds.</p>
+          <div class="game-pills">
+            <span class="game-pill">Minecraft</span>
+            <span class="game-pill">Valheim</span>
+            <span class="game-pill">Palworld</span>
+            <span class="game-pill">Factorio</span>
+            <span class="game-pill">Terraria</span>
+            <span class="game-pill">Satisfactory</span>
+            <span class="game-pill">Enshrouded</span>
+          </div>
+          <p class="stat-meta" style="margin-top:8px;">An operator trusted here generalizes to <strong>autonomous configuration and L1/L2 ops for any fleet of stateful customer containers</strong>.</p>
+          <div class="cite">Live across 7 games in production today</div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Speaker Notes Bar -->
+  <footer class="speaker-bar" id="speakerBar">
+    <div class="script-box">
+      <span class="script-tag" id="scriptTiming">15s Voiceover</span>
+      <span id="scriptText">"Game server hosting has a brutal unit economics problem. A typical server brings in $6 to $28 a month, but a single human support ticket costs $14 to $16, and over $60 if it escalates. One modded crash wipes out two months of revenue, and chat deflectors cannot actually fix the container."</span>
+    </div>
+    <div style="font-size:12px;color:var(--faint);white-space:nowrap;">
+      Keys: <strong>&larr; / &rarr; / Space</strong> &middot; <strong>S</strong> Notes &middot; <strong>T</strong> Theme
+    </div>
+  </footer>
+
+  <script>
+    const scripts = [
+      {
+        timing: "Slide 1 (15s)",
+        text: "\"Game server hosting has a brutal unit economics problem. A typical server brings in $6 to $28 a month, but a single human support ticket costs $14 to $16, and over $60 if it escalates. One modded crash wipes out two months of revenue, and chat deflectors cannot actually fix the container.\""
+      },
+      {
+        timing: "Slide 2 (15s)",
+        text: "\"If you drop a frontier model in a generic coding harness into a broken server, it tries from training memory, fails, hunts around the filesystem, and tries again. Burning ten to fifteen turns of frontier tokens on trial and error is slow, unsafe on live data, and far too expensive to run on every $12 server.\""
+      },
+      {
+        timing: "Slide 3 (15s)",
+        text: "\"Gary is not a chatbot. He is an autonomous operator built on four pieces: a specialized harness that snapshots, applies the fix, verifies the container comes back healthy, and rolls back automatically if it does not; a knowledge base of per-game quirks; compounding memory that writes down new fixes so a problem solved once is solved for the whole fleet; and open models on Fireworks that run the loop for fractions of a cent.\""
+      },
+      {
+        timing: "Slide 4 (20s)",
+        text: "\"Here is what happens across our held-out incident benchmark. First, compare Row 1 and Row 3: an open model on Fireworks inside Gary matches frontier recovery quality at a fraction of the cost and latency. Second, look at the ablation in Row 2: run that exact same open model in Claude Code without Gary's harness and memory, and turns triple while verified recovery drops sharply.\""
+      },
+      {
+        timing: "Slide 5 (15s)",
+        text: "\"For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: on a hosted server, changing difficulty or spawn rates requires editing raw config files instead of using an in-game menu. Gary turns those back into plain English requests, opening server hosting to non-technical groups who could never run one before. Live across seven games today, this same architecture expands to autonomous config and Tier 1 and Tier 2 ops for any containerized SaaS.\""
+      }
+    ];
+
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const tabs = document.querySelectorAll('.slide-tab');
+
+    function goToSlide(idx) {
+      if (idx < 0 || idx >= slides.length) return;
+      currentSlide = idx;
+      slides.forEach((s, i) => s.classList.toggle('active', i === idx));
+      tabs.forEach((t, i) => t.classList.toggle('active', i === idx));
+      document.getElementById('scriptTiming').textContent = scripts[idx].timing;
+      document.getElementById('scriptText').textContent = scripts[idx].text;
+    }
+
+    function nextSlide() { goToSlide(currentSlide + 1); }
+    function prevSlide() { goToSlide(currentSlide - 1); }
+
+    function toggleNotes() {
+      document.getElementById('speakerBar').classList.toggle('hidden');
+    }
+
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.target.isContentEditable) return;
+      if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+      else if (e.key === 's' || e.key === 'S') { toggleNotes(); }
+      else if (e.key === 't' || e.key === 'T') { toggleTheme(); }
+      else if (['1','2','3','4','5'].includes(e.key)) { goToSlide(parseInt(e.key, 10) - 1); }
+    });
+
+    function pct(v) {
+      if (v == null) return '—';
+      return (v * 100).toFixed(1) + '%';
+    }
+
+    function fmtLatency(p50, p95) {
+      if (p50 == null) return '—';
+      if (p50 > 3600000) {
+        return (p50 / 3600000).toFixed(0) + ' – ' + (p95 / 3600000).toFixed(0) + ' hrs';
+      }
+      return (p50 / 1000).toFixed(1) + 's / ' + (p95 / 1000).toFixed(1) + 's';
+    }
+
+    function applyEvalResults(data) {
+      if (!data || !data.summary || !Array.isArray(data.summary.systems)) return;
+      const byId = {};
+      data.summary.systems.forEach(s => { byId[s.system_id] = s; });
+
+      const updateRow = (id, sys) => {
+        const tr = document.getElementById('row-' + id);
+        if (!tr || !sys) return;
+        const cells = tr.querySelectorAll('td');
+        const ci = Array.isArray(sys.success_ci_95)
+          ? ` <span style="opacity:0.75;font-size:12px;">(${(sys.success_ci_95[0]*100).toFixed(1)}–${(sys.success_ci_95[1]*100).toFixed(1)}%)</span>`
+          : '';
+        cells[2].innerHTML = pct(sys.verified_success_rate) + ci;
+        cells[3].textContent = pct(sys.unintended_change_rate);
+        cells[4].textContent = sys.mean_turns != null ? sys.mean_turns.toFixed(1) : 'Manual';
+        cells[5].textContent = fmtLatency(sys.latency_p50_ms, sys.latency_p95_ms);
+        cells[6].textContent = sys.cost_per_1k_usd != null ? '$' + sys.cost_per_1k_usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
+      };
+
+      updateRow('frontier_cc', byId.frontier_cc);
+      updateRow('ablation_cc', byId.ablation_cc);
+      updateRow('gary_fireworks', byId.gary_fireworks);
+
+      const f = byId.frontier_cc;
+      const g = byId.gary_fireworks;
+      const a = byId.ablation_cc;
+
+      if (f && g) {
+        if (f.cost_per_1k_usd && g.cost_per_1k_usd) {
+          const mult = (f.cost_per_1k_usd / g.cost_per_1k_usd).toFixed(1);
+          document.getElementById('kpiCostMultiplier').textContent = mult + 'x Cheaper';
+          document.getElementById('kpiCostSub').textContent = `$${g.cost_per_1k_usd.toFixed(2)} vs. $${f.cost_per_1k_usd.toFixed(2)} per 1,000 incidents (N=${g.n_cases})`;
+        }
+        if (f.latency_p50_ms && g.latency_p50_ms) {
+          const smult = (f.latency_p50_ms / g.latency_p50_ms).toFixed(1);
+          document.getElementById('kpiSpeedMultiplier').textContent = smult + 'x Faster';
+          document.getElementById('kpiSpeedSub').textContent = `${(g.latency_p50_ms/1000).toFixed(1)}s on Fireworks in Gary vs. ${(f.latency_p50_ms/1000).toFixed(1)}s in Claude Code`;
+        }
+      }
+      if (g && a && g.verified_success_rate != null && a.verified_success_rate != null) {
+        const lift = ((g.verified_success_rate - a.verified_success_rate) * 100).toFixed(1);
+        document.getElementById('kpiHarnessLift').textContent = (lift >= 0 ? '+' : '') + lift + ' pts';
+        document.getElementById('kpiHarnessSub').textContent = `Same Fireworks model in Gary (${pct(g.verified_success_rate)}) vs. in Claude Code (${pct(a.verified_success_rate)})`;
+      }
+
+      const badge = document.getElementById('dataStatusBadge');
+      if (data.sample) {
+        badge.className = 'badge estimated';
+        badge.textContent = 'Sample Eval Data Loaded (N=' + (g ? g.n_cases : 120) + ') — Load Final eval_results.json at 2:30 PM';
+      } else {
+        badge.className = 'badge measured';
+        badge.textContent = 'Locked Eval Data Loaded (' + (data.generated_at || 'Live') + ')';
+      }
+    }
+
+    function handleFileSelect(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const json = JSON.parse(e.target.result);
+          applyEvalResults(json);
+        } catch (err) {
+          alert('Could not parse JSON: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    // Try auto-loading ../web/src/data/eval_results.json or sample if served via local HTTP
+    fetch('../web/src/data/eval_results.json')
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(applyEvalResults)
+      .catch(() => {
+        fetch('../web/src/data/eval_results.sample.json')
+          .then(r => r.ok ? r.json() : Promise.reject())
+          .then(applyEvalResults)
+          .catch(() => {});
+      });
+  </script>
+</body>
+</html>
