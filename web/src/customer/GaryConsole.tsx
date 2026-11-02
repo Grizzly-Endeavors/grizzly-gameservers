@@ -285,7 +285,8 @@ function DispatchBar({ onDispatch }: { onDispatch: () => void }) {
           id="gary-input"
           rows={1}
           value={draft}
-          placeholder={`Tell Gary what to check or change on ${focus} (e.g. "Why is the server rubber-banding?" or "Install Fabric API")...`}
+          aria-label={`Message Gary about ${focus}`}
+          placeholder={`Message Gary about ${focus}`}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
