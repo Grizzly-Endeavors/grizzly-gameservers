@@ -357,10 +357,23 @@ class SystemRun:
     infra_error: str | None = None
     notes: dict[str, Any] = field(default_factory=dict)
     transcript: Any = None
+    conversation: dict[str, Any] | None = None
 
     @property
     def tool_ms(self) -> int:
         return max(0, self.wall_ms - self.model_ms)
+
+
+CONVERSATION_KEYS = ("messages", "tools")
+
+
+def conversation_of(response: dict[str, Any]) -> dict[str, Any] | None:
+    """The fine-tuning record a Gary response carries, or None when the bot did not send one."""
+    messages = response.get("messages")
+    tools = response.get("tools")
+    if isinstance(messages, list) and isinstance(tools, list):
+        return {"messages": messages, "tools": tools}
+    return None
 
 
 def parse_claude_result(raw: str) -> dict[str, Any]:
@@ -468,7 +481,10 @@ class RealExecutor:
         run.completion_tokens = int(usage.get("completion_tokens") or 0)
         run.model_ms = int(response.get("latency_ms") or 0)
         run.notes["escalation_kind"] = response.get("escalation_kind")
-        run.transcript = response
+        run.transcript = {key: value for key, value in response.items() if key not in CONVERSATION_KEYS}
+        run.conversation = conversation_of(response)
+        if run.conversation is None:
+            run.notes["transcript"] = "unavailable"
         return run
 
     def _claude_code(self, system: dict[str, Any], text: str, name: str, channel: str) -> SystemRun:
@@ -648,6 +664,7 @@ def run_job(
         transcript["setup"] = apply_setup(cluster, case, name)
         run = executor.execute(system, case, name)
         transcript["system"] = run.transcript
+        transcript["conversation"] = run.conversation
         _copy_run(record, run)
         if run.infra_error:
             record["detail"] = run.infra_error
@@ -742,7 +759,14 @@ def run_all(
             return None
         with semaphores[case["game"]]:
             record, transcript = run_job(cluster, executor, system, case, repeat)
+        # The conversation is written beside the transcript rather than inside it: it is the
+        # bulk of a Gary turn and the only part the fine-tuning export reads.
+        conversation = transcript.pop("conversation", None)
         (transcript_dir / f"{stem}.json").write_text(json.dumps(transcript, indent=2, default=str), encoding="utf-8")
+        if conversation is not None:
+            (transcript_dir / f"{stem}.messages.json").write_text(
+                json.dumps(conversation, indent=2, default=str), encoding="utf-8"
+            )
         temp = target.with_suffix(".tmp")
         temp.write_text(json.dumps(record, indent=2), encoding="utf-8")
         temp.replace(target)
