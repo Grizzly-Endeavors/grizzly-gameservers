@@ -2,8 +2,9 @@
 //! from a dev box, so a change can be exercised end-to-end without a human
 //! typing into Discord.
 //!
-//! Three routes, all bearer-gated and reachable only over `kubectl port-forward`
-//! (the Service is `ClusterIP`, never a `NodePort`):
+//! Three routes, all bearer-gated. The Service is `ClusterIP`, never a
+//! `NodePort`: callers are `kubectl port-forward` and the web console's
+//! in-cluster proxy, which adds the token itself (ADR-043):
 //!
 //! - `POST /operator/tool` runs one of Gary's tools directly. No model, so the
 //!   result is deterministic and costs nothing — this is the ordinary path.

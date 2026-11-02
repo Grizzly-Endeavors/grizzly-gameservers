@@ -10,6 +10,9 @@ metadata:
     nginx.ingress.kubernetes.io/auth-secret: gary-web-basic-auth
     nginx.ingress.kubernetes.io/auth-secret-type: auth-file
     nginx.ingress.kubernetes.io/auth-realm: "Gary"
+    # Live mode proxies a Gary turn, which can run for minutes.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "900"
 spec:
   ingressClassName: nginx
   rules:
