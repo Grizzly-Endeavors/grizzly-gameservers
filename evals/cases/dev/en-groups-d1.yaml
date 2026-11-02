@@ -1,0 +1,29 @@
+id: en-groups-d1
+scenario: en-groups
+split: dev
+game: enshrouded
+kind: access
+task_area: config
+prompt: set a password for my friends and a separate admin one for me. friends use mushroom88 and mine is keepersonly
+setup:
+- pod_put:
+    src: evals/fixtures/enshrouded/wait_server_up.sh
+    dst: /tmp/wait_server_up.sh
+- pod_put:
+    src: evals/fixtures/enshrouded/en-groups-d1.json
+    dst: /home/steam/enshrouded/enshrouded_server.json
+- pod_exec: jq -e --arg n Admin --arg p tmpAdminPw1 '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_server_up.sh
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg n Admin --arg p keepersonly '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg n Friend --arg p mushroom88 '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg p keepersonly '.userGroups | map(select(.password==$p)) | length == 1' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0

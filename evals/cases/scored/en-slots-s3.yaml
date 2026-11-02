@@ -1,0 +1,23 @@
+id: en-slots-s3
+scenario: en-slots
+split: scored
+game: enshrouded
+kind: config
+task_area: config
+prompt: just us 4 now, can you shrink the server to 4 players
+setup:
+- pod_put:
+    src: evals/fixtures/enshrouded/wait_server_up.sh
+    dst: /tmp/wait_server_up.sh
+- pod_put:
+    src: evals/fixtures/enshrouded/en-slots-s3.json
+    dst: /home/steam/enshrouded/enshrouded_server.json
+- pod_exec: jq -e --argjson b 16 '.slotCount==$b' /home/steam/enshrouded/enshrouded_server.json
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_server_up.sh
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --argjson n 4 '.slotCount==$n' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0
