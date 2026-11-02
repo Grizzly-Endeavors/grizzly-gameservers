@@ -1,0 +1,37 @@
+id: tr-stuck-starting-d1
+scenario: tr-stuck-starting
+split: dev
+game: terraria
+kind: fix
+task_area: troubleshooting
+prompt: server has said 'starting' for 20 minutes
+setup:
+- tool: write_file
+  args:
+    path: config/serverconfig.txt
+    content: 'world=/data/worlds/Greenfield.wld
+
+      worldname=Grizzly
+
+      difficulty=0
+
+      maxplayers=8
+
+      port=7777
+
+      password=
+
+      '
+- restart: true
+- wait: log
+  pattern: Could not find file
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/config/serverconfig.txt
+  pattern: (?m)^world=/data/worlds/grizzly\.wld\s*$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -s /data/worlds/grizzly.wld'
+  expect_exit: 0
