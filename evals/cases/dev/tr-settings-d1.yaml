@@ -1,0 +1,22 @@
+id: tr-settings-d1
+scenario: tr-settings
+split: dev
+game: terraria
+kind: config
+task_area: config
+prompt: 'password it: hunter22'
+setup:
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: any_of
+  checks:
+  - type: file_regex
+    path: /data/config/serverconfig.txt
+    pattern: (?m)^password=hunter22\s*$
+    present: true
+  - type: json_equals
+    path: /data/config/config.json
+    key: Settings.ServerPassword
+    equals: hunter22

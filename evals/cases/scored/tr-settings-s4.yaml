@@ -1,0 +1,16 @@
+id: tr-settings-s4
+scenario: tr-settings
+split: scored
+game: terraria
+kind: config
+task_area: config
+prompt: no pvp on our server please, we don't want people fighting each other
+setup:
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: json_equals
+  path: /data/config/config.json
+  key: Settings.PvPMode
+  equals: disabled
