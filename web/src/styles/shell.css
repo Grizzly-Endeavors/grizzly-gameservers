@@ -381,6 +381,18 @@
   color: var(--muted);
   font-weight: 500;
 }
+.topbar-scope-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  transition: color var(--dur-fast) var(--ease-out-soft);
+}
+.topbar-scope-link:hover {
+  color: var(--ink-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .topbar-sep {
   color: var(--faint);
 }

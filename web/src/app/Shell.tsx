@@ -264,6 +264,7 @@ function PersonaSwitch() {
 function TopBar({ onMenu }: { onMenu: () => void }) {
   const { screen, persona, go, servers, turns, resolvedIds, setFocus } = useStore();
   const scope = persona === 'host' ? 'Pinecrest Hosting' : 'Friday Night Crew';
+  const home: Screen = persona === 'host' ? 'overview' : 'gary';
   const openEscalations = INCIDENTS.filter((i) => i.outcome === 'escalated' && !resolvedIds.includes(i.id)).length;
   const crashedServer = servers.find((s) => s.state.status === 'Crashed');
   const pendingApproval = turns.some((t) => t.approval?.state === 'pending');
@@ -276,7 +277,13 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
         </svg>
       </button>
       <div className="topbar-crumb" aria-label="Workspace scope">
-        <span className="topbar-scope">{scope}</span>
+        {screen === home ? (
+          <span className="topbar-scope">{scope}</span>
+        ) : (
+          <button type="button" className="topbar-scope topbar-scope-link" onClick={() => go(home)}>
+            {scope}
+          </button>
+        )}
         <span className="topbar-sep" aria-hidden="true">/</span>
         <span className="topbar-title">{TITLES[screen]}</span>
       </div>
