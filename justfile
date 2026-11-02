@@ -66,6 +66,11 @@ game-push game="minecraft" tag="dev":
 bot-push tag="dev":
     ./scripts/push-bot-image.sh {{tag}}
 
+# Fan a local eval run out across this box, gs66 and tk-dev. Args: CASES_DIR OUT_DIR
+# [--case-list FILE] [--concurrency "local=3 gs66=3 tk-dev=2"] [--dry-run].
+eval-local *args:
+    ./scripts/eval-local-fanout.sh "$@"
+
 # Run the full test suite (quiet format). --all-features so prompt-lib's
 # non-default codegen/verify faces are exercised, not just the runtime face.
 test:
