@@ -33,7 +33,7 @@ Then put the operator token and a channel id in `web/.env` (see `.env.example`),
 
 ## Deployed
 
-The console is served at <https://gameservers.grizzly-endeavors.com> behind HTTP basic auth. The username and password are in 1Password, `grizzly-platform/gameservers-web-demo` (`username`, `password`; the `htpasswd` field is what the Ingress checks).
+The console is served at <https://gameservers.grizzly-endeavors.com> behind HTTP basic auth. The username and password are in 1Password, `grizzly-platform/gameservers-web-demo` (`username`, `password`; the `judges_htpasswd` field is what the Ingress checks, and `web/deploy/externalsecret.yaml` says how to rotate it).
 
 Every push to `main` that touches `web/` (outside `web/deploy/`) runs `.github/workflows/web.yml`: it builds `web/Dockerfile` (Vite build served by nginx), pushes it to the in-cluster registry, and pins the digest in `web/deploy/kustomization.yaml`. A Flux Kustomization (`grizzly-gameservers-web`, registered in grizzly-platform) applies `web/deploy/` into its own `gary-web` namespace. None of this shares a trigger, image, pin file or namespace with the bot, so a web push never redeploys the bot and a bot push never redeploys the console. Watch a rollout with `gh run list --workflow web.yml`.
 
