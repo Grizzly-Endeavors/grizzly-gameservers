@@ -5,21 +5,22 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
-    # Paths no image or test reads. Anything not listed here builds, so a new
-    # top-level path deploys by default rather than being silently skipped.
-    paths-ignore:
-      - "docs/**"
-      - "web/**"
-      - "cluster/**"
-      - "deploy/**"
-      - "scripts/**"
-      - ".claude/**"
-      - ".githooks/**"
-      - ".agents/**"
-      - ".github/workflows/validate-cluster.yml"
-      - "*.md"
-      - "*.png"
-      - "justfile"
+    # Exactly the inputs of the bot image (Dockerfile COPY . . after .dockerignore):
+    # the workspace, its lockfile and toolchain, the baked game catalog, and the
+    # build definition. Anything else (docs, evals, web, cluster, scripts, deploy
+    # chart, agent config, tests) cannot change the image and must not restart
+    # the live bot. A new input to the image must be added here.
+    paths:
+      - "crates/**"
+      - "!crates/**/tests/**"
+      - "games/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
 
 # One deploy at a time, in push order. Runs are serialized rather than
 # cancelled: with several people pushing, cancel-in-progress restarts the build
