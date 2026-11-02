@@ -73,12 +73,12 @@ export interface EvalSystem {
   system_id: string;
   label: string;
   kind: SystemKind;
-  model: string;
+  model: string | null;
   harness: Harness;
-  n_cases: number;
-  verified_success_rate: number;
-  success_ci_95: [number, number];
-  unintended_change_rate: number;
+  n_cases: number | null;
+  verified_success_rate: number | null;
+  success_ci_95: [number, number] | null;
+  unintended_change_rate: number | null;
   mean_turns: number | null;
   mean_tokens: number | null;
   latency_p50_ms: number;
@@ -89,7 +89,7 @@ export interface EvalSystem {
 
 export interface EvalCaseResult {
   verified_success: boolean;
-  unintended_changes: number;
+  unintended_changes: number | null;
   turns: number;
   latency_ms: number;
   cost_usd: number;

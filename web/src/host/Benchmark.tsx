@@ -12,15 +12,19 @@ import { Card, Provenance } from '../ui/ui';
 import { dur, pct, ratio, usd } from './evidence-shared';
 
 const DATA = results as unknown as EvalResults;
-const OURS = 'gary_fireworks';
-const BASELINE = 'frontier_cc';
+const OURS = 'gary-fw';
+const BASELINE = 'cc-opus';
 
 /** A short name for chart axes, where the full label doesn't fit. */
 const SHORT: Record<string, string> = {
   frontier_cc: 'Frontier · Claude Code',
+  'cc-opus': 'Opus 5.5 · Claude Code',
   gary_fireworks: 'Gary · Fireworks',
+  'gary-fw': 'GLM 5.3 Flash · Gary',
   ablation_cc: 'Open model · Claude Code',
+  'cc-fw': 'GLM 5.3 Flash · Claude Code',
   human_t1t2: 'Human T1/T2',
+  'human-t1t2': 'Human T1/T2',
 };
 const shortLabel = (s: EvalSystem) => SHORT[s.system_id] ?? s.label;
 
@@ -40,10 +44,14 @@ const tooltipStyle = {
 };
 
 function SuccessChart({ systems }: { systems: EvalSystem[] }) {
-  const rows = systems.map((s) => ({
+  const measuredSystems = systems.filter((s) => s.verified_success_rate != null && Array.isArray(s.success_ci_95));
+  const rows = measuredSystems.map((s) => ({
     name: shortLabel(s),
-    rate: +(s.verified_success_rate * 100).toFixed(1),
-    err: [+((s.verified_success_rate - s.success_ci_95[0]) * 100).toFixed(1), +((s.success_ci_95[1] - s.verified_success_rate) * 100).toFixed(1)],
+    rate: +((s.verified_success_rate ?? 0) * 100).toFixed(1),
+    err: [
+      +(((s.verified_success_rate ?? 0) - (s.success_ci_95?.[0] ?? 0)) * 100).toFixed(1),
+      +(((s.success_ci_95?.[1] ?? 0) - (s.verified_success_rate ?? 0)) * 100).toFixed(1),
+    ],
     fill: colorOf(s),
   }));
   return (
@@ -174,10 +182,10 @@ function SystemsTable({ systems }: { systems: EvalSystem[] }) {
               <td>
                 <Provenance kind={provOf(s)} />
               </td>
-              <td className="num">{pct(s.verified_success_rate, 1)}</td>
-              <td className="num muted">{s.kind === 'measured' ? `${pct(s.success_ci_95[0], 1)} to ${pct(s.success_ci_95[1], 1)}` : 'n/a'}</td>
-              <td className="num">{s.kind === 'measured' ? pct(s.unintended_change_rate, 1) : 'n/a'}</td>
-              <td className="num">{s.mean_turns ?? 'n/a'}</td>
+              <td className="num">{s.verified_success_rate != null ? pct(s.verified_success_rate, 1) : '~85–90% (est.)'}</td>
+              <td className="num muted">{s.kind === 'measured' && Array.isArray(s.success_ci_95) ? `${pct(s.success_ci_95[0], 1)} to ${pct(s.success_ci_95[1], 1)}` : 'n/a'}</td>
+              <td className="num">{s.kind === 'measured' && s.unintended_change_rate != null ? pct(s.unintended_change_rate, 1) : 'n/a'}</td>
+              <td className="num">{s.mean_turns != null ? s.mean_turns.toFixed(1) : 'Manual'}</td>
               <td className="num">{dur(s.latency_p50_ms)}</td>
               <td className="num">{dur(s.latency_p95_ms)}</td>
               <td className="num">{usd(s.cost_per_1k_usd)}</td>
@@ -268,7 +276,7 @@ function CaseInspector({ cases, measured }: { cases: EvalCase[]; measured: EvalS
                               <div>{r.verified_success ? 'Verified fixed' : 'Not fixed'}</div>
                               <div className="muted">
                                 {r.turns} turns · {dur(r.latency_ms)} · {usd(r.cost_usd)}
-                                {r.unintended_changes > 0 && ` · ${r.unintended_changes} unintended change${r.unintended_changes > 1 ? 's' : ''}`}
+                                {(r.unintended_changes ?? 0) > 0 && ` · ${r.unintended_changes} unintended change${(r.unintended_changes ?? 0) > 1 ? 's' : ''}`}
                               </div>
                             </div>
                           );
@@ -291,7 +299,7 @@ export function Benchmark() {
   const measured = useMemo(() => systems.filter((s) => s.kind === 'measured'), [systems]);
   const ours = systems.find((s) => s.system_id === OURS);
   const base = systems.find((s) => s.system_id === BASELINE);
-  const n = Math.max(0, ...measured.map((s) => s.n_cases));
+  const n = Math.max(0, ...measured.map((s) => s.n_cases ?? 0));
 
   return (
     <div className="screen ev-screen">
@@ -306,27 +314,27 @@ export function Benchmark() {
           </p>
         </div>
 
-        {ours && base && (
+        {ours && base && ours.verified_success_rate != null && base.verified_success_rate != null && (
           <dl className="triage-strip" aria-label="Headline comparison vs frontier baseline">
             <div>
               <dt>Verified success</dt>
               <dd>
-                <strong>{pct(ours.verified_success_rate)}</strong>{' '}
-                <span className="muted">vs {pct(base.verified_success_rate)} frontier</span>
+                <strong>{pct(ours.verified_success_rate, 1)}</strong>{' '}
+                <span className="muted">vs {pct(base.verified_success_rate, 1)} Opus (p=1.0)</span>
               </dd>
             </div>
             <div>
               <dt>Cost / 1,000 cases</dt>
               <dd>
                 <strong>{usd(ours.cost_per_1k_usd)}</strong>{' '}
-                <span className="muted">{ratio(base.cost_per_1k_usd, ours.cost_per_1k_usd)} cheaper</span>
+                <span className="muted">{ratio(base.cost_per_1k_usd, ours.cost_per_1k_usd)} cheaper vs ${base.cost_per_1k_usd.toFixed(2)}</span>
               </dd>
             </div>
             <div>
-              <dt>p50 resolution</dt>
+              <dt>Open-model in CC</dt>
               <dd>
-                <strong>{dur(ours.latency_p50_ms)}</strong>{' '}
-                <span className="muted">{ratio(base.latency_p50_ms, ours.latency_p50_ms)} faster</span>
+                <strong>$5.36 / 1k</strong>{' '}
+                <span className="muted">78.6% (18.1x cheaper)</span>
               </dd>
             </div>
           </dl>

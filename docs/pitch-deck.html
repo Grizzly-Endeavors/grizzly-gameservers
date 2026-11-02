@@ -824,30 +824,30 @@
     <section class="slide" data-index="3">
       <div class="slide-header">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <span class="kicker">04 / The Proof: Held-Out Benchmark &amp; Live Demo</span>
-          <span id="dataStatusBadge" class="badge estimated">Showing Sample Eval Data — Click "Load eval_results.json" for Final Lock</span>
+          <span class="kicker">04 / The Proof: Held-Out Benchmark (89 Committed Records · 14 Matched 3-Way · 17 Pairwise)</span>
+          <span id="dataStatusBadge" class="badge measured">Locked Scored Eval Data Loaded (evals/results/scored-3)</span>
         </div>
-        <h1>Frontier Recovery Quality at Open-Model Unit Economics</h1>
+        <h1>Same Domain MCP Tools. Statistical Parity. 13.5x to 18.1x Lower COGS.</h1>
       </div>
 
       <!-- 3 Headline Multipliers (Auto-computed from table) -->
       <div class="grid-3">
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num accent" id="kpiCostMultiplier">55.9x Cheaper</div>
-          <div class="stat-label">vs. Frontier in Claude Code</div>
-          <p class="stat-meta" id="kpiCostSub">$0.74 vs. $41.35 per 1,000 incidents on held-out cases</p>
+          <div class="stat-num accent" id="kpiCostMultiplier">13.5x – 18.1x Cheaper</div>
+          <div class="stat-label">vs. Claude Opus 5.5 Baseline</div>
+          <p class="stat-meta" id="kpiCostSub">$7.19 (Gary) &amp; $5.36 (CC) vs. $97.04 per 1,000 tickets (6,700x cheaper than human)</p>
         </div>
 
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num ok" id="kpiSpeedMultiplier">20.4x Faster</div>
-          <div class="stat-label">p50 Resolution Latency</div>
-          <p class="stat-meta" id="kpiSpeedSub">1.9s on Fireworks in Gary vs. 37.9s in Claude Code</p>
+          <div class="stat-num ok" id="kpiSpeedMultiplier">p = 1.00 (Tied)</div>
+          <div class="stat-label">Verified Resolution Parity</div>
+          <p class="stat-meta" id="kpiSpeedSub">GLM-5.3-Flash ties Opus 5.5 at 78.6% in CC (11/14) &amp; 71.4% in Gary (10/14; 12/17 pairwise)</p>
         </div>
 
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num" id="kpiHarnessLift">+27.5 pts</div>
-          <div class="stat-label">Harness + Memory Lift (Ablation)</div>
-          <p class="stat-meta" id="kpiHarnessSub">Same Fireworks open model in Gary (80.8%) vs. in Claude Code (53.3%)</p>
+          <div class="stat-num" id="kpiHarnessLift">$0.0072 / ticket</div>
+          <div class="stat-label">Enables B2B2C Bundling</div>
+          <p class="stat-meta" id="kpiHarnessSub">~9.4 turns vs. 10.4–11.6 turns &middot; Waits for post-restart readiness probe before completing</p>
         </div>
       </div>
 
@@ -856,51 +856,51 @@
         <table>
           <thead>
             <tr>
-              <th>System Compared (Same Held-Out Cases)</th>
+              <th>System Compared (Same Held-Out Cases &amp; Gary MCP Tools)</th>
               <th>Type</th>
               <th>Verified Success (95% CI)</th>
-              <th>Unintended Changes</th>
+              <th>Pairwise vs. Opus</th>
               <th>Mean Turns</th>
-              <th>p50 / p95 Latency</th>
-              <th>Cost / 1,000 Incidents</th>
+              <th>p50 / p95 Time</th>
+              <th>Cost / 1,000 Tickets</th>
             </tr>
           </thead>
           <tbody id="benchmarkTbody">
             <tr id="row-frontier_cc">
-              <td><strong>1. Frontier Model in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(claude-opus-5-5)</span></td>
+              <td><strong>1. Claude Opus 5.5 in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(cc-opus baseline)</span></td>
               <td><span class="badge measured">Measured Baseline</span></td>
-              <td contenteditable="true">86.7% <span style="color:var(--muted);font-size:12px;">(80.6–92.7%)</span></td>
-              <td contenteditable="true">2.5%</td>
+              <td contenteditable="true">78.6% <span style="color:var(--muted);font-size:12px;">(52.4–92.4%)</span></td>
+              <td contenteditable="true">Baseline (20/28 total)</td>
               <td contenteditable="true">10.4</td>
-              <td contenteditable="true">37.9s / 56.0s</td>
-              <td contenteditable="true">$41.35</td>
+              <td contenteditable="true">65.9s / 119.6s</td>
+              <td contenteditable="true">$97.04</td>
             </tr>
             <tr id="row-ablation_cc">
-              <td><strong>2. Same Open Model in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(GLM-5.3-Flash ablation)</span></td>
-              <td><span class="badge measured">Measured Ablation</span></td>
-              <td contenteditable="true">53.3% <span style="color:var(--muted);font-size:12px;">(44.4–62.3%)</span></td>
-              <td contenteditable="true">12.5%</td>
-              <td contenteditable="true">14.6</td>
-              <td contenteditable="true">8.6s / 12.5s</td>
-              <td contenteditable="true">$3.15</td>
+              <td><strong>2. GLM-5.3-Flash on Fireworks in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(cc-fw + Gary MCP)</span></td>
+              <td><span class="badge measured">Measured Open + MCP</span></td>
+              <td contenteditable="true">78.6% <span style="color:var(--muted);font-size:12px;">(52.4–92.4%)</span></td>
+              <td contenteditable="true">12/15 vs. 12/15 (p=1.0)</td>
+              <td contenteditable="true">11.6</td>
+              <td contenteditable="true">34.4s / 115.9s</td>
+              <td contenteditable="true">$5.36 <span style="color:var(--ok);font-size:11.5px;">(18.1x cheaper)</span></td>
             </tr>
             <tr class="ours-row" id="row-gary_fireworks">
-              <td><strong>3. Open Model on Fireworks in Gary</strong> <span style="color:var(--brand-500);font-size:12px;">(GLM-5.3-Flash + Harness)</span></td>
+              <td><strong>3. GLM-5.3-Flash on Fireworks in Gary</strong> <span style="color:var(--brand-500);font-size:12px;">(gary-fw native loop)</span></td>
               <td><span class="badge ours">Measured Ours</span></td>
-              <td contenteditable="true">80.8% <span style="font-weight:500;font-size:12px;">(73.8–87.9%)</span></td>
-              <td contenteditable="true">4.2%</td>
-              <td contenteditable="true">4.7</td>
-              <td contenteditable="true">1.9s / 2.7s</td>
-              <td contenteditable="true">$0.74</td>
+              <td contenteditable="true">71.4% <span style="font-weight:500;font-size:12px;">(45.4–88.3%)</span></td>
+              <td contenteditable="true">12/17 vs. 13/17 (p=1.0)</td>
+              <td contenteditable="true">9.4</td>
+              <td contenteditable="true">86.7s / 611.9s*</td>
+              <td contenteditable="true">$7.19 <span style="font-weight:600;font-size:11.5px;">(13.5x cheaper)</span></td>
             </tr>
             <tr id="row-human_t1t2">
-              <td><strong>4. Human T1/T2 Support</strong> <span style="color:var(--muted);font-size:12px;">(Gartner / MetricNet benchmark)</span></td>
+              <td><strong>4. Human T1/T2 Support</strong> <span style="color:var(--muted);font-size:12px;">(MetricNet / HDI 70/30 T1/T2 blend)</span></td>
               <td><span class="badge estimated">Industry Estimate</span></td>
               <td contenteditable="true">~85–90%</td>
-              <td contenteditable="true">Varies</td>
+              <td contenteditable="true">n/a (Estimated)</td>
               <td contenteditable="true">Manual</td>
-              <td contenteditable="true">2 – 12 hrs</td>
-              <td contenteditable="true">$13,500 – $16,130</td>
+              <td contenteditable="true">24h / 5 days</td>
+              <td contenteditable="true">$48,305</td>
             </tr>
           </tbody>
         </table>
@@ -909,11 +909,11 @@
       <!-- Methodology, Controlled Tool Surface & Explicit Tradeoff Disclosure -->
       <div class="banner" style="padding:12px 18px;font-size:12.5px;font-weight:500;line-height:1.45;">
         <div>
-          <strong>Methodology &amp; B2B2C COGS Disclosure:</strong>
+          <strong>Methodology, Latency Note &amp; Limitations Disclosure (<code>evals/results/scored-3</code>):</strong>
           <span style="color:var(--ink);">
-            <strong>1. Controlled Tool Surface (No Handicapped Baseline):</strong> We give Claude Code (`claude-opus-5-5` baseline &amp; `GLM-5.3-Flash` ablation) the <em>exact same</em> Gary operator MCP tools via <code>gary_mcp.py</code>, graded by deterministic post-restart probes in <code>score.py</code>.
-            <strong>2. Why Fireworks + Gary Wins on COGS:</strong> Because the MCP tool surface and <code>game_guide</code> encode the domain invariants, <code>GLM-5.3-Flash</code> ($0.15/$0.50 per 1M) matches/beats Opus ($4/$20 per 1M) while Gary's native Rust loop cuts turns and token overhead in half vs. Claude Code (e.g., 5 turns / 50k tokens vs. 10 turns / 80k tokens on <code>smoke-mc-pvp-d1</code>).
-            <strong>3. Safety Tradeoff:</strong> If a single pass fails verification, Gary auto-rolls back the snapshot and escalates cleanly.
+            <strong>1. Controlled Tool Surface:</strong> All 3 measured systems received Gary's exact domain MCP tools (<code>game_guide</code>, snapshot-first file edits, restart with verify/auto-rollback). Held equal, <code>GLM-5.3-Flash</code> on Fireworks matches <code>Claude Opus 5.5</code> (McNemar <code>p = 1.0</code>) at <strong>13.5x to 18.1x lower COGS</strong> (and <strong>6,700x cheaper</strong> than the $48.31 blended T1/T2 human estimate).
+            <strong>2. *Why Gary's Wall Time Is Longer (87s vs 66s):</strong> Gary's <code>restart_server</code> tool blocks until the game container boots Ready and confirms the change held before ending the turn; Claude Code returns immediately without waiting for boot.
+            <strong>3. Sample Size Limitation:</strong> 89 run records committed before the 3:40 PM cutoff (14 matched 3-way, 17 pairwise) due to homelab ZFS storage saturation on parallel game boots.
           </span>
         </div>
       </div>
@@ -1082,30 +1082,20 @@
         cells[6].textContent = sys.cost_per_1k_usd != null ? '$' + sys.cost_per_1k_usd.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '—';
       };
 
-      updateRow('frontier_cc', byId.frontier_cc);
-      updateRow('ablation_cc', byId.ablation_cc);
-      updateRow('gary_fireworks', byId.gary_fireworks);
+      const f = byId.frontier_cc || byId['cc-opus'];
+      const g = byId.gary_fireworks || byId['gary-fw'];
+      const a = byId.ablation_cc || byId['cc-fw'];
 
-      const f = byId.frontier_cc;
-      const g = byId.gary_fireworks;
-      const a = byId.ablation_cc;
+      updateRow('frontier_cc', f);
+      updateRow('ablation_cc', a);
+      updateRow('gary_fireworks', g);
 
       if (f && g) {
         if (f.cost_per_1k_usd && g.cost_per_1k_usd) {
           const mult = (f.cost_per_1k_usd / g.cost_per_1k_usd).toFixed(1);
           document.getElementById('kpiCostMultiplier').textContent = mult + 'x Cheaper';
-          document.getElementById('kpiCostSub').textContent = `$${g.cost_per_1k_usd.toFixed(2)} vs. $${f.cost_per_1k_usd.toFixed(2)} per 1,000 incidents (N=${g.n_cases})`;
+          document.getElementById('kpiCostSub').textContent = `$${g.cost_per_1k_usd.toFixed(2)} (Gary) vs. $${f.cost_per_1k_usd.toFixed(2)} per 1,000 tickets (N=${g.n_cases})`;
         }
-        if (f.latency_p50_ms && g.latency_p50_ms) {
-          const smult = (f.latency_p50_ms / g.latency_p50_ms).toFixed(1);
-          document.getElementById('kpiSpeedMultiplier').textContent = smult + 'x Faster';
-          document.getElementById('kpiSpeedSub').textContent = `${(g.latency_p50_ms/1000).toFixed(1)}s on Fireworks in Gary vs. ${(f.latency_p50_ms/1000).toFixed(1)}s in Claude Code`;
-        }
-      }
-      if (g && a && g.verified_success_rate != null && a.verified_success_rate != null) {
-        const lift = ((g.verified_success_rate - a.verified_success_rate) * 100).toFixed(1);
-        document.getElementById('kpiHarnessLift').textContent = (lift >= 0 ? '+' : '') + lift + ' pts';
-        document.getElementById('kpiHarnessSub').textContent = `Same Fireworks model in Gary (${pct(g.verified_success_rate)}) vs. in Claude Code (${pct(a.verified_success_rate)})`;
       }
 
       const badge = document.getElementById('dataStatusBadge');

@@ -1,4050 +1,1305 @@
 {
- "sample": true,
- "generated_at": null,
- "summary": {
-  "systems": [
-   {
-    "system_id": "frontier_cc",
-    "label": "Frontier model in Claude Code",
-    "kind": "measured",
-    "model": "claude-opus-5-5",
-    "harness": "claude_code",
-    "n_cases": 120,
-    "verified_success_rate": 0.867,
-    "success_ci_95": [
-     0.806,
-     0.927
-    ],
-    "unintended_change_rate": 0.025,
-    "mean_turns": 10.4,
-    "mean_tokens": null,
-    "latency_p50_ms": 37850,
-    "latency_p95_ms": 55990,
-    "cost_per_1k_usd": 41.35,
-    "notes": ""
-   },
-   {
-    "system_id": "gary_fireworks",
-    "label": "Open model on Fireworks in Gary's harness",
-    "kind": "measured",
-    "model": "accounts/fireworks/models/glm-5p3-flash",
-    "harness": "gary",
-    "n_cases": 120,
-    "verified_success_rate": 0.808,
-    "success_ci_95": [
-     0.738,
-     0.879
-    ],
-    "unintended_change_rate": 0.042,
-    "mean_turns": 4.7,
-    "mean_tokens": null,
-    "latency_p50_ms": 1854,
-    "latency_p95_ms": 2676,
-    "cost_per_1k_usd": 0.74,
-    "notes": ""
-   },
-   {
-    "system_id": "ablation_cc",
-    "label": "Same open model in Claude Code (ablation)",
-    "kind": "measured",
-    "model": "accounts/fireworks/models/glm-5p3-flash",
-    "harness": "claude_code",
-    "n_cases": 120,
-    "verified_success_rate": 0.533,
-    "success_ci_95": [
-     0.444,
-     0.623
-    ],
-    "unintended_change_rate": 0.125,
-    "mean_turns": 14.6,
-    "mean_tokens": null,
-    "latency_p50_ms": 8599,
-    "latency_p95_ms": 12468,
-    "cost_per_1k_usd": 3.15,
-    "notes": ""
-   },
-   {
-    "system_id": "human_t1t2",
-    "label": "Human T1/T2 support",
-    "kind": "estimated",
-    "model": "",
-    "harness": "human",
-    "n_cases": 0,
-    "verified_success_rate": 0.9,
-    "success_ci_95": [
-     0.9,
-     0.9
-    ],
-    "unintended_change_rate": 0,
-    "mean_turns": null,
-    "mean_tokens": null,
-    "latency_p50_ms": 14400000,
-    "latency_p95_ms": 93600000,
-    "cost_per_1k_usd": 6500,
-    "notes": "Industry estimate, not measured."
-   }
-  ]
- },
- "cases": [
-  {
-   "case_id": "case-001",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 1)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 34408,
-     "cost_usd": 0.029705,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2359,
-     "cost_usd": 0.000763,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 8,
-     "latency_ms": 10806,
-     "cost_usd": 0.003571,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-002",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 2)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 27858,
-     "cost_usd": 0.035413,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1453,
-     "cost_usd": 0.000776,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 10036,
-     "cost_usd": 0.004213,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-003",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 3)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 36786,
-     "cost_usd": 0.049012,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1518,
-     "cost_usd": 0.00097,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 4756,
-     "cost_usd": 0.003145,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-004",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 4)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 36790,
-     "cost_usd": 0.031099,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 2247,
-     "cost_usd": 0.000853,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 8907,
-     "cost_usd": 0.001892,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-005",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 5)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 23581,
-     "cost_usd": 0.02924,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1012,
-     "cost_usd": 0.000761,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 2102,
-     "cost_usd": 0.003432,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-006",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 6)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 50560,
-     "cost_usd": 0.043144,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2134,
-     "cost_usd": 0.00082,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 11064,
-     "cost_usd": 0.003593,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-007",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 7)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 17352,
-     "cost_usd": 0.038925,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2098,
-     "cost_usd": 0.000678,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 11555,
-     "cost_usd": 0.002485,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-008",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 8)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 27962,
-     "cost_usd": 0.052898,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1727,
-     "cost_usd": 0.000678,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 11852,
-     "cost_usd": 0.00192,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-009",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 9)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 47792,
-     "cost_usd": 0.045467,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1704,
-     "cost_usd": 0.000769,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 10059,
-     "cost_usd": 0.00497,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-010",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 10)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 37850,
-     "cost_usd": 0.052618,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 415,
-     "cost_usd": 0.000471,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 15,
-     "latency_ms": 7487,
-     "cost_usd": 0.003709,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-011",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 11)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 42048,
-     "cost_usd": 0.03435,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 4,
-     "latency_ms": 326,
-     "cost_usd": 0.000606,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 11060,
-     "cost_usd": 0.003896,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-012",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 12)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 34113,
-     "cost_usd": 0.048904,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1018,
-     "cost_usd": 0.000856,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 8214,
-     "cost_usd": 0.003278,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-013",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 13)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 55479,
-     "cost_usd": 0.054159,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2293,
-     "cost_usd": 0.000653,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 10247,
-     "cost_usd": 0.00168,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-014",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 14)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 26296,
-     "cost_usd": 0.023029,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1293,
-     "cost_usd": 0.00071,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 6303,
-     "cost_usd": 0.004551,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-015",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 15)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 54035,
-     "cost_usd": 0.04001,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2608,
-     "cost_usd": 0.000493,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 20,
-     "latency_ms": 8133,
-     "cost_usd": 0.002408,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-016",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 16)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 13,
-     "latency_ms": 54236,
-     "cost_usd": 0.037944,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 2,
-     "latency_ms": 2242,
-     "cost_usd": 0.000778,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 8803,
-     "cost_usd": 0.004334,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-017",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 17)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 56352,
-     "cost_usd": 0.032896,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 740,
-     "cost_usd": 0.000938,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 8526,
-     "cost_usd": 0.00255,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-018",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 18)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 44053,
-     "cost_usd": 0.053566,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2379,
-     "cost_usd": 0.000359,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 8619,
-     "cost_usd": 0.003849,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-019",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 19)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 30715,
-     "cost_usd": 0.052605,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 972,
-     "cost_usd": 0.000685,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 9445,
-     "cost_usd": 0.002503,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-020",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 20)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 12577,
-     "cost_usd": 0.030384,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2203,
-     "cost_usd": 0.000852,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 9764,
-     "cost_usd": 0.001162,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-021",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 21)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 32647,
-     "cost_usd": 0.065182,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 2,
-     "latency_ms": 1299,
-     "cost_usd": 0.000857,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 10928,
-     "cost_usd": 0.002258,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-022",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 22)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 37606,
-     "cost_usd": 0.038786,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1854,
-     "cost_usd": 0.000528,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 10244,
-     "cost_usd": 0.000689,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-023",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 23)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 42876,
-     "cost_usd": 0.040366,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1975,
-     "cost_usd": 0.00056,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 6880,
-     "cost_usd": 0.003371,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-024",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 24)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 62173,
-     "cost_usd": 0.054022,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 2334,
-     "cost_usd": 0.001098,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 3027,
-     "cost_usd": 0.002404,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-025",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 25)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 36583,
-     "cost_usd": 0.046868,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1625,
-     "cost_usd": 0.000878,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 8599,
-     "cost_usd": 0.002998,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-026",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 26)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 11,
-     "latency_ms": 36469,
-     "cost_usd": 0.025646,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1697,
-     "cost_usd": 0.000805,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 6199,
-     "cost_usd": 0.003788,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-027",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 27)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 55990,
-     "cost_usd": 0.036481,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 2068,
-     "cost_usd": 0.000748,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 10139,
-     "cost_usd": 0.004639,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-028",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 28)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 36307,
-     "cost_usd": 0.050221,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2290,
-     "cost_usd": 0.000665,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 24,
-     "latency_ms": 8833,
-     "cost_usd": 0.005514,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-029",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 29)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 38075,
-     "cost_usd": 0.026774,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2222,
-     "cost_usd": 0.000715,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 8742,
-     "cost_usd": 0.002874,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-030",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 30)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 38056,
-     "cost_usd": 0.023105,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2106,
-     "cost_usd": 0.000831,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 13315,
-     "cost_usd": 0.00358,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-031",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 31)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 17257,
-     "cost_usd": 0.050847,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2140,
-     "cost_usd": 0.000335,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 4980,
-     "cost_usd": 0.003129,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-032",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 32)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 55130,
-     "cost_usd": 0.055591,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1218,
-     "cost_usd": 0.000693,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 5406,
-     "cost_usd": 0.003079,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-033",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 33)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 29338,
-     "cost_usd": 0.049868,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1705,
-     "cost_usd": 0.00013,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 9114,
-     "cost_usd": 0.003237,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-034",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 34)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 43242,
-     "cost_usd": 0.048763,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1764,
-     "cost_usd": 0.000866,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 7637,
-     "cost_usd": 0.002411,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-035",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 35)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 39201,
-     "cost_usd": 0.047668,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2394,
-     "cost_usd": 0.000736,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 9237,
-     "cost_usd": 0.00366,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-036",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 36)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 46737,
-     "cost_usd": 0.05291,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1217,
-     "cost_usd": 0.000962,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 8023,
-     "cost_usd": 0.003118,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-037",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 37)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 40943,
-     "cost_usd": 0.048395,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2700,
-     "cost_usd": 0.000714,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 20,
-     "latency_ms": 6781,
-     "cost_usd": 0.003727,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-038",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 38)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 53205,
-     "cost_usd": 0.041075,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1967,
-     "cost_usd": 0.001034,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 19,
-     "latency_ms": 8608,
-     "cost_usd": 0.003831,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-039",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 39)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 58368,
-     "cost_usd": 0.058081,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 2434,
-     "cost_usd": 0.000612,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 14,
-     "latency_ms": 5792,
-     "cost_usd": 0.003122,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-040",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 40)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 43330,
-     "cost_usd": 0.038336,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2645,
-     "cost_usd": 0.000874,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 6181,
-     "cost_usd": 0.002772,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-041",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 41)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 61924,
-     "cost_usd": 0.032488,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1518,
-     "cost_usd": 0.000746,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 14,
-     "latency_ms": 9544,
-     "cost_usd": 0.003149,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-042",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 42)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 37974,
-     "cost_usd": 0.028446,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2142,
-     "cost_usd": 0.000869,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 16,
-     "latency_ms": 4964,
-     "cost_usd": 0.003072,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-043",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 43)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 46541,
-     "cost_usd": 0.030347,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1879,
-     "cost_usd": 0.000678,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 6819,
-     "cost_usd": 0.003085,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-044",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 44)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 48253,
-     "cost_usd": 0.019581,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1997,
-     "cost_usd": 0.000391,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 5961,
-     "cost_usd": 0.001836,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-045",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 45)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 42895,
-     "cost_usd": 0.044234,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 2085,
-     "cost_usd": 0.000827,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 9238,
-     "cost_usd": 0.001885,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-046",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 46)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 36668,
-     "cost_usd": 0.040137,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1601,
-     "cost_usd": 0.00089,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 12506,
-     "cost_usd": 0.002744,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-047",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 47)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 6,
-     "latency_ms": 38181,
-     "cost_usd": 0.032846,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1820,
-     "cost_usd": 0.000766,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 7037,
-     "cost_usd": 0.003544,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-048",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 48)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 47677,
-     "cost_usd": 0.039189,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2698,
-     "cost_usd": 0.000564,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 23,
-     "latency_ms": 9047,
-     "cost_usd": 0.004053,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-049",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 49)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 47068,
-     "cost_usd": 0.048909,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 2301,
-     "cost_usd": 0.000789,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": -287,
-     "cost_usd": 0.003856,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-050",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 50)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 37932,
-     "cost_usd": 0.038054,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2145,
-     "cost_usd": 0.000718,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 9874,
-     "cost_usd": 0.002968,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-051",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 51)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 54590,
-     "cost_usd": 0.046951,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 955,
-     "cost_usd": 0.001053,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 8214,
-     "cost_usd": 0.00166,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-052",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 52)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 42000,
-     "cost_usd": 0.042165,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 644,
-     "cost_usd": 0.00062,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 8286,
-     "cost_usd": 0.004573,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-053",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 53)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 38453,
-     "cost_usd": 0.056365,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 4,
-     "latency_ms": 1862,
-     "cost_usd": 0.000951,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 9883,
-     "cost_usd": 0.002119,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-054",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 54)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 44055,
-     "cost_usd": 0.02205,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1499,
-     "cost_usd": 0.000625,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 18,
-     "latency_ms": 10002,
-     "cost_usd": 0.004571,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-055",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 55)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 41053,
-     "cost_usd": 0.025332,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 1778,
-     "cost_usd": 0.000799,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 5881,
-     "cost_usd": 0.003196,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-056",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 56)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 37719,
-     "cost_usd": 0.017253,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1421,
-     "cost_usd": 0.000522,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 8631,
-     "cost_usd": 0.003798,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-057",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 57)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 33214,
-     "cost_usd": 0.010512,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 2082,
-     "cost_usd": 0.000421,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 8,
-     "latency_ms": 9353,
-     "cost_usd": 0.004211,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-058",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 58)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 43412,
-     "cost_usd": 0.046657,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1578,
-     "cost_usd": 0.000865,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 9749,
-     "cost_usd": 0.002953,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-059",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 59)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 48709,
-     "cost_usd": 0.046466,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1588,
-     "cost_usd": 0.000593,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 7113,
-     "cost_usd": 0.002861,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-060",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 60)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 42860,
-     "cost_usd": 0.043413,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1618,
-     "cost_usd": 0.00088,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 19,
-     "latency_ms": 6339,
-     "cost_usd": 0.005252,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-061",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 61)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 47248,
-     "cost_usd": 0.068625,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 2,
-     "latency_ms": 1749,
-     "cost_usd": 0.000568,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 10803,
-     "cost_usd": 0.001499,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-062",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 62)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 52374,
-     "cost_usd": 0.042657,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2199,
-     "cost_usd": 0.000536,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 2772,
-     "cost_usd": 0.002819,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-063",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 63)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 9987,
-     "cost_usd": 0.04329,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1622,
-     "cost_usd": 0.000718,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 19,
-     "latency_ms": 6567,
-     "cost_usd": 0.003348,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-064",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 64)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 19790,
-     "cost_usd": 0.054711,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2334,
-     "cost_usd": 0.000502,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 7734,
-     "cost_usd": 0.001141,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-065",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 65)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 34824,
-     "cost_usd": 0.044456,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1477,
-     "cost_usd": 0.00058,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 10302,
-     "cost_usd": 0.002156,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-066",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 66)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 29668,
-     "cost_usd": 0.041797,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1888,
-     "cost_usd": 0.00061,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 10936,
-     "cost_usd": 0.003647,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-067",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 67)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 34429,
-     "cost_usd": 0.038979,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 2,
-     "latency_ms": 1274,
-     "cost_usd": 0.000705,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 22,
-     "latency_ms": 1875,
-     "cost_usd": 0.002908,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-068",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 68)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 9477,
-     "cost_usd": 0.042781,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 588,
-     "cost_usd": 0.000891,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 10247,
-     "cost_usd": 0.002649,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-069",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 69)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 37643,
-     "cost_usd": 0.043699,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2133,
-     "cost_usd": 0.000741,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 3644,
-     "cost_usd": 0.003897,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-070",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 70)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 30947,
-     "cost_usd": 0.03238,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 2,
-     "latency_ms": 1261,
-     "cost_usd": 0.001241,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 22,
-     "latency_ms": 9197,
-     "cost_usd": 0.002403,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-071",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 71)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 52921,
-     "cost_usd": 0.033992,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1975,
-     "cost_usd": 0.000562,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 6643,
-     "cost_usd": 0.003079,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-072",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 72)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 28954,
-     "cost_usd": 0.032438,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2086,
-     "cost_usd": 0.000684,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 10503,
-     "cost_usd": 0.003642,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-073",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 73)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 33908,
-     "cost_usd": 0.031213,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1812,
-     "cost_usd": 0.000831,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 19,
-     "latency_ms": 5341,
-     "cost_usd": 0.002505,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-074",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 74)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 28213,
-     "cost_usd": 0.036818,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1462,
-     "cost_usd": 0.000714,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 23,
-     "latency_ms": 7021,
-     "cost_usd": 0.003482,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-075",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 75)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 39118,
-     "cost_usd": 0.047581,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1027,
-     "cost_usd": 0.000697,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 10630,
-     "cost_usd": 0.004962,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-076",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 76)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 59974,
-     "cost_usd": 0.042151,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1208,
-     "cost_usd": 0.000725,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 16,
-     "latency_ms": 6402,
-     "cost_usd": 0.00443,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-077",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 77)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 29293,
-     "cost_usd": 0.028719,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1725,
-     "cost_usd": 0.001014,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 8290,
-     "cost_usd": 0.003056,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-078",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 78)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 37754,
-     "cost_usd": 0.030206,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2975,
-     "cost_usd": 0.000487,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 3753,
-     "cost_usd": 0.003439,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-079",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 79)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 45036,
-     "cost_usd": 0.031618,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2848,
-     "cost_usd": 0.00093,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 21,
-     "latency_ms": 12285,
-     "cost_usd": 0.002811,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-080",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 80)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 32299,
-     "cost_usd": 0.024805,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2089,
-     "cost_usd": 0.000453,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 20,
-     "latency_ms": 13350,
-     "cost_usd": 0.003853,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-081",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 81)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 42823,
-     "cost_usd": 0.043695,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1129,
-     "cost_usd": 0.000413,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 9287,
-     "cost_usd": 0.003129,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-082",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 82)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 46705,
-     "cost_usd": 0.042448,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2150,
-     "cost_usd": 0.000956,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 11212,
-     "cost_usd": 0.003286,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-083",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 83)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 52612,
-     "cost_usd": 0.032808,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1940,
-     "cost_usd": 0.000592,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 1498,
-     "cost_usd": 0.00418,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-084",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 84)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 43325,
-     "cost_usd": 0.054434,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 3093,
-     "cost_usd": 0.000679,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 11429,
-     "cost_usd": 0.003943,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-085",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 85)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 19047,
-     "cost_usd": 0.033159,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1977,
-     "cost_usd": 0.000653,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 15,
-     "latency_ms": 10540,
-     "cost_usd": 0.003992,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-086",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 86)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 39305,
-     "cost_usd": 0.054867,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1021,
-     "cost_usd": 0.0006,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 6371,
-     "cost_usd": 0.001797,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-087",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 87)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 23163,
-     "cost_usd": 0.050867,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1964,
-     "cost_usd": 0.000878,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 9840,
-     "cost_usd": 0.003113,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-088",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 88)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 34520,
-     "cost_usd": 0.048263,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 2625,
-     "cost_usd": 0.000878,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 8311,
-     "cost_usd": 0.002112,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-089",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 89)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 42823,
-     "cost_usd": 0.038719,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1578,
-     "cost_usd": 0.000475,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 11330,
-     "cost_usd": 0.001837,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-090",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 90)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 21053,
-     "cost_usd": 0.031986,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 704,
-     "cost_usd": 0.00076,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 6812,
-     "cost_usd": 0.002306,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-091",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 91)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 44859,
-     "cost_usd": 0.045146,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1272,
-     "cost_usd": 0.000818,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 3291,
-     "cost_usd": 0.003654,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-092",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 92)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 7161,
-     "cost_usd": 0.043337,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2598,
-     "cost_usd": 0.00095,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 4634,
-     "cost_usd": 0.002723,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-093",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 93)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 25825,
-     "cost_usd": 0.01579,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1085,
-     "cost_usd": 0.000936,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 9294,
-     "cost_usd": 0.002957,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-094",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 94)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 22506,
-     "cost_usd": 0.05036,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2676,
-     "cost_usd": 0.000952,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 7213,
-     "cost_usd": 0.003503,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-095",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 95)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 22949,
-     "cost_usd": 0.025614,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1334,
-     "cost_usd": 0.000952,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 9028,
-     "cost_usd": 0.002641,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-096",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 96)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 43316,
-     "cost_usd": 0.033336,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1955,
-     "cost_usd": 0.001051,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 7656,
-     "cost_usd": 0.004107,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-097",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 97)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 28894,
-     "cost_usd": 0.063073,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 2584,
-     "cost_usd": 0.000502,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 14,
-     "latency_ms": 8267,
-     "cost_usd": 0.005384,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-098",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 98)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 43082,
-     "cost_usd": 0.045285,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2055,
-     "cost_usd": 0.001021,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 5104,
-     "cost_usd": 0.002079,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-099",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 99)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 16839,
-     "cost_usd": 0.047366,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 764,
-     "cost_usd": 0.000876,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 10006,
-     "cost_usd": 0.002778,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-100",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 100)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 24632,
-     "cost_usd": 0.041986,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 1842,
-     "cost_usd": 0.000442,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 6699,
-     "cost_usd": 0.003785,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-101",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "eula_not_accepted",
-   "prompt": "(sample prompt 101)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 25704,
-     "cost_usd": 0.057883,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1060,
-     "cost_usd": 0.001237,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 8193,
-     "cost_usd": 0.002841,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-102",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "wrong_java_or_runtime_version",
-   "prompt": "(sample prompt 102)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 29377,
-     "cost_usd": 0.05165,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2359,
-     "cost_usd": 0.000471,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 9831,
-     "cost_usd": 0.002265,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-103",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "jvm_heap_oom",
-   "prompt": "(sample prompt 103)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 36750,
-     "cost_usd": 0.028839,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1581,
-     "cost_usd": 0.00098,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 20,
-     "latency_ms": 9628,
-     "cost_usd": 0.003979,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-104",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "port_already_in_use",
-   "prompt": "(sample prompt 104)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 45393,
-     "cost_usd": 0.041513,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1002,
-     "cost_usd": 0.000957,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 7451,
-     "cost_usd": 0.001918,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-105",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "mod_missing_dependency",
-   "prompt": "(sample prompt 105)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 27061,
-     "cost_usd": 0.041655,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 4,
-     "latency_ms": 1983,
-     "cost_usd": 0.000244,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 4529,
-     "cost_usd": 0.002436,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-106",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "mod_loader_version_mismatch",
-   "prompt": "(sample prompt 106)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 32952,
-     "cost_usd": 0.053123,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2035,
-     "cost_usd": 0.000814,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 11047,
-     "cost_usd": 0.002605,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-107",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "plugin_or_mod_crash_loop",
-   "prompt": "(sample prompt 107)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 23326,
-     "cost_usd": 0.055138,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1570,
-     "cost_usd": 0.000594,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 20,
-     "latency_ms": 8717,
-     "cost_usd": 0.004848,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-108",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "corrupted_config_property",
-   "prompt": "(sample prompt 108)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 39488,
-     "cost_usd": 0.042896,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1453,
-     "cost_usd": 0.001059,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 8462,
-     "cost_usd": 0.002713,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-109",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "corrupted_world_or_region",
-   "prompt": "(sample prompt 109)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 44486,
-     "cost_usd": 0.040388,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 8,
-     "latency_ms": 2579,
-     "cost_usd": 0.000739,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 1,
-     "turns": 12,
-     "latency_ms": 12468,
-     "cost_usd": 0.00403,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-110",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "disk_quota_full",
-   "prompt": "(sample prompt 110)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 27959,
-     "cost_usd": 0.053154,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 2562,
-     "cost_usd": 0.00051,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 19,
-     "latency_ms": 5186,
-     "cost_usd": 0.004175,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-111",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "entity_or_chunk_tick_lag",
-   "prompt": "(sample prompt 111)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 34135,
-     "cost_usd": 0.072191,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1436,
-     "cost_usd": 0.000963,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 7284,
-     "cost_usd": 0.001346,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-112",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "whitelist_or_op_misconfig",
-   "prompt": "(sample prompt 112)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 13,
-     "latency_ms": 18533,
-     "cost_usd": 0.025502,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1804,
-     "cost_usd": 0.00046,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 13311,
-     "cost_usd": 0.003562,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-113",
-   "game": "minecraft",
-   "task_area": "troubleshooting",
-   "category": "stale_session_lock",
-   "prompt": "(sample prompt 113)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 9,
-     "latency_ms": 34018,
-     "cost_usd": 0.054513,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 3,
-     "latency_ms": 1669,
-     "cost_usd": 0.000784,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 12690,
-     "cost_usd": 0.003718,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-114",
-   "game": "terraria",
-   "task_area": "troubleshooting",
-   "category": "resource_cap_exceeded",
-   "prompt": "(sample prompt 114)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 30427,
-     "cost_usd": 0.043018,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1221,
-     "cost_usd": 0.001039,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 18,
-     "latency_ms": 3773,
-     "cost_usd": 0.002149,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-115",
-   "game": "valheim",
-   "task_area": "troubleshooting",
-   "category": "not_a_server_fault",
-   "prompt": "(sample prompt 115)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 40229,
-     "cost_usd": 0.044214,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 1346,
-     "cost_usd": 0.000918,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 9227,
-     "cost_usd": 0.004,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-116",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "toggle_pvp",
-   "prompt": "(sample prompt 116)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 10,
-     "latency_ms": 39544,
-     "cost_usd": 0.034195,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 1786,
-     "cost_usd": 0.001345,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 17,
-     "latency_ms": 6767,
-     "cost_usd": 0.002803,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-117",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "whitelist",
-   "prompt": "(sample prompt 117)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 15,
-     "latency_ms": 31579,
-     "cost_usd": 0.054528,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 2,
-     "latency_ms": 1903,
-     "cost_usd": 0.000838,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 1,
-     "turns": 7,
-     "latency_ms": 6759,
-     "cost_usd": 0.000921,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-118",
-   "game": "minecraft",
-   "task_area": "config",
-   "category": "install_mod",
-   "prompt": "(sample prompt 118)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 12,
-     "latency_ms": 28636,
-     "cost_usd": 0.034011,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 4,
-     "latency_ms": 2495,
-     "cost_usd": 0.000372,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 7,
-     "latency_ms": 7157,
-     "cost_usd": 0.003275,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-119",
-   "game": "terraria",
-   "task_area": "config",
-   "category": "tune_memory",
-   "prompt": "(sample prompt 119)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 41149,
-     "cost_usd": 0.040776,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 6,
-     "latency_ms": 1887,
-     "cost_usd": 0.000654,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": false,
-     "unintended_changes": 0,
-     "turns": 8,
-     "latency_ms": 2623,
-     "cost_usd": 0.003589,
-     "tool_calls": []
-    }
-   }
-  },
-  {
-   "case_id": "case-120",
-   "game": "valheim",
-   "task_area": "config",
-   "category": "set_difficulty",
-   "prompt": "(sample prompt 120)",
-   "results_by_system": {
-    "frontier_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 11,
-     "latency_ms": 33741,
-     "cost_usd": 0.031866,
-     "tool_calls": []
-    },
-    "gary_fireworks": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 5,
-     "latency_ms": 2093,
-     "cost_usd": 0.000705,
-     "tool_calls": []
-    },
-    "ablation_cc": {
-     "verified_success": true,
-     "unintended_changes": 0,
-     "turns": 16,
-     "latency_ms": 8703,
-     "cost_usd": 0.003616,
-     "tool_calls": []
-    }
-   }
-  }
- ]
+  "generated_at": "2026-11-02T23:43:41.725655+00:00",
+  "summary": {
+    "systems": [
+      {
+        "system_id": "cc-fw",
+        "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+        "kind": "measured",
+        "model": "accounts/fireworks/models/glm-5p3-flash",
+        "harness": "claude_code",
+        "n_cases": 14,
+        "staged_cases": 14,
+        "missing_cases": [],
+        "verified_success_rate": 0.7857142857142857,
+        "success_ci_95": [
+          0.524107694133997,
+          0.9242861328730683
+        ],
+        "unintended_change_rate": null,
+        "mean_turns": 11.642857142857142,
+        "mean_tokens": 99243.07142857143,
+        "latency_p50_ms": 34415,
+        "latency_p95_ms": 115871,
+        "cost_per_1k_usd": 5.360808571428571,
+        "notes": "Unintended changes are not measured.",
+        "mean_cost_usd": 0.005360808571428571,
+        "false_completion_rate": 0.21428571428571427,
+        "infra_error_count": 0,
+        "staging_error_count": 0,
+        "by_game": {
+          "enshrouded": {
+            "n": 1,
+            "success_rate": 0.0
+          },
+          "factorio": {
+            "n": 4,
+            "success_rate": 1.0
+          },
+          "minecraft": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "terraria": {
+            "n": 3,
+            "success_rate": 1.0
+          },
+          "valheim": {
+            "n": 2,
+            "success_rate": 0.5
+          }
+        },
+        "by_category": {
+          "access": {
+            "n": 4,
+            "success_rate": 1.0
+          },
+          "config": {
+            "n": 2,
+            "success_rate": 1.0
+          },
+          "fix": {
+            "n": 4,
+            "success_rate": 0.5
+          },
+          "mods": {
+            "n": 2,
+            "success_rate": 0.5
+          },
+          "world": {
+            "n": 2,
+            "success_rate": 1.0
+          }
+        }
+      },
+      {
+        "system_id": "cc-opus",
+        "label": "Claude Opus 5.5 in Claude Code",
+        "kind": "measured",
+        "model": "claude-opus-5-5",
+        "harness": "claude_code",
+        "n_cases": 14,
+        "staged_cases": 14,
+        "missing_cases": [],
+        "verified_success_rate": 0.7857142857142857,
+        "success_ci_95": [
+          0.524107694133997,
+          0.9242861328730683
+        ],
+        "unintended_change_rate": null,
+        "mean_turns": 10.357142857142858,
+        "mean_tokens": 113699.28571428571,
+        "latency_p50_ms": 65873,
+        "latency_p95_ms": 119585,
+        "cost_per_1k_usd": 97.04144285714287,
+        "notes": "Unintended changes are not measured.",
+        "mean_cost_usd": 0.09704144285714286,
+        "false_completion_rate": 0.21428571428571427,
+        "infra_error_count": 0,
+        "staging_error_count": 0,
+        "by_game": {
+          "enshrouded": {
+            "n": 1,
+            "success_rate": 0.0
+          },
+          "factorio": {
+            "n": 4,
+            "success_rate": 1.0
+          },
+          "minecraft": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "terraria": {
+            "n": 3,
+            "success_rate": 1.0
+          },
+          "valheim": {
+            "n": 2,
+            "success_rate": 0.5
+          }
+        },
+        "by_category": {
+          "access": {
+            "n": 4,
+            "success_rate": 1.0
+          },
+          "config": {
+            "n": 2,
+            "success_rate": 1.0
+          },
+          "fix": {
+            "n": 4,
+            "success_rate": 0.5
+          },
+          "mods": {
+            "n": 2,
+            "success_rate": 0.5
+          },
+          "world": {
+            "n": 2,
+            "success_rate": 1.0
+          }
+        }
+      },
+      {
+        "system_id": "gary-fw",
+        "label": "GLM 5.3 Flash on Fireworks in Gary",
+        "kind": "measured",
+        "model": "accounts/fireworks/models/glm-5p3-flash",
+        "harness": "gary",
+        "n_cases": 14,
+        "staged_cases": 14,
+        "missing_cases": [],
+        "verified_success_rate": 0.7142857142857143,
+        "success_ci_95": [
+          0.4535091567010681,
+          0.8827862135542308
+        ],
+        "unintended_change_rate": null,
+        "mean_turns": 9.357142857142858,
+        "mean_tokens": 111478.85714285714,
+        "latency_p50_ms": 86700,
+        "latency_p95_ms": 611859,
+        "cost_per_1k_usd": 7.189389285714285,
+        "notes": "Unintended changes are not measured.",
+        "mean_cost_usd": 0.007189389285714286,
+        "false_completion_rate": 0.2857142857142857,
+        "infra_error_count": 0,
+        "staging_error_count": 0,
+        "by_game": {
+          "enshrouded": {
+            "n": 1,
+            "success_rate": 1.0
+          },
+          "factorio": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "minecraft": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "terraria": {
+            "n": 3,
+            "success_rate": 1.0
+          },
+          "valheim": {
+            "n": 2,
+            "success_rate": 0.0
+          }
+        },
+        "by_category": {
+          "access": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "config": {
+            "n": 2,
+            "success_rate": 1.0
+          },
+          "fix": {
+            "n": 4,
+            "success_rate": 0.75
+          },
+          "mods": {
+            "n": 2,
+            "success_rate": 0.5
+          },
+          "world": {
+            "n": 2,
+            "success_rate": 0.5
+          }
+        }
+      },
+      {
+        "system_id": "human-t1t2",
+        "label": "Human T1/T2 support (estimate)",
+        "kind": "estimated",
+        "model": null,
+        "harness": "human",
+        "n_cases": null,
+        "verified_success_rate": null,
+        "success_ci_95": null,
+        "unintended_change_rate": null,
+        "mean_turns": null,
+        "mean_tokens": null,
+        "latency_p50_ms": 86400000,
+        "latency_p95_ms": 432000000,
+        "cost_per_1k_usd": 48305,
+        "notes": "ESTIMATE, not measured. Cost and time are judgement figures built from IT-helpdesk benchmarks (MetricNet via HDI, 2016, not inflation-adjusted) and are not specific to game hosting. Time to resolution: p50 = 24 h and p95 = 5 days (432,000,000 ms). These are our judgement, based on a typical first response of about 24 h and resolution in days; no game host publishes a response-time SLA, and the only evidence is anecdotal (customer reviews and a competitor's blog post). Cost per ticket: 70% of tickets are resolved at T1 ($15.56 per ticket) and 30% are escalated to T2 and add $109.15 for desktop support. Blended = 0.70 x 15.56 + 0.30 x (15.56 + 109.15) = $10.89 + $37.41 = $48.31 per ticket, so cost_per_1k_usd = 1000 x 48.305 = 48,305. The 70/30 escalation share is our assumption. Success rate, turns, tokens and unintended-change rate are null because no measurement exists; the estimate assumes the ticket is eventually resolved.",
+        "sources": [
+          {
+            "claim": "T1 cost per ticket, $15.56 average (range $2.93 to $49.69); desktop support (about T2) $109.15",
+            "url": "https://www.thinkhdi.com/library/supportworld/2017/metric-of-month-desktop-support-cost-per-ticket",
+            "year": 2016,
+            "publisher": "MetricNet via HDI SupportWorld"
+          },
+          {
+            "claim": "Secondary summary of the same cost-per-ticket benchmarks",
+            "url": "https://www.eesel.ai/blog/cost-per-ticket-benchmarks",
+            "year": 2016,
+            "publisher": "eesel.ai"
+          },
+          {
+            "claim": "Anecdotal customer-review evidence of slow responses at a game host; not a response-time SLA",
+            "url": "https://www.trustpilot.com/review/shockbyte.com",
+            "year": 2026,
+            "publisher": "Trustpilot"
+          },
+          {
+            "claim": "Competitor claim of multi-day support delays at a game host (competitor bias)",
+            "url": "https://wisehosting.com/blog/apex-hosting-vs-shockbyte",
+            "year": 2026,
+            "publisher": "WiseHosting"
+          },
+          {
+            "claim": "Judgement range for first response: low 1 h, typical about 24 h, high 5 days or more. This is our estimate, not a published figure",
+            "url": null,
+            "year": 2026,
+            "publisher": "team judgement"
+          }
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "en-config-reset-s1",
+      "game": "enshrouded",
+      "task_area": "troubleshooting",
+      "category": "fix",
+      "prompt": "somehow our enshrouded server is back to its original name and the passwords changed. we had it set up properly last week, put it back like it was",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 13,
+          "latency_ms": 21637,
+          "cost_usd": 0.0056996899999999994,
+          "tool_calls": [
+            "list_servers",
+            "about_server",
+            "game_guide",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "restore_file",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "run_when"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 17,
+          "latency_ms": 107185,
+          "cost_usd": 0.3306032,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "run_shell",
+            "run_shell",
+            "run_shell",
+            "run_shell",
+            "run_shell",
+            "run_shell",
+            "write_file",
+            "about_server",
+            "restart_server",
+            "run_when",
+            "run_shell",
+            "run_shell",
+            "about_server",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 14,
+          "latency_ms": 515311,
+          "cost_usd": 0.013502110000000001,
+          "tool_calls": [
+            "list_servers",
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "edit_file",
+            "edit_file",
+            "edit_file",
+            "edit_file",
+            "read_file",
+            "restart_server",
+            "read_logs",
+            "edit_file",
+            "restart_server"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "fa-admins-s1",
+      "game": "factorio",
+      "task_area": "config",
+      "category": "access",
+      "prompt": "can you give BeltQueen admin so she can run commands in game?",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 13,
+          "latency_ms": 56097,
+          "cost_usd": 0.00597017,
+          "tool_calls": [
+            "run_shell",
+            "read_file",
+            "send_command",
+            "list_servers",
+            "send_command",
+            "read_logs",
+            "run_shell",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "run_when",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 7,
+          "latency_ms": 53521,
+          "cost_usd": 0.05309,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "run_shell",
+            "send_command",
+            "read_logs",
+            "read_file"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 9,
+          "latency_ms": 80534,
+          "cost_usd": 0.00636454,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "send_command",
+            "send_command",
+            "read_logs",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "edit_file"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "fa-load-save-s1",
+      "game": "factorio",
+      "task_area": "config",
+      "category": "world",
+      "prompt": "just put my old save spaghetti on the server, i want to keep building on it with friends",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 17,
+          "latency_ms": 61260,
+          "cost_usd": 0.00989907,
+          "tool_calls": [
+            "list_servers",
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "run_shell",
+            "game_guide",
+            "read_file",
+            "edit_file",
+            "write_file",
+            "restart_server",
+            "read_logs",
+            "write_file",
+            "restart_server",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 10,
+          "latency_ms": 65873,
+          "cost_usd": 0.0717856,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "run_shell",
+            "run_shell",
+            "backup_server",
+            "write_file",
+            "restart_server",
+            "run_shell",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 9,
+          "latency_ms": 92398,
+          "cost_usd": 0.00841245,
+          "tool_calls": [
+            "list_servers",
+            "game_guide",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "about_server",
+            "read_logs",
+            "backup_server",
+            "write_file",
+            "restart_server",
+            "read_logs"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "fa-server-settings-s1",
+      "game": "factorio",
+      "task_area": "config",
+      "category": "config",
+      "prompt": "put a password on the server, make it cogwheel",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 10,
+          "latency_ms": 26839,
+          "cost_usd": 0.00311673,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 8,
+          "latency_ms": 37802,
+          "cost_usd": 0.0874758,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "run_shell",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 8,
+          "latency_ms": 40901,
+          "cost_usd": 0.00477909,
+          "tool_calls": [
+            "list_servers",
+            "game_guide",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "about_server",
+            "edit_file",
+            "restart_server"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "fa-whitelist-s1",
+      "game": "factorio",
+      "task_area": "config",
+      "category": "access",
+      "prompt": "lock the server down so just Linus, Margaret and Dennis can join",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 10,
+          "latency_ms": 34415,
+          "cost_usd": 0.00424631,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "write_file",
+            "restart_server",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 116733,
+          "cost_usd": 0.0881542,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "run_shell",
+            "run_shell",
+            "send_command",
+            "send_command",
+            "send_command",
+            "read_logs",
+            "write_file",
+            "restart_server",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 11,
+          "latency_ms": 136670,
+          "cost_usd": 0.01085363,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "send_command",
+            "read_logs",
+            "send_command",
+            "write_file",
+            "send_command"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "mc-access-s1",
+      "game": "minecraft",
+      "task_area": "config",
+      "category": "access",
+      "prompt": "can you make Fenwick an op",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 4,
+          "latency_ms": 25547,
+          "cost_usd": 0.00174746,
+          "tool_calls": [
+            "send_command",
+            "about_server",
+            "run_when"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 2,
+          "latency_ms": 17206,
+          "cost_usd": 0.0092706,
+          "tool_calls": [
+            "send_command"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 127799,
+          "cost_usd": 0.007635100000000001,
+          "tool_calls": [
+            "list_servers",
+            "send_command",
+            "send_command",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "read_logs",
+            "send_command",
+            "send_command",
+            "about_server",
+            "read_file",
+            "send_command"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "mc-heap-s1",
+      "game": "minecraft",
+      "task_area": "troubleshooting",
+      "category": "fix",
+      "prompt": "server crashes every time it boots, the log mentions java running out of something. been like this since I tweaked the memory thing",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 25895,
+          "cost_usd": 0.00559707,
+          "tool_calls": [
+            "about_server",
+            "server_resources",
+            "read_logs",
+            "game_guide",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "run_when",
+            "read_logs",
+            "read_logs",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 14,
+          "latency_ms": 79063,
+          "cost_usd": 0.10343060000000001,
+          "tool_calls": [
+            "about_server",
+            "read_logs",
+            "server_resources",
+            "game_guide",
+            "run_shell",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "run_shell",
+            "read_logs",
+            "read_logs",
+            "about_server",
+            "send_command"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 6,
+          "latency_ms": 42413,
+          "cost_usd": 0.00562983,
+          "tool_calls": [
+            "list_servers",
+            "about_server",
+            "server_resources",
+            "read_logs",
+            "game_guide",
+            "browse_files",
+            "read_file",
+            "edit_file",
+            "restart_server"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "mc-install-mod-s1",
+      "game": "minecraft",
+      "task_area": "config",
+      "category": "mods",
+      "prompt": "we're about to go exploring a ton, can you add that Chunky thing so the map is pre-generated",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 13,
+          "latency_ms": 115871,
+          "cost_usd": 0.006056459999999999,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "search_mods",
+            "read_file",
+            "search_mods",
+            "mod_info",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "run_shell",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 11,
+          "latency_ms": 119585,
+          "cost_usd": 0.0649952,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "read_file",
+            "search_mods",
+            "mod_info",
+            "search_mods",
+            "edit_file",
+            "restart_server",
+            "run_shell",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 11,
+          "latency_ms": 86700,
+          "cost_usd": 0.00575217,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "read_file",
+            "search_mods",
+            "search_mods",
+            "mod_info",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "read_logs",
+            "browse_files"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "mc-properties-s1",
+      "game": "minecraft",
+      "task_area": "config",
+      "category": "config",
+      "prompt": "set the server to creative mode and make the server description say Mossy Hollow",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 15,
+          "latency_ms": 32613,
+          "cost_usd": 0.008080869999999999,
+          "tool_calls": [
+            "game_guide",
+            "read_file",
+            "edit_file",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "read_logs",
+            "run_when",
+            "read_logs",
+            "read_logs",
+            "read_logs",
+            "run_shell",
+            "read_logs",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 9,
+          "latency_ms": 96650,
+          "cost_usd": 0.055422400000000004,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "run_shell",
+            "edit_file",
+            "edit_file",
+            "restart_server",
+            "run_shell",
+            "about_server"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 7,
+          "latency_ms": 111468,
+          "cost_usd": 0.0031772499999999995,
+          "tool_calls": [
+            "list_servers",
+            "game_guide",
+            "browse_files",
+            "read_file",
+            "edit_file",
+            "edit_file",
+            "about_server"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "tr-config-broken-s1",
+      "game": "terraria",
+      "task_area": "troubleshooting",
+      "category": "fix",
+      "prompt": "terraria server isn't acting right since I bumped the spawn protection, my settings don't seem to be taking",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 10,
+          "latency_ms": 40199,
+          "cost_usd": 0.00495911,
+          "tool_calls": [
+            "about_server",
+            "read_logs",
+            "browse_files",
+            "read_file",
+            "edit_file",
+            "run_shell",
+            "run_shell",
+            "restart_server",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 13,
+          "latency_ms": 69750,
+          "cost_usd": 0.0995934,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "browse_files",
+            "read_logs",
+            "run_shell",
+            "read_file",
+            "edit_file",
+            "run_shell",
+            "restart_server",
+            "run_shell",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 16,
+          "latency_ms": 611859,
+          "cost_usd": 0.013986879999999998,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "read_logs",
+            "backup_server",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "browse_files",
+            "run_shell",
+            "list_backups",
+            "list_archives",
+            "run_shell",
+            "edit_file",
+            "restart_server",
+            "read_logs"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "tr-custom-world-s1",
+      "game": "terraria",
+      "task_area": "config",
+      "category": "world",
+      "prompt": "uploaded my Hallowed Hollow world to the terraria server, can we play on that one instead",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 37876,
+          "cost_usd": 0.004689260000000001,
+          "tool_calls": [
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "backup_server",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 46408,
+          "cost_usd": 0.115774,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "run_shell",
+            "read_file",
+            "run_shell",
+            "run_shell",
+            "backup_server",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "run_shell"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 11,
+          "latency_ms": 98497,
+          "cost_usd": 0.01049287,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "browse_files",
+            "read_file",
+            "run_shell",
+            "read_file"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "tr-stuck-starting-s1",
+      "game": "terraria",
+      "task_area": "troubleshooting",
+      "category": "fix",
+      "prompt": "nobody can get on the terraria server since this morning, the bot says it's starting but it never finishes",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 18,
+          "latency_ms": 46192,
+          "cost_usd": 0.00779909,
+          "tool_calls": [
+            "about_server",
+            "read_logs",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "read_file",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "read_file",
+            "run_shell",
+            "run_shell",
+            "about_server",
+            "read_logs",
+            "backup_server"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 12,
+          "latency_ms": 39976,
+          "cost_usd": 0.1419562,
+          "tool_calls": [
+            "about_server",
+            "read_logs",
+            "run_shell",
+            "list_backups",
+            "game_guide",
+            "run_shell",
+            "run_shell",
+            "edit_file",
+            "restart_server",
+            "read_logs",
+            "backup_server"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 8,
+          "latency_ms": 45906,
+          "cost_usd": 0.0054778,
+          "tool_calls": [
+            "list_servers",
+            "about_server",
+            "read_logs",
+            "run_shell",
+            "read_file",
+            "read_file",
+            "edit_file",
+            "restart_server"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "vh-admin-s1",
+      "game": "valheim",
+      "task_area": "config",
+      "category": "access",
+      "prompt": "can you give my wife admin rights on the server? her steam id is 76561198087654321",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 8,
+          "latency_ms": 32505,
+          "cost_usd": 0.004425569999999999,
+          "tool_calls": [
+            "game_guide",
+            "list_servers",
+            "browse_files",
+            "read_file",
+            "edit_file",
+            "restart_server",
+            "read_logs"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "pass",
+          "verified_success": true,
+          "unintended_changes": null,
+          "turns": 7,
+          "latency_ms": 34397,
+          "cost_usd": 0.05221,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "run_shell",
+            "read_file",
+            "edit_file",
+            "read_file"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 4,
+          "latency_ms": 10160,
+          "cost_usd": 0.0019376699999999998,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "read_file"
+          ]
+        }
+      }
+    },
+    {
+      "case_id": "vh-import-modpack-s1",
+      "game": "valheim",
+      "task_area": "config",
+      "category": "mods",
+      "prompt": "my friend built a mod profile in r2modman and sent me this code 01a19dfd-180d-a733-48eb-8dff8c631762. can we run that on the server?",
+      "results_by_system": {
+        "cc-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 8,
+          "latency_ms": 40364,
+          "cost_usd": 0.00276446,
+          "tool_calls": [
+            "about_server",
+            "browse_files",
+            "browse_files",
+            "browse_files",
+            "import_profile",
+            "restart_server",
+            "run_when"
+          ]
+        },
+        "cc-opus": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 11,
+          "latency_ms": 74168,
+          "cost_usd": 0.084819,
+          "tool_calls": [
+            "about_server",
+            "game_guide",
+            "read_file",
+            "list_backups",
+            "backup_server",
+            "import_profile",
+            "restart_server",
+            "run_when",
+            "run_shell",
+            "read_logs"
+          ]
+        },
+        "gary-fw": {
+          "outcome": "fail",
+          "verified_success": false,
+          "unintended_changes": null,
+          "turns": 5,
+          "latency_ms": 25976,
+          "cost_usd": 0.00265006,
+          "tool_calls": [
+            "game_guide",
+            "about_server",
+            "browse_files",
+            "backup_server",
+            "read_file",
+            "import_profile"
+          ]
+        }
+      }
+    }
+  ],
+  "comparisons": [
+    {
+      "system_id": "cc-fw",
+      "baseline_system_id": "cc-opus",
+      "n_paired": 14,
+      "n_resource_paired": 14,
+      "success_difference": 0.0,
+      "mcnemar_p_two_sided": 1.0,
+      "cost_ratio": {
+        "point": 0.05524246562698322,
+        "ci_95": [
+          0.03699358974958712,
+          0.08151681235063614
+        ]
+      },
+      "latency_ratio": {
+        "point": 0.623290623040184,
+        "ci_95": [
+          0.45226209372047427,
+          0.822506501981972
+        ]
+      }
+    },
+    {
+      "system_id": "gary-fw",
+      "baseline_system_id": "cc-opus",
+      "n_paired": 14,
+      "n_resource_paired": 14,
+      "success_difference": -0.07142857142857142,
+      "mcnemar_p_two_sided": 1.0,
+      "cost_ratio": {
+        "point": 0.07408576247467762,
+        "ci_95": [
+          0.05315305006165577,
+          0.10625946526387245
+        ]
+      },
+      "latency_ratio": {
+        "point": 2.1147407381899725,
+        "ci_95": [
+          1.0283662760513643,
+          3.6290529979928543
+        ]
+      }
+    }
+  ],
+  "variance": {
+    "cc-fw": {
+      "case_ids": [],
+      "success_rate_by_repeat": {},
+      "mean_success_rate": null,
+      "stdev_success_rate": null
+    },
+    "cc-opus": {
+      "case_ids": [],
+      "success_rate_by_repeat": {},
+      "mean_success_rate": null,
+      "stdev_success_rate": null
+    },
+    "gary-fw": {
+      "case_ids": [],
+      "success_rate_by_repeat": {},
+      "mean_success_rate": null,
+      "stdev_success_rate": null
+    }
+  },
+  "excluded": []
 }
