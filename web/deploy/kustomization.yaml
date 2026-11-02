@@ -13,4 +13,4 @@ resources:
 images:
   - name: gary-web
     newName: registry.registry.svc.cluster.local:5000/gary-web
-    digest: sha256:97dd72a1c4fc9d6a7fa1e3adf5dbb60d5639e0496d498e55d740e58630e4a630
+    digest: sha256:365b74b81dacfcc5b8b782ff31dcb478a3dae10affab28a0ede001dfab2f97d0
