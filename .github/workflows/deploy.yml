@@ -10,16 +10,31 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
+    # Paths no image or test reads. Anything not listed here builds, so a new
+    # top-level path deploys by default rather than being silently skipped.
+    paths-ignore:
+      - "docs/**"
+      - "cluster/**"
+      - "deploy/**"
+      - "scripts/**"
+      - ".claude/**"
+      - ".githooks/**"
+      - ".agents/**"
+      - ".github/workflows/validate-cluster.yml"
+      - "*.md"
+      - "*.png"
+      - "justfile"
+      - "gate-config.json"
 
-# One deploy at a time, newest wins. Without this, two pushes close together
-# race: each run pins the digest *it* built, and whichever finishes last commits
-# last — so a run started from an older commit can overwrite a newer pin and
-# hand Flux an image missing the change that was merged after it. Cancelling the
-# older run is safe because the pin commit is its only side effect and it
-# happens at the very end.
+# One deploy at a time, in push order. Runs are serialized rather than
+# cancelled: with several people pushing, cancel-in-progress restarts the build
+# on every push and nothing deploys until pushes stop. GitHub keeps at most one
+# run pending per group and a newer push replaces it, so a burst of pushes
+# builds the run in flight plus the newest. Serializing also keeps an older
+# run's pin commit from landing after a newer one's.
 concurrency:
   group: deploy-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   REGISTRY: registry.registry.svc.cluster.local:5000

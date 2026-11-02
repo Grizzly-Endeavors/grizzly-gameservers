@@ -1,91 +1,44 @@
 #!/usr/bin/env bash
-# Pre-commit hook
-# Enforces code quality before commits are created
+# Pre-commit: the fast checks on what's staged — formatting, clippy, and the
+# suppression/debug greps. Tests run at pre-push, scoped to what the push touches.
+unset $(git rev-parse --local-env-vars)
+set -u
 
-set -e
-
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${YELLOW}Running pre-commit checks...${NC}"
-
-STAGED_RS_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
-STAGED_TOML_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.toml$' || true)
-
-HAS_RUST=false
-[ -n "$STAGED_RS_FILES" ] || [ -n "$STAGED_TOML_FILES" ] && HAS_RUST=true
-
-if [ "$HAS_RUST" != "true" ]; then
-    echo "No Rust or TOML files staged, skipping checks."
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+if ! grep -qE '\.(rs|toml)$' <<<"$STAGED"; then
     exit 0
 fi
 
-STEP=0
-TOTAL_STEPS=3
-if command -v cargo-deny >/dev/null 2>&1; then
-    TOTAL_STEPS=4
+failed=()
+
+if ! cargo fmt --all -- --check >/dev/null 2>&1; then
+    echo -e "${RED}✗ fmt${NC}: run 'cargo fmt --all', re-stage, and commit again"
+    failed+=(fmt)
 fi
 
-STEP=$((STEP + 1))
-echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Auto-formatting Rust code...${NC}"
-cargo fmt > /dev/null 2>&1
-# `git add -u` would also sweep unrelated working-tree edits the author
-# deliberately left out of this commit — the formatter rewrites the whole
-# tree, not just the staged paths. Re-stage only what was actually staged.
-while IFS= read -r _staged; do
-    [ -n "$_staged" ] && git add -- "$_staged"
-done <<< "$STAGED_RS_FILES"
-echo -e "${GREEN}✓ Formatting applied${NC}"
-
-STEP=$((STEP + 1))
-echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running clippy...${NC}"
 if ! OUTPUT=$(cargo clippy --all-targets --all-features -- -D warnings 2>&1); then
     echo "$OUTPUT"
-    echo -e "${RED}ERROR: Clippy found issues.${NC}"
+    echo -e "${RED}✗ clippy${NC}"
+    failed+=(clippy)
+fi
+
+ADDED_RS=$(git diff --cached --diff-filter=ACM -- '*.rs' | grep -E '^\+' || true)
+if grep -qE '\bdbg!\(' <<<"$ADDED_RS"; then
+    echo -e "${RED}✗ dbg!()${NC} in staged changes; remove it"
+    failed+=(dbg)
+fi
+if grep -qE '#\[allow\(' <<<"$ADDED_RS"; then
+    echo -e "${RED}✗ #[allow(...)]${NC} in staged changes; use #[expect(lint, reason = \"...\")]"
+    failed+=(allow)
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+    echo -e "${RED}pre-commit failed: ${failed[*]}${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Clippy OK${NC}"
-
-STEP=$((STEP + 1))
-echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running tests...${NC}"
-if ! OUTPUT=$(cargo test --quiet --all-features 2>&1); then
-    echo "$OUTPUT"
-    echo -e "${RED}ERROR: Tests failed.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}✓ Tests OK${NC}"
-
-if command -v cargo-deny >/dev/null 2>&1; then
-    STEP=$((STEP + 1))
-    echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running cargo deny...${NC}"
-    if ! OUTPUT=$(cargo deny check 2>&1); then
-        echo "$OUTPUT"
-        echo -e "${RED}ERROR: cargo deny found issues.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}✓ Cargo deny OK${NC}"
-fi
-
-# Check for common issues
-echo -e "\n${YELLOW}Checking for common issues...${NC}"
-
-if git diff --cached --diff-filter=ACM -- '*.rs' | grep -E '^\+.*\bdbg!\(' > /dev/null 2>&1; then
-    echo -e "${RED}WARNING: Found dbg!() macro in staged changes.${NC}"
-    echo "Remove debug macros before committing."
-    exit 1
-fi
-
-if git diff --cached --diff-filter=ACM -- '*.rs' | grep -E '^\+.*#\[allow\(' > /dev/null 2>&1; then
-    echo -e "${RED}ERROR: Found #[allow(...)] in staged changes.${NC}"
-    echo "Use #[expect(lint, reason = \"...\")] instead so stale suppressions warn."
-    exit 1
-fi
-
-if git diff --cached --diff-filter=ACM -- '*.rs' | grep -E '^\+.*(FIXME|XXX)' > /dev/null 2>&1; then
-    echo -e "${YELLOW}NOTE: Found FIXME/XXX comments in staged changes.${NC}"
-fi
-
-echo -e "\n${GREEN}All pre-commit checks passed!${NC}"
+echo -e "${GREEN}pre-commit ok${NC} ${YELLOW}(tests run at pre-push)${NC}"

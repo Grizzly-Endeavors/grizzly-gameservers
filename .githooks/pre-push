@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Pre-push: the tests for the crates the pushed commits touch, plus the offline
+# cargo-deny checks when dependencies change. This is the last check before code
+# reaches main, which deploys on every push. Docs-only pushes run nothing.
+unset $(git rev-parse --local-env-vars)
+set -u
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+root="$(git rev-parse --show-toplevel)"
+# shellcheck source=lib/select-checks.sh
+. "$root/.githooks/lib/select-checks.sh"
+
+zero=0000000000000000000000000000000000000000
+head_sha=$(git rev-parse HEAD)
+changed=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue # deleting a remote branch
+    # The checks run on the working tree, so it has to be what's being pushed.
+    if [ "$local_sha" != "$head_sha" ]; then
+        echo -e "${RED}pre-push: pushing ${local_sha:0:9}, but HEAD is ${head_sha:0:9}.${NC} Check it out and push from there."
+        exit 1
+    fi
+    if [ "$remote_sha" = "$zero" ] || ! git cat-file -e "$remote_sha" 2>/dev/null; then
+        base=$(git merge-base "$local_sha" origin/main 2>/dev/null || true)
+    else
+        base="$remote_sha"
+    fi
+    if [ -z "$base" ]; then
+        changed+=$'\n'"<unknown base>" # selects everything
+    else
+        changed+=$'\n'"$(git diff --name-only "$base" "$local_sha")"
+    fi
+done
+
+[ -z "${changed//$'\n'/}" ] && exit 0
+
+if ! git diff --quiet HEAD --; then
+    echo -e "${RED}pre-push: tracked files have uncommitted changes.${NC} Commit or stash them so the checks see what's being pushed."
+    exit 1
+fi
+
+checks=$(select_checks <<<"$changed")
+[ -z "$checks" ] && exit 0
+
+failed=()
+run() {
+    local name="$1"
+    shift
+    echo "▶ $name"
+    if ! "$@"; then
+        failed+=("$name")
+    fi
+}
+
+if grep -qx workspace <<<"$checks"; then
+    run "tests (workspace)" cargo test --quiet --all-features --workspace
+    run "select-checks table" bash "$root/.githooks/tests/select-checks.sh"
+else
+    while read -r pkg; do
+        run "tests ($pkg)" cargo test --quiet --all-features -p "$pkg"
+    done < <(sed -n 's/^pkg://p' <<<"$checks")
+fi
+if grep -qx deny <<<"$checks" && command -v cargo-deny >/dev/null 2>&1; then
+    run "cargo deny (bans, licenses, sources)" cargo deny --offline check bans licenses sources
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+    echo -e "${RED}pre-push failed: ${failed[*]}${NC}"
+    exit 1
+fi
+echo -e "${GREEN}pre-push ok${NC}"

@@ -154,7 +154,7 @@ It fails if a `used_by` entry names a source file that doesn't exist or that lac
 ### Day-to-day
 
 1. Create a feature branch from `main` with a prefixed name (`feat/`, `fix/`, `refactor/`, `docs/`, `ci/`, `chore/`).
-2. **Commit frequently** — especially during large multi-phase tasks. Pre-commit hooks enforce fmt, lint, and tests.
+2. **Commit frequently** — especially during large multi-phase tasks. Pre-commit runs fmt-check and clippy; pre-push runs the tests of the crates the push touches (see README "Git Hooks"). While iterating, run only the narrow test you're working on (`cargo test --quiet -p <crate> <name>`); don't rerun what the hooks already passed.
 3. Wrapup: check for anything unfinished, update docs/guides, create migration guides for breaking changes.
 4. Push the branch and merge into `main`.
 
