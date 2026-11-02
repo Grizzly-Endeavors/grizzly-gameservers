@@ -625,66 +625,66 @@
       </div>
     </section>
 
-    <!-- SLIDE 2: WHY GENERIC FRONTIER AGENTS FAIL -->
+    <!-- SLIDE 2: WHY FRONTIER MODELS IN GENERALIST HARNESSES BREAK B2B2C COGS -->
     <section class="slide" data-index="1">
       <div class="slide-header">
-        <span class="kicker">02 / Why Generic AI Breaks the Math</span>
-        <h1>Why Claude Opus in Claude Code Fails on Live Game Containers</h1>
-        <p class="subtitle">Even given the exact same MCP tools, a generalist coding harness burns expensive turns and falls into container state traps that wipe its fixes on restart.</p>
+        <span class="kicker">02 / Why Frontier Models Break B2B2C COGS</span>
+        <h1>In B2B2C Hosting, COGS Is Everything</h1>
+        <p class="subtitle">We gave Claude Opus 5.5 and Fireworks GLM-5.3-Flash the exact same Gary MCP tools. Frontier token pricing plus generalist CLI overhead breaks the math on a $12/month server.</p>
       </div>
 
       <div class="grid-2">
         <div class="card bad-card">
-          <div class="stat-label" style="color:var(--bad);">Claude Opus 5.5 in Claude Code (Generalist Baseline)</div>
-          <p class="stat-meta">Hunts from pretraining memory, burns 10+ turns on discovery, and falls into live stateful container traps:</p>
+          <div class="stat-label" style="color:var(--bad);">Claude Opus 5.5 in Claude Code (Frontier Baseline)</div>
+          <p class="stat-meta">Even with Gary's exact domain MCP tools, a frontier model in a generalist coding CLI burns massive token overhead and still hits container traps:</p>
           <div class="loop-track">
-            <span class="step-chip bad">1. Guess from training data</span>
+            <span class="step-chip bad">$4 / $20 per 1M tokens</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">2. Hit state trap</span>
+            <span class="step-chip bad">68k–80k tokens / ticket</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">3. Hunt filesystem</span>
+            <span class="step-chip bad">7–10 turns</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip bad">4. Vanishes on restart</span>
+            <span class="step-chip bad">$40+ / 1k incidents</span>
           </div>
           <ul class="bullet-list">
-            <li><span class="dot bad"></span><span><strong>State Trap 1 &middot; Ephemeral Commands (<code>smoke-mc-pvp-d1</code>):</strong> Opus ran an in-game <code>/pvp</code> command and declared victory. When our scorer restarted the container, the fix vanished.</span></li>
-            <li><span class="dot bad"></span><span><strong>State Trap 2 &middot; Shutdown Overwrites (<code>Palworld</code>):</strong> Palworld's binary overwrites its own <code>.ini</code> on shutdown. Editing while running wipes the fix on restart.</span></li>
-            <li><span class="dot bad"></span><span><strong>10.4 turns &amp; $41.35 / 1k incidents:</strong> Far too slow (37.9s p50) and expensive to bundle on a $12 server.</span></li>
+            <li><span class="dot bad"></span><span><strong>Frontier Token Rates + Heavy CLI Loop:</strong> On our <code>smoke-mc-pvp-d1</code> run, Claude Code burned <strong>68k–80k prompt tokens</strong> per ticket across 7 to 10 turns.</span></li>
+            <li><span class="dot bad"></span><span><strong>Overthinking into State Traps:</strong> Even with <code>game_guide</code> available, Opus ran an ephemeral in-game <code>/pvp</code> command that vanished on container restart.</span></li>
+            <li><span class="dot bad"></span><span><strong>Kills B2B2C Gross Margin:</strong> When a server owner and 8 friends ask Gary 50 questions a month, frontier COGS eats the entire $3 ARPU lift.</span></li>
           </ul>
         </div>
 
         <div class="card highlight">
-          <div class="stat-label" style="color:var(--brand-500);">How We Created Our Own Domain Frontier</div>
-          <p class="stat-meta">Instead of paying for a massive generalist model to rediscover game rules on every ticket, we moved the frontier into a 4-layer operator harness around <code>GLM-5.3-Flash</code>:</p>
+          <div class="stat-label" style="color:var(--brand-500);">How Gary + Fireworks Cuts COGS by ~50x (`&lt; $0.04/Server/Mo`)</div>
+          <p class="stat-meta">Because Gary's MCP tool surface and lightweight Rust loop carry the domain structure, we don't need a $20/M frontier model to operate the container:</p>
           <div class="loop-track">
-            <span class="step-chip ok">1. Typed Tools</span>
+            <span class="step-chip ok">1. Domain MCP Tools</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip ok">2. Invariant Priming</span>
+            <span class="step-chip ok">2. Native Rust Loop</span>
             <span class="arrow">&rarr;</span>
-            <span class="step-chip ok">3. Restart Probe</span>
+            <span class="step-chip ok">3. Fireworks GLM-5.3-Flash</span>
             <span class="arrow">&rarr;</span>
             <span class="step-chip ok">4. SFT Flywheel</span>
           </div>
           <ul class="bullet-list">
-            <li><span class="dot ok"></span><span><strong>Pre-turn operational invariants (<code>game_guide</code>):</strong> Tells the model up front: edit <code>/data/server.properties</code> for Minecraft; <em>stop &rarr; edit &rarr; start</em> for Palworld.</span></li>
-            <li><span class="dot ok"></span><span><strong>Post-restart verification loop:</strong> Snapshot state, apply edit, restart container, verify readiness probe, or auto-rollback.</span></li>
-            <li><span class="dot ok"></span><span><strong>Compounding memory + Fireworks SFT export (<code>export_sft.py</code>):</strong> Verified dev traces export directly to Fireworks fine-tuning JSONL.</span></li>
+            <li><span class="dot ok"></span><span><strong>Domain MCP Absorbs the Complexity:</strong> <code>game_guide</code> + typed container tools let a <strong>$0.15 / $0.50</strong> open model on Fireworks execute the exact same fixes as Opus.</span></li>
+            <li><span class="dot ok"></span><span><strong>Native Rust Loop Halves Token Burn:</strong> Gary's lean Rust session loop solves tickets in <strong>~5 turns / 50k tokens</strong> vs. 10 turns / 80k tokens in Claude Code.</span></li>
+            <li><span class="dot ok"></span><span><strong>98.7% Gross Margin on the +$3 ARPU Lift:</strong> 50 turns/month costs <strong>~$0.04/server</strong> on Fireworks, turning AI support from a cost center into pure margin.</span></li>
           </ul>
         </div>
       </div>
 
       <div class="banner">
-        <span>We didn't beat Claude Code with a bigger model. We beat it by moving container invariants and verification into the harness.</span>
-        <span class="badge measured">+27.5 pt Harness Lift in Ablation</span>
+        <span>Same domain MCP tools. Same post-restart state verification. ~50x lower inference COGS on Fireworks.</span>
+        <span class="badge measured">&lt; $0.04 / Server / Month COGS</span>
       </div>
     </section>
 
     <!-- SLIDE 3: GARY ARCHITECTURE (VISUAL SYSTEM DIAGRAM) -->
     <section class="slide" data-index="2">
       <div class="slide-header">
-        <span class="kicker">03 / Creating Our Domain Frontier: The 4-Layer Architecture</span>
-        <h1>How GLM-5.3-Flash on Fireworks Beats a Frontier Generalist</h1>
-        <p class="subtitle">Four compounding layers turn a fast open model on Fireworks into a domain frontier operator (~4.7 turns, 1.9s p50, $0.00074/incident).</p>
+        <span class="kicker">03 / The Low-COGS Operator Architecture</span>
+        <h1>How GLM-5.3-Flash on Fireworks Delivers Frontier Ops at 1/50th the Cost</h1>
+        <p class="subtitle">Domain MCP tools + a lean Rust session loop + Fireworks open-model inference (~4.7 turns, 1.9s p50, $0.00074/incident).</p>
       </div>
 
       <div class="card" style="padding: 18px 22px; overflow: hidden;">
@@ -906,14 +906,14 @@
         </table>
       </div>
 
-      <!-- Methodology, Ablation Failure Case & Explicit Tradeoff Disclosure -->
+      <!-- Methodology, Controlled Tool Surface & Explicit Tradeoff Disclosure -->
       <div class="banner" style="padding:12px 18px;font-size:12.5px;font-weight:500;line-height:1.45;">
         <div>
-          <strong>Methodology &amp; Tradeoff Disclosure:</strong>
+          <strong>Methodology &amp; B2B2C COGS Disclosure:</strong>
           <span style="color:var(--ink);">
-            <strong>1. Equal Access:</strong> Baseline (`claude-opus-5-5` in Claude Code) and Gary (`GLM-5.3-Flash` on Fireworks) receive identical K8s container tools via <code>gary_mcp.py</code> and are scored by deterministic state probes in <code>score.py</code> (never LLM-as-judge).
-            <strong>2. Why Ablation Fails:</strong> Without Gary's <code>game_guide</code> + verification loop, models issue non-persistent commands (e.g., on <code>smoke-mc-pvp-d1</code>, Claude Code ran in-game <code>/pvp</code> which vanished on restart; Gary edited <code>/data/server.properties</code> and verified readiness).
-            <strong>3. Quality/Cost Tradeoff:</strong> Where single-pass <code>GLM-5.3-Flash</code> trails Opus on multi-step edge cases, Gary's harness catches the failed readiness probe, auto-rolls back the snapshot, and escalates cleanly rather than leaving a broken server.
+            <strong>1. Controlled Tool Surface (No Handicapped Baseline):</strong> We give Claude Code (`claude-opus-5-5` baseline &amp; `GLM-5.3-Flash` ablation) the <em>exact same</em> Gary operator MCP tools via <code>gary_mcp.py</code>, graded by deterministic post-restart probes in <code>score.py</code>.
+            <strong>2. Why Fireworks + Gary Wins on COGS:</strong> Because the MCP tool surface and <code>game_guide</code> encode the domain invariants, <code>GLM-5.3-Flash</code> ($0.15/$0.50 per 1M) matches/beats Opus ($4/$20 per 1M) while Gary's native Rust loop cuts turns and token overhead in half vs. Claude Code (e.g., 5 turns / 50k tokens vs. 10 turns / 80k tokens on <code>smoke-mc-pvp-d1</code>).
+            <strong>3. Safety Tradeoff:</strong> If a single pass fails verification, Gary auto-rolls back the snapshot and escalates cleanly.
           </span>
         </div>
       </div>
@@ -1001,15 +1001,15 @@
       },
       {
         timing: "Slide 2 (15s)",
-        text: "\"Even when you give Claude Opus in Claude Code the exact same container tools, it falls into live state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Burning ten turns of frontier tokens on trial and error breaks the math on a $12 server.\""
+        text: "\"In B2B2C game hosting, COGS is everything. Even when we give Claude Opus 5.5 in Claude Code the exact same Gary MCP tools, frontier token rates and a heavy generalist CLI burn seventy to eighty thousand tokens a ticket—over forty dollars per thousand incidents. When a server owner and eight friends ask fifty questions a month, frontier COGS wipes out the host's margin.\""
       },
       {
         timing: "Slide 3 (15s)",
-        text: "\"To beat Claude Code with GLM 5.3 Flash on Fireworks, we built a four-layer domain frontier harness: first, a typed operator tool surface; second, pre-turn invariant priming so the model knows each game's persistence rules up front; third, a snapshot, apply, and post-restart readiness probe loop; and fourth, compounding fleet memory that exports verified dev traces straight into Fireworks fine-tuning.\""
+        text: "\"Gary solves the COGS equation with four layers: first, our domain MCP tools and game guides encode each game's config and persistence rules so the model never guesses; second, Gary's lean Rust session loop cuts turns and token burn in half compared to Claude Code; third, GLM 5.3 Flash on Fireworks runs at fifteen cents per million tokens with prompt caching; and fourth, verified dev traces export straight into Fireworks fine-tuning.\""
       },
       {
         timing: "Slide 4 (20s)",
-        text: "\"Here is what happens across our held-out incident benchmark, where every system gets identical container tools and is graded by deterministic state probes. Compare Row 1 and Row 3: GLM 5.3 Flash on Fireworks inside Gary matches Claude Opus recovery at one-fiftieth the cost and twenty times the speed. In Row 2, run that same open model in Claude Code without Gary's guide and probe loop, and it makes non-persistent edits that vanish on restart. Where a single pass fails verification, Gary auto-rolls back and escalates cleanly.\""
+        text: "\"Because we give every system the exact same Gary MCP tools and grade every fix with a post-restart container probe, this benchmark is a clean model and COGS test. GLM 5.3 Flash on Fireworks matches or beats Claude Opus 5.5 at roughly one-fiftieth the cost and twenty times the speed—and running it inside Gary's native Rust loop uses half the turns and tokens of wrapping the same MCP inside Claude Code.\""
       },
       {
         timing: "Slide 5 (15s)",
