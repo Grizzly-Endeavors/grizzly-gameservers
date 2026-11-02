@@ -60,7 +60,7 @@ scenarios:
     staging: a client-only mod hidden among 5-6 good ones; the trace names a client class, not the mod
     examples: ["we added a bunch of mods tonight and now it crashes on boot"]
     checks: [server Ready with the customer's other mods still installed]
-    note: "only the dev variant is staged; no scored variant has been written"
+    note: "only one Fabric client-only mod (search-on-mcmod) was found that crashes a dedicated server on this version; no second crasher in time for scored variants"
     variants: 1
     split: { dev: 1, scored: 0 }
 
@@ -262,8 +262,8 @@ scenarios:
     staging: healthy server
     examples: ["password it: hunter22", "16 players max", "turn on the whitelist and add my IP"]
     checks: [target setting applied, server Ready]
-    variants: 5
-    split: { dev: 1, scored: 4 }
+    variants: 7
+    split: { dev: 1, scored: 6 }
 
   - id: tr-admin
     game: terraria
@@ -306,8 +306,8 @@ scenarios:
     staging: customised server-settings.json
     examples: ["put a password on it", "autosave every 5 minutes", "kick people who are afk for 10 min"]
     checks: [target key set, server Ready]
-    variants: 7
-    split: { dev: 1, scored: 6 }
+    variants: 9
+    split: { dev: 1, scored: 8 }
 
   - id: fa-keep-running
     game: factorio

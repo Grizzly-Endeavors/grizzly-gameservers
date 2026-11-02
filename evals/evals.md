@@ -49,13 +49,13 @@ The scenario catalog is `evals/scenarios.yaml`. Each scenario is a template. The
 
 | Game | Scored cases |
 |---|---|
-| Factorio | 22 |
+| Factorio | 24 |
 | Minecraft (Fabric) | 20 |
 | Valheim (BepInEx) | 17 |
-| Terraria (TShock) | 14 |
+| Terraria (TShock) | 16 |
 | Palworld | 14 |
 | Enshrouded | 11 |
-| **Total** | **98** |
+| **Total** | **102** |
 
 There are also 36 development cases. One development case exists for each of the 35 scenarios in the catalog. The 36th is `smoke-mc-pvp`, a smoke case that is not in the catalog.
 
@@ -95,7 +95,7 @@ Six scenarios are dropped. They have no cases, and `scenarios.yaml` marks each o
 - `en-transfer-world`: there is no file move or copy tool (issue #129).
 - `mc-plugins-on-modded` and `mc-upgrade-version`: not staged in time.
 
-The scored set is 98 cases. This is below the 100 target in the rule above.
+The scored set is 102 cases. This meets the 100 target in the rule above.
 
 ## 4. Procedure for one case
 
