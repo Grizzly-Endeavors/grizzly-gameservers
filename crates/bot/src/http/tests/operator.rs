@@ -95,7 +95,7 @@ fn guild_scope_without_a_guild_is_refused_rather_than_widened() {
 fn snowflakes_must_be_real_ids() {
     assert_eq!(
         parse_id("123456789012345678", "channel").unwrap(),
-        1_524_223_576_067_145_818
+        123_456_789_012_345_678
     );
     assert_eq!(
         parse_id(" 42 ", "channel").unwrap(),
