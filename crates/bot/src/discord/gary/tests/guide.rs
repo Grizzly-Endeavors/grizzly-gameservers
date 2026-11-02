@@ -28,6 +28,7 @@ fn a_modrinth_guide_names_the_game_and_the_file_installs_go_through() {
         "minecraft",
         &GuideSubject::Registry(&registry),
         None,
+        None,
         CATALOG,
     );
     assert!(rendered.contains("minecraft"), "{rendered}");
@@ -40,7 +41,13 @@ fn a_thunderstore_guide_teaches_pinning_and_delete_the_line() {
     // The two rules a model can't infer: a search result carries no version, and
     // removal here is the exact opposite of Minecraft's rule.
     let registry = thunderstore();
-    let rendered = render_guide("valheim", &GuideSubject::Registry(&registry), None, CATALOG);
+    let rendered = render_guide(
+        "valheim",
+        &GuideSubject::Registry(&registry),
+        None,
+        None,
+        CATALOG,
+    );
     assert!(rendered.contains(".grizzly/mods"), "{rendered}");
     assert!(rendered.contains("Namespace-Name-1.2.3"), "{rendered}");
     assert!(rendered.contains("delete its line"), "{rendered}");
@@ -57,9 +64,16 @@ fn the_two_registries_never_hand_back_each_others_instructions() {
         "minecraft",
         &GuideSubject::Registry(&modrinth),
         None,
+        None,
         CATALOG,
     );
-    let other = render_guide("valheim", &GuideSubject::Registry(&thunder), None, CATALOG);
+    let other = render_guide(
+        "valheim",
+        &GuideSubject::Registry(&thunder),
+        None,
+        None,
+        CATALOG,
+    );
     assert!(!one.contains(".grizzly/mods"), "{one}");
     assert!(!other.contains("MODRINTH_PROJECTS"), "{other}");
 }
@@ -67,7 +81,13 @@ fn the_two_registries_never_hand_back_each_others_instructions() {
 #[test]
 fn a_guide_reads_as_intro_then_choice_then_install() {
     let registry = thunderstore();
-    let rendered = render_guide("valheim", &GuideSubject::Registry(&registry), None, CATALOG);
+    let rendered = render_guide(
+        "valheim",
+        &GuideSubject::Registry(&registry),
+        None,
+        None,
+        CATALOG,
+    );
     let intro = rendered
         .find("Here is how mods work")
         .expect("the intro leads");
@@ -84,7 +104,7 @@ fn a_guide_reads_as_intro_then_choice_then_install() {
 fn a_game_with_no_registry_says_so_and_forbids_improvising() {
     // The alternative to a final answer is Gary hand-installing through the file
     // tools, which puts the change outside everything that would check it.
-    let rendered = render_guide("factorio", &GuideSubject::NoRegistry, None, CATALOG);
+    let rendered = render_guide("factorio", &GuideSubject::NoRegistry, None, None, CATALOG);
     assert!(rendered.contains("factorio"), "{rendered}");
     assert!(rendered.contains("no supported way"), "{rendered}");
     assert!(rendered.contains("Don't improvise"), "{rendered}");
@@ -93,7 +113,7 @@ fn a_game_with_no_registry_says_so_and_forbids_improvising() {
 
 #[test]
 fn an_unknown_game_names_the_catalog_and_how_to_find_the_right_id() {
-    let rendered = render_guide("valhiem", &GuideSubject::UnknownGame, None, CATALOG);
+    let rendered = render_guide("valhiem", &GuideSubject::UnknownGame, None, None, CATALOG);
     assert!(rendered.contains("valhiem"), "{rendered}");
     assert!(rendered.contains(CATALOG), "{rendered}");
     assert!(rendered.contains("about_server"), "{rendered}");
@@ -101,7 +121,7 @@ fn an_unknown_game_names_the_catalog_and_how_to_find_the_right_id() {
 
 #[test]
 fn an_empty_catalog_renders_as_words_rather_than_a_blank() {
-    let rendered = render_guide("anything", &GuideSubject::UnknownGame, None, "(none)");
+    let rendered = render_guide("anything", &GuideSubject::UnknownGame, None, None, "(none)");
     assert!(rendered.contains("(none)"), "{rendered}");
 }
 
@@ -112,6 +132,7 @@ fn a_thunderstore_guide_carries_the_profile_code_workflow() {
     let guide = render_guide(
         "valheim",
         &GuideSubject::Registry(&thunderstore()),
+        None,
         None,
         CATALOG,
     );
@@ -128,6 +149,7 @@ fn a_modrinth_guide_says_nothing_about_profile_codes() {
         "minecraft",
         &GuideSubject::Registry(&ModRegistry::Modrinth),
         None,
+        None,
         CATALOG,
     );
     assert!(!guide.contains("profile code"), "{guide}");
@@ -142,6 +164,7 @@ fn a_game_with_an_overlay_names_the_file_and_only_its_own_keys() {
         "valheim",
         &GuideSubject::Registry(&thunderstore()),
         Some(&overlay),
+        None,
         CATALOG,
     );
     assert!(rendered.contains(".grizzly/env"), "{rendered}");
@@ -160,6 +183,7 @@ fn an_overlay_guide_says_the_setting_is_in_no_file() {
         "valheim",
         &GuideSubject::Registry(&thunderstore()),
         Some(&overlay),
+        None,
         CATALOG,
     );
     assert!(
@@ -173,7 +197,7 @@ fn an_overlay_guide_says_the_setting_is_in_no_file() {
 fn a_game_without_an_overlay_is_pointed_at_its_own_config_files() {
     // Silence here would read as "this game has no settings" beside the other
     // branch's explicit file.
-    let rendered = render_guide("factorio", &GuideSubject::NoRegistry, None, CATALOG);
+    let rendered = render_guide("factorio", &GuideSubject::NoRegistry, None, None, CATALOG);
     assert!(rendered.contains("factorio"), "{rendered}");
     assert!(rendered.contains("browse_files"), "{rendered}");
     assert!(!rendered.contains(".grizzly/env"), "{rendered}");
@@ -191,7 +215,7 @@ fn every_real_game_answers_the_settings_question() {
         (GuideSubject::Registry(&registry), None),
         (GuideSubject::Registry(&registry), Some(&declared)),
     ] {
-        let rendered = render_guide("valheim", &subject, overlay, CATALOG);
+        let rendered = render_guide("valheim", &subject, overlay, None, CATALOG);
         assert!(
             rendered.contains("settings"),
             "settings section missing: {rendered}"
@@ -208,6 +232,7 @@ fn settings_lead_and_the_mod_workflow_follows() {
         "valheim",
         &GuideSubject::Registry(&thunderstore()),
         Some(&overlay),
+        None,
         CATALOG,
     );
     let settings = rendered
@@ -226,6 +251,7 @@ fn an_unknown_game_is_still_only_the_correction() {
         "valhiem",
         &GuideSubject::UnknownGame,
         Some(&overlay),
+        None,
         CATALOG,
     );
     assert!(rendered.contains("valhiem"), "{rendered}");
@@ -251,6 +277,7 @@ fn the_valheim_guide_names_the_world_switch_key() {
         "valheim",
         &GuideSubject::Registry(&thunderstore()),
         Some(&overlay),
+        None,
         CATALOG,
     );
     assert!(rendered.contains("WORLD_NAME"), "{rendered}");
@@ -263,6 +290,7 @@ fn the_factorio_guide_takes_the_overlay_branch_and_names_the_save_keys() {
         "factorio",
         &GuideSubject::NoRegistry,
         Some(&overlay),
+        None,
         CATALOG,
     );
     assert!(rendered.contains(".grizzly/env"), "{rendered}");
@@ -272,4 +300,29 @@ fn the_factorio_guide_takes_the_overlay_branch_and_names_the_save_keys() {
         rendered.contains("not stored in any config file"),
         "{rendered}"
     );
+}
+
+#[test]
+fn a_shutdown_rewritten_config_gets_the_stop_edit_start_section_after_settings() {
+    let rendered = render_guide(
+        "palworld",
+        &GuideSubject::NoRegistry,
+        None,
+        Some("Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"),
+        CATALOG,
+    );
+    assert!(
+        rendered.contains("Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("stop_server"), "{rendered}");
+    let settings = rendered.find("settings").unwrap();
+    let rewrite = rendered.find("stop_server").unwrap();
+    assert!(settings < rewrite, "{rendered}");
+}
+
+#[test]
+fn a_game_without_the_annotation_gets_no_stop_edit_start_section() {
+    let rendered = render_guide("factorio", &GuideSubject::NoRegistry, None, None, CATALOG);
+    assert!(!rendered.contains("stop_server"), "{rendered}");
 }
