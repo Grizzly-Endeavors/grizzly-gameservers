@@ -374,8 +374,24 @@ def _evaluate(cluster: Any, check: dict[str, Any], name: str, reply: str) -> tup
     return False, f"unknown check type {kind}"
 
 
+# Long enough for the slowest image to relaunch its game after an in-place restart.
+CHECK_SETTLE_S = 420.0
+
+
 def run_checks(cluster: Any, case: dict[str, Any], name: str, reply: str, prefix: str) -> list[dict[str, Any]]:
-    results = [run_check(cluster, check, name, reply) for check in case["checks"]]
+    """Run every check, re-running the set until all pass or the boot timeout ends.
+
+    Agones keeps a GameServer Ready through an in-place restart, so Ready does not mean the game
+    process is back; the checked state itself is the signal. A fix that did not hold never passes.
+    """
+    results: list[dict[str, Any]] = []
+
+    def all_pass() -> bool:
+        nonlocal results
+        results = [run_check(cluster, check, name, reply) for check in case["checks"]]
+        return all(result["ok"] for result in results)
+
+    wait_for(cluster, all_pass, CHECK_SETTLE_S)
     return [{**result, "name": f"{prefix}: {result['name']}"} for result in results]
 
 

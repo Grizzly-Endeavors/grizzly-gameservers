@@ -491,3 +491,31 @@ class ChannelSelectionTest(unittest.TestCase):
         executor = run.RealExecutor(conn, ["first", "second", "third"], {})
         self.assertEqual([executor._next_channel() for _ in range(4)], ["first", "second", "third", "first"])
         self.assertEqual(conn.channel, "first")
+
+
+class RunChecksSettleTest(unittest.TestCase):
+    CASE = {"checks": [{"type": "file_regex", "path": "/data/x", "pattern": "on", "present": True}]}
+
+    def test_waits_for_state_that_appears_after_restart(self):
+        cluster = run.FakeCluster()
+        cluster.files["srv"] = {}
+        calls = {"n": 0}
+        real_exec = cluster.exec
+
+        def exec_late(name, argv, timeout=120.0):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                cluster.files["srv"]["/data/x"] = "on"
+            return real_exec(name, argv, timeout)
+
+        cluster.exec = exec_late
+        results = run.run_checks(cluster, self.CASE, "srv", "", "after restart")
+        self.assertTrue(all(r["ok"] for r in results))
+        self.assertEqual(results[0]["name"].split(":")[0], "after restart")
+
+    def test_state_that_never_holds_fails_at_the_settle_deadline(self):
+        cluster = run.FakeCluster()
+        cluster.files["srv"] = {}
+        results = run.run_checks(cluster, self.CASE, "srv", "", "after stop")
+        self.assertFalse(results[0]["ok"])
+        self.assertGreaterEqual(cluster.clock, run.CHECK_SETTLE_S)
