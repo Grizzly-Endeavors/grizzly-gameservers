@@ -2,11 +2,12 @@
 """Score eval run records into eval_results.json and a markdown summary.
 
 Input is a directory of run records, one JSON file per (system, case, repeat).
-Scoring rules are in evals/evals.md (sections 5-7); the output shape is
+Scoring rules are in evals/evals.md (sections 5-8); the output shape is
 FR-4.3 in docs/fireworks-deploy-prd.md.
 
 Usage: python3 evals/harness/score.py <runs_dir> [-o eval_results.json]
-       [--cases <cases_dir>] [--baseline <system_id>]
+       [--cases <cases_dir>] [--baseline <system_id>] [--no-baseline]
+       [--human-estimate <file.json>]
 """
 
 from __future__ import annotations
@@ -52,17 +53,49 @@ RECORD_FIELDS = (
     "checks",
 )
 CASE_FIELDS = ("game", "task_area", "category", "prompt")
+COUNT_FIELDS = ("turns", "latency_ms", "model_ms", "tool_ms")
 USAGE_FIELDS = ("prompt_tokens", "cached_tokens", "completion_tokens")
 RATE_FIELDS = ("input_per_1m_usd", "cached_input_per_1m_usd", "output_per_1m_usd")
 OUTCOMES = ("pass", "fail", "staging_error", "infra_error")
 SPLITS = ("scored", "dev")
 HARNESSES = ("gary", "claude_code")
 TASK_AREAS = ("config", "troubleshooting")
+ESTIMATE_FIELDS = (
+    "system_id",
+    "label",
+    "kind",
+    "model",
+    "harness",
+    "n_cases",
+    "verified_success_rate",
+    "success_ci_95",
+    "unintended_change_rate",
+    "mean_turns",
+    "mean_tokens",
+    "latency_p50_ms",
+    "latency_p95_ms",
+    "cost_per_1k_usd",
+    "notes",
+)
+ESTIMATE_NUMBER_FIELDS = (
+    "n_cases",
+    "verified_success_rate",
+    "unintended_change_rate",
+    "mean_turns",
+    "mean_tokens",
+    "latency_p50_ms",
+    "latency_p95_ms",
+    "cost_per_1k_usd",
+)
 
 
 @dataclass(frozen=True)
 class Row:
-    """One scored run record joined with its case metadata and cost."""
+    """One case's result for one system, joined with its case metadata and cost.
+
+    A `missing` row is a scored case the system has no run record for. It counts
+    as a fail and carries no measurements, so its measurement fields are None.
+    """
 
     system_id: str
     label: str
@@ -76,13 +109,17 @@ class Row:
     repeat: int
     outcome: str
     claimed_done: bool
-    turns: int
+    turns: int | None
     tool_calls: tuple[str, ...]
-    prompt_tokens: int
-    cached_tokens: int
-    completion_tokens: int
-    latency_ms: int
+    prompt_tokens: int | None
+    cached_tokens: int | None
+    completion_tokens: int | None
+    latency_ms: int | None
     cost_usd: float | None
+
+    @property
+    def measured(self) -> bool:
+        return self.outcome != "missing"
 
     @property
     def success(self) -> bool:
@@ -107,6 +144,14 @@ def read_structured(path: Path) -> object:
         raise ValueError(f"failed to read {path}") from err
 
 
+def is_whole_number(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def is_non_negative_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+
+
 def validate_record(record: object, path: Path) -> dict:
     if not isinstance(record, dict):
         raise ValueError(f"run record at {path} is not an object")
@@ -121,22 +166,50 @@ def validate_record(record: object, path: Path) -> dict:
         raise ValueError(f"run record at {path} has unknown harness {record['harness']!r}")
     if record["task_area"] not in TASK_AREAS:
         raise ValueError(f"run record at {path} has unknown task_area {record['task_area']!r}")
-    repeat = record["repeat"]
-    if not isinstance(repeat, int) or isinstance(repeat, bool) or repeat < 0:
+    if not is_whole_number(record["repeat"]):
         raise ValueError(f"run record at {path} has a repeat that is not a whole number >= 0")
+    for field in COUNT_FIELDS:
+        if not is_whole_number(record[field]):
+            raise ValueError(f"run record at {path} has a {field} that is not a whole number >= 0")
+    if not isinstance(record["claimed_done"], bool):
+        raise ValueError(f"run record at {path} has a claimed_done that is not true or false")
+    if not isinstance(record["tool_calls"], list):
+        raise ValueError(f"run record at {path} has a tool_calls that is not a list")
     usage = record["usage"]
     if not isinstance(usage, dict) or any(field not in usage for field in USAGE_FIELDS):
         raise ValueError(f"run record at {path} has a usage object without {', '.join(USAGE_FIELDS)}")
+    for field in USAGE_FIELDS:
+        if not is_whole_number(usage[field]):
+            raise ValueError(f"run record at {path} has a usage.{field} that is not a whole number >= 0")
     if usage["cached_tokens"] > usage["prompt_tokens"]:
         raise ValueError(f"run record at {path} has more cached tokens than prompt tokens")
     return record
+
+
+def check_system_identity(loaded: list[tuple[Path, dict]]) -> None:
+    """Every record of one system must agree on its label, model and harness."""
+    first: dict[str, tuple[Path, dict]] = {}
+    for path, record in loaded:
+        system_id = record["system_id"]
+        if system_id not in first:
+            first[system_id] = (path, record)
+            continue
+        first_path, reference = first[system_id]
+        for field in ("label", "model", "harness"):
+            if record[field] != reference[field]:
+                raise ValueError(
+                    f"system {system_id!r} has inconsistent {field}: "
+                    f"{reference[field]!r} in {first_path} but {record[field]!r} in {path}"
+                )
 
 
 def load_records(runs_dir: Path) -> list[dict]:
     paths = sorted(runs_dir.glob("*.json"))
     if not paths:
         raise ValueError(f"no run records found in {runs_dir}")
-    return [validate_record(read_structured(path), path) for path in paths]
+    loaded = [(path, validate_record(read_structured(path), path)) for path in paths]
+    check_system_identity(loaded)
+    return [record for _, record in loaded]
 
 
 def load_rates(path: Path) -> dict[str, dict[str, float]]:
@@ -172,6 +245,28 @@ def load_catalog(cases_dir: Path) -> dict[str, dict]:
     if not catalog:
         raise ValueError(f"no case files found in {cases_dir}")
     return catalog
+
+
+def load_estimate(path: Path) -> dict:
+    """Read the human estimate row: one JSON object in the FR-4.3 summary.systems shape."""
+    raw = read_structured(path)
+    if not isinstance(raw, dict):
+        raise ValueError(f"human estimate at {path} is not an object")
+    missing = [field for field in ESTIMATE_FIELDS if field not in raw]
+    if missing:
+        raise ValueError(f"human estimate at {path} is missing {', '.join(missing)}")
+    if raw["kind"] != "estimated":
+        raise ValueError(f"human estimate at {path} has kind {raw['kind']!r}; expected 'estimated'")
+    if raw["harness"] != "human":
+        raise ValueError(f"human estimate at {path} has harness {raw['harness']!r}; expected 'human'")
+    for field in ESTIMATE_NUMBER_FIELDS:
+        value = raw[field]
+        if value is not None and not is_non_negative_number(value):
+            raise ValueError(f"human estimate at {path} has a {field} that is not a number >= 0 or null")
+    ci = raw["success_ci_95"]
+    if ci is not None and not (isinstance(ci, list) and len(ci) == 2 and all(is_non_negative_number(x) for x in ci)):
+        raise ValueError(f"human estimate at {path} has a success_ci_95 that is not [low, high] or null")
+    return dict(raw)
 
 
 def wilson_interval(successes: int, n: int) -> tuple[float, float] | None:
@@ -268,34 +363,75 @@ def breakdown(rows: list[Row], attr: str) -> dict[str, dict]:
     }
 
 
-def summarize_system(scored: list[Row], headline: list[Row]) -> dict:
-    """Headline measures for one system. `headline` is its repeat-0, non-staging rows."""
-    first = scored[0]
+def missing_row(identity: Row, case_id: str, meta: dict) -> Row:
+    """A scored case with no run record for this system: a fail with nothing measured."""
+    return Row(
+        system_id=identity.system_id,
+        label=identity.label,
+        model=identity.model,
+        harness=identity.harness,
+        case_id=case_id,
+        game=meta["game"],
+        task_area=meta["task_area"],
+        category=meta["category"],
+        prompt=meta["prompt"],
+        repeat=0,
+        outcome="missing",
+        claimed_done=False,
+        turns=None,
+        tool_calls=(),
+        prompt_tokens=None,
+        cached_tokens=None,
+        completion_tokens=None,
+        latency_ms=None,
+        cost_usd=None,
+    )
+
+
+def summarize_system(headline: list[Row], scored: list[Row], staged_cases: int) -> dict:
+    """Headline measures for one system.
+
+    `headline` has one row per case the system was scored on, missing cases included.
+    `scored` is every scored record of the system, for identity and error counts.
+    """
+    identity = scored[0]
     n = len(headline)
     successes = sum(r.success for r in headline)
     ci = wilson_interval(successes, n)
-    costs = [r.cost_usd for r in headline]
+    measured = [r for r in headline if r.measured]
+    costs = [r.cost_usd for r in measured]
     mean_cost = None if None in costs else mean(costs)
-    latencies = [r.latency_ms for r in headline]
+    latencies = [r.latency_ms for r in measured]
+    missing = [r.case_id for r in headline if not r.measured]
+    notes = ["Unintended changes are not measured."]
+    if missing:
+        notes.append(
+            f"{len(missing)} case(s) have no run record and count as fails; "
+            "turns, tokens, latency and cost use the measured cases only."
+        )
     return {
-        "system_id": first.system_id,
-        "label": first.label,
+        "system_id": identity.system_id,
+        "label": identity.label,
         "kind": "measured",
-        "model": first.model,
-        "harness": first.harness,
+        "model": identity.model,
+        "harness": identity.harness,
         "n_cases": n,
+        "staged_cases": staged_cases,
+        "missing_cases": missing,
         "verified_success_rate": successes / n if n else None,
         "success_ci_95": list(ci) if ci else None,
         "unintended_change_rate": None,
-        "mean_turns": mean([r.turns for r in headline]),
-        "mean_tokens": mean([r.tokens for r in headline]),
+        "mean_turns": mean([r.turns for r in measured]),
+        "mean_tokens": mean([r.tokens for r in measured]),
         "latency_p50_ms": nearest_rank(latencies, 50),
         "latency_p95_ms": nearest_rank(latencies, 95),
         "cost_per_1k_usd": mean_cost * 1000 if mean_cost is not None else None,
-        "notes": "",
+        "notes": " ".join(notes),
         "mean_cost_usd": mean_cost,
         "false_completion_rate": (
-            sum(1 for r in headline if r.claimed_done and r.outcome == "fail") / n if n else None
+            sum(1 for r in measured if r.claimed_done and r.outcome == "fail") / len(measured)
+            if measured
+            else None
         ),
         "infra_error_count": sum(r.outcome == "infra_error" for r in scored),
         "staging_error_count": sum(r.outcome == "staging_error" for r in scored),
@@ -307,12 +443,13 @@ def summarize_system(scored: list[Row], headline: list[Row]) -> dict:
 def compare_to_baseline(
     system_id: str,
     baseline_id: str,
-    headline: dict[str, dict[str, Row]],
+    headline_by_case: dict[str, dict[str, Row]],
 ) -> dict:
-    system_rows = headline[system_id]
-    baseline_rows = headline[baseline_id]
-    paired = sorted(set(system_rows) & set(baseline_rows))
-    pairs = [(system_rows[c], baseline_rows[c]) for c in paired]
+    """Compare on the shared cases. A missing case is a fail on the side that lacks it."""
+    system_rows = headline_by_case[system_id]
+    baseline_rows = headline_by_case[baseline_id]
+    shared = sorted(set(system_rows) & set(baseline_rows))
+    pairs = [(system_rows[c], baseline_rows[c]) for c in shared]
     n = len(pairs)
     success_difference = None
     mcnemar_p = None
@@ -323,14 +460,16 @@ def compare_to_baseline(
         only_system = sum(1 for s, b in pairs if s.success and not b.success)
         only_baseline = sum(1 for s, b in pairs if b.success and not s.success)
         mcnemar_p = mcnemar_exact_p(only_system, only_baseline)
+    both_measured = [(s, b) for s, b in pairs if s.measured and b.measured]
     return {
         "system_id": system_id,
         "baseline_system_id": baseline_id,
         "n_paired": n,
+        "n_resource_paired": len(both_measured),
         "success_difference": success_difference,
         "mcnemar_p_two_sided": mcnemar_p,
-        "cost_ratio": ratio_summary([(s.cost_usd, b.cost_usd) for s, b in pairs]),
-        "latency_ratio": ratio_summary([(s.latency_ms, b.latency_ms) for s, b in pairs]),
+        "cost_ratio": ratio_summary([(s.cost_usd, b.cost_usd) for s, b in both_measured]),
+        "latency_ratio": ratio_summary([(s.latency_ms, b.latency_ms) for s, b in both_measured]),
     }
 
 
@@ -369,12 +508,26 @@ def resolve_case(record: dict, catalog: dict[str, dict] | None) -> dict:
     return {field: entry[field] for field in CASE_FIELDS}
 
 
+def case_result(row: Row) -> dict:
+    return {
+        "outcome": row.outcome,
+        "verified_success": row.success,
+        "unintended_changes": None,
+        "turns": row.turns,
+        "latency_ms": row.latency_ms,
+        "cost_usd": row.cost_usd,
+        "tool_calls": list(row.tool_calls),
+    }
+
+
 def build_results(
     records: list[dict],
     rates: dict[str, dict[str, float]],
     catalog: dict[str, dict] | None = None,
     baseline_id: str | None = None,
     generated_at: str | None = None,
+    estimate: dict | None = None,
+    no_baseline: bool = False,
 ) -> dict:
     seen: set[tuple[str, str, int]] = set()
     for record in records:
@@ -390,9 +543,13 @@ def build_results(
     for model in sorted(m for m in priced_models & rates.keys() if not any(rates[m].values())):
         warn(f"every rate for model {model!r} is zero in models.json; its cost is reported as 0")
 
+    case_meta: dict[str, dict] = {}
+    if catalog is not None:
+        case_meta = {case_id: {f: entry[f] for f in CASE_FIELDS} for case_id, entry in catalog.items()}
     scored: list[Row] = []
     for record in scored_records:
         meta = resolve_case(record, catalog)
+        case_meta.setdefault(record["case_id"], meta)
         usage = record["usage"]
         scored.append(
             Row(
@@ -418,50 +575,81 @@ def build_results(
             )
         )
 
+    # The scored case set: the catalog when one is given, else every repeat-0 case any system ran.
+    expected = (
+        sorted(catalog)
+        if catalog is not None
+        else sorted({r.case_id for r in scored if r.repeat == 0})
+    )
     system_order = unique_in_order(r.system_id for r in scored)
-    valid = [r for r in scored if r.outcome != "staging_error"]
-    headline = {sid: [r for r in valid if r.system_id == sid and r.repeat == 0] for sid in system_order}
     scored_by_system = {sid: [r for r in scored if r.system_id == sid] for sid in system_order}
+    repeat_zero = {(r.system_id, r.case_id): r for r in scored if r.repeat == 0}
+
+    headline_by_case: dict[str, dict[str, Row]] = {}
+    for sid in system_order:
+        identity = scored_by_system[sid][0]
+        staged: dict[str, Row] = {}
+        for case_id in expected:
+            row = repeat_zero.get((sid, case_id))
+            if row is None:
+                staged[case_id] = missing_row(identity, case_id, case_meta[case_id])
+            elif row.outcome != "staging_error":
+                staged[case_id] = row
+        headline_by_case[sid] = staged
+
+    for sid in system_order:
+        missing_ids = [case_id for case_id, row in headline_by_case[sid].items() if not row.measured]
+        if missing_ids:
+            warn(
+                f"system {sid!r} has no run record for {len(missing_ids)} scored case(s), "
+                f"counted as fails: {', '.join(missing_ids)}"
+            )
+    staging_excluded = {
+        sid: sorted(set(expected) - set(headline_by_case[sid])) for sid in system_order
+    }
+    if len({tuple(ids) for ids in staging_excluded.values()}) > 1:
+        differences = "; ".join(
+            f"{sid!r} excludes {', '.join(ids) or 'none'}" for sid, ids in staging_excluded.items()
+        )
+        warn(f"headline case sets differ across systems because of staging errors: {differences}")
 
     if baseline_id is None:
         baseline_id = next(
-            (sid for sid in system_order if scored_by_system[sid][0].harness == "claude_code"
-             and "opus" in scored_by_system[sid][0].model.lower()),
+            (
+                sid
+                for sid in system_order
+                if scored_by_system[sid][0].harness == "claude_code"
+                and "opus" in scored_by_system[sid][0].model.lower()
+            ),
             None,
         )
+        if baseline_id is None and not no_baseline:
+            raise ValueError(
+                "no baseline system found (looked for harness claude_code with an opus model); "
+                "pass --baseline <system_id> or --no-baseline"
+            )
     elif baseline_id not in system_order:
         raise ValueError(f"baseline system {baseline_id!r} has no scored run records")
 
-    headline_by_case = {
-        sid: {r.case_id: r for r in rows} for sid, rows in headline.items()
-    }
-    cases_map: dict[str, dict[str, Row]] = defaultdict(dict)
-    for sid in system_order:
-        for row in headline[sid]:
-            cases_map[row.case_id][sid] = row
+    if estimate is not None and estimate["system_id"] in system_order:
+        raise ValueError(f"human estimate system_id {estimate['system_id']!r} collides with a measured system")
 
     cases = []
-    for case_id in sorted(cases_map):
-        results = cases_map[case_id]
-        first = next(results[sid] for sid in system_order if sid in results)
+    for case_id in expected:
+        results = {
+            sid: headline_by_case[sid][case_id] for sid in system_order if case_id in headline_by_case[sid]
+        }
+        if not results:
+            continue
+        meta = case_meta[case_id]
         cases.append(
             {
                 "case_id": case_id,
-                "game": first.game,
-                "task_area": first.task_area,
-                "category": first.category,
-                "prompt": first.prompt,
-                "results_by_system": {
-                    sid: {
-                        "verified_success": row.success,
-                        "unintended_changes": None,
-                        "turns": row.turns,
-                        "latency_ms": row.latency_ms,
-                        "cost_usd": row.cost_usd,
-                        "tool_calls": list(row.tool_calls),
-                    }
-                    for sid, row in results.items()
-                },
+                "game": meta["game"],
+                "task_area": meta["task_area"],
+                "category": meta["category"],
+                "prompt": meta["prompt"],
+                "results_by_system": {sid: case_result(row) for sid, row in results.items()},
             }
         )
 
@@ -475,6 +663,13 @@ def build_results(
         else []
     )
 
+    systems = [
+        summarize_system(list(headline_by_case[sid].values()), scored_by_system[sid], len(expected))
+        for sid in system_order
+    ]
+    if estimate is not None:
+        systems.append(dict(estimate))
+
     excluded = [
         {"system_id": r.system_id, "case_id": r.case_id, "repeat": r.repeat, "reason": "staging_error"}
         for r in scored
@@ -482,11 +677,10 @@ def build_results(
     ]
     excluded.sort(key=lambda e: (e["system_id"], e["case_id"], e["repeat"]))
 
+    valid = [r for r in scored if r.outcome != "staging_error"]
     return {
         "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
-        "summary": {
-            "systems": [summarize_system(scored_by_system[sid], headline[sid]) for sid in system_order],
-        },
+        "summary": {"systems": systems},
         "cases": cases,
         "comparisons": comparisons,
         "variance": {
@@ -522,13 +716,14 @@ def render_markdown(results: dict) -> str:
     for s in results["summary"]["systems"]:
         ci = s["success_ci_95"]
         ci_text = "n/a" if ci is None else f"[{fmt_pct(ci[0])}, {fmt_pct(ci[1])}]"
+        label = f"{s['label']} (estimated)" if s["kind"] == "estimated" else s["label"]
         lines.append(
-            f"| {s['label']} | {s['harness']} | {s['model']} | {s['n_cases']} "
+            f"| {label} | {s['harness']} | {s['model']} | {fmt_num(s['n_cases'])} "
             f"| {fmt_pct(s['verified_success_rate'])} {ci_text} "
             f"| {fmt_num(s['mean_turns'], 1)} | {fmt_num(s['mean_tokens'])} "
             f"| {fmt_num(s['latency_p50_ms'])} | {fmt_num(s['latency_p95_ms'])} "
-            f"| {fmt_num(s['cost_per_1k_usd'], 2)} | {fmt_pct(s['false_completion_rate'])} "
-            f"| {s['infra_error_count']} | {s['staging_error_count']} |"
+            f"| {fmt_num(s['cost_per_1k_usd'], 2)} | {fmt_pct(s.get('false_completion_rate'))} "
+            f"| {s.get('infra_error_count', 'n/a')} | {s.get('staging_error_count', 'n/a')} |"
         )
     if results["comparisons"]:
         lines += [
@@ -547,8 +742,10 @@ def render_markdown(results: dict) -> str:
                 f"| {'n/a' if p is None else f'{p:.3f}'} "
                 f"| {fmt_ratio(c['cost_ratio'])} | {fmt_ratio(c['latency_ratio'])} |"
             )
+    missing_total = sum(len(s.get("missing_cases", [])) for s in results["summary"]["systems"])
     lines.append("")
-    lines.append(f"Staging errors excluded from all denominators: {len(results['excluded'])}.")
+    lines.append(f"Missing run records, counted as fails: {missing_total}.")
+    lines.append(f"Staging errors excluded from their system's denominator: {len(results['excluded'])}.")
     return "\n".join(lines)
 
 
@@ -558,13 +755,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-o", "--output", type=Path, default=Path("eval_results.json"))
     parser.add_argument("--cases", dest="cases_dir", type=Path, help="directory of case files; metadata comes from it")
     parser.add_argument("--baseline", help="system_id to compare against (default: first Claude Code Opus system)")
+    parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help="allow a run with no baseline; the comparisons section is left empty",
+    )
+    parser.add_argument(
+        "--human-estimate",
+        type=Path,
+        help="JSON file holding the kind-estimated human row, appended to summary.systems",
+    )
     args = parser.parse_args(argv)
 
     try:
         records = load_records(args.runs_dir)
         rates = load_rates(RATES_PATH)
         catalog = load_catalog(args.cases_dir) if args.cases_dir else None
-        results = build_results(records, rates, catalog=catalog, baseline_id=args.baseline)
+        estimate = load_estimate(args.human_estimate) if args.human_estimate else None
+        results = build_results(
+            records,
+            rates,
+            catalog=catalog,
+            baseline_id=args.baseline,
+            estimate=estimate,
+            no_baseline=args.no_baseline,
+        )
     except ValueError as err:
         print(f"error: {err}", file=sys.stderr)
         return 1

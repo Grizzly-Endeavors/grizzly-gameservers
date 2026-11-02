@@ -130,7 +130,7 @@ We calculate cost from the token counts. We use one rate table (`models.json`) f
 - Number of model calls and tool calls for each case.
 - Tokens for each case: uncached input, cached input, and output.
 - Time for each case, divided into model time and tool time.
-- False completion rate: the number of cases where the system said that the task is done but the checks failed.
+- False completion rate: the number of cases where the system said that the task is done but the checks failed. Infra errors are not counted.
 
 ## 7. Statistics
 

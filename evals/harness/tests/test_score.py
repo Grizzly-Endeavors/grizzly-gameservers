@@ -148,7 +148,7 @@ class CostTest(unittest.TestCase):
         records = [make_record(model="unpriced", case_id="c1")]
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            results = score.build_results(records, RATES, generated_at="t")
+            results = score.build_results(records, RATES, no_baseline=True, generated_at="t")
         self.assertIn("unpriced", stderr.getvalue())
         system = results["summary"]["systems"][0]
         self.assertIsNone(system["cost_per_1k_usd"])
@@ -158,7 +158,7 @@ class CostTest(unittest.TestCase):
         rates = {"unfilled": {"input_per_1m_usd": 0.0, "cached_input_per_1m_usd": 0.0, "output_per_1m_usd": 0.0}}
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            score.build_results([make_record(model="unfilled", case_id="c1")], rates, generated_at="t")
+            score.build_results([make_record(model="unfilled", case_id="c1")], rates, no_baseline=True, generated_at="t")
         self.assertIn("every rate for model 'unfilled' is zero", stderr.getvalue())
 
 
@@ -367,6 +367,8 @@ class EndToEndTest(unittest.TestCase):
                     (runs / f"{system_id}-{case_id}-0.json").write_text(json.dumps(record), encoding="utf-8")
             staging = make_record("gary-open", "c4", model="open", harness="gary", outcome="staging_error")
             (runs / "gary-open-c4-0.json").write_text(json.dumps(staging), encoding="utf-8")
+            opus_c4 = make_record("opus", "c4", outcome="pass", latency_ms=900)
+            (runs / "opus-c4-0.json").write_text(json.dumps(opus_c4), encoding="utf-8")
 
             out = Path(tmp) / "eval_results.json"
             stdout = io.StringIO()
@@ -388,7 +390,8 @@ class EndToEndTest(unittest.TestCase):
             self.assertAlmostEqual(systems["gary-open"]["verified_success_rate"], 2 / 3)
             self.assertIsNone(systems["opus"]["unintended_change_rate"])
 
-            self.assertEqual(len(results["cases"]), 3)
+            # c4 is a staging error for gary-open only, so gary-open drops it and opus keeps it.
+            self.assertEqual(len(results["cases"]), 4)
             case = results["cases"][0]
             self.assertEqual(
                 set(case),
@@ -397,7 +400,7 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(set(case["results_by_system"]), {"opus", "gary-open"})
             self.assertEqual(
                 set(case["results_by_system"]["opus"]),
-                {"verified_success", "unintended_changes", "turns", "latency_ms", "cost_usd", "tool_calls"},
+                {"outcome", "verified_success", "unintended_changes", "turns", "latency_ms", "cost_usd", "tool_calls"},
             )
             self.assertEqual(results["comparisons"][0]["baseline_system_id"], "opus")
             self.assertEqual(results["excluded"][0]["case_id"], "c4")
@@ -410,6 +413,298 @@ class EndToEndTest(unittest.TestCase):
                 code = score.main([str(Path(tmp) / "empty"), "-o", str(Path(tmp) / "out.json")])
             self.assertEqual(code, 1)
             self.assertIn("error:", stderr.getvalue())
+
+
+def system_row(results: dict, system_id: str) -> dict:
+    return next(s for s in results["summary"]["systems"] if s["system_id"] == system_id)
+
+
+def catalog_entry(case_id: str) -> dict:
+    return {"case_id": case_id, "game": "minecraft", "task_area": "config", "category": "mods",
+            "prompt": f"prompt for {case_id}"}
+
+
+def write_records(runs: Path, records: list[dict]) -> None:
+    for record in records:
+        name = f"{record['system_id']}-{record['case_id']}-{record['repeat']}.json"
+        (runs / name).write_text(json.dumps(record), encoding="utf-8")
+
+
+class MissingRecordTest(unittest.TestCase):
+    def build(self) -> dict:
+        records = [
+            make_record("opus", "c1"),
+            make_record("opus", "c2"),
+            make_record("open", "c1", model="open", harness="gary"),
+        ]
+        return score.build_results(records, RATES, baseline_id="opus", generated_at="t")
+
+    def test_absent_record_counts_as_fail_and_is_listed(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            results = self.build()
+        open_system = system_row(results, "open")
+        self.assertEqual(open_system["n_cases"], 2)
+        self.assertEqual(open_system["missing_cases"], ["c2"])
+        self.assertAlmostEqual(open_system["verified_success_rate"], 0.5)
+        self.assertIn("no run record for 1 scored case(s)", stderr.getvalue())
+        self.assertIn("c2", stderr.getvalue())
+        self.assertIn("no run record", open_system["notes"])
+        self.assertEqual(system_row(results, "opus")["missing_cases"], [])
+
+    def test_missing_case_appears_with_missing_outcome(self) -> None:
+        results = quietly(self.build)
+        c2 = next(c for c in results["cases"] if c["case_id"] == "c2")
+        self.assertEqual(c2["results_by_system"]["open"]["outcome"], "missing")
+        self.assertFalse(c2["results_by_system"]["open"]["verified_success"])
+        self.assertIsNone(c2["results_by_system"]["open"]["cost_usd"])
+
+    def test_missing_case_stays_in_the_paired_comparison_as_a_fail(self) -> None:
+        records = [
+            make_record("opus", "c1"),
+            make_record("opus", "c2"),
+            make_record("open", "c1", model="open", harness="gary"),
+        ]
+        results = quietly(score.build_results, records, RATES, baseline_id="opus", generated_at="t")
+        comparison = results["comparisons"][0]
+        self.assertEqual(comparison["n_paired"], 2)
+        self.assertEqual(comparison["n_resource_paired"], 1)
+        self.assertAlmostEqual(comparison["success_difference"], -0.5)
+
+    def test_catalog_case_with_no_record_fails_for_every_system(self) -> None:
+        catalog = {"c1": catalog_entry("c1"), "c9": catalog_entry("c9")}
+        records = [make_record("opus", "c1"), make_record("open", "c1", model="open", harness="gary")]
+        results = quietly(score.build_results, records, RATES, catalog=catalog, baseline_id="opus",
+                          generated_at="t")
+        for system_id in ("opus", "open"):
+            system = system_row(results, system_id)
+            self.assertEqual(system["staged_cases"], 2)
+            self.assertEqual(system["n_cases"], 2)
+            self.assertEqual(system["missing_cases"], ["c9"])
+        self.assertEqual([c["case_id"] for c in results["cases"]], ["c1", "c9"])
+        self.assertEqual(results["comparisons"][0]["n_paired"], 2)
+
+
+class BaselineRequiredTest(unittest.TestCase):
+    def test_no_baseline_is_an_error_naming_the_flag(self) -> None:
+        records = [make_record("gary", "c1", model="open", harness="gary")]
+        with self.assertRaises(ValueError) as ctx:
+            score.build_results(records, RATES, generated_at="t")
+        self.assertIn("no baseline system found", str(ctx.exception))
+        self.assertIn("--no-baseline", str(ctx.exception))
+
+    def test_no_baseline_flag_builds_without_comparisons(self) -> None:
+        records = [make_record("gary", "c1", model="open", harness="gary")]
+        results = quietly(score.build_results, records, RATES, no_baseline=True, generated_at="t")
+        self.assertEqual(results["comparisons"], [])
+        self.assertEqual(len(results["summary"]["systems"]), 1)
+
+    def test_cli_exits_nonzero_without_baseline_unless_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            runs.mkdir()
+            write_records(runs, [make_record("gary", "c1", model="open", harness="gary")])
+            out = Path(tmp) / "out.json"
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+                code = score.main([str(runs), "-o", str(out)])
+            self.assertEqual(code, 1)
+            self.assertIn("error: no baseline system found", stderr.getvalue())
+            self.assertFalse(out.exists())
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                code = score.main([str(runs), "-o", str(out), "--no-baseline"])
+            self.assertEqual(code, 0)
+
+
+class SystemIdentityTest(unittest.TestCase):
+    def test_inconsistent_field_within_a_system_names_both_files(self) -> None:
+        changes = {"model": "fireworks/other", "label": "OTHER", "harness": "claude_code"}
+        for field, value in changes.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                runs = Path(tmp)
+                first = make_record("open", "c1", model="fireworks/a", harness="gary")
+                second = make_record("open", "c2", model="fireworks/a", harness="gary")
+                second[field] = value
+                write_records(runs, [first, second])
+                with self.assertRaises(ValueError) as ctx:
+                    score.load_records(runs)
+                message = str(ctx.exception)
+                self.assertIn(f"inconsistent {field}", message)
+                self.assertIn("open-c1-0.json", message)
+                self.assertIn("open-c2-0.json", message)
+
+    def test_consistent_system_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            write_records(runs, [make_record("open", "c1", model="open", harness="gary"),
+                                 make_record("open", "c2", model="open", harness="gary")])
+            self.assertEqual(len(score.load_records(runs)), 2)
+
+
+class NumericFieldTest(unittest.TestCase):
+    def test_null_or_wrongly_typed_fields_name_the_field(self) -> None:
+        bad_values = {
+            "latency_ms": None,
+            "turns": True,
+            "model_ms": "12",
+            "tool_ms": -1,
+        }
+        for field, bad in bad_values.items():
+            with self.subTest(field=field):
+                record = make_record()
+                record[field] = bad
+                with self.assertRaises(ValueError) as ctx:
+                    score.validate_record(record, Path("bad.json"))
+                self.assertIn(field, str(ctx.exception))
+                self.assertIn("bad.json", str(ctx.exception))
+
+    def test_null_usage_count_names_the_usage_field(self) -> None:
+        record = make_record()
+        record["usage"]["cached_tokens"] = None
+        with self.assertRaises(ValueError) as ctx:
+            score.validate_record(record, Path("bad.json"))
+        self.assertIn("usage.cached_tokens", str(ctx.exception))
+        self.assertIn("bad.json", str(ctx.exception))
+
+    def test_claimed_done_must_be_a_bool(self) -> None:
+        record = make_record()
+        record["claimed_done"] = "false"
+        with self.assertRaises(ValueError) as ctx:
+            score.validate_record(record, Path("bad.json"))
+        self.assertIn("claimed_done", str(ctx.exception))
+
+    def test_tool_calls_must_be_a_list(self) -> None:
+        record = make_record()
+        record["tool_calls"] = "read_file"
+        with self.assertRaises(ValueError) as ctx:
+            score.validate_record(record, Path("bad.json"))
+        self.assertIn("tool_calls", str(ctx.exception))
+
+    def test_bad_record_fails_the_cli_with_an_error_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            runs.mkdir()
+            record = make_record()
+            record["latency_ms"] = None
+            write_records(runs, [record])
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+                code = score.main([str(runs), "-o", str(Path(tmp) / "out.json")])
+            self.assertEqual(code, 1)
+            self.assertIn("latency_ms", stderr.getvalue())
+            self.assertIn("opus-case-1-0.json", stderr.getvalue())
+
+
+class HumanEstimateTest(unittest.TestCase):
+    def estimate(self, **overrides) -> dict:
+        row = {
+            "system_id": "human-t1-t2",
+            "label": "Human T1/T2",
+            "kind": "estimated",
+            "model": "human",
+            "harness": "human",
+            "n_cases": None,
+            "verified_success_rate": 0.9,
+            "success_ci_95": [0.8, 0.95],
+            "unintended_change_rate": None,
+            "mean_turns": None,
+            "mean_tokens": None,
+            "latency_p50_ms": None,
+            "latency_p95_ms": None,
+            "cost_per_1k_usd": None,
+            "notes": "Industry estimate.",
+        }
+        row.update(overrides)
+        return row
+
+    def records(self) -> list[dict]:
+        return [make_record("opus", "c1"), make_record("open", "c1", model="open", harness="gary")]
+
+    def test_estimate_row_is_appended_and_kept_out_of_comparisons(self) -> None:
+        results = quietly(score.build_results, self.records(), RATES, baseline_id="opus",
+                          estimate=self.estimate(), generated_at="t")
+        systems = results["summary"]["systems"]
+        self.assertEqual([s["system_id"] for s in systems], ["opus", "open", "human-t1-t2"])
+        self.assertEqual(systems[-1]["kind"], "estimated")
+        self.assertEqual(systems[-1]["verified_success_rate"], 0.9)
+        self.assertEqual([c["system_id"] for c in results["comparisons"]], ["open"])
+        for case in results["cases"]:
+            self.assertNotIn("human-t1-t2", case["results_by_system"])
+        self.assertNotIn("human-t1-t2", results["variance"])
+
+    def test_estimate_row_renders_marked_as_estimated(self) -> None:
+        results = quietly(score.build_results, self.records(), RATES, baseline_id="opus",
+                          estimate=self.estimate(), generated_at="t")
+        self.assertIn("Human T1/T2 (estimated)", score.render_markdown(results))
+
+    def test_load_estimate_accepts_a_valid_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "human.json"
+            path.write_text(json.dumps(self.estimate()), encoding="utf-8")
+            loaded = score.load_estimate(path)
+            self.assertEqual(loaded["kind"], "estimated")
+            self.assertEqual(loaded["success_ci_95"], [0.8, 0.95])
+
+    def test_load_estimate_rejects_a_measured_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "human.json"
+            path.write_text(json.dumps(self.estimate(kind="measured")), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                score.load_estimate(path)
+            self.assertIn("expected 'estimated'", str(ctx.exception))
+            self.assertIn("human.json", str(ctx.exception))
+
+    def test_load_estimate_rejects_a_missing_field(self) -> None:
+        row = self.estimate()
+        del row["cost_per_1k_usd"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "human.json"
+            path.write_text(json.dumps(row), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                score.load_estimate(path)
+            self.assertIn("cost_per_1k_usd", str(ctx.exception))
+
+    def test_load_estimate_rejects_a_negative_number(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "human.json"
+            path.write_text(json.dumps(self.estimate(mean_turns=-2)), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                score.load_estimate(path)
+            self.assertIn("mean_turns", str(ctx.exception))
+            self.assertIn("human.json", str(ctx.exception))
+
+
+class StagingCaseSetTest(unittest.TestCase):
+    def test_staging_error_on_one_system_warns_and_shrinks_only_that_system(self) -> None:
+        records = [
+            make_record("opus", "c1"),
+            make_record("opus", "c2"),
+            make_record("open", "c1", model="open", harness="gary"),
+            make_record("open", "c2", model="open", harness="gary", outcome="staging_error"),
+        ]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            results = score.build_results(records, RATES, baseline_id="opus", generated_at="t")
+        self.assertIn("headline case sets differ across systems", stderr.getvalue())
+        self.assertIn("'open' excludes c2", stderr.getvalue())
+        open_system = system_row(results, "open")
+        self.assertEqual(open_system["staged_cases"], 2)
+        self.assertEqual(open_system["n_cases"], 1)
+        self.assertEqual(open_system["missing_cases"], [])
+        self.assertEqual(system_row(results, "opus")["n_cases"], 2)
+        self.assertEqual(results["comparisons"][0]["n_paired"], 1)
+
+    def test_matching_staging_sets_do_not_warn(self) -> None:
+        records = [
+            make_record("opus", "c1"),
+            make_record("opus", "c2", outcome="staging_error"),
+            make_record("open", "c1", model="open", harness="gary"),
+            make_record("open", "c2", model="open", harness="gary", outcome="staging_error"),
+        ]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            score.build_results(records, RATES, baseline_id="opus", generated_at="t")
+        self.assertNotIn("headline case sets differ", stderr.getvalue())
 
 
 if __name__ == "__main__":
