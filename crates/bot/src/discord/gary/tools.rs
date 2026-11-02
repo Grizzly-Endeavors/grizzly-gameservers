@@ -2667,6 +2667,7 @@ fn exec_game_guide(ctx: &ToolCtx<'_>, game: &str) -> String {
         game,
         &subject,
         overlay,
+        entry.and_then(|entry| entry.config_rewritten_on_shutdown.as_deref()),
         if ids.is_empty() { "(none)" } else { &ids },
     )
 }
