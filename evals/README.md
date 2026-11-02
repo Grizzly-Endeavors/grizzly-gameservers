@@ -20,7 +20,9 @@ The definitions are in `harness/systems.json`. Rates are in `harness/models.json
 | `gary-ollama-dev` | GLM 5.2 on Ollama | Gary | Dev smoke only; not a result row |
 | `human-t1t2` | Not applicable | Not applicable | Estimate from `human_estimate.json`; never measured |
 
-All measured systems get the same cases, the same customer message, the same tool surface (the Claude Code rows reach it through the MCP server in `harness/gary_mcp.py`), and the same budget of 40 model calls or 20 minutes per case. Claude Code runs headless with an empty configuration directory, in an empty temporary directory, with only the Gary MCP server enabled. Gary starts each case with its memory turned off. See [evals.md](evals.md) section 2.
+All measured systems get the same cases, the same customer message, the same tool surface (the Claude Code rows reach it through the MCP server in `harness/gary_mcp.py`), and the same budget of 40 model calls or 20 minutes per case. Gary starts each case with its memory turned off. See [evals.md](evals.md) section 2.
+
+The Claude Code rows run `claude -p` in an empty temporary directory with a fresh, empty `CLAUDE_CONFIG_DIR`, so no `CLAUDE.md`, memory, settings, skills or plugins load. Built-in tools are disabled (`--tools ""`), and `--strict-mcp-config` makes `gary_mcp.py` the only MCP server, with `remember`/`forget` excluded so neither side has durable memory. The runner records whether `--bare` mode ran.
 
 ## Layout
 
@@ -42,6 +44,7 @@ All measured systems get the same cases, the same customer message, the same too
 ## Prerequisites
 
 - Python 3 with `pyyaml`.
+- A cluster running the Gary bot and Agones; [docs/setup.md](../docs/setup.md) covers standing one up.
 - `kubectl` access to the cluster that runs the Gary bot and Agones. The runner port-forwards the bot's operator route and reads the operator bearer token from the `grizzly-gameservers-operator` Secret in memory. It never prints the token. To skip the Secret read, set `GAMESERVERS_OPERATOR_TOKEN`.
 - A repo-root `.env` (gitignored) with these keys. Names only; never commit values:
   - `GAMESERVERS_OPERATOR_CHANNEL`: the Discord channel that receives the operator audit lines. `GAMESERVERS_EVAL_CHANNELS` (comma list) may add more channels for parallel Gary turns.
@@ -73,6 +76,8 @@ python3 evals/harness/run.py --cases evals/cases/dev --systems gary-fw --dry-run
 ```
 python3 evals/harness/run.py --cases evals/cases/dev --systems gary-fw,cc-fw,cc-opus --out evals/results/dev-1
 ```
+
+`evals/cases/dev/smoke-mc-pvp-d1.yaml` is a one-case smoke check (`--case smoke-mc-pvp-d1`). The runner skips a (system, case, repeat) whose record already exists in the output directory; pass `--force` to rerun it.
 
 **Scored run.** Run only after the freeze. One run per case per system; `--repeats 3` on a chosen subset (use `--case ID` for each) gives the variation between runs. Without `--out`, records go to `evals/results/runs/<UTC timestamp>/`. `--concurrency` sets parallel servers and `--game-cap game=N` limits servers per game.
 
