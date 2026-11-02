@@ -35,8 +35,8 @@ scenarios:
     staging: healthy Fabric server with a few mods
     examples: ["can you add Lithium", "we want the voice chat mod on the server"]
     checks: [mod resolved for this loader+version, existing mods kept, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: mc-mod-missing-dependency
     game: minecraft
@@ -45,8 +45,8 @@ scenarios:
     staging: a mod with a required dependency added; dependency downloads off
     examples: ["server won't start after I added Mod Menu"]
     checks: [requested mod kept, dependency installed, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: mc-crash-bisect
     game: minecraft
@@ -55,8 +55,8 @@ scenarios:
     staging: a client-only mod hidden among 5-6 good ones; the trace names a client class, not the mod
     examples: ["we added a bunch of mods tonight and now it crashes on boot"]
     checks: [only the culprit removed, every other mod kept, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: mc-plugins-on-modded
     game: minecraft
@@ -201,8 +201,8 @@ scenarios:
     staging: healthy server
     examples: ["rename the server to Mead Hall", "turn on crossplay so my xbox friend can join", "hide it from the server list"]
     checks: [target setting applied, others unchanged, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   # ═══════════════ Terraria (TShock) — 13 scored ═══════════════
 
@@ -223,8 +223,8 @@ scenarios:
     staging: healthy small world
     examples: ["can we get a fresh large world, keep the old one though", "new world on expert"]
     checks: [new world at requested size/difficulty is active, old .wld untouched, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: tr-stuck-starting
     game: terraria
@@ -253,8 +253,8 @@ scenarios:
     staging: healthy server
     examples: ["password it: hunter22", "16 players max", "turn on the whitelist and add my IP"]
     checks: [target setting applied, other lines byte-identical, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: tr-admin
     game: terraria
@@ -296,8 +296,8 @@ scenarios:
     staging: customised server-settings.json
     examples: ["put a password on it", "autosave every 5 minutes", "kick people who are afk for 10 min"]
     checks: [target key set, rest of the JSON unchanged, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: fa-keep-running
     game: factorio
@@ -327,8 +327,8 @@ scenarios:
     staging: a save made with Space Age; mod-list.json has space-age/quality/elevated-rails disabled
     examples: ["the server won't load our save, says something about space age"]
     checks: [the three expansion mods enabled, save loads, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 4
+    split: { dev: 1, scored: 3 }
 
   - id: fa-disable-mod
     game: factorio
@@ -337,8 +337,8 @@ scenarios:
     staging: mod-list.json enables a mod that fails at startup
     examples: ["crashed after we turned on a mod"]
     checks: [only that mod disabled, others enabled, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 4
+    split: { dev: 1, scored: 3 }
 
   # ═══════════════ Palworld — 14 scored ═══════════════
 
@@ -351,8 +351,8 @@ scenarios:
       case-sensitive and the server rewrites the file on shutdown
     examples: ["double the exp rate", "make pals easier to catch", "turn off raids", "drop nothing on death"]
     checks: [target value in effect after restart (ini survives shutdown), rest of the line unchanged, server Ready]
-    variants: 6
-    split: { dev: 1, scored: 5 }
+    variants: 7
+    split: { dev: 1, scored: 6 }
 
   - id: pw-settings-ignored
     game: palworld
@@ -413,8 +413,8 @@ scenarios:
     staging: enshrouded_server.json with default userGroups
     examples: ["set a password for friends and a separate admin one for me", "guests shouldn't be able to break stuff"]
     checks: [userGroups passwords/permissions as asked, other groups intact, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: en-game-settings
     game: enshrouded
@@ -454,58 +454,5 @@ scenarios:
     staging: healthy server
     examples: ["we need 12 slots"]
     checks: [slotCount set, rest unchanged, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
-
-  # ═══════════════ Satisfactory — 11 scored ═══════════════
-
-  - id: sf-upload-save
-    game: satisfactory
-    kind: world
-    source: https://nodecraft.com/support/games/satisfactory/uploading-an-existing-world-to-your-satisfactory-server
-    reach: verify   # loading a session goes through the game's HTTPS API, which no tool speaks
-    staging: an uploaded .sav in SaveGames/server/
-    examples: ["I put our co-op save on the server, load it"]
-    checks: [server running the uploaded session, ServerSettings files untouched, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
-
-  - id: sf-player-cap
-    game: satisfactory
-    kind: config
-    source: https://shockbyte.com/billing/knowledgebase/451/
-    staging: healthy server
-    examples: ["raise the player limit to 8"]
-    checks: ["MaxPlayers set in Game.ini under /Script/Engine.GameSession", server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
-
-  - id: sf-lag
-    game: satisfactory
-    kind: fix
-    source: https://supercraft.host/wiki/satisfactory/connection_issues/
-    staging: default network tick settings
-    examples: ["everyone rubber-bands when we're near the big factory"]
-    checks: [Engine.ini net tick/bandwidth raised coherently, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
-
-  - id: sf-autosave
-    game: satisfactory
-    kind: config
-    source: https://shockbyte.com/billing/knowledgebase/451/
-    staging: healthy server
-    examples: ["keep more autosaves", "autosave more often"]
-    checks: [setting applied in the right ini, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
-
-  - id: sf-unclaimed
-    game: satisfactory
-    kind: fix
-    source: https://nodecraft.com/support/games/satisfactory/uploading-an-existing-world-to-your-satisfactory-server
-    staging: ServerSettings.* moved aside (server reads as unclaimed); the originals remain in a backup
-    examples: ["server says it's unclaimed again and lost our admin password"]
-    checks: [ServerSettings restored, server claimed with prior settings, server Ready]
     variants: 4
     split: { dev: 1, scored: 3 }
