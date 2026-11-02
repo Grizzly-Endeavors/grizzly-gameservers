@@ -675,55 +675,142 @@
       </div>
     </section>
 
-    <!-- SLIDE 3: GARY ARCHITECTURE -->
+    <!-- SLIDE 3: GARY ARCHITECTURE (VISUAL SYSTEM DIAGRAM) -->
     <section class="slide" data-index="2">
       <div class="slide-header">
-        <span class="kicker">03 / How Gary Works</span>
-        <h1>An Autonomous Operator Built on Four Compounding Layers</h1>
-        <p class="subtitle">Gary combines a deterministic container safety harness, per-game RAG, and self-writing memory so open models on Fireworks outperform frontier generalists on cost and speed.</p>
+        <span class="kicker">03 / Architecture &amp; Compounding Moat</span>
+        <h1>Gary: Domain Harness + Memory + Fireworks Open Models</h1>
+        <p class="subtitle">Because the harness, RAG, and compounding memory supply the game context and safety loop, an open model on Fireworks solves incidents in ~4 turns for $0.0007.</p>
       </div>
 
-      <div class="grid-4">
-        <div class="card">
-          <span class="step-num">1</span>
-          <div class="stat-label">Specialized SRE Harness</div>
-          <p class="stat-meta">Bounded per-game tools wrapped in an automatic safety loop: <strong>Snapshot &rarr; Apply Fix &rarr; Verify Health &rarr; Auto-Rollback</strong> if unhealthy. Destructive actions require human approval.</p>
-          <div class="cite">Zero unverified mutations</div>
-        </div>
+      <div class="card" style="padding: 18px 22px; overflow: hidden;">
+        <svg viewBox="0 0 1160 430" width="100%" height="auto" style="display:block; max-height: 430px;" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arr-brand" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--brand-500)" />
+            </marker>
+            <marker id="arr-ok" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--ok)" />
+            </marker>
+            <marker id="arr-warn" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--warn)" />
+            </marker>
+            <marker id="arr-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 1 L 10 5 L 0 9 z" fill="var(--muted)" />
+            </marker>
+            <style>
+              .svg-box { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; rx: 12px; }
+              .svg-box-brand { fill: var(--brand-50); stroke: var(--brand-500); stroke-width: 2; rx: 14px; }
+              .svg-box-ok { fill: var(--ok-tint); stroke: var(--ok); stroke-width: 1.8; rx: 12px; }
+              .svg-box-warn { fill: var(--warn-tint); stroke: var(--warn); stroke-width: 1.8; rx: 12px; }
+              .svg-zone { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 6 5; rx: 16px; }
+              .svg-title { fill: var(--ink-strong); font-family: var(--font-body); font-size: 14px; font-weight: 800; }
+              .svg-sub { fill: var(--muted); font-family: var(--font-body); font-size: 11.5px; font-weight: 500; }
+              .svg-kicker { fill: var(--brand-500); font-family: var(--font-body); font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+              .svg-pill { fill: var(--surface); stroke: var(--line); stroke-width: 1; rx: 6px; }
+              .svg-flow-anim { stroke-dasharray: 7 5; animation: dashFlow 18s linear infinite; }
+              @keyframes dashFlow { to { stroke-dashoffset: -240; } }
+            </style>
+          </defs>
 
-        <div class="card">
-          <span class="step-num">2</span>
-          <div class="stat-label">Per-Game Knowledge Base</div>
-          <p class="stat-meta">Pre-loaded config schemas, file paths, and mod-loader dependency rules across 7 games. Gary never wastes turns running <code>find</code> to locate settings.</p>
-          <div class="cite">Eliminates cold discovery turns</div>
-        </div>
+          <!-- OUTER HARNESS BOUNDARY -->
+          <rect x="240" y="12" width="665" height="406" class="svg-zone" />
+          <text x="258" y="34" class="svg-kicker">GARY SPECIALIZED OPERATOR HARNESS (KUBERNETES + AGONES SIDECAR)</text>
 
-        <div class="card">
-          <span class="step-num">3</span>
-          <div class="stat-label">Compounding Memory</div>
-          <p class="stat-meta">When Gary solves a novel mod conflict or game update quirk once, he writes it down to durable memory. A problem solved on one server is solved for the entire fleet.</p>
-          <div class="cite">Every incident makes the fleet smarter</div>
-        </div>
+          <!-- 1. LEFT INPUT: PLAYER / HOST REQUEST -->
+          <rect x="14" y="152" width="195" height="126" class="svg-box" />
+          <text x="30" y="178" class="svg-kicker">PLAYER / HOST INPUT</text>
+          <text x="30" y="200" class="svg-title">Discord or In-Game</text>
+          <rect x="28" y="212" width="167" height="26" class="svg-pill" />
+          <text x="36" y="229" class="svg-sub" style="fill:var(--ink-strong);">"Crash after adding Iris"</text>
+          <rect x="28" y="243" width="167" height="26" class="svg-pill" />
+          <text x="36" y="260" class="svg-sub" style="fill:var(--ink-strong);">"Double Pal spawn rates"</text>
 
-        <div class="card highlight">
-          <span class="step-num">4</span>
-          <div class="stat-label">Fireworks Open Models</div>
-          <p class="stat-meta">Because the harness, RAG, and memory carry the domain context, an open model on Fireworks executes the fix in ~4 turns at sub-cent cost and 2-second latency.</p>
-          <div class="cite">Powered by Fireworks AI</div>
-        </div>
-      </div>
+          <!-- Arrow: Input -> Fireworks Engine -->
+          <line x1="209" y1="215" x2="262" y2="215" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
 
-      <div class="banner">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <span><strong>Deterministic Safety Loop:</strong></span>
-          <span class="step-chip">1. Snapshot State</span>
-          <span class="arrow">&rarr;</span>
-          <span class="step-chip">2. Apply Config / Mod Change</span>
-          <span class="arrow">&rarr;</span>
-          <span class="step-chip">3. Restart &amp; Probe Readiness</span>
-          <span class="arrow">&rarr;</span>
-          <span class="step-chip ok">4. Healthy (or Auto-Rollback)</span>
-        </div>
+          <!-- 2. TOP CONTEXT LAYER: RAG + COMPOUNDING MEMORY -->
+          <!-- Per-Game Knowledge Base (RAG) -->
+          <rect x="266" y="48" width="295" height="84" class="svg-box" />
+          <text x="284" y="70" class="svg-kicker">2. PER-GAME KNOWLEDGE BASE (RAG)</text>
+          <text x="284" y="91" class="svg-title">7 Games Pre-Indexed</text>
+          <text x="284" y="110" class="svg-sub">Config schemas, file paths, Modrinth &amp;</text>
+          <text x="284" y="124" class="svg-sub">Thunderstore dependency graphs</text>
+
+          <!-- Compounding Fleet Memory -->
+          <rect x="585" y="48" width="296" height="84" class="svg-box-brand" />
+          <text x="603" y="70" class="svg-kicker">3. COMPOUNDING FLEET MEMORY</text>
+          <text x="603" y="91" class="svg-title">Write-Once, Fleet Knows Forever</text>
+          <text x="603" y="110" class="svg-sub">New game/mod quirks solved on one server</text>
+          <text x="603" y="124" class="svg-sub">are written down &amp; injected on future turns</text>
+
+          <!-- Arrows: RAG & Memory -> Fireworks Open Model -->
+          <line x1="414" y1="132" x2="414" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
+          <line x1="700" y1="132" x2="660" y2="162" stroke="var(--brand-500)" stroke-width="2" marker-end="url(#arr-brand)" />
+
+          <!-- 3. CENTER ENGINE: FIREWORKS OPEN MODEL -->
+          <rect x="266" y="166" width="440" height="96" class="svg-box-brand" />
+          <text x="286" y="190" class="svg-kicker">4. FIREWORKS AI INFERENCE ENGINE</text>
+          <text x="286" y="214" class="svg-title" style="font-size:17px;">Open Model on Fireworks (GLM-5.2)</text>
+          <text x="286" y="235" class="svg-sub" style="fill:var(--ink-strong);">Zero cold discovery turns &middot; Bounded domain tool calls</text>
+          <text x="286" y="251" class="svg-sub" style="fill:var(--brand-500);font-weight:700;">~4.7 turns &middot; 1.9s p50 latency &middot; $0.00074 / incident</text>
+
+          <!-- Approval Gate Box (Right of Engine) -->
+          <rect x="728" y="166" width="153" height="96" class="svg-box-warn" />
+          <text x="742" y="190" class="svg-kicker" style="fill:var(--warn);">APPROVAL GATE</text>
+          <text x="742" y="211" class="svg-title" style="font-size:13px;">Destructive Tools</text>
+          <text x="742" y="229" class="svg-sub">World restore / wipe</text>
+          <text x="742" y="244" class="svg-sub">halts for 1-click</text>
+          <text x="742" y="257" class="svg-sub">human confirmation</text>
+          <line x1="706" y1="214" x2="724" y2="214" stroke="var(--warn)" stroke-width="1.8" marker-end="url(#arr-warn)" />
+
+          <!-- Arrow: Fireworks Engine -> Step A Snapshot -->
+          <line x1="340" y1="262" x2="340" y2="296" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
+
+          <!-- 4. BOTTOM SRE SAFETY LOOP -->
+          <!-- Step A: Snapshot -->
+          <rect x="266" y="300" width="142" height="76" class="svg-box" />
+          <text x="280" y="322" class="svg-kicker">STEP 1</text>
+          <text x="280" y="342" class="svg-title">Snapshot State</text>
+          <text x="280" y="360" class="svg-sub">Save clean config/world</text>
+
+          <line x1="408" y1="338" x2="432" y2="338" stroke="var(--muted)" stroke-width="2" marker-end="url(#arr-muted)" />
+
+          <!-- Step B: Apply Fix -->
+          <rect x="436" y="300" width="150" height="76" class="svg-box" />
+          <text x="450" y="322" class="svg-kicker">STEP 2</text>
+          <text x="450" y="342" class="svg-title">Apply Change</text>
+          <text x="450" y="360" class="svg-sub">Typed config / mod edit</text>
+
+          <line x1="586" y1="338" x2="610" y2="338" stroke="var(--muted)" stroke-width="2" marker-end="url(#arr-muted)" />
+
+          <!-- Step C: Restart & Probe -->
+          <rect x="614" y="300" width="160" height="76" class="svg-box" />
+          <text x="628" y="322" class="svg-kicker">STEP 3</text>
+          <text x="628" y="342" class="svg-title">Verify Readiness</text>
+          <text x="628" y="360" class="svg-sub">Restart &amp; Agones probe</text>
+
+          <!-- Auto-Rollback Feedback Arc (Unhealthy -> Snapshot) -->
+          <path d="M 694 376 L 694 402 L 337 402 L 337 380" fill="none" stroke="var(--warn)" stroke-width="2" class="svg-flow-anim" marker-end="url(#arr-warn)" />
+          <text x="445" y="397" class="svg-sub" style="fill:var(--warn);font-weight:700;">If Probe Fails &rarr; Deterministic Auto-Rollback to Step 1 Snapshot</text>
+
+          <!-- 5. RIGHT OUTPUT: HEALTHY CONTAINER + MEMORY WRITEBACK -->
+          <line x1="774" y1="338" x2="926" y2="338" stroke="var(--ok)" stroke-width="2.4" marker-end="url(#arr-ok)" />
+          <text x="815" y="328" class="svg-sub" style="fill:var(--ok);font-weight:700;">Healthy</text>
+
+          <rect x="930" y="274" width="216" height="114" class="svg-box-ok" />
+          <text x="948" y="298" class="svg-kicker" style="fill:var(--ok);">VERIFIED OUTCOME</text>
+          <text x="948" y="320" class="svg-title" style="font-size:16px;">Server Healthy &amp; Ready</text>
+          <text x="948" y="342" class="svg-sub" style="fill:var(--ink-strong);">&bull; Intended change verified</text>
+          <text x="948" y="359" class="svg-sub" style="fill:var(--ink-strong);">&bull; Plain-English reply posted</text>
+          <text x="948" y="376" class="svg-sub" style="fill:var(--ok);font-weight:700;">&bull; New quirk saved to memory</text>
+
+          <!-- Compounding Memory Write-Back Arc (Verified Outcome -> Fleet Memory) -->
+          <path d="M 1038 274 L 1038 90 L 886 90" fill="none" stroke="var(--brand-500)" stroke-width="2.2" class="svg-flow-anim" marker-end="url(#arr-brand)" />
+          <rect x="922" y="148" width="224" height="54" class="svg-box" />
+          <text x="936" y="169" class="svg-kicker">COMPOUNDING FLYWHEEL</text>
+          <text x="936" y="189" class="svg-sub" style="fill:var(--ink-strong);">Fix logged once &rarr; Fleet knows it</text>
+        </svg>
       </div>
     </section>
 

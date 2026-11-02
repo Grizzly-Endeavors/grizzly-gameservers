@@ -67,9 +67,35 @@
 
 ---
 
-### Slide 3: Gary: An Operator, Not a Chatbot
+### Slide 3: Gary: An Operator, Not a Chatbot (System Diagram)
 
-**On Screen (4 Pillars):**
+**On Screen (Visual System & Closed-Loop Flywheel Diagram):**
+
+```text
+                       GARY SPECIALIZED OPERATOR HARNESS (K8s + Agones)
+                     +-------------------------------------------------------+
+                     |  [2. Per-Game RAG (7 Games)]  [3. Compounding Memory] |
+                     |   Schemas, paths, mod rules    Write-once, fleet knows|
+                     |               |                          |            |
+[Player / Host]      |               v                          v            |
+"Crash after Iris" ->|  +-------------------------------------------------+  |   Destructive?
+"Double Pal spawns"  |  | 4. Fireworks AI Open Model (GLM-5.2)            |->|-> [Human Approval]
+                     |  | ~4.7 turns | 1.9s p50 | $0.00074 / incident     |  |
+                     |  +-------------------------------------------------+  |
+                     |            |                                          |
+                     |            v                                          |
+                     |  [Step 1: Snapshot] -> [Step 2: Apply] -> [Step 3: Probe Readiness]
+                     |            ^                                    |     |
+                     |            +--- Auto-Rollback if Unhealthy <----+     |
+                     +-------------------------------------------------|-----+
+                                                                       | Healthy
+                                                                       v
+                                                       [Verified Server Ready + Reply]
+                                                                       |
+                                                                       +--> Writes new quirk back
+                                                                            to Compounding Memory
+```
+
 1. **Specialized Harness:** Bounded tools with an automatic SRE safety loop (`Snapshot` -> `Apply Change` -> `Verify Health` -> `Auto-Rollback if Unhealthy`).
 2. **RAG / Knowledge Base:** Pre-loaded per-game config layouts, mod loaders, and startup quirks across 7 games.
 3. **Compounding Memory:** When Gary solves a new quirk once, he writes it down. One server's fix becomes fleet-wide knowledge.
