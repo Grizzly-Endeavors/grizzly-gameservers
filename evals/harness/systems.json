@@ -19,6 +19,17 @@
     }
   },
   {
+    "system_id": "gary-fw-local",
+    "label": "GLM 5.3 Flash on Fireworks in Gary (local docker, dev iteration)",
+    "harness": "gary",
+    "backend": "docker",
+    "model": "accounts/fireworks/models/glm-5p3-flash",
+    "model_profile": {
+      "provider": "fireworks",
+      "model": "accounts/fireworks/models/glm-5p3-flash"
+    }
+  },
+  {
     "system_id": "cc-fw",
     "label": "GLM 5.3 Flash on Fireworks in Claude Code",
     "harness": "claude_code",
