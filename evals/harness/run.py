@@ -8,7 +8,8 @@ budget: evals/evals.md sections 2, 4 and 5. Case format: evals/cases (YAML).
 
 Usage: python3 evals/harness/run.py --cases evals/cases/dev --systems gary-ollama-dev
        [--case ID ...] [--repeats N] [--concurrency N] [--out DIR] [--dry-run]
-       [--game-cap game=N ...] [--allow-missing-extras]
+       [--game-cap game=N ...] [--allow-missing-extras] [--ready-timeout S]
+       [--rerun-outcomes infra_error,staging_error,missing] [--force]
 
 Gary channels: GAMESERVERS_EVAL_CHANNELS (comma list) in the repo-root .env,
 else the single operator channel. A Gary turn holds a per-channel lock because
@@ -55,8 +56,9 @@ GARY_MCP_PATH = HARNESS_DIR / "gary_mcp.py"
 
 NAMESPACE = "game-servers"
 SLOW_GAMES = frozenset({"valheim", "palworld", "enshrouded"})
-SLOW_READY_S = 900.0
-FAST_READY_S = 400.0
+DEFAULT_READY_S = 900.0
+ABORT_AFTER_FAILURES = 5
+RERUNNABLE_OUTCOMES = ("infra_error", "staging_error", "missing")
 DEFAULT_SLOW_GAME_CAP = 2
 POLL_INTERVAL_S = 5.0
 WALL_CLOCK_S = 1200.0
@@ -113,6 +115,16 @@ def load_systems(path: Path, wanted: list[str]) -> list[dict[str, Any]]:
     return [everything[name] for name in wanted]
 
 
+def eval_channels(arg: str | None, environ: Any, env_file: dict[str, str]) -> list[str]:
+    """Gary channels: --channels, else GAMESERVERS_EVAL_CHANNELS. The first also carries every operator tool call.
+
+    Servers are stamped with the guild of the channel that created them, so tool calls must
+    all use one channel; Gary turns round-robin over the whole list.
+    """
+    listed = arg or environ.get(CHANNELS_KEY) or env_file.get(CHANNELS_KEY) or ""
+    return [c.strip() for c in listed.split(",") if c.strip()]
+
+
 def resolve_env(spec: dict[str, str], env_file: dict[str, str]) -> dict[str, str]:
     """Expand `$VAR` values from the process environment, then the repo-root .env."""
     resolved = {}
@@ -138,8 +150,9 @@ def server_name(case_id: str, system_id: str, repeat: int) -> str:
     return label[: MAX_NAME_LEN - 7].rstrip("-") + "-" + digest
 
 
-def ready_timeout(game: str) -> float:
-    return SLOW_READY_S if game in SLOW_GAMES else FAST_READY_S
+def ready_timeout(cluster: Any) -> float:
+    """PVC provisioning dominates create time for every game, so one timeout serves all."""
+    return float(getattr(cluster, "ready_timeout_s", DEFAULT_READY_S))
 
 
 def context_line(name: str, game: str) -> str:
@@ -153,10 +166,17 @@ def context_line(name: str, game: str) -> str:
 class Cluster:
     """The live cluster: operator tool route for Gary's tools, kubectl for the pod."""
 
-    def __init__(self, conn: OperatorConn, namespace: str = NAMESPACE) -> None:
+    def __init__(
+        self, conn: OperatorConn, namespace: str = NAMESPACE, ready_timeout_s: float = DEFAULT_READY_S
+    ) -> None:
         self.conn = conn
+        self.ready_timeout_s = ready_timeout_s
         self.namespace = namespace
         self._pods: dict[str, tuple[str, str]] = {}
+
+    @property
+    def failure_streak(self) -> int:
+        return self.conn.failure_streak
 
     def now(self) -> float:
         return time.monotonic()
@@ -232,13 +252,12 @@ def wait_for(cluster: Any, ready: Callable[[], bool], timeout_s: float) -> bool:
         cluster.sleep(POLL_INTERVAL_S)
 
 
-def wait_ready(cluster: Any, name: str, game: str) -> bool:
-    return wait_for(cluster, lambda: cluster.state(name) == "Ready", ready_timeout(game))
+def wait_ready(cluster: Any, name: str) -> bool:
+    return wait_for(cluster, lambda: cluster.state(name) == "Ready", ready_timeout(cluster))
 
 
 def apply_setup(cluster: Any, case: dict[str, Any], name: str) -> list[str]:
     """Run the setup steps in order; any failure raises StagingError. Returns a step log."""
-    game = case["game"]
     log = []
     for index, step in enumerate(case.get("setup") or []):
         label = f"setup[{index}] {next(iter(step), '?')}"
@@ -259,7 +278,7 @@ def apply_setup(cluster: Any, case: dict[str, Any], name: str) -> list[str]:
             elif "restart" in step:
                 log.append(f"{label}: {cluster.tool('restart_server', {'name': name})[:300]}")
             elif "wait" in step:
-                wait_step(cluster, step, name, game)
+                wait_step(cluster, step, name)
                 log.append(f"{label} {step['wait']} ok")
             else:
                 raise StagingError(f"{label} is not a known step kind")
@@ -268,9 +287,9 @@ def apply_setup(cluster: Any, case: dict[str, Any], name: str) -> list[str]:
     return log
 
 
-def wait_step(cluster: Any, step: dict[str, Any], name: str, game: str) -> None:
+def wait_step(cluster: Any, step: dict[str, Any], name: str) -> None:
     kind = step["wait"]
-    timeout = float(step.get("timeout_s", ready_timeout(game)))
+    timeout = float(step.get("timeout_s", ready_timeout(cluster)))
     if kind == "ready":
         ok = wait_for(cluster, lambda: cluster.state(name) == "Ready", timeout)
     elif kind == "not_ready":
@@ -679,7 +698,7 @@ def run_job(
         if not created.lower().startswith("created"):
             record["detail"] = f"create_server refused: {created[:300]}"
             return record, transcript
-        if not wait_ready(cluster, name, game):
+        if not wait_ready(cluster, name):
             record.update(outcome="staging_error", detail="server never became Ready after create")
             return record, transcript
         transcript["setup"] = apply_setup(cluster, case, name)
@@ -725,14 +744,13 @@ def _copy_run(record: dict[str, Any], run: SystemRun) -> None:
 
 
 def _grade(cluster: Any, case: dict[str, Any], name: str, reply: str, record: dict[str, Any]) -> str:
-    game = case["game"]
-    wait_ready(cluster, name, game)
+    wait_ready(cluster, name)
     first = run_checks(cluster, case, name, reply, "after stop")
     record["checks"] = first
     if not all(item["ok"] for item in first):
         return "fail"
     cluster.tool("restart_server", {"name": name})
-    wait_ready(cluster, name, game)
+    wait_ready(cluster, name)
     second = run_checks(cluster, case, name, reply, "after restart")
     record["checks"] = first + second
     return "pass" if all(item["ok"] for item in second) else "fail"
@@ -763,7 +781,11 @@ def run_all(
     game_caps: dict[str, int],
     force: bool = False,
     known: frozenset[str] = frozenset(),
+    rerun_outcomes: frozenset[str] | None = None,
+    aborted: threading.Event | None = None,
 ) -> list[dict[str, Any]]:
+    """Run every job that is not already recorded; `aborted` is set if the operator stays unreachable."""
+    aborted = aborted if aborted is not None else threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
     transcript_dir = out_dir / "transcripts"
     transcript_dir.mkdir(exist_ok=True)
@@ -777,10 +799,14 @@ def run_all(
         system, case, repeat = job
         stem = f"{system['system_id']}__{case['id']}__r{repeat}"
         target = out_dir / f"{stem}.json"
-        if target.exists() and not force:
+        if aborted.is_set() or not should_run(target, force, rerun_outcomes):
             return None
         with semaphores[case["game"]]:
+            if aborted.is_set():
+                return None
             record, transcript = run_job(cluster, executor, system, case, repeat)
+        if getattr(cluster, "failure_streak", 0) >= ABORT_AFTER_FAILURES:
+            aborted.set()
         # The conversation is written beside the transcript rather than inside it: it is the
         # bulk of a Gary turn and the only part the fine-tuning export reads.
         conversation = transcript.pop("conversation", None)
@@ -800,7 +826,42 @@ def run_all(
 
     jobs = [(s, c, r) for s in systems for c in cases for r in range(1, repeats + 1)]
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
-        return [record for record in pool.map(one, jobs) if record is not None]
+        records = [record for record in pool.map(one, jobs) if record is not None]
+    if aborted.is_set():
+        _sweep_undestroyed(cluster, records)
+    return records
+
+
+def _sweep_undestroyed(cluster: Any, records: list[dict[str, Any]]) -> None:
+    """After an abort, retry the destroy of every server this process created and could not remove."""
+    for record in records:
+        if record["destroyed"]:
+            continue
+        record["destroyed"], _ = _destroy(cluster, record["server"])
+        print(f"abort sweep: {record['server']} destroyed={record['destroyed']}", flush=True)
+
+
+def should_run(target: Path, force: bool, rerun_outcomes: frozenset[str] | None) -> bool:
+    """Whether the job whose record would be `target` still needs running."""
+    if force:
+        return True
+    if not target.exists():
+        return rerun_outcomes is None or "missing" in rerun_outcomes
+    if rerun_outcomes is None:
+        return False
+    try:
+        outcome = json.loads(target.read_text(encoding="utf-8")).get("outcome")
+    except (ValueError, OSError, AttributeError):
+        return "missing" in rerun_outcomes
+    return outcome in rerun_outcomes
+
+
+def parse_rerun_outcomes(text: str) -> frozenset[str]:
+    wanted = frozenset(part.strip() for part in text.split(",") if part.strip())
+    unknown = sorted(wanted - set(RERUNNABLE_OUTCOMES))
+    if unknown or not wanted:
+        raise ValueError(f"--rerun-outcomes wants some of {','.join(RERUNNABLE_OUTCOMES)}, got {text!r}")
+    return wanted
 
 
 def parse_game_caps(items: list[str]) -> dict[str, int]:
@@ -827,6 +888,8 @@ class FakeCluster:
         self.logs: dict[str, str] = {}
         self.destroyed: list[str] = []
         self.restarts: list[str] = []
+        self.ready_timeout_s = DEFAULT_READY_S
+        self.failure_streak = 0
         self.on_restart: Callable[[str, "FakeCluster"], None] | None = None
         self.tool_replies: dict[str, str] = {}
         self._lock = threading.Lock()
@@ -911,6 +974,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-missing-extras", action="store_true",
                         help="retry a Gary turn without model_profile/memory when the bot rejects them (smoke only)")
     parser.add_argument("--force", action="store_true", help="rerun jobs whose record already exists")
+    parser.add_argument("--ready-timeout", type=float, default=DEFAULT_READY_S,
+                        help="seconds to wait for a created server to become Ready (default: %(default)s)")
+    parser.add_argument("--rerun-outcomes", type=parse_rerun_outcomes,
+                        help="with an existing --out, rerun only records with these outcomes "
+                             f"({','.join(RERUNNABLE_OUTCOMES)}); everything else is skipped")
     parser.add_argument("--dry-run", action="store_true", help="fake cluster and systems; no cluster or model calls")
     args = parser.parse_args(argv)
 
@@ -933,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         cluster: Any = FakeCluster()
         executor: Any = FakeExecutor(cluster)
-        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known)
+        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known, args.rerun_outcomes)
         print(f"dry run: {len(records)} records in {out_dir}")
         return 0
 
@@ -942,18 +1010,29 @@ def main(argv: list[str] | None = None) -> int:
         for system in systems:
             if system["harness"] == "claude_code":
                 resolve_env(system.get("env") or {}, env_file)
-        listed = args.channels or os.environ.get(CHANNELS_KEY) or env_file.get(CHANNELS_KEY) or ""
-        channels = [c.strip() for c in listed.split(",") if c.strip()]
+        channels = eval_channels(args.channels, os.environ, env_file)
         conn = OperatorConn.connect(channel=channels[0] if channels else None, timeout=WALL_CLOCK_S)
     except (ValueError, OperatorConnError) as err:
         print(f"run: {err}", file=sys.stderr)
         return 2
     with conn:
         executor = RealExecutor(conn, channels or [conn.channel], env_file, args.allow_missing_extras)
-        records = run_all(Cluster(conn), executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known)
+        aborted = threading.Event()
+        cluster = Cluster(conn, ready_timeout_s=args.ready_timeout)
+        records = run_all(
+            cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps,
+            args.force, known, args.rerun_outcomes, aborted,
+        )
     tally: dict[str, int] = {}
     for record in records:
         tally[record["outcome"]] = tally.get(record["outcome"], 0) + 1
+    if aborted.is_set():
+        print(
+            f"ABORTED: the operator stayed unreachable after {ABORT_AFTER_FAILURES} consecutive failures; "
+            f"{len(records)} records written to {out_dir} {tally}. Rerun with --out {out_dir} to finish.",
+            file=sys.stderr,
+        )
+        return 1
     print(f"done: {len(records)} records in {out_dir} {tally}")
     return 0
 
