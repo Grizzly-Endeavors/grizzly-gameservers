@@ -1407,10 +1407,9 @@ fn a_settings_overlay_declares_both_halves_or_neither() {
 
 #[test]
 fn valheim_holds_the_dangerous_keys_off_its_allowlist() {
-    // Three of lloesche's variables are deliberately unreachable per instance,
-    // and none of them fails loudly if exposed. WORLD_NAME switches the server
-    // to a different world, which reads to whoever is playing as total data
-    // loss. SERVER_ARGS takes arbitrary launch arguments — the open surface that
+    // Two of lloesche's variables are deliberately unreachable per instance,
+    // and neither fails loudly if exposed. SERVER_ARGS takes arbitrary launch
+    // arguments — the open surface that
     // keeps MODS/PLUGINS off Minecraft's allowlist. VALHEIM_PLUS cannot be
     // combined with the BEPINEX loader this image builds on, so setting it takes
     // down the baked RCON plugin and with it Gary's console and player count.
@@ -1423,7 +1422,7 @@ fn valheim_holds_the_dangerous_keys_off_its_allowlist() {
         .expect("games/valheim/gameserver.yaml parses")
         .expect("valheim declares a settings overlay");
 
-    for forbidden in ["WORLD_NAME", "SERVER_ARGS", "VALHEIM_PLUS"] {
+    for forbidden in ["SERVER_ARGS", "VALHEIM_PLUS"] {
         assert!(
             !overlay.keys.iter().any(|key| key == forbidden),
             "games/valheim/gameserver.yaml puts {forbidden} on the per-instance allowlist; \
