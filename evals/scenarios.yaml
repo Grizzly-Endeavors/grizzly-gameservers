@@ -20,9 +20,12 @@
 #   system can do it through the tools, the catalog/allowlist is widened before
 #   the freeze (identically for every system) or the scenario is dropped.
 #
-# Every case also records: unintended_changes (diff of the data root against
-# the staged snapshot, minus target paths and loader-owned files), turns,
-# tokens, latency, cost.
+# Checks assert only what the ticket asks for, stated or plainly implied
+# (a crash fix keeps the customer's mods), plus the server coming back Ready
+# and the result surviving one more runner-triggered restart. They do not
+# grade how the fix was done or what else changed.
+#
+# Every case also records turns, tokens, cost and time to resolution.
 
 scenarios:
 
@@ -34,7 +37,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/how-to-install-fabric-mods-on-your-minecraft-server
     staging: healthy Fabric server with a few mods
     examples: ["can you add Lithium", "we want the voice chat mod on the server"]
-    checks: [mod resolved for this loader+version, existing mods kept, server Ready]
+    checks: [mod resolved for this loader+version, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -44,7 +47,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/my-minecraft-server-won-t-start
     staging: a mod with a required dependency added; dependency downloads off
     examples: ["server won't start after I added Mod Menu"]
-    checks: [requested mod kept, dependency installed, server Ready]
+    checks: [requested mod installed and loading, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -54,7 +57,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/my-minecraft-server-won-t-start
     staging: a client-only mod hidden among 5-6 good ones; the trace names a client class, not the mod
     examples: ["we added a bunch of mods tonight and now it crashes on boot"]
-    checks: [only the culprit removed, every other mod kept, server Ready]
+    checks: [server Ready with the customer's other mods still installed]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -75,7 +78,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/my-minecraft-server-won-t-start
     staging: a second, uploaded world directory beside the active one
     examples: ["I uploaded our old world 'smp-season2', can we play on that instead"]
-    checks: [level-name points at the uploaded world, both worlds intact, server Ready]
+    checks: [level-name points at the uploaded world, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -115,7 +118,7 @@ scenarios:
     source: common
     staging: customised server.properties
     examples: ["turn off pvp", "20 players and hard mode", "make it so people can't hurt each other"]
-    checks: [target keys set, every other line byte-identical, server Ready]
+    checks: [target keys set, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -140,7 +143,7 @@ scenarios:
     reach: verify   # world name is not on the overlay allowlist today
     staging: an uploaded .db/.fwl pair under its own name beside the active world
     examples: ["I uploaded my single player world 'Dragonholm', can the server run it"]
-    checks: [server loads the uploaded world, original world intact, server Ready]
+    checks: [server loads the uploaded world, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -190,7 +193,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/how-to-use-dev-cheat-commands-on-your-valheim-server
     staging: adminlist.txt with one entry
     examples: ["make me admin, my steam id is 7656119…"]
-    checks: [SteamID64 in adminlist.txt, existing entries kept, server Ready]
+    checks: [SteamID64 in adminlist.txt, server Ready]
     variants: 2
     split: { dev: 1, scored: 1 }
 
@@ -200,7 +203,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/how-to-change-your-valheim-server-password
     staging: healthy server
     examples: ["rename the server to Mead Hall", "turn on crossplay so my xbox friend can join", "hide it from the server list"]
-    checks: [target setting applied, others unchanged, server Ready]
+    checks: [target setting applied, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -212,7 +215,7 @@ scenarios:
     source: https://shockbyte.com/billing/knowledgebase/305/How-to-Use-a-Custom-World-on-your-Terraria-Server.html
     staging: an uploaded .wld beside the active world
     examples: ["I put my world file 'Corruption Run' in, use that one"]
-    checks: [world= points at the uploaded world, original intact, server Ready]
+    checks: [world= points at the uploaded world, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -252,7 +255,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/categories/terraria
     staging: healthy server
     examples: ["password it: hunter22", "16 players max", "turn on the whitelist and add my IP"]
-    checks: [target setting applied, other lines byte-identical, server Ready]
+    checks: [target setting applied, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -275,7 +278,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/how-to-add-an-admin-on-your-factorio-server
     staging: server-adminlist.json with one entry
     examples: ["make TinkerTom an admin"]
-    checks: [name in server-adminlist.json (or promoted over RCON and persisted), others kept]
+    checks: [name in server-adminlist.json (or promoted over RCON and persisted)]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -295,7 +298,7 @@ scenarios:
     source: https://shockbyte.com/billing/knowledgebase/437/How-to-Customize-Your-Factorio-Server-Details.html
     staging: customised server-settings.json
     examples: ["put a password on it", "autosave every 5 minutes", "kick people who are afk for 10 min"]
-    checks: [target key set, rest of the JSON unchanged, server Ready]
+    checks: [target key set, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -305,7 +308,7 @@ scenarios:
     source: https://shockbyte.com/billing/knowledgebase/433/How-to-Keep-Your-Server-Running-with-0-Active-Players.html
     staging: auto_pause on
     examples: ["the factory stops when nobody's on, keep it running"]
-    checks: [auto_pause false, rest unchanged, server Ready]
+    checks: [auto_pause false, server Ready]
     variants: 2
     split: { dev: 1, scored: 1 }
 
@@ -316,7 +319,7 @@ scenarios:
     reach: verify   # the image loads the newest save; choosing one may need SAVE_NAME on an overlay
     staging: an uploaded single-player save .zip beside the current save
     examples: ["I uploaded my singleplayer save 'megabase.zip', load it"]
-    checks: [server running the uploaded save, original save intact, server Ready]
+    checks: [server running the uploaded save, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -336,7 +339,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/categories/factorio
     staging: mod-list.json enables a mod that fails at startup
     examples: ["crashed after we turned on a mod"]
-    checks: [only that mod disabled, others enabled, server Ready]
+    checks: [server Ready with the customer's other mods still enabled]
     variants: 4
     split: { dev: 1, scored: 3 }
 
@@ -350,7 +353,7 @@ scenarios:
       PalWorldSettings.ini present (single OptionSettings line); values are
       case-sensitive and the server rewrites the file on shutdown
     examples: ["double the exp rate", "make pals easier to catch", "turn off raids", "drop nothing on death"]
-    checks: [target value in effect after restart (ini survives shutdown), rest of the line unchanged, server Ready]
+    checks: [target value in effect after restart (ini survives shutdown), server Ready]
     variants: 7
     split: { dev: 1, scored: 6 }
 
@@ -360,7 +363,7 @@ scenarios:
     source: https://www.gameserverkings.com/knowledge-base/palworld/world-settings/
     staging: a WorldOption.sav in the world folder overriding the ini
     examples: ["I changed the settings and nothing happened"]
-    checks: [requested setting in effect, world save intact, server Ready]
+    checks: [requested setting in effect, server Ready]
     variants: 2
     split: { dev: 1, scored: 1 }
 
@@ -390,7 +393,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/categories/palworld?page=2
     staging: an uploaded world folder under SaveGames; GameUserSettings.ini DedicatedServerName points at the old one
     examples: ["I uploaded our co-op world, can the server use it"]
-    checks: [DedicatedServerName matches the uploaded folder, server Ready, old world intact]
+    checks: [DedicatedServerName matches the uploaded folder, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -400,7 +403,7 @@ scenarios:
     source: https://shockbyte.com/help/knowledgebase/articles/how-to-configure-your-palworld-server
     staging: healthy server
     examples: ["let 20 people on"]
-    checks: [player cap set, rest unchanged, server Ready]
+    checks: [player cap set, server Ready]
     variants: 3
     split: { dev: 1, scored: 2 }
 
@@ -412,7 +415,7 @@ scenarios:
     source: https://xgamingserver.com/blog/enshrouded-server-config-json-settings-explained/
     staging: enshrouded_server.json with default userGroups
     examples: ["set a password for friends and a separate admin one for me", "guests shouldn't be able to break stuff"]
-    checks: [userGroups passwords/permissions as asked, other groups intact, server Ready]
+    checks: [userGroups passwords/permissions as asked, server Ready]
     variants: 5
     split: { dev: 1, scored: 4 }
 
@@ -453,6 +456,6 @@ scenarios:
     source: https://xgamingserver.com/blog/enshrouded-server-config-json-settings-explained/
     staging: healthy server
     examples: ["we need 12 slots"]
-    checks: [slotCount set, rest unchanged, server Ready]
+    checks: [slotCount set, server Ready]
     variants: 4
     split: { dev: 1, scored: 3 }
