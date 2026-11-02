@@ -1,0 +1,44 @@
+id: tr-reset-world-s4
+scenario: tr-reset-world
+split: scored
+game: terraria
+kind: world
+task_area: config
+prompt: this world is too tiny now. set up a bigger new one for us and leave the old world alone
+setup:
+- pod_put:
+    src: evals/fixtures/terraria/small-world.wld
+    dst: /data/worlds/Hearthstone.wld
+- tool: write_file
+  args:
+    path: config/serverconfig.txt
+    content: 'world=/data/worlds/Hearthstone.wld
+
+      worldname=Grizzly
+
+      difficulty=0
+
+      maxplayers=8
+
+      port=7777
+
+      password=
+
+      '
+- restart: true
+- wait: log
+  pattern: Server started
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/config/serverconfig.txt
+  pattern: (?m)^world=(?!.*Hearthstone\.wld).*\.wld\s*$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -s /data/worlds/Hearthstone.wld'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c "find /data/worlds -name '*.wld' ! -name Hearthstone.wld -size +3500000c -size -99000000c
+    | grep -q ."
+  expect_exit: 0
