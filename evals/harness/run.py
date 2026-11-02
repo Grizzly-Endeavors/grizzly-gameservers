@@ -46,6 +46,7 @@ from operator_conn import (
     find_env_file,
     read_env_file,
 )
+from scrub import dumps_scrubbed, known_ids, scrub_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HARNESS_DIR = Path(__file__).resolve().parent
@@ -761,6 +762,7 @@ def run_all(
     out_dir: Path,
     game_caps: dict[str, int],
     force: bool = False,
+    known: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     transcript_dir = out_dir / "transcripts"
@@ -782,16 +784,18 @@ def run_all(
         # The conversation is written beside the transcript rather than inside it: it is the
         # bulk of a Gary turn and the only part the fine-tuning export reads.
         conversation = transcript.pop("conversation", None)
-        (transcript_dir / f"{stem}.json").write_text(json.dumps(transcript, indent=2, default=str), encoding="utf-8")
+        (transcript_dir / f"{stem}.json").write_text(
+            dumps_scrubbed(transcript, known, indent=2, default=str), encoding="utf-8"
+        )
         if conversation is not None:
             (transcript_dir / f"{stem}.messages.json").write_text(
-                json.dumps(conversation, indent=2, default=str), encoding="utf-8"
+                dumps_scrubbed(conversation, known, indent=2, default=str), encoding="utf-8"
             )
         temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        temp.write_text(dumps_scrubbed(record, known, indent=2), encoding="utf-8")
         temp.replace(target)
         with print_lock:
-            print(f"{stem}: {record['outcome']} {record['detail'][:120]}", flush=True)
+            print(f"{stem}: {record['outcome']} {scrub_text(record['detail'][:120], known)}", flush=True)
         return record
 
     jobs = [(s, c, r) for s in systems for c in cases for r in range(1, repeats + 1)]
@@ -920,10 +924,16 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out or REPO_ROOT / "evals" / "results" / "runs" / run_id
 
+    try:
+        known = known_ids()
+    except OperatorConnError as err:
+        print(f"run: {err}", file=sys.stderr)
+        return 2
+
     if args.dry_run:
         cluster: Any = FakeCluster()
         executor: Any = FakeExecutor(cluster)
-        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force)
+        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known)
         print(f"dry run: {len(records)} records in {out_dir}")
         return 0
 
@@ -940,7 +950,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     with conn:
         executor = RealExecutor(conn, channels or [conn.channel], env_file, args.allow_missing_extras)
-        records = run_all(Cluster(conn), executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force)
+        records = run_all(Cluster(conn), executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known)
     tally: dict[str, int] = {}
     for record in records:
         tally[record["outcome"]] = tally.get(record["outcome"], 0) + 1
