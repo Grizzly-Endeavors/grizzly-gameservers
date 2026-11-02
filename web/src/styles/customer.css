@@ -3,6 +3,31 @@
 .main-gary {
   padding-bottom: 24px;
 }
+/* On desktop the workbench fills the window, so the tiles reach the bottom edge
+   and a long conversation scrolls inside the inspector instead of the page. */
+@media (min-width: 1121px) {
+  .main-gary {
+    display: flex;
+    flex-direction: column;
+    /* Clears the floating fault pill. */
+    padding-bottom: 40px;
+  }
+  .main-gary > .screen-wrap,
+  .main-gary .cx,
+  .main-gary .cx-workbench {
+    flex: 1;
+  }
+  .main-gary > .screen-wrap {
+    display: flex;
+    flex-direction: column;
+  }
+  .main-gary .cx-workbench {
+    min-height: 460px;
+  }
+  .main-gary .cx-srv-foot {
+    margin-top: auto;
+  }
+}
 .cx {
   display: flex;
   flex-direction: column;
@@ -682,18 +707,56 @@
   min-width: 0;
   flex: 1;
 }
-.cx-run-closed {
+.cx-run-parent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cx-followup {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 4px;
   margin-top: 2px;
-  padding: 8px 11px;
+  padding: 3px 4px 3px 11px;
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--surface-2);
-  font-size: 12.5px;
+  transition: border-color var(--dur-fast) var(--ease-out-soft);
+}
+.cx-followup:focus-within {
+  border-color: var(--brand-600);
+}
+.cx-followup input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  border: 0;
+  background: none;
+  color: var(--ink-strong);
+  font-size: 13px;
+}
+.cx-followup input:focus {
+  outline: none;
+}
+.cx-followup-send {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-btn);
+  background: none;
+  color: var(--brand-600);
+  transition:
+    background-color var(--dur-fast) var(--ease-out-soft),
+    color var(--dur-fast) var(--ease-out-soft);
+}
+.cx-followup-send:hover:not(:disabled) {
+  background: var(--hover);
+}
+.cx-followup-send:disabled {
+  color: var(--muted);
+  opacity: 0.5;
 }
 .cx-run-history {
   border-top: 1px solid var(--line);
