@@ -19,5 +19,5 @@ checks:
 - type: ready
 - type: file_regex
   path: /factorio/config/server-adminlist.json
-  pattern: '"BeltQueen"'
+  pattern: '"(?i:BeltQueen)"'
   present: true
