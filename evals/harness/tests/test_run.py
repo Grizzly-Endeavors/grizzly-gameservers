@@ -60,6 +60,10 @@ CLAUDE_FIXTURE = {
 }
 
 
+GARY_FIXTURE_MESSAGES = [{"role": "system", "content": "you are Gary"}, {"role": "user", "content": "hi"}]
+GARY_FIXTURE_TOOLS = [{"type": "function", "function": {"name": "edit_file"}}]
+
+
 def fixes_pvp(cluster, name):
     cluster.files[name]["server.properties"] = "pvp=false\n"
 
@@ -171,6 +175,67 @@ class HelpersTest(unittest.TestCase):
     def test_ready_timeout_by_game(self):
         self.assertEqual(run.ready_timeout("palworld"), 900)
         self.assertEqual(run.ready_timeout("minecraft"), 400)
+
+
+class FakeOperatorConn:
+    """Stands in for OperatorConn: returns a canned Gary response."""
+
+    channel = None
+    timeout = 0.0
+
+    def __init__(self, response):
+        self.response = response
+
+    def gary(self, text, access, **kwargs):
+        return self.response
+
+
+GARY_RESPONSE = {
+    "reply": "done",
+    "escalated": False,
+    "rounds": 1,
+    "tool_calls": [{"name": "edit_file"}],
+    "usage": {"prompt_tokens": 10, "cached_tokens": 2, "completion_tokens": 5},
+    "latency_ms": 7,
+    "escalation_kind": None,
+    "messages": GARY_FIXTURE_MESSAGES,
+    "tools": GARY_FIXTURE_TOOLS,
+}
+
+
+class GaryConversationTest(unittest.TestCase):
+    def gary_run(self, response):
+        executor = run.RealExecutor(FakeOperatorConn(response), ["c1"], {})
+        return executor._gary(SYSTEM, "turn off pvp", "c1")
+
+    def test_conversation_is_split_out_of_the_transcript(self):
+        run_result = self.gary_run(GARY_RESPONSE)
+        self.assertEqual(run_result.conversation, {"messages": GARY_FIXTURE_MESSAGES, "tools": GARY_FIXTURE_TOOLS})
+        self.assertNotIn("messages", run_result.transcript)
+        self.assertNotIn("tools", run_result.transcript)
+        self.assertEqual(run_result.transcript["reply"], "done")
+        self.assertNotIn("transcript", run_result.notes)
+
+    def test_response_without_messages_is_noted_unavailable(self):
+        response = {key: value for key, value in GARY_RESPONSE.items() if key not in ("messages", "tools")}
+        run_result = self.gary_run(response)
+        self.assertIsNone(run_result.conversation)
+        self.assertEqual(run_result.notes["transcript"], "unavailable")
+
+    def test_run_all_writes_the_conversation_beside_the_transcript(self):
+        class Gary:
+            def execute(self, system, case, name):
+                return run.SystemRun(reply="done", claimed_done=True,
+                                     conversation={"messages": [{"role": "user", "content": "hi"}], "tools": []})
+
+        cluster = run.FakeCluster()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            run.run_all(cluster, Gary(), [SYSTEM], [PVP_CASE], 1, 1, out, {})
+            messages = json.loads((out / "transcripts" / "fake__mc-pvp-d1__r1.messages.json").read_text())
+            self.assertEqual(messages["tools"], [])
+            transcript = json.loads((out / "transcripts" / "fake__mc-pvp-d1__r1.json").read_text())
+            self.assertNotIn("conversation", transcript)
 
 
 class ClaudeResultTest(unittest.TestCase):
