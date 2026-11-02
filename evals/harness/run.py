@@ -48,6 +48,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cluster_errors import ClusterError, StagingError
+from run_layout import RUN_MANIFEST_NAME
 from local_cluster import DockerCluster, GaryLocal, GaryLocalTimeout, resolve_binary
 from operator_conn import (
     OperatorConn,
@@ -890,7 +891,7 @@ def run_all(
     transcript_dir = out_dir / "transcripts"
     transcript_dir.mkdir(exist_ok=True)
     if manifest is not None:
-        (out_dir / "manifest.json").write_text(dumps_scrubbed(manifest, known, indent=2, default=str), encoding="utf-8")
+        (out_dir / RUN_MANIFEST_NAME).write_text(dumps_scrubbed(manifest, known, indent=2, default=str), encoding="utf-8")
     semaphores: dict[str, threading.Semaphore] = {}
     for game in {case["game"] for case in cases}:
         cap = game_caps.get(game, DEFAULT_SLOW_GAME_CAP if game in SLOW_GAMES else concurrency)

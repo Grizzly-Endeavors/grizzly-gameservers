@@ -22,6 +22,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from operator_conn import OperatorConnError
+from run_layout import record_paths
 from scrub import dumps_scrubbed, known_ids
 
 SCORED = "scored"
@@ -54,7 +55,7 @@ def load_records(runs_dirs: list[Path]) -> list[tuple[Path, dict[str, Any]]]:
     for runs_dir in runs_dirs:
         if not runs_dir.is_dir():
             raise ExportError(f"runs directory not found: {runs_dir}")
-        for path in sorted(runs_dir.glob("*.json")):
+        for path in record_paths(runs_dir):
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as err:

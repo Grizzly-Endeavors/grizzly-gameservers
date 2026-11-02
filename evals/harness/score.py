@@ -25,6 +25,8 @@ from pathlib import Path
 
 import yaml
 
+from run_layout import record_paths
+
 RATES_PATH = Path(__file__).resolve().with_name("models.json")
 Z_95 = 1.959963984540054
 BOOTSTRAP_RESAMPLES = 2000
@@ -204,7 +206,7 @@ def check_system_identity(loaded: list[tuple[Path, dict]]) -> None:
 
 
 def load_records(runs_dir: Path) -> list[dict]:
-    paths = sorted(runs_dir.glob("*.json"))
+    paths = record_paths(runs_dir)
     if not paths:
         raise ValueError(f"no run records found in {runs_dir}")
     loaded = [(path, validate_record(read_structured(path), path)) for path in paths]
