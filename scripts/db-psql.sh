@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Open psql against the bot's Postgres database, for the derivation-layer
-# queries in scripts/queries/ (see docs/operations/data-collection.md).
+# queries in scripts/queries/ (see docs/operations/data-collection.md on the pre-hackathon branch).
 #
 # Foundation Postgres is a host-network container on the R730xd reached over the
 # flat LAN, not a Kubernetes Service — so this needs no port-forward. It also

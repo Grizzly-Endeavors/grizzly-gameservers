@@ -30,7 +30,7 @@ impl AnnotatedTemplate {
     ///
     /// Returns an error if the template is not parseable YAML.
     pub(crate) fn parse(gameserver_yaml: &str) -> Result<Self> {
-        Ok(serde_yaml_ng::from_str(gameserver_yaml)?)
+        Ok(serde_saphyr::from_str(gameserver_yaml)?)
     }
 
     /// This template's metadata annotations.

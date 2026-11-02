@@ -2,7 +2,7 @@
 //! actually do with their servers.
 //!
 //! This is the Postgres half of the two-plane data collection design
-//! (`docs/archive/data-collection/design.md`). Langfuse holds the LLM-interaction
+//! (`docs/archive/data-collection/design.md on the pre-hackathon branch`). Langfuse holds the LLM-interaction
 //! plane — traces, generations, tool calls, outcome scores. This plane holds the
 //! product plane: lifecycle actions, backups, escalations, and acquisition, in
 //! the shapes SQL answers well (distinct active guilds per week, time from join

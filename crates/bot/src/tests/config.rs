@@ -511,7 +511,7 @@ fn load_egress(file: &str) -> EgressPolicy {
     .join(file);
     let yaml =
         std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("reading {path:?}: {err}"));
-    serde_yaml_ng::from_str(&yaml).unwrap_or_else(|err| panic!("parsing {path:?}: {err}"))
+    serde_saphyr::from_str(&yaml).unwrap_or_else(|err| panic!("parsing {path:?}: {err}"))
 }
 
 #[test]
@@ -823,7 +823,7 @@ fn load_game_manifests() -> Vec<(String, GameServerManifest)> {
         let name = dir.file_name().to_string_lossy().into_owned();
         let yaml = std::fs::read_to_string(&manifest_path)
             .unwrap_or_else(|err| panic!("reading {manifest_path:?}: {err}"));
-        let manifest = serde_yaml_ng::from_str(&yaml)
+        let manifest = serde_saphyr::from_str(&yaml)
             .unwrap_or_else(|err| panic!("parsing {manifest_path:?}: {err}"));
         manifests.push((name, manifest));
     }
