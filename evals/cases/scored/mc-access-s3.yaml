@@ -1,0 +1,53 @@
+id: mc-access-s3
+scenario: mc-access
+split: scored
+game: minecraft
+kind: access
+task_area: config
+prompt: Bartholomew_X is coming over tonight, make sure he can get on the server
+setup:
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: online-mode=true
+    new_text: online-mode=false
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: white-list=false
+    new_text: white-list=true
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: enforce-whitelist=false
+    new_text: enforce-whitelist=true
+- tool: write_file
+  args:
+    path: whitelist.json
+    content: "[\n  {\n    \"uuid\": \"1b7a8f2e-3c4d-3e5f-9a6b-7c8d9e0f1a2b\",\n    \"name\": \"Ines\"\n  },\n  {\n    \"uuid\": \"2c8b9a3f-4d5e-3f60-8b7c-8d9e0f1a2b3c\",\n    \"name\": \"kestrel9\"\n  }\n]\n"
+- tool: write_file
+  args:
+    path: ops.json
+    content: "[\n  {\n    \"uuid\": \"3d9cab40-5e6f-3071-9c8d-9e0f1a2b3c4d\",\n    \"name\": \"Odalys\",\n    \"level\": 4,\n    \"bypassesPlayerLimit\": false\n  }\n]\n"
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/whitelist.json
+  pattern: (?i)"name":\s*"Bartholomew_X"
+  present: true
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^white-list=true$
+  present: true
+- type: file_regex
+  path: /data/whitelist.json
+  pattern: (?i)"name":\s*"Ines"
+  present: true
+- type: file_regex
+  path: /data/whitelist.json
+  pattern: (?i)"name":\s*"kestrel9"
+  present: true
