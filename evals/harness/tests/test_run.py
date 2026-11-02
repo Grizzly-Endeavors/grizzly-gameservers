@@ -241,6 +241,73 @@ class GaryConversationTest(unittest.TestCase):
             self.assertNotIn("conversation", transcript)
 
 
+
+class FakeLocalCluster:
+    """Stands in for DockerCluster's turn call: records what it was handed, returns a canned body."""
+
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = []
+
+    def gary_turn(self, name, prompt, model_profile, timeout):
+        self.calls.append((name, prompt, model_profile))
+        if self.error:
+            raise self.error
+        return self.response
+
+
+LOCAL_SYSTEM = {"system_id": "gary-fw-local", "label": "L", "harness": "gary", "backend": "docker",
+                "model": "m", "model_profile": {"provider": "fireworks", "model": "m"}}
+
+
+class LocalGaryExecutorTest(unittest.TestCase):
+    def test_turn_gets_the_live_message_and_records_like_the_live_executor(self):
+        cluster = FakeLocalCluster(GARY_RESPONSE)
+        result = run.LocalGaryExecutor(cluster).execute(LOCAL_SYSTEM, PVP_CASE, "ev-x-1")
+        name, prompt, profile = cluster.calls[0]
+        self.assertEqual(prompt, run.turn_message("ev-x-1", PVP_CASE))
+        self.assertTrue(prompt.startswith("The customer's server is named ev-x-1 (game: minecraft).\n\n"))
+        self.assertEqual(profile, LOCAL_SYSTEM["model_profile"])
+        live = run.RealExecutor(FakeOperatorConn(GARY_RESPONSE), ["c1"], {})._gary(SYSTEM, prompt, "c1")
+        for attr in ("reply", "claimed_done", "turns", "tool_calls", "prompt_tokens", "cached_tokens",
+                     "completion_tokens", "model_ms", "transcript", "conversation", "notes"):
+            self.assertEqual(getattr(result, attr), getattr(live, attr), attr)
+
+    def test_setup_error_and_timeout(self):
+        broken = run.LocalGaryExecutor(FakeLocalCluster(error=run.ClusterError("no key")))
+        self.assertIn("no key", broken.execute(LOCAL_SYSTEM, PVP_CASE, "ev-x-1").infra_error)
+        slow = run.LocalGaryExecutor(FakeLocalCluster(error=run.GaryLocalTimeout("slow")))
+        result = slow.execute(LOCAL_SYSTEM, PVP_CASE, "ev-x-1")
+        self.assertIsNone(result.infra_error)
+        self.assertEqual(result.notes["budget_exceeded"], "wall clock")
+
+    def test_backend_selection(self):
+        run.check_backend([SYSTEM], local=True)
+        run.check_backend([SYSTEM], local=False)
+        with self.assertRaises(ValueError):
+            run.check_backend([LOCAL_SYSTEM], local=False)
+        with self.assertRaises(ValueError):
+            run.check_backend([dict(SYSTEM, harness="claude_code")], local=True)
+
+    def test_local_manifest_names_backend_host_and_binary(self):
+        manifest = run.build_manifest(["--local"], False, Path("/b/grizzly-gameservers"))
+        self.assertEqual(manifest["backend"], "docker")
+        self.assertTrue(manifest["host"])
+        self.assertEqual(manifest["bot_image"], "local binary /b/grizzly-gameservers")
+
+    def test_case_file_lists_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ids"
+            path.write_text("mc-a-d1\n\n# shard 2\nmc-b-d1  # trailing\n")
+            self.assertEqual(run.read_case_file(path), ["mc-a-d1", "mc-b-d1"])
+
+    def test_systems_json_has_the_local_system(self):
+        local = run.load_systems(run.SYSTEMS_PATH, ["gary-fw-local", "gary-fw"])
+        self.assertEqual(local[0]["backend"], "docker")
+        self.assertEqual(local[0]["model_profile"], local[1]["model_profile"])
+        self.assertEqual(local[0]["model"], local[1]["model"])
+
 class ClaudeResultTest(unittest.TestCase):
     def test_usage_sums_cache_creation_into_prompt_tokens(self):
         parsed = run.parse_claude_result(json.dumps(CLAUDE_FIXTURE))

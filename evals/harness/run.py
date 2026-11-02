@@ -7,13 +7,19 @@ one runner-triggered restart, and always destroys the server. Procedure and
 budget: evals/evals.md sections 2, 4 and 5. Case format: evals/cases (YAML).
 
 Usage: python3 evals/harness/run.py --cases evals/cases/dev --systems gary-ollama-dev
-       [--case ID ...] [--repeats N] [--concurrency N] [--out DIR] [--dry-run]
-       [--game-cap game=N ...] [--allow-missing-extras] [--ready-timeout S]
-       [--rerun-outcomes infra_error,staging_error,missing] [--force]
+       [--case ID ...] [--case-file PATH] [--repeats N] [--concurrency N] [--out DIR]
+       [--dry-run] [--local] [--game-cap game=N ...] [--allow-missing-extras]
+       [--ready-timeout S] [--rerun-outcomes infra_error,staging_error,missing] [--force]
 
 Gary channels: GAMESERVERS_EVAL_CHANNELS (comma list) in the repo-root .env,
 else the single operator channel. A Gary turn holds a per-channel lock because
 new_session clears the whole channel session.
+
+--local runs each server as a Docker container on this host and each Gary turn and
+tool call through the `grizzly-gameservers gary-local` binary (GARY_LOCAL_BIN, else
+target/release, then target/debug): no kubectl, no port-forward, no Discord channel.
+Only `gary`-harness systems run there, and a system marked `"backend": "docker"`
+runs nowhere else.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,6 +47,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from cluster_errors import ClusterError, StagingError
+from local_cluster import DockerCluster, GaryLocal, GaryLocalTimeout, resolve_binary
 from operator_conn import (
     OperatorConn,
     OperatorConnError,
@@ -70,14 +79,7 @@ CC_EXCLUDED_TOOLS = "remember,forget"
 CASE_REQUIRED = ("id", "game", "prompt", "checks")
 UNKNOWN_FIELD_STATUSES = (400, 422)
 AUTH_FAILURE = re.compile(r"(?i)api key|log ?in|authenticat|unauthori[sz]ed|auth token")
-
-
-class ClusterError(Exception):
-    """kubectl or the operator route failed in a way that is not the system's fault."""
-
-
-class StagingError(Exception):
-    """The case could not be put into its starting condition."""
+DOCKER_BACKEND = "docker"
 
 
 # --------------------------------------------------------------------------
@@ -157,6 +159,11 @@ def ready_timeout(cluster: Any) -> float:
 
 def context_line(name: str, game: str) -> str:
     return f"The customer's server is named {name} (game: {game})."
+
+
+def turn_message(name: str, case: dict[str, Any]) -> str:
+    """The user message every system is handed: the server's context line, then the customer's words."""
+    return f"{context_line(name, case['game'])}\n\n{case['prompt']}"
 
 
 # --------------------------------------------------------------------------
@@ -504,6 +511,54 @@ def stream_escalated(events: list[dict[str, Any]]) -> bool:
     return False
 
 
+def gary_run(response: dict[str, Any], run: SystemRun | None = None) -> SystemRun:
+    """Fill a run from a Gary turn's body, which the operator route and gary-local share."""
+    run = run if run is not None else SystemRun()
+    usage = response.get("usage") or {}
+    run.reply = str(response.get("reply") or "")
+    run.claimed_done = not response.get("escalated")
+    if response.get("escalated"):
+        run.notes["escalated"] = True
+    run.turns = int(response.get("rounds") or 0)
+    run.tool_calls = [call["name"] for call in response.get("tool_calls") or []]
+    run.prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    run.cached_tokens = int(usage.get("cached_tokens") or 0)
+    run.completion_tokens = int(usage.get("completion_tokens") or 0)
+    run.model_ms = int(response.get("latency_ms") or 0)
+    run.notes["escalation_kind"] = response.get("escalation_kind")
+    run.transcript = {key: value for key, value in response.items() if key not in CONVERSATION_KEYS}
+    run.conversation = conversation_of(response)
+    if run.conversation is None:
+        run.notes["transcript"] = "unavailable"
+    return run
+
+
+class LocalGaryExecutor:
+    """Runs one Gary turn per case through the gary-local binary, over the case's container."""
+
+    def __init__(self, cluster: DockerCluster) -> None:
+        self.cluster = cluster
+
+    def execute(self, system: dict[str, Any], case: dict[str, Any], name: str) -> SystemRun:
+        started = time.monotonic()
+        run = self._turn(system, turn_message(name, case), name)
+        run.wall_ms = int((time.monotonic() - started) * 1000)
+        return run
+
+    def _turn(self, system: dict[str, Any], text: str, name: str) -> SystemRun:
+        if system["harness"] != "gary":
+            return SystemRun(infra_error=f"the docker backend cannot run the {system['harness']} harness")
+        try:
+            response = self.cluster.gary_turn(name, text, system.get("model_profile"), WALL_CLOCK_S)
+        except GaryLocalTimeout:
+            return SystemRun(notes={"budget_exceeded": "wall clock"})
+        except ClusterError as err:
+            return SystemRun(infra_error=f"gary-local turn failed: {err}")
+        if "error" in response and "reply" not in response:
+            return SystemRun(infra_error=f"gary-local turn failed: {str(response['error'])[:300]}")
+        return gary_run(response)
+
+
 class RealExecutor:
     """Hands the customer message to a system on the live bot."""
 
@@ -530,7 +585,7 @@ class RealExecutor:
         return channel
 
     def execute(self, system: dict[str, Any], case: dict[str, Any], name: str) -> SystemRun:
-        text = f"{context_line(name, case['game'])}\n\n{case['prompt']}"
+        text = turn_message(name, case)
         channel = self._next_channel()
         started = time.monotonic()
         if system["harness"] == "gary":
@@ -566,23 +621,7 @@ class RealExecutor:
                 else:
                     run.infra_error = f"operator gary unreachable: {err}"
                 return run
-        usage = response.get("usage") or {}
-        run.reply = str(response.get("reply") or "")
-        run.claimed_done = not response.get("escalated")
-        if response.get("escalated"):
-            run.notes["escalated"] = True
-        run.turns = int(response.get("rounds") or 0)
-        run.tool_calls = [call["name"] for call in response.get("tool_calls") or []]
-        run.prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        run.cached_tokens = int(usage.get("cached_tokens") or 0)
-        run.completion_tokens = int(usage.get("completion_tokens") or 0)
-        run.model_ms = int(response.get("latency_ms") or 0)
-        run.notes["escalation_kind"] = response.get("escalation_kind")
-        run.transcript = {key: value for key, value in response.items() if key not in CONVERSATION_KEYS}
-        run.conversation = conversation_of(response)
-        if run.conversation is None:
-            run.notes["transcript"] = "unavailable"
-        return run
+        return gary_run(response, run)
 
     def _claude_code(self, system: dict[str, Any], text: str, name: str, channel: str) -> SystemRun:
         try:
@@ -960,18 +999,51 @@ def live_bot_image() -> str:
     return done.stdout.strip() if done.returncode == 0 else f"unavailable: {done.stderr.strip()[:200]}"
 
 
-def build_manifest(argv: list[str], dry_run: bool) -> dict[str, Any]:
-    """Describe the run: configs (secrets stay as $VAR names), code revision, live bot image, args."""
+def build_manifest(argv: list[str], dry_run: bool, local_binary: Path | None = None) -> dict[str, Any]:
+    """Describe the run: configs (secrets stay as $VAR names), code revision, bot image or binary, args.
+
+    `local_binary` marks a docker-backend run: it records the binary and this host in place
+    of the live bot image, which such a run never touches.
+    """
     status = _git_output(["status", "--porcelain"])
-    return {
+    if dry_run:
+        bot_image = "skipped in --dry-run"
+    elif local_binary is not None:
+        bot_image = f"local binary {local_binary}"
+    else:
+        bot_image = live_bot_image()
+    manifest: dict[str, Any] = {
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "args": argv,
         "git_head": _git_output(["rev-parse", "HEAD"]),
         "git_dirty": None if status is None else bool(status),
-        "bot_image": "skipped in --dry-run" if dry_run else live_bot_image(),
+        "bot_image": bot_image,
         "systems": json.loads(SYSTEMS_PATH.read_text(encoding="utf-8")),
         "models": json.loads((HARNESS_DIR / "models.json").read_text(encoding="utf-8")),
     }
+    if local_binary is not None:
+        manifest.update(backend=DOCKER_BACKEND, host=socket.gethostname(), gary_binary=str(local_binary))
+    return manifest
+
+
+def check_backend(systems: list[dict[str, Any]], local: bool) -> None:
+    """Refuse a system the chosen backend cannot run."""
+    for system in systems:
+        docker_only = system.get("backend") == DOCKER_BACKEND
+        if docker_only and not local:
+            raise ValueError(f"{system['system_id']} runs on the docker backend; pass --local")
+        if local and system["harness"] != "gary":
+            raise ValueError(f"{system['system_id']} uses the {system['harness']} harness, which --local cannot run")
+
+
+def read_case_file(path: Path) -> list[str]:
+    """Case ids from a file, one per line; blank lines and `#` comments are skipped."""
+    ids = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            ids.append(entry)
+    return ids
 
 
 def parse_game_caps(items: list[str]) -> dict[str, int]:
@@ -1076,6 +1148,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cases", required=True, type=Path)
     parser.add_argument("--systems", required=True, help="comma-separated system ids from systems.json")
     parser.add_argument("--case", action="append", default=[], help="only this case id (repeatable)")
+    parser.add_argument("--case-file", type=Path, help="only the case ids in this file, one per line")
+    parser.add_argument("--local", action="store_true",
+                        help="Docker containers on this host and the gary-local binary; no cluster or bot")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--out", type=Path)
@@ -1094,9 +1169,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        cases = load_cases(args.cases, args.case)
+        only = args.case + (read_case_file(args.case_file) if args.case_file else [])
+        cases = load_cases(args.cases, only)
         systems = load_systems(SYSTEMS_PATH, [s for s in args.systems.split(",") if s])
         caps = parse_game_caps(args.game_cap)
+        if not args.dry_run:
+            check_backend(systems, args.local)
     except (ValueError, OSError, yaml.YAMLError) as err:
         print(f"run: {err}", file=sys.stderr)
         return 2
@@ -1117,6 +1195,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dry run: {len(records)} records in {out_dir}")
         return 0
 
+    if args.local:
+        return run_local(args, raw_args, systems, cases, caps, out_dir, known)
+
     env_file = read_env_file(find_env_file())
     try:
         for system in systems:
@@ -1135,12 +1216,54 @@ def main(argv: list[str] | None = None) -> int:
             cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps,
             args.force, known, args.rerun_outcomes, aborted, build_manifest(raw_args, False),
         )
+    return report_finish(records, aborted, out_dir, "the operator")
+
+
+def run_local(
+    args: argparse.Namespace,
+    raw_args: list[str],
+    systems: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    caps: dict[str, int],
+    out_dir: Path,
+    known: frozenset[str],
+) -> int:
+    """The docker backend: containers on this host, Gary through the gary-local binary."""
+    try:
+        binary = resolve_binary()
+    except ValueError as err:
+        print(f"run: {err}", file=sys.stderr)
+        return 2
+    env_path = find_env_file()
+    cluster = DockerCluster(
+        GaryLocal(binary, env_path if env_path.exists() else None), ready_timeout_s=args.ready_timeout
+    )
+    print(f"local run: containers prefixed {cluster.prefix}, binary {binary}", flush=True)
+    aborted = threading.Event()
+    try:
+        records = run_all(
+            cluster, LocalGaryExecutor(cluster), systems, cases, args.repeats, args.concurrency, out_dir, caps,
+            args.force, known, args.rerun_outcomes, aborted, build_manifest(raw_args, False, binary),
+        )
+    finally:
+        # Every job destroys its own server; this catches what an interrupt or crash left behind.
+        try:
+            left = cluster.sweep()
+        except ClusterError as err:
+            print(f"run: could not sweep containers prefixed {cluster.prefix}: {err}", file=sys.stderr)
+        else:
+            if left:
+                print(f"swept {len(left)} leftover containers and volumes", flush=True)
+    return report_finish(records, aborted, out_dir, "docker or gary-local")
+
+
+def report_finish(records: list[dict[str, Any]], aborted: threading.Event, out_dir: Path, backend: str) -> int:
     tally: dict[str, int] = {}
     for record in records:
         tally[record["outcome"]] = tally.get(record["outcome"], 0) + 1
     if aborted.is_set():
         print(
-            f"ABORTED: the operator stayed unreachable after {ABORT_AFTER_FAILURES} consecutive failures; "
+            f"ABORTED: {backend} stayed unreachable after {ABORT_AFTER_FAILURES} consecutive failures; "
             f"{len(records)} records written to {out_dir} {tally}. Rerun with --out {out_dir} to finish.",
             file=sys.stderr,
         )
