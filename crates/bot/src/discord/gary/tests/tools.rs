@@ -117,7 +117,7 @@ fn tier_refusal_names_the_tier_each_tool_actually_needs() {
     // Walks the live table so the refusal prose can't be wired to the wrong tier:
     // telling a read-only caller "no such tool" when the real answer is "an admin
     // has to do that" hides the actual reason and sends Gary down a dead end.
-    for (tier, tool) in tool_table() {
+    for (tier, _, tool) in tool_table() {
         let name = tool.function.name;
         let expected = match tier {
             AccessLevel::Admin => {

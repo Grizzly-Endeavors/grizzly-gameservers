@@ -597,6 +597,7 @@ impl DurableState {
 struct ReconcileHandles {
     client: kube::Client,
     namespace: String,
+    control_port: u16,
     domain: String,
     catalog: std::sync::Arc<agones::GameCatalog>,
     events: std::sync::Arc<events::EventLog>,
@@ -609,6 +610,7 @@ impl ReconcileHandles {
         Self {
             client: handles.client.clone(),
             namespace: handles.namespace.clone(),
+            control_port: handles.control_port,
             domain: handles.domain.clone(),
             catalog: std::sync::Arc::clone(&handles.catalog),
             events: std::sync::Arc::clone(&handles.events),
@@ -741,6 +743,7 @@ fn spawn_stranded_cycle(
                 let ctx = agones::StrandedCtx {
                     client: &handles.client,
                     namespace: &handles.namespace,
+                    control_port: handles.control_port,
                     domain: &handles.domain,
                     catalog: &handles.catalog,
                     events: &handles.events,

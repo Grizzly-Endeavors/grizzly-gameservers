@@ -53,7 +53,7 @@ async fn record(
         .instance(InstanceName::new(instance));
     deps.data
         .events
-        .record_lifecycle(&deps.data.kube_client, &deps.data.namespace, event)
+        .record_lifecycle(deps.data.servers(), event)
         .await;
 }
 

@@ -15,7 +15,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use kube::Client;
 use sqlx::postgres::PgPool;
 use tracing::{error, info, warn};
 
@@ -406,8 +405,7 @@ impl EventLog {
     /// without a database makes no extra API calls on lifecycle paths.
     pub(crate) async fn record_lifecycle(
         &self,
-        client: &Client,
-        namespace: &str,
+        servers: crate::agones::Servers<'_>,
         mut event: ProductEvent,
     ) {
         if !self.enabled() {
@@ -416,7 +414,7 @@ impl EventLog {
         if let Some(instance) = event.instance.clone()
             && (event.guild.is_none() || event.game.is_none())
         {
-            match crate::agones::owner_in_cluster(client, namespace, instance.as_str()).await {
+            match servers.owner_of(instance.as_str()).await {
                 Ok(Some(owner)) => {
                     event.guild = event.guild.or(owner.guild);
                     event.game = event.game.or(owner.game);

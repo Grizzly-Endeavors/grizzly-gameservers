@@ -82,11 +82,7 @@ impl BackupCtx<'_> {
     /// The cluster, as the supervisor calls address it. Backups run only against
     /// the deployed bot's own servers, so this is never a fixed directory.
     pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
-        crate::agones::Servers::Cluster {
-            client: self.client,
-            namespace: self.namespace,
-            control_port: self.control_port,
-        }
+        crate::agones::Servers::cluster(self.client, self.namespace, self.control_port)
     }
 }
 

@@ -2218,9 +2218,7 @@ async fn record_boot(
     if let Some(details) = details {
         event = event.details(details);
     }
-    data.events
-        .record_lifecycle(&data.kube_client, &data.namespace, event)
-        .await;
+    data.events.record_lifecycle(data.servers(), event).await;
 }
 
 /// Danger/Cancel button row for a destructive confirmation.

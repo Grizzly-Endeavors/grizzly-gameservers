@@ -90,7 +90,7 @@ pub(crate) struct InstanceOwner {
 /// # Errors
 ///
 /// Returns an error if the Service cannot be read from the Kubernetes API.
-pub(crate) async fn owner_in_cluster(
+pub(super) async fn owner_in_cluster(
     client: &Client,
     namespace: &str,
     instance: &str,

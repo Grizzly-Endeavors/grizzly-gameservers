@@ -44,7 +44,7 @@ use crate::agones::{
     supervisor_start, supervisor_status, supervisor_stop, supervisor_write_file,
     wait_for_instance_ready, wait_for_ready,
 };
-use crate::agones::{InstanceOwner, ModRegistry, ServerDirectory, guild_usage};
+use crate::agones::{InstanceOwner, ModRegistry, ServerDirectory, Servers, guild_usage};
 use crate::backup::{
     ArchiveDeleteOutcome, ArchiveOutcome, ArtifactSummary, BackupOutcome, BootState,
     RecoverOutcome, RestoreOutcome,
@@ -284,8 +284,7 @@ impl ToolCtx<'_> {
         self.data
             .events
             .record_lifecycle(
-                &self.data.kube_client,
-                &self.data.namespace,
+                self.data.servers(),
                 event.guild(self.guild.map(|guild| GuildId::new(guild.to_string()))),
             )
             .await;
@@ -299,9 +298,21 @@ struct TargetName {
     name: String,
 }
 
-/// Every Discord tool paired with the lowest tier that may call it — the single
-/// home the offer list, the dispatch gate, and the below-tier refusal all read,
-/// so a tool's tier is stated exactly once.
+/// What a tool reaches, stated on its table entry so that adding a tool forces the
+/// choice. A `Supervisor` tool needs only a server's supervisor, the game catalog
+/// and the public mod registries, so `gary-local` can offer it. A `Cluster` tool
+/// needs the Kubernetes API, Postgres, object storage, the deferred-task queue or
+/// a Discord channel behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    Supervisor,
+    Cluster,
+}
+
+/// Every Discord tool paired with the lowest tier that may call it and the
+/// [`Backend`] it reaches — the single home the offer list, the dispatch gate,
+/// the below-tier refusal and the local-run offer all read, so a tool's tier and
+/// backend are each stated exactly once.
 ///
 /// The tiers, in the order they appear: read-only lookups anyone may run —
 /// plus `escalate`, which every caller needs precisely because the ones with the
@@ -317,43 +328,68 @@ struct TargetName {
 /// unattended turns at that tier — can act on the memory-pressure incident it
 /// exists to detect, rather than only reporting it. What stops that becoming
 /// runaway allocation is the clamp in `crate::sizing`, not the tier.
-fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
+fn tool_table() -> Vec<(AccessLevel, Backend, ToolDef)> {
+    use Backend::{Cluster, Supervisor};
     vec![
-        (AccessLevel::ReadOnly, ListServers::spec().into()),
-        (AccessLevel::ReadOnly, AboutServer::spec().into()),
-        (AccessLevel::ReadOnly, ListBackups::spec().into()),
-        (AccessLevel::ReadOnly, ListArchives::spec().into()),
-        (AccessLevel::ReadOnly, ServerResources::spec().into()),
-        (AccessLevel::ReadOnly, ExportProfile::spec().into()),
-        (AccessLevel::ReadOnly, Escalate::spec().into()),
-        (AccessLevel::Manager, CreateServer::spec().into()),
-        (AccessLevel::Manager, StopServer::spec().into()),
-        (AccessLevel::Manager, StartServer::spec().into()),
-        (AccessLevel::Manager, RestartServer::spec().into()),
-        (AccessLevel::Manager, ShutdownServer::spec().into()),
-        (AccessLevel::Manager, BrowseFiles::spec().into()),
-        (AccessLevel::Manager, ReadFile::spec().into()),
-        (AccessLevel::Manager, ReadLogs::spec().into()),
-        (AccessLevel::Manager, RunShell::spec().into()),
-        (AccessLevel::Manager, EditFile::spec().into()),
-        (AccessLevel::Manager, WriteFile::spec().into()),
-        (AccessLevel::Manager, RestoreFile::spec().into()),
-        (AccessLevel::Manager, RunWhen::spec().into()),
-        (AccessLevel::Manager, BackupServer::spec().into()),
-        (AccessLevel::Manager, GameGuide::spec().into()),
-        (AccessLevel::Manager, SearchMods::spec().into()),
-        (AccessLevel::Manager, ModInfo::spec().into()),
-        (AccessLevel::Manager, ImportProfile::spec().into()),
-        (AccessLevel::Manager, UpdateMods::spec().into()),
-        (AccessLevel::Manager, Remember::spec().into()),
-        (AccessLevel::Manager, Forget::spec().into()),
-        (AccessLevel::Manager, SetResources::spec().into()),
-        (AccessLevel::Admin, DestroyServer::spec().into()),
-        (AccessLevel::Admin, DeleteArchive::spec().into()),
-        (AccessLevel::Admin, ArchiveServer::spec().into()),
-        (AccessLevel::Admin, RestoreServer::spec().into()),
-        (AccessLevel::Admin, RecoverServer::spec().into()),
-        (AccessLevel::Admin, SendCommand::spec().into()),
+        (
+            AccessLevel::ReadOnly,
+            Supervisor,
+            ListServers::spec().into(),
+        ),
+        (
+            AccessLevel::ReadOnly,
+            Supervisor,
+            AboutServer::spec().into(),
+        ),
+        (AccessLevel::ReadOnly, Cluster, ListBackups::spec().into()),
+        (AccessLevel::ReadOnly, Cluster, ListArchives::spec().into()),
+        (
+            AccessLevel::ReadOnly,
+            Cluster,
+            ServerResources::spec().into(),
+        ),
+        (
+            AccessLevel::ReadOnly,
+            Supervisor,
+            ExportProfile::spec().into(),
+        ),
+        (AccessLevel::ReadOnly, Supervisor, Escalate::spec().into()),
+        (AccessLevel::Manager, Cluster, CreateServer::spec().into()),
+        (AccessLevel::Manager, Supervisor, StopServer::spec().into()),
+        (AccessLevel::Manager, Cluster, StartServer::spec().into()),
+        (
+            AccessLevel::Manager,
+            Supervisor,
+            RestartServer::spec().into(),
+        ),
+        (AccessLevel::Manager, Cluster, ShutdownServer::spec().into()),
+        (AccessLevel::Manager, Supervisor, BrowseFiles::spec().into()),
+        (AccessLevel::Manager, Supervisor, ReadFile::spec().into()),
+        (AccessLevel::Manager, Supervisor, ReadLogs::spec().into()),
+        (AccessLevel::Manager, Supervisor, RunShell::spec().into()),
+        (AccessLevel::Manager, Supervisor, EditFile::spec().into()),
+        (AccessLevel::Manager, Supervisor, WriteFile::spec().into()),
+        (AccessLevel::Manager, Supervisor, RestoreFile::spec().into()),
+        (AccessLevel::Manager, Cluster, RunWhen::spec().into()),
+        (AccessLevel::Manager, Cluster, BackupServer::spec().into()),
+        (AccessLevel::Manager, Supervisor, GameGuide::spec().into()),
+        (AccessLevel::Manager, Supervisor, SearchMods::spec().into()),
+        (AccessLevel::Manager, Supervisor, ModInfo::spec().into()),
+        (
+            AccessLevel::Manager,
+            Supervisor,
+            ImportProfile::spec().into(),
+        ),
+        (AccessLevel::Manager, Supervisor, UpdateMods::spec().into()),
+        (AccessLevel::Manager, Cluster, Remember::spec().into()),
+        (AccessLevel::Manager, Cluster, Forget::spec().into()),
+        (AccessLevel::Manager, Cluster, SetResources::spec().into()),
+        (AccessLevel::Admin, Cluster, DestroyServer::spec().into()),
+        (AccessLevel::Admin, Cluster, DeleteArchive::spec().into()),
+        (AccessLevel::Admin, Cluster, ArchiveServer::spec().into()),
+        (AccessLevel::Admin, Cluster, RestoreServer::spec().into()),
+        (AccessLevel::Admin, Cluster, RecoverServer::spec().into()),
+        (AccessLevel::Admin, Supervisor, SendCommand::spec().into()),
     ]
 }
 
@@ -362,8 +398,8 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
 pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
     tool_table()
         .into_iter()
-        .filter(|(tier, _)| access >= *tier)
-        .map(|(_, tool)| tool)
+        .filter(|(tier, _, _)| access >= *tier)
+        .map(|(_, _, tool)| tool)
         .collect()
 }
 
@@ -376,43 +412,14 @@ pub(crate) fn available_tools_for(access: AccessLevel, memory_tools: bool) -> Ve
     defs
 }
 
-/// The tools that reach nothing but a server's supervisor, the game catalog and
-/// the public mod registries — what `gary-local` can offer, since it has no
-/// cluster, database, object store, queue or Discord channel behind it. A tool
-/// left off here isn't offered there at all, rather than offered and failing.
-const SUPERVISOR_ONLY_TOOLS: &[&str] = &[
-    ListServers::NAME,
-    AboutServer::NAME,
-    ExportProfile::NAME,
-    Escalate::NAME,
-    StopServer::NAME,
-    RestartServer::NAME,
-    BrowseFiles::NAME,
-    ReadFile::NAME,
-    ReadLogs::NAME,
-    RunShell::NAME,
-    EditFile::NAME,
-    WriteFile::NAME,
-    RestoreFile::NAME,
-    GameGuide::NAME,
-    SearchMods::NAME,
-    ModInfo::NAME,
-    ImportProfile::NAME,
-    UpdateMods::NAME,
-    SendCommand::NAME,
-];
-
-/// Whether `name` runs with only a supervisor behind it; see
-/// [`SUPERVISOR_ONLY_TOOLS`].
-pub(crate) fn needs_only_supervisor(name: &str) -> bool {
-    SUPERVISOR_ONLY_TOOLS.contains(&name)
-}
-
-/// [`available_tools`] narrowed to [`SUPERVISOR_ONLY_TOOLS`], in table order.
+/// The tools `gary-local` offers: every [`Backend::Supervisor`] tool within the
+/// caller's tier, in table order. A tool left out isn't offered there at all,
+/// rather than offered and failing.
 pub(crate) fn supervisor_only_tools(access: AccessLevel) -> Vec<ToolDef> {
-    available_tools(access)
+    tool_table()
         .into_iter()
-        .filter(|tool| needs_only_supervisor(&tool.function.name))
+        .filter(|(tier, backend, _)| access >= *tier && *backend == Backend::Supervisor)
+        .map(|(_, _, tool)| tool)
         .collect()
 }
 
@@ -420,8 +427,16 @@ pub(crate) fn supervisor_only_tools(access: AccessLevel) -> Vec<ToolDef> {
 fn tier_of(name: &str) -> Option<AccessLevel> {
     tool_table()
         .into_iter()
-        .find(|(_, tool)| tool.function.name == name)
-        .map(|(tier, _)| tier)
+        .find(|(_, _, tool)| tool.function.name == name)
+        .map(|(tier, _, _)| tier)
+}
+
+/// What `name` reaches, or `None` if it isn't a tool at all.
+pub(crate) fn backend_of(name: &str) -> Option<Backend> {
+    tool_table()
+        .into_iter()
+        .find(|(_, _, tool)| tool.function.name == name)
+        .map(|(_, backend, _)| backend)
 }
 
 /// Whether `name` is a tool at all, at any tier. Distinguishes a typo (which a
@@ -450,36 +465,26 @@ pub(crate) fn known_tool(name: &str) -> bool {
 /// listing (see `exec_recover`), and `escalate` reaches no server at all.
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
-    match tier_of(call.function.name.as_str()) {
-        Some(required) if ctx.access < required => {
-            return tier_refusal(call.function.name.as_str());
-        }
+    let name = call.function.name.as_str();
+    match tier_of(name) {
+        Some(required) if ctx.access < required => return tier_refusal(name),
         // A fixed directory has nothing behind it but supervisors, so a tool that
-        // needs more was never offered there and reads as unknown if called.
+        // needs a cluster was never offered there and reads as unknown if called.
         Some(_)
             if matches!(ctx.data.directory, ServerDirectory::Fixed(_))
-                && !needs_only_supervisor(call.function.name.as_str()) =>
+                && backend_of(name) == Some(Backend::Cluster) =>
         {
-            return prompts::UnknownTool {
-                name: &call.function.name,
-            }
-            .render();
+            return prompts::UnknownTool { name }.render();
         }
         Some(_) => {}
-        None => {
-            return prompts::UnknownTool {
-                name: &call.function.name,
-            }
-            .render();
-        }
+        None => return prompts::UnknownTool { name }.render(),
     }
-    if targets_existing_server(call.function.name.as_str())
-        && let Ok(TargetName { name }) = serde_json::from_str::<TargetName>(args)
-        && let Some(refusal) = scope_refusal(ctx, &name).await
+    if targets_existing_server(name)
+        && let Ok(TargetName { name: server }) = serde_json::from_str::<TargetName>(args)
+        && let Some(refusal) = scope_refusal(ctx, &server).await
     {
         return refusal;
     }
-    let name = call.function.name.as_str();
     match name {
         ListServers::NAME => exec_list_servers(ctx).await,
         AboutServer::NAME => match parse::<NameParams>(args) {
@@ -1135,6 +1140,7 @@ fn refusal_reply(server: &str, outcome: &ProvisionOutcome) -> Option<String> {
 /// full readiness budget.
 fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
     let (client, namespace) = (ctx.data.kube_client.clone(), ctx.data.namespace.clone());
+    let control_port = ctx.data.control_port;
     let events = std::sync::Arc::clone(&ctx.data.events);
     let shutdown = ctx.data.shutdown.clone();
     let attribution = ctx.attribution();
@@ -1156,8 +1162,7 @@ fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
         let elapsed = ready.then(|| started.elapsed());
         events
             .record_lifecycle(
-                &client,
-                &namespace,
+                Servers::cluster(&client, &namespace, control_port),
                 ProductEvent::new(kind, &attribution, mapping::readiness(ready))
                     .instance(InstanceName::new(server))
                     .guild(guild)

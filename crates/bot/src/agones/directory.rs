@@ -124,6 +124,18 @@ pub(crate) enum Servers<'a> {
     Fixed(&'a FixedServers),
 }
 
+impl<'a> Servers<'a> {
+    /// The cluster directory: servers located through `client` in `namespace`,
+    /// with their supervisors dialed on `control_port`.
+    pub(crate) fn cluster(client: &'a Client, namespace: &'a str, control_port: u16) -> Self {
+        Self::Cluster {
+            client,
+            namespace,
+            control_port,
+        }
+    }
+}
+
 impl Servers<'_> {
     /// Where `instance`'s control API is, or why it can't be reached.
     ///

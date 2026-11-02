@@ -66,11 +66,7 @@ pub(crate) struct SamplerCtx<'a> {
 impl SamplerCtx<'_> {
     /// The cluster, as the supervisor calls address it.
     fn servers(&self) -> crate::agones::Servers<'_> {
-        crate::agones::Servers::Cluster {
-            client: self.client,
-            namespace: self.namespace,
-            control_port: self.control_port,
-        }
+        crate::agones::Servers::cluster(self.client, self.namespace, self.control_port)
     }
 }
 

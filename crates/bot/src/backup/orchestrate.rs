@@ -105,9 +105,7 @@ impl BackupService {
     /// Record a backup-flow event. Guild and game are filled from the instance's
     /// labels when the flow didn't already have a target in hand.
     async fn record(&self, ctx: &BackupCtx<'_>, event: ProductEvent) {
-        self.events
-            .record_lifecycle(ctx.client, ctx.namespace, event)
-            .await;
+        self.events.record_lifecycle(ctx.servers(), event).await;
     }
 
     /// How often the scheduled backup cycle should run.

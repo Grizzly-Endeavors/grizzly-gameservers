@@ -31,6 +31,7 @@ use kube::{Client, Error as KubeError};
 use tracing::{error, info, warn};
 
 use super::catalog::GameCatalog;
+use super::directory::Servers;
 use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed, label_value};
 use super::provision::{
     DeleteWait, DeletionState, StartBegin, begin_start, delete_and_confirm, deletion_state,
@@ -43,6 +44,7 @@ use crate::events::{Attribution, EventKind, ProductEvent, mapping};
 pub(crate) struct StrandedCtx<'a> {
     pub(crate) client: &'a Client,
     pub(crate) namespace: &'a str,
+    pub(crate) control_port: u16,
     pub(crate) domain: &'a str,
     pub(crate) catalog: &'a GameCatalog,
     /// Records a recycle as a system-driven start. Strand-and-recycle frequency
@@ -193,8 +195,7 @@ async fn recycle_instance(ctx: &StrandedCtx<'_>, instance: &str) -> Result<()> {
     .await?;
     ctx.events
         .record_lifecycle(
-            ctx.client,
-            ctx.namespace,
+            Servers::cluster(ctx.client, ctx.namespace, ctx.control_port),
             ProductEvent::new(
                 EventKind::ServerStarted,
                 &Attribution::system(),

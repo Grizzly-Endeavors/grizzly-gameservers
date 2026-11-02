@@ -1,4 +1,5 @@
 use super::*;
+use crate::discord::gary::tools::known_tool;
 
 fn offered(access: AccessLevel) -> Vec<String> {
     supervisor_only_tools(access)
@@ -158,4 +159,28 @@ fn the_contract_request_shapes_parse() {
     .unwrap();
     assert_eq!(tool.tool.as_deref(), Some("write_file"));
     assert!(!tool.memory);
+}
+
+#[tokio::test]
+async fn a_cluster_tool_the_fixed_directory_never_offered_reads_as_unknown() {
+    // gary-local never offers create_server, but a model can still name it. The
+    // dispatcher has to answer as it would for a name that isn't a tool, rather
+    // than reach for a cluster that isn't there.
+    let tasks = TaskTracker::new();
+    let data = local_data(
+        local_config().expect("local config"),
+        FixedServers::default(),
+        &tasks,
+        CancellationToken::new(),
+    )
+    .await
+    .expect("local data");
+    let response = run_tool(
+        &data,
+        AccessLevel::Admin,
+        "create_server".to_owned(),
+        &serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(response.result, "'create_server' isn't a tool I have.");
 }

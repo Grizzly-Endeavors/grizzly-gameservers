@@ -26,7 +26,7 @@ use crate::agent::{
 use crate::agones::{FixedServer, FixedServers, ServerDirectory, ServerScope};
 use crate::config::BotConfig;
 use crate::discord::gary::tools::{
-    ConfirmMode, ToolCtx, dispatch, known_tool, needs_only_supervisor, supervisor_only_tools,
+    Backend, ConfirmMode, ToolCtx, backend_of, dispatch, supervisor_only_tools,
 };
 use crate::discord::gary::{
     build_system_prompt_with_memory, drive_turn, framed_turn, game_catalog_list,
@@ -179,15 +179,13 @@ fn job_of(
                 model_profile,
             })
         }
-        (None, Some(name)) => {
-            if !known_tool(&name) {
-                bail!("unknown tool {name:?}");
+        (None, Some(name)) => match backend_of(&name) {
+            Some(Backend::Supervisor) => Ok(Job::Tool { name, arguments }),
+            Some(Backend::Cluster) => {
+                bail!("tool {name:?} needs the cluster, so gary-local doesn't offer it")
             }
-            if !needs_only_supervisor(&name) {
-                bail!("tool {name:?} needs the cluster, so gary-local doesn't offer it");
-            }
-            Ok(Job::Tool { name, arguments })
-        }
+            None => bail!("unknown tool {name:?}"),
+        },
         (Some(_), Some(_)) => bail!("the request has both \"prompt\" and \"tool\"; send one"),
         (None, None) => bail!("the request has neither \"prompt\" nor \"tool\"; send one"),
     }

@@ -210,11 +210,11 @@ impl Data {
     /// Where this process finds a server's supervisor, for every control call.
     pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
         match &self.directory {
-            crate::agones::ServerDirectory::Cluster => crate::agones::Servers::Cluster {
-                client: &self.kube_client,
-                namespace: &self.namespace,
-                control_port: self.control_port,
-            },
+            crate::agones::ServerDirectory::Cluster => crate::agones::Servers::cluster(
+                &self.kube_client,
+                &self.namespace,
+                self.control_port,
+            ),
             crate::agones::ServerDirectory::Fixed(fixed) => crate::agones::Servers::Fixed(fixed),
         }
     }

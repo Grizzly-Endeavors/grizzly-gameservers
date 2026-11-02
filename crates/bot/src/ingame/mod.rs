@@ -67,11 +67,7 @@ impl IngameDeps {
     /// The cluster, as the supervisor calls address it. In-game triggers come
     /// only from the deployed bot's own servers.
     pub(crate) fn servers(&self) -> crate::agones::Servers<'_> {
-        crate::agones::Servers::Cluster {
-            client: &self.client,
-            namespace: &self.namespace,
-            control_port: self.control_port,
-        }
+        crate::agones::Servers::cluster(&self.client, &self.namespace, self.control_port)
     }
 
     /// Carve the endpoint's handles out of the command `Data`, so both halves of

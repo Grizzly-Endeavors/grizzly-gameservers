@@ -49,7 +49,7 @@ pub(crate) use provision::{
     provision_paused_instance, shutdown_instance, wait_for_instance_ready,
 };
 pub(crate) use resize::{ResizeOutcome, resize_instance};
-pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope, owner_in_cluster};
+pub(crate) use scope::{InstanceOwner, ScopeVerdict, ServerScope};
 pub(crate) use stranded::{StrandedCtx, run_stranded_cycle};
 pub(crate) use supervisor::{
     ControlReady, PodTarget, ReadyWait, RuntimeState, StatusPoll, SupervisorOutcome,
