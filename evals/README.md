@@ -46,6 +46,7 @@ The definitions are in `harness/systems.json`. Rates are in `harness/models.json
 | `gary-fw` | GLM 5.3 Flash on Fireworks | Gary | Our system |
 | `cc-fw` | GLM 5.3 Flash on Fireworks | Claude Code | Harness ablation (same model as `gary-fw`) |
 | `gary-ollama-dev` | GLM 5.2 on Ollama | Gary | Dev smoke only; not a result row |
+| `gary-fw-local` | GLM 5.3 Flash on Fireworks | Gary, run locally (`--local`) | Dev iteration only; not a result row |
 | `human-t1t2` | Not applicable | Not applicable | Estimate from `human_estimate.json`; never measured |
 
 All measured systems get the same cases, the same customer message, the same tool surface (the Claude Code rows reach it through the MCP server in `harness/gary_mcp.py`), and the same budget of 40 model calls or 20 minutes per case. Gary starts each case with its memory turned off. See [evals.md](evals.md) section 2.
@@ -102,6 +103,12 @@ python3 evals/harness/check_split.py
 python3 evals/harness/run.py --cases evals/cases/dev --systems gary-fw,cc-fw,cc-opus --out evals/results/dev-1
 ```
 
+**Local dev run (no cluster).** `--local` runs each server as a Docker container on this host, from the `localhost:5000/grizzly-gameservers-<game>:dev` image (`GARY_LOCAL_IMAGE_PREFIX` replaces the part before `<game>`), with the catalog env, memory limit and a named volume from `games/<game>/gameserver.yaml`. Gary's turns and tools go through `grizzly-gameservers gary-local` (`GARY_LOCAL_BIN`, else `target/release`, then `target/debug`), which reads its keys from the environment or the repo-root `.env`. It needs no kubectl, port-forward or Discord channel, and runs only `gary`-harness systems. Container and volume names start with a per-process prefix, and each one carries the label `grizzly-eval.run=<prefix>`. Use `--case-file PATH` (one id per line, `#` comments allowed) to give a shard its list.
+
+```
+python3 evals/harness/run.py --local --cases evals/cases/dev --systems gary-fw-local --concurrency 3 --out evals/results/local-1
+```
+
 `evals/cases/dev/smoke-mc-pvp-d1.yaml` is a one-case smoke check (`--case smoke-mc-pvp-d1`). The runner skips a (system, case, repeat) whose record already exists in the output directory; pass `--force` to rerun it.
 
 **Scored run.** Run only after the freeze. One run per case per system; `--repeats 3` on a chosen subset (use `--case ID` for each) gives the variation between runs. Without `--out`, records go to `evals/results/runs/<UTC timestamp>/`. `--concurrency` sets parallel servers and `--game-cap game=N` limits servers per game.
@@ -136,7 +143,7 @@ python3 -m unittest discover -s evals/harness/tests -q
 
 Each run directory holds `<system>__<case>__r<N>.json` run records and a `transcripts/` directory. Gary transcripts hold the model conversation and every tool call and result; Claude Code transcripts hold the final `claude -p` output. Scored output is `eval_results.json` (systems summary, then per-case results) and `summary.md`. `results/smoke/` holds the records from the first paid smoke run on one dev case.
 
-Run records do not yet carry a manifest. Nothing in a run directory records the `systems.json` or `models.json` a run used, the eval repo commit, or the bot image digest the cluster ran. To recover them, use the commit that added the run directory and the bot digest pinned in `deploy/values.yaml` at that commit.
+Each run directory also holds `manifest.json`: the arguments, the eval repo commit and whether the tree was dirty, the `systems.json` and `models.json` the run used, and the bot image the cluster ran. A `--local` run records `"backend": "docker"`, the host name and the `gary-local` binary path in place of the bot image.
 
 ## Integrity rules
 
