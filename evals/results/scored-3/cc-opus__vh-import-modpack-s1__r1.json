@@ -1,0 +1,72 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "vh-import-modpack-s1",
+  "game": "valheim",
+  "task_area": "config",
+  "category": "mods",
+  "prompt": "my friend built a mod profile in r2modman and sent me this code 01a19dfd-180d-a733-48eb-8dff8c631762. can we run that on the server?",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 11,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "read_file",
+    "list_backups",
+    "backup_server",
+    "import_profile",
+    "restart_server",
+    "run_when",
+    "run_shell",
+    "read_logs"
+  ],
+  "usage": {
+    "prompt_tokens": 76061,
+    "cached_tokens": 68175,
+    "completion_tokens": 1982
+  },
+  "latency_ms": 74168,
+  "model_ms": 24081,
+  "tool_ms": 50087,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": false,
+      "detail": "pattern present"
+    }
+  ],
+  "server": "ev-vh-import-modpack-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:23:17+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T23:40:57+00:00"
+}

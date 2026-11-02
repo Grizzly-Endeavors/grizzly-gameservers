@@ -1,0 +1,69 @@
+{
+  "system_id": "cc-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "claude_code",
+  "case_id": "fa-keep-running-s1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "my belts freeze when everyone logs off, i want the base to keep producing 24/7",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 13,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "browse_files",
+    "read_file",
+    "browse_files",
+    "read_file",
+    "read_file",
+    "run_shell",
+    "edit_file",
+    "restart_server",
+    "read_logs",
+    "read_logs"
+  ],
+  "usage": {
+    "prompt_tokens": 88562,
+    "cached_tokens": 82360,
+    "completion_tokens": 1713
+  },
+  "latency_ms": 55565,
+  "model_ms": 15088,
+  "tool_ms": 40477,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    }
+  ],
+  "server": "ev-fa-keep-running-s1-cc-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:21:22+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:27:16+00:00"
+}

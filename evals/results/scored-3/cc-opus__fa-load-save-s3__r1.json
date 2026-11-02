@@ -1,0 +1,64 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-load-save-s3",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "world",
+  "prompt": "grab the oilfield save i put on there and start the server from that",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 8,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "run_shell",
+    "backup_server",
+    "write_file",
+    "restart_server",
+    "read_logs"
+  ],
+  "usage": {
+    "prompt_tokens": 65275,
+    "cached_tokens": 51556,
+    "completion_tokens": 1157
+  },
+  "latency_ms": 41426,
+  "model_ms": 18838,
+  "tool_ms": 22588,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-fa-load-save-s3-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:18:04+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:19:39+00:00"
+}

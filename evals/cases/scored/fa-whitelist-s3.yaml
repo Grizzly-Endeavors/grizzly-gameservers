@@ -1,0 +1,34 @@
+id: fa-whitelist-s3
+scenario: fa-whitelist
+split: scored
+game: factorio
+kind: access
+task_area: config
+prompt: it's just my kids playing, so make sure nobody but Mabel, Otis and June can get in
+setup:
+- tool: write_file
+  args:
+    path: config/server-adminlist.json
+    content: '["Rivet"]
+
+      '
+- restart: true
+- wait: ready
+  timeout_s: 300
+checks:
+- type: ready
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Mabel)"'
+  present: true
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Otis)"'
+  present: true
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:June)"'
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test "$(jq length /factorio/config/server-whitelist.json)" = 3'
+  expect_exit: 0

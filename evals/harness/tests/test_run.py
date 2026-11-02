@@ -262,6 +262,64 @@ class ClaudeResultTest(unittest.TestCase):
             run.parse_claude_result("not json")
 
 
+class ClaudeStreamTests(unittest.TestCase):
+    def test_stream_yields_events_and_result(self):
+        events = [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x"}]}},
+            CLAUDE_FIXTURE,
+        ]
+        raw = "\n".join(json.dumps(e) for e in events) + "\nnot json\n"
+        got, parsed = run.parse_claude_stream(raw)
+        self.assertEqual(len(got), 4)
+        self.assertEqual(parsed["turns"], 7)
+        self.assertEqual(parsed["reply"], "all fixed")
+        self.assertEqual(parsed["prompt_tokens"], 1400)
+
+    def test_stream_without_result_is_an_error(self):
+        with self.assertRaises(ValueError):
+            run.parse_claude_stream(json.dumps({"type": "system"}))
+
+    def test_escalate_tool_use_is_detected(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "mcp__gary__escalate", "input": {"reason": "needs a human"}},
+            ]}},
+            CLAUDE_FIXTURE,
+        ]
+        raw = "\n".join(json.dumps(e) for e in events)
+        got, _ = run.parse_claude_stream(raw)
+        self.assertTrue(run.stream_escalated(got))
+
+    def test_stream_without_escalate_is_not_escalated(self):
+        events = [
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__gary__read_file"}]}},
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "escalate"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "escalate"}]}},
+            CLAUDE_FIXTURE,
+        ]
+        self.assertFalse(run.stream_escalated(events))
+
+
+class ManifestTests(unittest.TestCase):
+    def test_dry_run_writes_manifest_without_secrets(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            cluster = run.FakeCluster()
+            manifest = run.build_manifest(["--dry-run"], True)
+            run.run_all(cluster, run.FakeExecutor(cluster), [], [], 1, 1, out, {}, manifest=manifest)
+            written = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(written["args"], ["--dry-run"])
+        self.assertIn("skipped", written["bot_image"])
+        self.assertIsInstance(written["git_dirty"], bool)
+        self.assertEqual(len(written["git_head"]), 40)
+        self.assertIn("$ANTHROPIC_API_KEY", json.dumps(written["systems"]))
+        self.assertTrue(written["models"])
+
+
 ANY_OF_CASE = dict(
     PVP_CASE,
     checks=[
@@ -433,3 +491,31 @@ class ChannelSelectionTest(unittest.TestCase):
         executor = run.RealExecutor(conn, ["first", "second", "third"], {})
         self.assertEqual([executor._next_channel() for _ in range(4)], ["first", "second", "third", "first"])
         self.assertEqual(conn.channel, "first")
+
+
+class RunChecksSettleTest(unittest.TestCase):
+    CASE = {"checks": [{"type": "file_regex", "path": "/data/x", "pattern": "on", "present": True}]}
+
+    def test_waits_for_state_that_appears_after_restart(self):
+        cluster = run.FakeCluster()
+        cluster.files["srv"] = {}
+        calls = {"n": 0}
+        real_exec = cluster.exec
+
+        def exec_late(name, argv, timeout=120.0):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                cluster.files["srv"]["/data/x"] = "on"
+            return real_exec(name, argv, timeout)
+
+        cluster.exec = exec_late
+        results = run.run_checks(cluster, self.CASE, "srv", "", "after restart")
+        self.assertTrue(all(r["ok"] for r in results))
+        self.assertEqual(results[0]["name"].split(":")[0], "after restart")
+
+    def test_state_that_never_holds_fails_at_the_settle_deadline(self):
+        cluster = run.FakeCluster()
+        cluster.files["srv"] = {}
+        results = run.run_checks(cluster, self.CASE, "srv", "", "after stop")
+        self.assertFalse(results[0]["ok"])
+        self.assertGreaterEqual(cluster.clock, run.CHECK_SETTLE_S)

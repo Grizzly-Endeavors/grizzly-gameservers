@@ -559,6 +559,13 @@ class SystemIdentityTest(unittest.TestCase):
                                  make_record("open", "c2", model="open", harness="gary")])
             self.assertEqual(len(score.load_records(runs)), 2)
 
+    def test_run_manifest_is_not_a_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            write_records(runs, [make_record("open", "c1", model="open", harness="gary")])
+            (runs / score.MANIFEST_NAME).write_text('{"backend": "cluster"}', encoding="utf-8")
+            self.assertEqual(len(score.load_records(runs)), 1)
+
 
 class NumericFieldTest(unittest.TestCase):
     def test_null_or_wrongly_typed_fields_name_the_field(self) -> None:

@@ -1,0 +1,53 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-load-save-d1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "world",
+  "prompt": "I uploaded my singleplayer save megabase.zip, can you load that one on the server?",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 7,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "run_shell",
+    "run_shell",
+    "escalate"
+  ],
+  "usage": {
+    "prompt_tokens": 70510,
+    "cached_tokens": 64923,
+    "completion_tokens": 2350
+  },
+  "latency_ms": 48121,
+  "model_ms": 30749,
+  "tool_ms": 17372,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: command terminated with exit code 1"
+    }
+  ],
+  "server": "ev-fa-load-save-d1-cc-opus-1",
+  "destroyed": false,
+  "detail": "destroy failed: operator tool destroy_server failed: POST /operator/tool failed: Remote end closed connection without response",
+  "started_at": "2026-11-02T21:32:13+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:33:44+00:00"
+}

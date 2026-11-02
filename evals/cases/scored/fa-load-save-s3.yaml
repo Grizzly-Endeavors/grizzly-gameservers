@@ -1,0 +1,21 @@
+id: fa-load-save-s3
+scenario: fa-load-save
+split: scored
+game: factorio
+kind: world
+task_area: config
+prompt: grab the oilfield save i put on there and start the server from that
+setup:
+- pod_put:
+    src: evals/fixtures/factorio/singleplayer-save.zip
+    dst: /factorio/saves/oilfield.zip
+- pod_exec: sh -c 'chown factorio:factorio /factorio/saves/oilfield.zip && touch -d "2026-09-01 10:00:00" /factorio/saves/oilfield.zip'
+- restart: true
+- wait: log
+  pattern: Loading map /factorio/saves/_autosave
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: grep -q 'Loading map /factorio/saves/oilfield.zip' /factorio/factorio-current.log
+  expect_exit: 0

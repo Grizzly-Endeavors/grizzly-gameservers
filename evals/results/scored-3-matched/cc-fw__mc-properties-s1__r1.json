@@ -1,0 +1,81 @@
+{
+  "system_id": "cc-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "claude_code",
+  "case_id": "mc-properties-s1",
+  "game": "minecraft",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "set the server to creative mode and make the server description say Mossy Hollow",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 15,
+  "tool_calls": [
+    "game_guide",
+    "read_file",
+    "edit_file",
+    "edit_file",
+    "restart_server",
+    "read_logs",
+    "read_logs",
+    "run_when",
+    "read_logs",
+    "read_logs",
+    "read_logs",
+    "run_shell",
+    "read_logs",
+    "read_logs"
+  ],
+  "usage": {
+    "prompt_tokens": 196403,
+    "cached_tokens": 183884,
+    "completion_tokens": 1373
+  },
+  "latency_ms": 32613,
+  "model_ms": 16647,
+  "tool_ms": 15966,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-mc-properties-s1-cc-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:39:57+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:43:13+00:00"
+}

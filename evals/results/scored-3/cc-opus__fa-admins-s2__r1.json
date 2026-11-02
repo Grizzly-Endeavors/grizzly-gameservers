@@ -1,0 +1,63 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-admins-s2",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "i need Gearhead_Gus to be an admin, he keeps asking me to do stuff for him",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 7,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "send_command",
+    "run_shell",
+    "read_file",
+    "read_logs"
+  ],
+  "usage": {
+    "prompt_tokens": 53860,
+    "cached_tokens": 40740,
+    "completion_tokens": 886
+  },
+  "latency_ms": 31206,
+  "model_ms": 12930,
+  "tool_ms": 18276,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-adminlist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /factorio/config/server-adminlist.json",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-fa-admins-s2-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:18:04+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:19:24+00:00"
+}

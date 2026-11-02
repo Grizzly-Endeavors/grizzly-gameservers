@@ -1,0 +1,95 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "tr-reset-world-s1",
+  "game": "terraria",
+  "task_area": "config",
+  "category": "world",
+  "prompt": "new world on expert please. don't delete the one we have",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 19,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "browse_files",
+    "list_backups",
+    "run_shell",
+    "run_shell",
+    "backup_server",
+    "write_file",
+    "restart_server",
+    "run_shell",
+    "run_shell",
+    "run_when",
+    "run_shell",
+    "run_shell",
+    "about_server",
+    "run_shell",
+    "run_shell",
+    "send_command"
+  ],
+  "usage": {
+    "prompt_tokens": 236614,
+    "cached_tokens": 226502,
+    "completion_tokens": 3496
+  },
+  "latency_ms": 166335,
+  "model_ms": 42376,
+  "tool_ms": 123959,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: any_of",
+      "ok": true,
+      "detail": "file_regex /data/config/serverconfig.txt passed: ; file_regex /data/config/serverconfig.txt failed: pattern absent"
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: any_of",
+      "ok": true,
+      "detail": "file_regex /data/config/serverconfig.txt passed: ; file_regex /data/config/serverconfig.txt failed: pattern absent"
+    }
+  ],
+  "server": "ev-tr-reset-world-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:08:55+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T23:16:08+00:00"
+}

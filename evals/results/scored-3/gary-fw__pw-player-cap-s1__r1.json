@@ -1,0 +1,31 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "pw-player-cap-s1",
+  "game": "palworld",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "our friend group got bigger, can the server hold 28 players now",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "staging_error",
+  "claimed_done": false,
+  "turns": 0,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 0,
+    "cached_tokens": 0,
+    "completion_tokens": 0
+  },
+  "latency_ms": 0,
+  "model_ms": 0,
+  "tool_ms": 0,
+  "checks": [],
+  "server": "ev-pw-player-cap-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "setup[5] pod_exec failed: kubectl exec failed: Command '['kubectl', '-n', 'game-servers', 'exec', 'ev-pw-player-cap-s1-gary-fw-1', '-c', 'palworld', '--', 'bash', '/tmp/wait_rcon_open.sh']' timed out after 120.0 seconds",
+  "started_at": "2026-11-02T23:07:38+00:00",
+  "finished_at": "2026-11-02T23:20:28+00:00"
+}

@@ -1,0 +1,60 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-disable-mod-s4",
+  "game": "factorio",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "turned on pipe tuner and now the factorio server just sits there and never comes up",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 9,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "read_logs",
+    "run_shell",
+    "edit_file",
+    "run_shell",
+    "edit_file",
+    "escalate"
+  ],
+  "usage": {
+    "prompt_tokens": 96328,
+    "cached_tokens": 88577,
+    "completion_tokens": 3000
+  },
+  "latency_ms": 38643,
+  "model_ms": 35503,
+  "tool_ms": 3140,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: command terminated with exit code 1"
+    },
+    {
+      "name": "after stop: file_regex /factorio/mods/mod-list.json",
+      "ok": false,
+      "detail": "pattern absent"
+    }
+  ],
+  "server": "ev-fa-disable-mod-s4-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:55:45+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:57:10+00:00"
+}

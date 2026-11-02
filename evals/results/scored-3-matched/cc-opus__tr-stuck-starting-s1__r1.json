@@ -1,0 +1,78 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "tr-stuck-starting-s1",
+  "game": "terraria",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "nobody can get on the terraria server since this morning, the bot says it's starting but it never finishes",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 12,
+  "tool_calls": [
+    "about_server",
+    "read_logs",
+    "run_shell",
+    "list_backups",
+    "game_guide",
+    "run_shell",
+    "run_shell",
+    "edit_file",
+    "restart_server",
+    "read_logs",
+    "backup_server"
+  ],
+  "usage": {
+    "prompt_tokens": 128357,
+    "cached_tokens": 109361,
+    "completion_tokens": 2205
+  },
+  "latency_ms": 39976,
+  "model_ms": 28930,
+  "tool_ms": 11046,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-tr-stuck-starting-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:16:08+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T23:30:21+00:00"
+}

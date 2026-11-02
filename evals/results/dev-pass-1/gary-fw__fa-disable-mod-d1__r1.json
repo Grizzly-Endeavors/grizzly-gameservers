@@ -1,0 +1,60 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "fa-disable-mod-d1",
+  "game": "factorio",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "the factorio server crashed right after we turned on a new mod and won't start now",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": false,
+  "turns": 8,
+  "tool_calls": [
+    "list_servers",
+    "about_server",
+    "game_guide",
+    "browse_files",
+    "start_server",
+    "start_server",
+    "list_servers",
+    "start_server",
+    "escalate"
+  ],
+  "usage": {
+    "prompt_tokens": 78439,
+    "cached_tokens": 76520,
+    "completion_tokens": 2002
+  },
+  "latency_ms": 667767,
+  "model_ms": 16798,
+  "tool_ms": 650969,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": false,
+      "detail": "state Unhealthy"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    },
+    {
+      "name": "after stop: file_regex /factorio/mods/mod-list.json",
+      "ok": false,
+      "detail": "could not read file: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    }
+  ],
+  "server": "ev-fa-disable-mod-d1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:12:12+00:00",
+  "notes": {
+    "escalation_kind": "agent_requested"
+  },
+  "finished_at": "2026-11-02T21:31:13+00:00"
+}

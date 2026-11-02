@@ -1,0 +1,66 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-keep-running-s1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "my belts freeze when everyone logs off, i want the base to keep producing 24/7",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 10,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "run_shell",
+    "edit_file",
+    "restart_server",
+    "run_shell",
+    "send_command",
+    "send_command"
+  ],
+  "usage": {
+    "prompt_tokens": 114173,
+    "cached_tokens": 108623,
+    "completion_tokens": 1808
+  },
+  "latency_ms": 81195,
+  "model_ms": 25885,
+  "tool_ms": 55310,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    }
+  ],
+  "server": "ev-fa-keep-running-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:18:04+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:20:36+00:00"
+}

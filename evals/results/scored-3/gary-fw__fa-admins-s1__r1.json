@@ -1,0 +1,65 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "fa-admins-s1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "can you give BeltQueen admin so she can run commands in game?",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 9,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "send_command",
+    "send_command",
+    "read_logs",
+    "browse_files",
+    "browse_files",
+    "read_file",
+    "edit_file"
+  ],
+  "usage": {
+    "prompt_tokens": 89996,
+    "cached_tokens": 73728,
+    "completion_tokens": 3425
+  },
+  "latency_ms": 80534,
+  "model_ms": 44877,
+  "tool_ms": 35657,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-adminlist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /factorio/config/server-adminlist.json",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-fa-admins-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:21:22+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T22:27:05+00:00"
+}

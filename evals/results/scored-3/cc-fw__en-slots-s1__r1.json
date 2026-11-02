@@ -1,0 +1,31 @@
+{
+  "system_id": "cc-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "claude_code",
+  "case_id": "en-slots-s1",
+  "game": "enshrouded",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "we need 12 slots",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "staging_error",
+  "claimed_done": false,
+  "turns": 0,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 0,
+    "cached_tokens": 0,
+    "completion_tokens": 0
+  },
+  "latency_ms": 0,
+  "model_ms": 0,
+  "tool_ms": 0,
+  "checks": [],
+  "server": "ev-en-slots-s1-cc-fw-1",
+  "destroyed": true,
+  "detail": "server never became Ready after create",
+  "started_at": "2026-11-02T23:22:54+00:00",
+  "finished_at": "2026-11-02T23:38:37+00:00"
+}

@@ -13,7 +13,7 @@ setup:
 
       VERSION=26.2
 
-      MODRINTH_PROJECTS=ferrite-core,spark
+      MODRINTH_PROJECTS=krypton,spark
 
       MODRINTH_DOWNLOAD_DEPENDENCIES=required
 

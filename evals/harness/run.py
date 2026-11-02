@@ -374,8 +374,24 @@ def _evaluate(cluster: Any, check: dict[str, Any], name: str, reply: str) -> tup
     return False, f"unknown check type {kind}"
 
 
+# Long enough for the slowest image to relaunch its game after an in-place restart.
+CHECK_SETTLE_S = 420.0
+
+
 def run_checks(cluster: Any, case: dict[str, Any], name: str, reply: str, prefix: str) -> list[dict[str, Any]]:
-    results = [run_check(cluster, check, name, reply) for check in case["checks"]]
+    """Run every check, re-running the set until all pass or the boot timeout ends.
+
+    Agones keeps a GameServer Ready through an in-place restart, so Ready does not mean the game
+    process is back; the checked state itself is the signal. A fix that did not hold never passes.
+    """
+    results: list[dict[str, Any]] = []
+
+    def all_pass() -> bool:
+        nonlocal results
+        results = [run_check(cluster, check, name, reply) for check in case["checks"]]
+        return all(result["ok"] for result in results)
+
+    wait_for(cluster, all_pass, CHECK_SETTLE_S)
     return [{**result, "name": f"{prefix}: {result['name']}"} for result in results]
 
 
@@ -449,6 +465,45 @@ def parse_claude_result(raw: str) -> dict[str, Any]:
     }
 
 
+def parse_claude_stream(raw: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Split `--output-format stream-json` stdout into its events and the parsed final result."""
+    events: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    final = next((e for e in reversed(events) if e.get("type") == "result"), None)
+    if final is None:
+        raise ValueError("claude stream has no result event")
+    return events, parse_claude_result(json.dumps(final))
+
+
+ESCALATE_TOOL_SUFFIX = "escalate"
+
+
+def stream_escalated(events: list[dict[str, Any]]) -> bool:
+    """True when the stream contains a tool_use of Gary's `escalate` tool (MCP names end in it)."""
+    for event in events:
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and str(block.get("name") or "").endswith(ESCALATE_TOOL_SUFFIX)
+            ):
+                return True
+    return False
+
+
 class RealExecutor:
     """Hands the customer message to a system on the live bot."""
 
@@ -514,6 +569,8 @@ class RealExecutor:
         usage = response.get("usage") or {}
         run.reply = str(response.get("reply") or "")
         run.claimed_done = not response.get("escalated")
+        if response.get("escalated"):
+            run.notes["escalated"] = True
         run.turns = int(response.get("rounds") or 0)
         run.tool_calls = [call["name"] for call in response.get("tool_calls") or []]
         run.prompt_tokens = int(usage.get("prompt_tokens") or 0)
@@ -596,7 +653,7 @@ class RealExecutor:
         if bare:
             command.append("--bare")
         command += [
-            "--output-format", "json",
+            "--output-format", "stream-json", "--verbose",
             "--model", system["model"],
             "--strict-mcp-config", "--mcp-config", str(mcp_config),
             "--tools", "",
@@ -617,7 +674,7 @@ class RealExecutor:
             return run
         run.tool_calls = _read_tool_log(tool_log)
         try:
-            parsed = parse_claude_result(done.stdout)
+            events, parsed = parse_claude_stream(done.stdout)
         except ValueError as err:
             combined = (done.stderr + done.stdout)[-400:]
             run.notes["auth_rejected"] = bool(AUTH_FAILURE.search(combined))
@@ -629,12 +686,15 @@ class RealExecutor:
         run.cached_tokens = parsed["cached_tokens"]
         run.completion_tokens = parsed["completion_tokens"]
         run.model_ms = parsed["model_ms"]
-        run.claimed_done = done.returncode == 0 and not parsed["is_error"]
+        escalated = stream_escalated(events)
+        run.claimed_done = done.returncode == 0 and not parsed["is_error"] and not escalated
+        if escalated:
+            run.notes["escalated"] = True
         run.notes["subtype"] = parsed["subtype"]
         if parsed["is_error"] and parsed["prompt_tokens"] == 0 and AUTH_FAILURE.search(run.reply):
             run.notes["auth_rejected"] = True
             run.infra_error = f"claude rejected the credentials: {run.reply[:200]}"
-        run.transcript = {"stdout": done.stdout, "stderr": done.stderr[-2000:]}
+        run.transcript = {"events": events, "stderr": done.stderr[-2000:]}
         return run
 
 
@@ -783,12 +843,15 @@ def run_all(
     known: frozenset[str] = frozenset(),
     rerun_outcomes: frozenset[str] | None = None,
     aborted: threading.Event | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run every job that is not already recorded; `aborted` is set if the operator stays unreachable."""
     aborted = aborted if aborted is not None else threading.Event()
     out_dir.mkdir(parents=True, exist_ok=True)
     transcript_dir = out_dir / "transcripts"
     transcript_dir.mkdir(exist_ok=True)
+    if manifest is not None:
+        (out_dir / "manifest.json").write_text(dumps_scrubbed(manifest, known, indent=2, default=str), encoding="utf-8")
     semaphores: dict[str, threading.Semaphore] = {}
     for game in {case["game"] for case in cases}:
         cap = game_caps.get(game, DEFAULT_SLOW_GAME_CAP if game in SLOW_GAMES else concurrency)
@@ -810,8 +873,12 @@ def run_all(
         # The conversation is written beside the transcript rather than inside it: it is the
         # bulk of a Gary turn and the only part the fine-tuning export reads.
         conversation = transcript.pop("conversation", None)
+        system_part = transcript.get("system")
+        # A Claude Code run is saved as its bare event array: every assistant message,
+        # tool_use and tool_result, in order.
+        saved: Any = system_part["events"] if isinstance(system_part, dict) and "events" in system_part else transcript
         (transcript_dir / f"{stem}.json").write_text(
-            dumps_scrubbed(transcript, known, indent=2, default=str), encoding="utf-8"
+            dumps_scrubbed(saved, known, indent=2, default=str), encoding="utf-8"
         )
         if conversation is not None:
             (transcript_dir / f"{stem}.messages.json").write_text(
@@ -824,12 +891,21 @@ def run_all(
             print(f"{stem}: {record['outcome']} {scrub_text(record['detail'][:120], known)}", flush=True)
         return record
 
-    jobs = [(s, c, r) for s in systems for c in cases for r in range(1, repeats + 1)]
+    # Case-major, first variant of every scenario first: a run cut short at a deadline still holds
+    # paired results across every system and an even spread over scenarios.
+    ordered = sorted(cases, key=_variant_order)
+    jobs = [(s, c, r) for r in range(1, repeats + 1) for c in ordered for s in systems]
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         records = [record for record in pool.map(one, jobs) if record is not None]
     if aborted.is_set():
         _sweep_undestroyed(cluster, records)
     return records
+
+
+def _variant_order(case: dict[str, Any]) -> tuple[int, str]:
+    """Sort key: variant number (the `-sN`/`-dN` suffix), then id."""
+    match = re.search(r"-[sd](\d+)$", case["id"])
+    return (int(match.group(1)) if match else 0, case["id"])
 
 
 def _sweep_undestroyed(cluster: Any, records: list[dict[str, Any]]) -> None:
@@ -862,6 +938,40 @@ def parse_rerun_outcomes(text: str) -> frozenset[str]:
     if unknown or not wanted:
         raise ValueError(f"--rerun-outcomes wants some of {','.join(RERUNNABLE_OUTCOMES)}, got {text!r}")
     return wanted
+
+
+def _git_output(args: list[str]) -> str | None:
+    try:
+        done = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def live_bot_image() -> str:
+    try:
+        done = subprocess.run(
+            ["kubectl", "-n", "game-servers", "get", "deploy", "-o",
+             "jsonpath={.items[*].spec.template.spec.containers[*].image}"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as err:
+        return f"unavailable: {err}"
+    return done.stdout.strip() if done.returncode == 0 else f"unavailable: {done.stderr.strip()[:200]}"
+
+
+def build_manifest(argv: list[str], dry_run: bool) -> dict[str, Any]:
+    """Describe the run: configs (secrets stay as $VAR names), code revision, live bot image, args."""
+    status = _git_output(["status", "--porcelain"])
+    return {
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "args": argv,
+        "git_head": _git_output(["rev-parse", "HEAD"]),
+        "git_dirty": None if status is None else bool(status),
+        "bot_image": "skipped in --dry-run" if dry_run else live_bot_image(),
+        "systems": json.loads(SYSTEMS_PATH.read_text(encoding="utf-8")),
+        "models": json.loads((HARNESS_DIR / "models.json").read_text(encoding="utf-8")),
+    }
 
 
 def parse_game_caps(items: list[str]) -> dict[str, int]:
@@ -980,6 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="with an existing --out, rerun only records with these outcomes "
                              f"({','.join(RERUNNABLE_OUTCOMES)}); everything else is skipped")
     parser.add_argument("--dry-run", action="store_true", help="fake cluster and systems; no cluster or model calls")
+    raw_args = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
 
     try:
@@ -1001,7 +1112,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         cluster: Any = FakeCluster()
         executor: Any = FakeExecutor(cluster)
-        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known, args.rerun_outcomes)
+        records = run_all(cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps, args.force, known, args.rerun_outcomes,
+                           manifest=build_manifest(raw_args, True))
         print(f"dry run: {len(records)} records in {out_dir}")
         return 0
 
@@ -1021,7 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
         cluster = Cluster(conn, ready_timeout_s=args.ready_timeout)
         records = run_all(
             cluster, executor, systems, cases, args.repeats, args.concurrency, out_dir, caps,
-            args.force, known, args.rerun_outcomes, aborted,
+            args.force, known, args.rerun_outcomes, aborted, build_manifest(raw_args, False),
         )
     tally: dict[str, int] = {}
     for record in records:

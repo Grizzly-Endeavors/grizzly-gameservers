@@ -1,0 +1,66 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-server-settings-s2",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "kick anyone who's been afk for 10 minutes",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 10,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "edit_file",
+    "send_command",
+    "restart_server",
+    "run_when",
+    "read_logs",
+    "run_shell"
+  ],
+  "usage": {
+    "prompt_tokens": 88194,
+    "cached_tokens": 84186,
+    "completion_tokens": 1464
+  },
+  "latency_ms": 56987,
+  "model_ms": 22183,
+  "tool_ms": 34804,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "afk_autokick_interval is 10"
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "afk_autokick_interval is 10"
+    }
+  ],
+  "server": "ev-fa-server-settings-s2-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:18:07+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:20:03+00:00"
+}

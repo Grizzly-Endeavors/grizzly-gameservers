@@ -1,0 +1,73 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "mc-properties-s1",
+  "game": "minecraft",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "set the server to creative mode and make the server description say Mossy Hollow",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 7,
+  "tool_calls": [
+    "list_servers",
+    "game_guide",
+    "browse_files",
+    "read_file",
+    "edit_file",
+    "edit_file",
+    "about_server"
+  ],
+  "usage": {
+    "prompt_tokens": 73993,
+    "cached_tokens": 71160,
+    "completion_tokens": 1235
+  },
+  "latency_ms": 111468,
+  "model_ms": 11104,
+  "tool_ms": 100364,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-mc-properties-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:38:37+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T22:44:34+00:00"
+}

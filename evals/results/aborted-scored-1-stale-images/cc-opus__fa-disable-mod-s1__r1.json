@@ -1,0 +1,70 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-disable-mod-s1",
+  "game": "factorio",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "added a couple of mods to the factorio server and now it's dead. it was fine before that",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 14,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "read_logs",
+    "run_shell",
+    "run_shell",
+    "edit_file",
+    "restart_server",
+    "run_shell",
+    "write_file",
+    "restart_server",
+    "run_shell",
+    "read_logs",
+    "run_shell"
+  ],
+  "usage": {
+    "prompt_tokens": 152795,
+    "cached_tokens": 142291,
+    "completion_tokens": 2904
+  },
+  "latency_ms": 56056,
+  "model_ms": 36672,
+  "tool_ms": 19384,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: file_regex /factorio/mods/mod-list.json",
+      "ok": false,
+      "detail": "pattern absent"
+    },
+    {
+      "name": "after stop: file_regex /factorio/mods/mod-list.json",
+      "ok": false,
+      "detail": "pattern absent"
+    }
+  ],
+  "server": "ev-fa-disable-mod-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:55:45+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:57:35+00:00"
+}

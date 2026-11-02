@@ -1,0 +1,31 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "pw-settings-reset-s1",
+  "game": "palworld",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "the server forgot all the rates we set, its back to normal xp and catch rate. help",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "staging_error",
+  "claimed_done": false,
+  "turns": 0,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 0,
+    "cached_tokens": 0,
+    "completion_tokens": 0
+  },
+  "latency_ms": 0,
+  "model_ms": 0,
+  "tool_ms": 0,
+  "checks": [],
+  "server": "ev-pw-settings-reset-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "server never became Ready after create",
+  "started_at": "2026-11-02T23:17:43+00:00",
+  "finished_at": "2026-11-02T23:34:35+00:00"
+}

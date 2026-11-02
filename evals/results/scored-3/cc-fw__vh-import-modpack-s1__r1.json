@@ -1,0 +1,69 @@
+{
+  "system_id": "cc-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "claude_code",
+  "case_id": "vh-import-modpack-s1",
+  "game": "valheim",
+  "task_area": "config",
+  "category": "mods",
+  "prompt": "my friend built a mod profile in r2modman and sent me this code 01a19dfd-180d-a733-48eb-8dff8c631762. can we run that on the server?",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 8,
+  "tool_calls": [
+    "about_server",
+    "browse_files",
+    "browse_files",
+    "browse_files",
+    "import_profile",
+    "restart_server",
+    "run_when"
+  ],
+  "usage": {
+    "prompt_tokens": 49700,
+    "cached_tokens": 41892,
+    "completion_tokens": 673
+  },
+  "latency_ms": 40364,
+  "model_ms": 8246,
+  "tool_ms": 32118,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": false,
+      "detail": "pattern present"
+    }
+  ],
+  "server": "ev-vh-import-modpack-s1-cc-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:24:51+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T23:37:46+00:00"
+}

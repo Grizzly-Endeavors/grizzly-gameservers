@@ -25,6 +25,8 @@ from pathlib import Path
 
 import yaml
 
+# The run manifest run.py writes beside the records; it describes the run, not a case.
+MANIFEST_NAME = "manifest.json"
 RATES_PATH = Path(__file__).resolve().with_name("models.json")
 Z_95 = 1.959963984540054
 BOOTSTRAP_RESAMPLES = 2000
@@ -204,7 +206,7 @@ def check_system_identity(loaded: list[tuple[Path, dict]]) -> None:
 
 
 def load_records(runs_dir: Path) -> list[dict]:
-    paths = sorted(runs_dir.glob("*.json"))
+    paths = sorted(path for path in runs_dir.glob("*.json") if path.name != MANIFEST_NAME)
     if not paths:
         raise ValueError(f"no run records found in {runs_dir}")
     loaded = [(path, validate_record(read_structured(path), path)) for path in paths]

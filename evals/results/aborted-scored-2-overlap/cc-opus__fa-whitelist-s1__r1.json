@@ -1,0 +1,31 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-whitelist-s1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "lock the server down so just Linus, Margaret and Dennis can join",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "infra_error",
+  "claimed_done": false,
+  "turns": 0,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 0,
+    "cached_tokens": 0,
+    "completion_tokens": 0
+  },
+  "latency_ms": 0,
+  "model_ms": 0,
+  "tool_ms": 0,
+  "checks": [],
+  "server": "ev-fa-whitelist-s1-cc-opus-1",
+  "destroyed": false,
+  "detail": "create_server refused: nothing was created \u2014 the service has 3.6 cores of CPU left and this needs 4.2 cores. this is the whole service being full, not this community's allowance, so it won't clear on its own: destroying or stopping a server they no longer need frees room, otherwise say the operator needs to add capacity; destroy unclear: there's no server named ev-fa-whitelist-s1-cc-opus-1 \u2014 check list_servers for the current names",
+  "started_at": "2026-11-02T22:10:58+00:00",
+  "finished_at": "2026-11-02T22:10:59+00:00"
+}

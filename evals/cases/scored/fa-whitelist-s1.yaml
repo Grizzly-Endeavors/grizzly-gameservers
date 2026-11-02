@@ -6,6 +6,13 @@ kind: access
 task_area: config
 prompt: lock the server down so just Linus, Margaret and Dennis can join
 setup:
+- tool: write_file
+  args:
+    path: config/server-adminlist.json
+    content: '["Wrench"]
+
+      '
+- restart: true
 - wait: ready
   timeout_s: 300
 checks:
