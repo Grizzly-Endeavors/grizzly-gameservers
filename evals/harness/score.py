@@ -7,7 +7,7 @@ FR-4.3 in docs/fireworks-deploy-prd.md.
 
 Usage: python3 evals/harness/score.py <runs_dir> [-o eval_results.json]
        [--cases <cases_dir>] [--baseline <system_id>] [--no-baseline]
-       [--human-estimate <file.json>]
+       [--include-dev] [--human-estimate <file.json>]
 """
 
 from __future__ import annotations
@@ -528,6 +528,7 @@ def build_results(
     generated_at: str | None = None,
     estimate: dict | None = None,
     no_baseline: bool = False,
+    include_dev: bool = False,
 ) -> dict:
     seen: set[tuple[str, str, int]] = set()
     for record in records:
@@ -536,7 +537,8 @@ def build_results(
             raise ValueError(f"more than one run record for system {key[0]!r}, case {key[1]!r}, repeat {key[2]}")
         seen.add(key)
 
-    scored_records = [r for r in records if r["split"] == "scored"]
+    counted_splits = ("scored", "dev") if include_dev else ("scored",)
+    scored_records = [r for r in records if r["split"] in counted_splits]
     priced_models = {r["model"] for r in scored_records if r["outcome"] != "staging_error"}
     for model in sorted(priced_models - rates.keys()):
         warn(f"no rate for model {model!r} in models.json; its cost is reported as null")
@@ -761,6 +763,11 @@ def main(argv: list[str] | None = None) -> int:
         help="allow a run with no baseline; the comparisons section is left empty",
     )
     parser.add_argument(
+        "--include-dev",
+        action="store_true",
+        help="also summarize dev-split records (smoke and dev runs); scored-only by default",
+    )
+    parser.add_argument(
         "--human-estimate",
         type=Path,
         help="JSON file holding the kind-estimated human row, appended to summary.systems",
@@ -779,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_id=args.baseline,
             estimate=estimate,
             no_baseline=args.no_baseline,
+            include_dev=args.include_dev,
         )
     except ValueError as err:
         print(f"error: {err}", file=sys.stderr)

@@ -707,5 +707,37 @@ class StagingCaseSetTest(unittest.TestCase):
         self.assertNotIn("headline case sets differ", stderr.getvalue())
 
 
+class IncludeDevTest(unittest.TestCase):
+    def records(self):
+        return [make_record("opus", "c1"), make_record("opus", "d1", split="dev")]
+
+    def test_dev_records_are_left_out_by_default(self) -> None:
+        results = score.build_results(self.records(), RATES, no_baseline=True, generated_at="t")
+        self.assertEqual([c["case_id"] for c in results["cases"]], ["c1"])
+        self.assertEqual(results["summary"]["systems"][0]["n_cases"], 1)
+
+    def test_include_dev_counts_dev_records_alongside_scored(self) -> None:
+        results = score.build_results(
+            self.records(), RATES, no_baseline=True, include_dev=True, generated_at="t"
+        )
+        self.assertEqual([c["case_id"] for c in results["cases"]], ["c1", "d1"])
+        self.assertEqual(results["summary"]["systems"][0]["n_cases"], 2)
+
+    def test_dev_only_run_prints_a_table_with_include_dev(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp) / "runs"
+            runs.mkdir()
+            record = make_record("opus", "d1", split="dev")
+            (runs / "opus-d1-0.json").write_text(json.dumps(record), encoding="utf-8")
+            out = Path(tmp) / "out.json"
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+                code = score.main([str(runs), "-o", str(out), "--no-baseline", "--include-dev"])
+            self.assertEqual(code, 0)
+            self.assertIn("| OPUS |", stdout.getvalue())
+            results = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(results["summary"]["systems"][0]["n_cases"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

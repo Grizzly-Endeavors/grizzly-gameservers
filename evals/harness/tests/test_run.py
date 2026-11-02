@@ -259,5 +259,112 @@ class ClaudeResultTest(unittest.TestCase):
             run.parse_claude_result("not json")
 
 
+ANY_OF_CASE = dict(
+    PVP_CASE,
+    checks=[
+        {"type": "ready"},
+        {
+            "type": "any_of",
+            "checks": [
+                {"type": "file_regex", "path": "/data/server.properties", "pattern": "(?m)^pvp=false$"},
+                {"type": "tool_regex", "tool": "send_command", "args": {"command": "gamerule pvp"},
+                 "pattern": "(?i)false"},
+            ],
+        },
+    ],
+)
+
+
+class AnyOfFlowTest(unittest.TestCase):
+    def run_one(self, case, effect=None, replies=None):
+        cluster = run.FakeCluster()
+        cluster.tool_replies = dict(replies or {})
+        record, _ = run.run_job(cluster, run.FakeExecutor(cluster, effect), SYSTEM, case, 1)
+        return record
+
+    def test_passes_when_only_the_gamerule_is_set(self):
+        record = self.run_one(ANY_OF_CASE, replies={"send_command": "Gamerule pvp is currently set to: false"})
+        self.assertEqual(record["outcome"], "pass")
+        any_of = next(c for c in record["checks"] if c["name"].startswith("after stop: any_of"))
+        self.assertTrue(any_of["ok"])
+        self.assertIn("file_regex /data/server.properties failed", any_of["detail"])
+        self.assertIn("tool_regex send_command passed", any_of["detail"])
+
+    def test_passes_when_only_the_properties_file_is_set(self):
+        record = self.run_one(ANY_OF_CASE, fixes_pvp, replies={"send_command": "Gamerule pvp is currently set to: true"})
+        self.assertEqual(record["outcome"], "pass")
+
+    def test_fails_when_no_nested_check_passes(self):
+        record = self.run_one(ANY_OF_CASE, replies={"send_command": "Gamerule pvp is currently set to: true"})
+        self.assertEqual(record["outcome"], "fail")
+        any_of = next(c for c in record["checks"] if c["name"] == "after stop: any_of")
+        self.assertFalse(any_of["ok"])
+        self.assertIn("file_regex /data/server.properties failed", any_of["detail"])
+        self.assertIn("tool_regex send_command failed", any_of["detail"])
+
+    def test_unavailable_nested_check_counts_as_failed_and_others_still_decide(self):
+        record = self.run_one(ANY_OF_CASE, fixes_pvp)
+        self.assertEqual(record["outcome"], "pass")
+        any_of = next(c for c in record["checks"] if c["name"] == "after stop: any_of")
+        self.assertIn("cluster error", any_of["detail"])
+
+    def test_empty_any_of_fails_with_a_reason(self):
+        case = dict(PVP_CASE, checks=[{"type": "any_of", "checks": []}])
+        record = self.run_one(case, fixes_pvp)
+        self.assertEqual(record["outcome"], "fail")
+        self.assertEqual(record["checks"][0]["detail"], "any_of has no checks")
+
+
+class FakeToolConn:
+    """Stands in for OperatorConn.tool: records each call and answers with a canned result."""
+
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
+        self.calls = []
+
+    def tool(self, name, arguments, access="admin", confirm=False):
+        self.calls.append((name, dict(arguments), access))
+        if self.error is not None:
+            raise self.error
+        return {"result": self.result}
+
+
+class ToolRegexTest(unittest.TestCase):
+    CHECK = {"type": "tool_regex", "tool": "send_command", "args": {"command": "gamerule pvp"}, "pattern": "(?i)false"}
+
+    def test_calls_the_tool_with_the_server_name_and_matches_the_result(self):
+        conn = FakeToolConn(result="Gamerule pvp is currently set to: false")
+        result = run.run_check(run.Cluster(conn), self.CHECK, "srv-1", "")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["name"], "tool_regex send_command")
+        self.assertEqual(conn.calls, [("send_command", {"command": "gamerule pvp", "name": "srv-1"}, "admin")])
+        self.assertEqual(self.CHECK["args"], {"command": "gamerule pvp"})
+
+    def test_mismatch_fails_with_the_result_in_the_detail(self):
+        conn = FakeToolConn(result="Gamerule pvp is currently set to: true")
+        result = run.run_check(run.Cluster(conn), self.CHECK, "srv-1", "")
+        self.assertFalse(result["ok"])
+        self.assertIn("did not match", result["detail"])
+        self.assertIn("set to: true", result["detail"])
+
+    def test_present_false_passes_when_the_pattern_is_absent(self):
+        conn = FakeToolConn(result="Gamerule pvp is currently set to: true")
+        check = dict(self.CHECK, pattern="(?i)false", present=False)
+        self.assertTrue(run.run_check(run.Cluster(conn), check, "srv-1", "")["ok"])
+
+    def test_present_false_fails_when_the_pattern_matches(self):
+        conn = FakeToolConn(result="Gamerule pvp is currently set to: false")
+        check = dict(self.CHECK, present=False)
+        self.assertFalse(run.run_check(run.Cluster(conn), check, "srv-1", "")["ok"])
+
+    def test_operator_failure_is_a_failed_check_not_a_crash(self):
+        conn = FakeToolConn(error=run.OperatorError(500, "rcon unavailable"))
+        result = run.run_check(run.Cluster(conn), self.CHECK, "srv-1", "")
+        self.assertFalse(result["ok"])
+        self.assertIn("cluster error", result["detail"])
+        self.assertIn("rcon unavailable", result["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
