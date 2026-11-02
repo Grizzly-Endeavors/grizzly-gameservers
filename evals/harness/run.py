@@ -1165,8 +1165,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="with an existing --out, rerun only records with these outcomes "
                              f"({','.join(RERUNNABLE_OUTCOMES)}); everything else is skipped")
     parser.add_argument("--dry-run", action="store_true", help="fake cluster and systems; no cluster or model calls")
+    parser.add_argument("--prepare-bases", action="store_true",
+                        help="--local: build every needed game's base volume before the first case, in parallel")
+    parser.add_argument("--no-bases", action="store_true",
+                        help="--local: create every server cold instead of copying a game's base volume")
     raw_args = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
+    if (args.prepare_bases or args.no_bases) and not args.local:
+        parser.error("--prepare-bases and --no-bases apply to --local runs")
+    if args.prepare_bases and args.no_bases:
+        parser.error("--prepare-bases builds bases that --no-bases would not use")
 
     try:
         only = args.case + (read_case_file(args.case_file) if args.case_file else [])
@@ -1219,6 +1227,17 @@ def main(argv: list[str] | None = None) -> int:
     return report_finish(records, aborted, out_dir, "the operator")
 
 
+def prepare_bases(cluster: DockerCluster, cases: list[dict[str, Any]]) -> None:
+    """Build the base volume of every game the cases use that has one, one game per thread."""
+    games = sorted({case["game"] for case in cases if cluster.has_base(case["game"])})
+    if not games:
+        print("prepare-bases: no case uses a game with a base volume", flush=True)
+        return
+    with ThreadPoolExecutor(max_workers=len(games)) as pool:
+        for game, volume in zip(games, pool.map(cluster.prepare_base, games)):
+            print(f"prepare-bases: {game} base ready in {volume}", flush=True)
+
+
 def run_local(
     args: argparse.Namespace,
     raw_args: list[str],
@@ -1236,15 +1255,22 @@ def run_local(
         return 2
     env_path = find_env_file()
     cluster = DockerCluster(
-        GaryLocal(binary, env_path if env_path.exists() else None), ready_timeout_s=args.ready_timeout
+        GaryLocal(binary, env_path if env_path.exists() else None),
+        ready_timeout_s=args.ready_timeout,
+        use_bases=not args.no_bases,
     )
     print(f"local run: containers prefixed {cluster.prefix}, binary {binary}", flush=True)
     aborted = threading.Event()
     try:
+        if args.prepare_bases:
+            prepare_bases(cluster, cases)
         records = run_all(
             cluster, LocalGaryExecutor(cluster), systems, cases, args.repeats, args.concurrency, out_dir, caps,
             args.force, known, args.rerun_outcomes, aborted, build_manifest(raw_args, False, binary),
         )
+    except ClusterError as err:
+        print(f"run: {err}", file=sys.stderr)
+        return 1
     finally:
         # Every job destroys its own server; this catches what an interrupt or crash left behind.
         try:

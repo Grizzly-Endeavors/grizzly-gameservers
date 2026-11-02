@@ -10,6 +10,7 @@ docker, because the binary does not offer those tools.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -20,6 +21,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -40,10 +43,29 @@ BINARY_NAME = "grizzly-gameservers"
 DUMMY_AGENT_URL = "http://127.0.0.1:1/ingame-trigger"
 RUN_LABEL = "grizzly-eval.run"
 SERVER_LABEL = "grizzly-eval.server"
+BASE_LABEL = "grizzly-eval.base"
+BASE_VOLUME_PREFIX = "gary-eval-base-"
 PORT_ENV_PREFIX = "grizzly-gameservers.grizzly-endeavors.com/port-env."
+DEFAULT_STATE_DIR = Path.home() / ".cache" / "grizzly-eval"
 STATUS_TIMEOUT_S = 5.0
 DOCKER_TIMEOUT_S = 300.0
+COPY_TIMEOUT_S = 600.0
+STOP_TIMEOUT_S = 300.0
 GARY_TIMEOUT_S = 1200.0
+POLL_S = 1.0
+# Games whose base volume a case may start from. A base is one first boot to Ready followed by
+# a stop; a fresh server reaches the same files on its own first boot, so a case starts from the
+# same state either way. The one thing a base shares that a fresh server would not is the map or
+# world seed, which no dev case depends on. Every other game is created cold, for these reasons:
+#   enshrouded    first boot mints the admin and friend passwords, so every case would share them
+#   valheim       first boot seeds RCON credentials, for the same reason
+#   palworld      seeds its RCON keys the same way
+#   minecraft     reads its GameServer name from the pod label, which a base does not carry
+#   satisfactory  not audited yet
+BASE_GAMES: dict[str, str] = {
+    "factorio": "first boot writes the default save and config files, none tied to the server name",
+    "terraria": "first boot autocreates the world from the seeded config, none tied to the server name",
+}
 QUANTITY = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([KMGTE]i?|[kmgte])?$")
 BINARY_SUFFIX = {"Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Ei": 2**60}
 DECIMAL_SUFFIX = {"k": 10**3, "K": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "E": 10**18}
@@ -251,6 +273,28 @@ def fetch_status(url: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def post_control(url: str) -> None:
+    """Issue a supervisor lifecycle command (`POST /stop`) and fail if it is refused or unreachable."""
+    request = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=STOP_TIMEOUT_S) as response:
+            response.read()
+    except (urllib.error.URLError, OSError) as err:
+        raise ClusterError(f"POST {url} failed: {err}") from err
+
+
+@contextmanager
+def base_lock(state_dir: Path, game: str) -> Iterator[None]:
+    """Hold the game's base lock; flock is per open file, so threads in one process exclude each other too."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / f"base-{game}.lock").open("a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 class DockerCluster:
     """The interface run.py's `Cluster` offers, over local containers and the gary-local binary."""
 
@@ -264,14 +308,20 @@ class DockerCluster:
         image_prefix: str | None = None,
         games_dir: Path = GAMES_DIR,
         ready_timeout_s: float = 900.0,
+        use_bases: bool = True,
+        state_dir: Path = DEFAULT_STATE_DIR,
+        post: Callable[[str], None] = post_control,
     ) -> None:
         self.gary = gary
         self.runner = runner
         self.status = status
+        self.post = post
         self.prefix = prefix or run_prefix()
         self.image_prefix = image_prefix or os.environ.get(IMAGE_PREFIX_KEY) or DEFAULT_IMAGE_PREFIX
         self.games_dir = games_dir
         self.ready_timeout_s = ready_timeout_s
+        self.use_bases = use_bases
+        self.state_dir = state_dir
         self.failure_streak = 0
         self._servers: dict[str, LocalServer] = {}
         self._lock = threading.Lock()
@@ -311,15 +361,15 @@ class DockerCluster:
 
     # ---- lifecycle the harness owns
 
-    def run_args(self, game: str, name: str) -> list[str]:
-        """The `docker run` arguments that start `name` as a fresh instance of `game`."""
+    def run_args(self, game: str, name: str, volume: str | None = None) -> list[str]:
+        """The `docker run` arguments that start `name` as a fresh instance of `game` on `volume`."""
         template, service = load_template(game, self.games_dir)
         args = [
             "run", "-d",
             "--name", self.container_name(name),
             "--label", f"{RUN_LABEL}={self.prefix}",
             "--label", f"{SERVER_LABEL}={name}",
-            "--mount", f"type=volume,src={self.volume_name(name)},dst={data_mount(template)},volume-nocopy",
+            "--mount", f"type=volume,src={volume or self.volume_name(name)},dst={data_mount(template)},volume-nocopy",
             "-p", f"127.0.0.1::{CONTROL_PORT}",
         ]
         limit = memory_limit(template)
@@ -336,11 +386,13 @@ class DockerCluster:
             args = self.run_args(game, name)
         except (OSError, KeyError, IndexError, ValueError, yaml.YAMLError) as err:
             raise ClusterError(f"cannot read the catalog entry for {game}: {err}") from err
-        volume = self._docker(
-            ["volume", "create", "--label", f"{RUN_LABEL}={self.prefix}", self.volume_name(name)]
-        )
-        if volume.returncode != 0:
-            raise ClusterError(f"docker volume create failed: {volume.stderr.strip()[-300:]}")
+        if self.has_base(game):
+            with base_lock(self.state_dir, game):
+                base = self._ensure_base(game)
+                self._new_volume(self.volume_name(name))
+                self._copy_volume(game, base, self.volume_name(name))
+        else:
+            self._new_volume(self.volume_name(name))
         started = self._docker(args)
         if started.returncode != 0:
             raise ClusterError(f"docker run {self.image(game)} failed: {started.stderr.strip()[-300:]}")
@@ -348,6 +400,123 @@ class DockerCluster:
         with self._lock:
             self._servers[name] = LocalServer(name, game, self.container_name(name), self.volume_name(name), url)
         return f"created {name}; supervisor control at {url}"
+
+    # ---- base volumes: one booted-then-stopped copy of each game, copied into every case
+
+    def base_volume_name(self, game: str) -> str:
+        return f"{BASE_VOLUME_PREFIX}{game}"
+
+    def has_base(self, game: str) -> bool:
+        return self.use_bases and game in BASE_GAMES
+
+    def prepare_base(self, game: str) -> str:
+        """Build the game's base now if it is missing or was built from another image; returns its volume name."""
+        if game not in BASE_GAMES:
+            raise ClusterError(f"{game} is created cold; it has no base volume")
+        with base_lock(self.state_dir, game):
+            return self._ensure_base(game)
+
+    def _new_volume(self, volume: str) -> None:
+        self._docker_checked(["volume", "create", "--label", f"{RUN_LABEL}={self.prefix}", volume], f"docker volume create {volume}")
+
+    def _sentinel(self, game: str) -> Path:
+        """Records the image ID a finished base was built from; a build that never finished leaves none."""
+        return self.state_dir / f"base-{game}.image"
+
+    def _ensure_base(self, game: str) -> str:
+        """Return the base volume, rebuilding it when it is missing or was built from an older image."""
+        image_id = self._image_id(game)
+        base = self.base_volume_name(game)
+        sentinel = self._sentinel(game)
+        if sentinel.is_file() and sentinel.read_text(encoding="utf-8").strip() == image_id and self._volume_exists(base):
+            return base
+        sentinel.unlink(missing_ok=True)
+        self._remove_volume(base)
+        self._build_base(game, base)
+        self._record_base(game, image_id)
+        return base
+
+    def _image_id(self, game: str) -> str:
+        done = self._docker(["image", "inspect", "-f", "{{.Id}}", self.image(game)], 60.0)
+        if done.returncode != 0:
+            raise ClusterError(f"image {self.image(game)} is not present: {done.stderr.strip()[-300:]}")
+        return done.stdout.strip()
+
+    def _volume_exists(self, volume: str) -> bool:
+        done = self._docker(["volume", "inspect", volume], 60.0)
+        if done.returncode == 0:
+            return True
+        if "no such volume" in done.stderr.lower():
+            return False
+        raise ClusterError(f"docker volume inspect {volume} failed: {done.stderr.strip()[-300:]}")
+
+    def _remove_volume(self, volume: str) -> None:
+        done = self._docker(["volume", "rm", "-f", volume], 180.0)
+        if done.returncode != 0 and "no such volume" not in done.stderr.lower():
+            raise ClusterError(f"docker volume rm {volume} failed: {done.stderr.strip()[-300:]}")
+
+    def _record_base(self, game: str, image_id: str) -> None:
+        sentinel = self._sentinel(game)
+        staged = sentinel.with_suffix(".tmp")
+        staged.write_text(image_id + "\n", encoding="utf-8")
+        os.replace(staged, sentinel)
+
+    def _build_base(self, game: str, base: str) -> None:
+        self._docker_checked(
+            ["volume", "create", "--label", f"{BASE_LABEL}={game}", base], f"docker volume create {base}"
+        )
+        try:
+            self._boot_and_stop(game, base)
+        except ClusterError:
+            self._remove_volume(base)
+            raise
+
+    def _boot_and_stop(self, game: str, base: str) -> None:
+        """Boot the game on the base volume until the supervisor reports Ready, then stop it through the supervisor."""
+        builder = f"base-{game}"
+        self._docker_checked(self.run_args(game, builder, volume=base), f"docker run for the {game} base")
+        try:
+            url = self._control_url(builder)
+            with self._lock:
+                self._servers[builder] = LocalServer(builder, game, self.container_name(builder), base, url)
+            self._wait_for_phase(builder, "Ready", self.ready_timeout_s)
+            self.post(f"{url}/stop")
+            self._wait_for_phase(builder, "Stopped", STOP_TIMEOUT_S)
+        finally:
+            with self._lock:
+                self._servers.pop(builder, None)
+            self._docker_checked(["rm", "-f", "-v", self.container_name(builder)], f"removing the {game} base builder", 180.0)
+
+    def _wait_for_phase(self, name: str, phase: str, timeout_s: float) -> None:
+        deadline = self.now() + timeout_s
+        while True:
+            current = self.state(name)
+            if current == phase:
+                return
+            if current in ("Unhealthy", "absent"):
+                raise ClusterError(f"{name} is {current} while waiting for {phase}")
+            if self.now() >= deadline:
+                raise ClusterError(f"{name} did not reach {phase} within {timeout_s:.0f}s; last state {current}")
+            self.sleep(POLL_S)
+
+    def _copy_volume(self, game: str, base: str, volume: str) -> None:
+        """Copy the base's files into a case volume with the game's own image, keeping owners and modes."""
+        self._docker_checked(
+            [
+                "run", "--rm", "--entrypoint", "cp",
+                "--mount", f"type=volume,src={base},dst=/from,readonly",
+                "--mount", f"type=volume,src={volume},dst=/to",
+                self.image(game), "-a", "/from/.", "/to/",
+            ],
+            f"copy of {base} into {volume}",
+            COPY_TIMEOUT_S,
+        )
+
+    def _docker_checked(self, args: list[str], what: str, timeout: float = DOCKER_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
+        done = self._docker(args, timeout)
+        if done.returncode != 0:
+            raise ClusterError(f"{what} failed: {(done.stderr or done.stdout).strip()[-300:]}")
+        return done
 
     def _control_url(self, name: str) -> str:
         done = self._docker(["port", self.container_name(name), f"{CONTROL_PORT}/tcp"])

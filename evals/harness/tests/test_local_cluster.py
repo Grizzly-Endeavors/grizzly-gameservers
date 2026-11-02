@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 lc = import_module("local_cluster")
@@ -90,7 +93,7 @@ class DockerCommandTest(unittest.TestCase):
     def cluster(self, runner, status=None, gary=None):
         return lc.DockerCluster(
             gary, runner=runner, status=status or (lambda url: None), prefix="gev-box-abc123",
-            image_prefix="localhost:5000/grizzly-gameservers-",
+            image_prefix="localhost:5000/grizzly-gameservers-", use_bases=False,
         )
 
     def test_create_runs_the_catalog_image_with_volume_port_memory_and_env(self):
@@ -204,6 +207,222 @@ class DockerCommandTest(unittest.TestCase):
         first, second = lc.run_prefix("Bear's Box.local"), lc.run_prefix("Bear's Box.local")
         self.assertTrue(first.startswith("gev-bear-s-box-local-"))
         self.assertNotEqual(first, second)
+
+
+class StatefulDocker:
+    """A FakeRunner that remembers which volumes exist and which image the host holds."""
+
+    BASE = "gary-eval-base-factorio"
+
+    def __init__(self, image_id="sha256:one"):
+        self.image_id = image_id
+        self.volumes: set[str] = set()
+        self.never_ready = False
+        self.polls = 0
+        self.posts: list[str] = []
+        self.runner = FakeRunner([
+            (["docker", "image", "inspect"], lambda argv: done(argv, 0, self.image_id + "\n")),
+            (["docker", "volume", "inspect"], self._inspect_volume),
+            (["docker", "volume", "create"], self._create_volume),
+            (["docker", "volume", "rm"], self._remove_volume),
+            (["docker", "run", "--rm"], (0, "")),
+            (["docker", "run", "-d"], self._start_container),
+            (["docker", "port"], (0, "127.0.0.1:49300\n")),
+            (["docker", "inspect"], (0, "running\n")),
+            (["docker", "rm"], (0, "")),
+        ])
+
+    def _start_container(self, argv):
+        if "gev-box-abc123-base-factorio" in argv:
+            self.posts.clear()
+            self.polls = 0
+        return done(argv, 0, "cid\n")
+
+    def _inspect_volume(self, argv):
+        name = argv[-1]
+        return done(argv, 0, "[]\n") if name in self.volumes else done(argv, 1, "", f"Error: No such volume: {name}")
+
+    def _create_volume(self, argv):
+        self.volumes.add(argv[-1])
+        return done(argv, 0, argv[-1] + "\n")
+
+    def _remove_volume(self, argv):
+        name = argv[-1]
+        if name not in self.volumes:
+            return done(argv, 1, "", f"Error: No such volume: {name}")
+        self.volumes.discard(name)
+        return done(argv, 0, "")
+
+    def status(self, url):
+        """Starting on the first poll, ready on the next, stopped once asked to stop."""
+        if self.posts:
+            return {"process": "stopped", "ready": False}
+        if self.never_ready:
+            return {"process": "starting", "ready": False}
+        self.polls += 1
+        if self.polls == 1:
+            return {"process": "starting", "ready": False}
+        return {"process": "running", "ready": True}
+
+    def post(self, url):
+        self.posts.append(url)
+
+    def runs(self, flag):
+        return [c for c in self.runner.calls if c[:2] == ["docker", "run"] and flag in c]
+
+    def copies(self):
+        return [c for c in self.runner.calls if "--entrypoint" in c]
+
+
+class InstantCluster(lc.DockerCluster):
+    """Never sleeps, and its clock moves one second per read, so a wait that never ends fails after its budget."""
+
+    step = 1.0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.clock = 0.0
+
+    def now(self):
+        self.clock += self.step
+        return self.clock
+
+    def sleep(self, seconds):
+        return None
+
+
+class ClockedCluster(InstantCluster):
+    """Moves its clock 100 seconds per read, so a 50-second wait expires on the second poll."""
+
+    step = 100.0
+
+
+class BaseVolumeTest(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.state_dir = Path(temp.name)
+        self.docker = StatefulDocker()
+
+    def cluster(self, cls=InstantCluster, **kwargs):
+        options = dict(
+            runner=self.docker.runner, status=self.docker.status, post=self.docker.post,
+            prefix="gev-box-abc123", image_prefix="localhost:5000/grizzly-gameservers-",
+            state_dir=self.state_dir,
+        )
+        options.update(kwargs)
+        return cls(None, **options)
+
+    def sentinel(self):
+        return self.state_dir / "base-factorio.image"
+
+    def test_first_create_boots_and_stops_a_base_then_copies_it_into_the_case(self):
+        cluster = self.cluster()
+        cluster.tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        calls = self.docker.runner.calls
+        builder = next(c for c in self.docker.runs("-d") if "gev-box-abc123-base-factorio" in c)
+        self.assertIn(f"type=volume,src={StatefulDocker.BASE},dst=/factorio,volume-nocopy", builder)
+        self.assertIn(["docker", "volume", "create", "--label", "grizzly-eval.base=factorio", StatefulDocker.BASE], calls)
+        self.assertEqual(self.docker.posts, ["http://127.0.0.1:49300/stop"])
+        self.assertEqual(self.sentinel().read_text(encoding="utf-8"), "sha256:one\n")
+        self.assertIn(["docker", "rm", "-f", "-v", "gev-box-abc123-base-factorio"], calls)
+        [copy] = self.docker.copies()
+        self.assertEqual(copy[copy.index("--entrypoint") + 1], "cp")
+        self.assertIn(f"type=volume,src={StatefulDocker.BASE},dst=/from,readonly", copy)
+        self.assertIn("type=volume,src=gev-box-abc123-ev-fa-1-data,dst=/to", copy)
+        self.assertEqual(copy[-4:], ["localhost:5000/grizzly-gameservers-factorio:dev", "-a", "/from/.", "/to/"])
+        served = next(c for c in self.docker.runs("-d") if "gev-box-abc123-ev-fa-1" in c)
+        self.assertIn("type=volume,src=gev-box-abc123-ev-fa-1-data,dst=/factorio,volume-nocopy", served)
+        self.assertLess(calls.index(["docker", "rm", "-f", "-v", "gev-box-abc123-base-factorio"]), calls.index(copy))
+
+    def test_later_creates_reuse_the_base_without_booting_it_again(self):
+        cluster = self.cluster()
+        cluster.tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        cluster.tool("create_server", {"game": "factorio", "name": "ev-fa-2"})
+        self.assertEqual(len(self.docker.runs("-d")), 3)
+        builders = [c for c in self.docker.runs("-d") if "gev-box-abc123-base-factorio" in c]
+        self.assertEqual(len(builders), 1)
+        self.assertEqual(len(self.docker.copies()), 2)
+        self.assertEqual(self.docker.posts, ["http://127.0.0.1:49300/stop"])
+
+    def test_a_new_image_id_rebuilds_the_base(self):
+        self.cluster().tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        self.docker.image_id = "sha256:two"
+        self.cluster().tool("create_server", {"game": "factorio", "name": "ev-fa-2"})
+        builders = [c for c in self.docker.runs("-d") if "gev-box-abc123-base-factorio" in c]
+        self.assertEqual(len(builders), 2)
+        self.assertEqual(self.sentinel().read_text(encoding="utf-8"), "sha256:two\n")
+        self.assertIn(["docker", "volume", "rm", "-f", StatefulDocker.BASE], self.docker.runner.calls)
+
+    def test_a_base_that_never_reaches_ready_is_removed_and_not_recorded(self):
+        self.docker.never_ready = True
+        cluster = self.cluster(ClockedCluster, ready_timeout_s=50.0)
+        with self.assertRaises(ClusterError) as raised:
+            cluster.tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        self.assertIn("did not reach Ready", str(raised.exception))
+        self.assertFalse(self.sentinel().exists())
+        self.assertNotIn(StatefulDocker.BASE, self.docker.volumes)
+        self.assertIn(["docker", "rm", "-f", "-v", "gev-box-abc123-base-factorio"], self.docker.runner.calls)
+        self.assertEqual(self.docker.copies(), [])
+
+    def test_a_sentinel_whose_volume_was_removed_triggers_a_rebuild(self):
+        self.cluster().prepare_base("factorio")
+        self.docker.volumes.discard(StatefulDocker.BASE)
+        self.cluster().tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        builders = [c for c in self.docker.runs("-d") if "gev-box-abc123-base-factorio" in c]
+        self.assertEqual(len(builders), 2)
+
+    def test_prepare_base_builds_once_and_a_second_prepare_reuses_it(self):
+        cluster = self.cluster()
+        self.assertEqual(cluster.prepare_base("factorio"), StatefulDocker.BASE)
+        cluster.prepare_base("factorio")
+        self.assertEqual(len([c for c in self.docker.runs("-d") if "gev-box-abc123-base-factorio" in c]), 1)
+
+    def test_the_base_build_and_copy_run_inside_the_game_lock(self):
+        events = []
+        recorded_calls = self.docker.runner.calls
+
+        @contextmanager
+        def recording_lock(state_dir, game):
+            events.append(("enter", game, len(recorded_calls)))
+            yield
+            events.append(("exit", game, len(recorded_calls)))
+
+        with mock.patch.object(lc, "base_lock", recording_lock):
+            self.cluster().tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        self.assertEqual([e[0] for e in events], ["enter", "exit"])
+        self.assertEqual(events[0][2], 0)
+        copy_index = recorded_calls.index(self.docker.copies()[0])
+        self.assertLess(copy_index, events[1][2])
+
+    def test_the_game_lock_excludes_a_second_holder_of_the_same_game(self):
+        with lc.base_lock(self.state_dir, "factorio"):
+            other = (self.state_dir / "base-factorio.lock").open("a")
+            self.addCleanup(other.close)
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(other.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elsewhere = (self.state_dir / "base-terraria.lock").open("a")
+            self.addCleanup(elsewhere.close)
+            fcntl.flock(elsewhere.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(elsewhere.fileno(), fcntl.LOCK_UN)
+
+    def test_cold_games_and_no_bases_never_touch_a_base(self):
+        self.cluster().tool("create_server", {"game": "minecraft", "name": "ev-mc-1"})
+        self.cluster(use_bases=False).tool("create_server", {"game": "factorio", "name": "ev-fa-1"})
+        self.assertFalse(any(c[:3] == ["docker", "image", "inspect"] for c in self.docker.runner.calls))
+        self.assertNotIn(StatefulDocker.BASE, self.docker.volumes)
+        self.assertEqual(self.docker.copies(), [])
+        with self.assertRaises(ClusterError):
+            self.cluster().prepare_base("minecraft")
+
+    def test_base_games_do_not_depend_on_the_gameserver_name(self):
+        for game in lc.BASE_GAMES:
+            with self.subTest(game=game):
+                template, service = lc.load_template(game)
+                self.assertEqual(
+                    lc.container_env(template, service, "ev-one", game),
+                    lc.container_env(template, service, "ev-two", game),
+                )
 
 
 class ResolveBinaryTest(unittest.TestCase):

@@ -308,6 +308,30 @@ class LocalGaryExecutorTest(unittest.TestCase):
         self.assertEqual(local[0]["model_profile"], local[1]["model_profile"])
         self.assertEqual(local[0]["model"], local[1]["model"])
 
+class PrepareBasesTest(unittest.TestCase):
+    class FakeBases:
+        def __init__(self):
+            self.built = []
+
+        def has_base(self, game):
+            return game != "minecraft"
+
+        def prepare_base(self, game):
+            self.built.append(game)
+            return f"gary-eval-base-{game}"
+
+    def test_each_game_with_a_base_is_built_once_and_cold_games_are_skipped(self):
+        cluster = self.FakeBases()
+        cases = [{"game": "factorio"}, {"game": "terraria"}, {"game": "factorio"}, {"game": "minecraft"}]
+        run.prepare_bases(cluster, cases)
+        self.assertEqual(sorted(cluster.built), ["factorio", "terraria"])
+
+    def test_no_base_games_means_nothing_to_build(self):
+        cluster = self.FakeBases()
+        run.prepare_bases(cluster, [{"game": "minecraft"}])
+        self.assertEqual(cluster.built, [])
+
+
 class ClaudeResultTest(unittest.TestCase):
     def test_usage_sums_cache_creation_into_prompt_tokens(self):
         parsed = run.parse_claude_result(json.dumps(CLAUDE_FIXTURE))

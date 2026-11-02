@@ -105,6 +105,8 @@ python3 evals/harness/run.py --cases evals/cases/dev --systems gary-fw,cc-fw,cc-
 
 **Local dev run (no cluster).** `--local` runs each server as a Docker container on this host, from the `localhost:5000/grizzly-gameservers-<game>:dev` image (`GARY_LOCAL_IMAGE_PREFIX` replaces the part before `<game>`), with the catalog env, memory limit and a named volume from `games/<game>/gameserver.yaml`. Gary's turns and tools go through `grizzly-gameservers gary-local` (`GARY_LOCAL_BIN`, else `target/release`, then `target/debug`), which reads its keys from the environment or the repo-root `.env`. It needs no kubectl, port-forward or Discord channel, and runs only `gary`-harness systems. Container and volume names start with a per-process prefix, and each one carries the label `grizzly-eval.run=<prefix>`. Use `--case-file PATH` (one id per line, `#` comments allowed) to give a shard its list.
 
+Factorio and Terraria start from a base volume, `gary-eval-base-<game>`: the game is booted once to Ready and stopped through the supervisor, and each case copies that volume into its own. The base is rebuilt when the image ID changes, which is recorded in `~/.cache/grizzly-eval/base-<game>.image`; a per-game lock keeps concurrent creates from building it twice. Other games create cold, and `BASE_GAMES` in `evals/harness/local_cluster.py` says why. `--prepare-bases` builds every needed base before the first case, and `--no-bases` creates every server cold.
+
 ```
 python3 evals/harness/run.py --local --cases evals/cases/dev --systems gary-fw-local --concurrency 3 --out evals/results/local-1
 ```
