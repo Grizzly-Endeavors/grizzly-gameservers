@@ -9,12 +9,12 @@
 ## 1. The 4-Point Investor Thesis
 
 1. **The Unit Economics Trap:** A typical hosted game server brings in **$6 to $28 per month** (BisectHosting, Apex Hosting, and Shockbyte 2 GB to 8 GB plans), while a single human support ticket costs **$13.50 to $16.13** at Tier 1 (Gartner and MetricNet benchmarks) and **$62+** when escalated to Tier 2 technical support. One modded server crash wipes out one to two months of gross revenue on that server.
-2. **Why Generic Frontier Agents Fail:** Dropping a frontier model inside a generic coding harness (such as Claude Code) into a broken game container fails the unit economics. The agent relies on training memory, guesses wrong on game-specific paths or mod loaders, fails, searches the filesystem, and tries again. Burning 10 to 20 turns of frontier tokens on trial and error is slow, unsafe on live player worlds, and too expensive to run on a $12 server.
-3. **Our Moat (Harness + Open Model + RAG Knowledge Base + Compounding Memory):**
-   - **Specialized Harness:** Bounded operator tools wrapped in an automatic safety loop (`Snapshot State -> Apply Change -> Verify Container Health -> Auto-Rollback on Failure`), plus human approval gates for destructive actions.
-   - **RAG / Knowledge Base:** Pre-loaded per-game configuration schemas, file paths, and mod loader rules across 7 supported games so the model never hunts blindly.
-   - **Compounding Memory:** When Gary solves a new game or mod quirk once, he writes it down. A fix discovered on one server becomes instant knowledge across the entire fleet.
-   - **Fireworks Open Models:** Because the harness, knowledge base, and memory carry the domain structure, a fast open model on Fireworks executes the fix in a few turns for fractions of a cent.
+2. **In B2B2C Hosting, COGS Is Everything (Why Frontier Models in Generalist Harnesses Break the Math):** Even when you give a frontier model (`Claude Opus 5.5` at $4/$20 per 1M tokens) inside a generalist coding CLI (`Claude Code`) the **exact same Gary operator MCP tools**, frontier token rates plus heavy CLI prompt overhead burn **68,000 to 80,000 tokens per ticket** across 7 to 10 turns (~$40+ per 1,000 incidents). When a server owner and 8 friends ask Gary 50 questions a month, frontier COGS eats the entire margin.
+3. **Our Moat (Domain MCP Surface + Native Rust Loop + Fireworks Open Models + SFT Flywheel):**
+   - **Domain MCP Tool Surface (`game_guide` + Typed Container Tools):** Pre-loaded per-game configuration schemas, persistence rules, and bounded tools (`about_server`, `game_guide`, `edit_file`, `restart_server`, `backup_server`) carry the domain structure so we don't need a $20/M frontier model to operate the container.
+   - **Lean Rust Session Loop + Closed-Loop Verification:** Gary's native Rust loop solves tickets in **~5 turns / 50k tokens** (half the turns and ~38% fewer tokens than running the exact same MCP inside Claude Code) and enforces `Snapshot -> Apply -> Post-Restart Readiness Probe -> Auto-Rollback`.
+   - **Fireworks Open Models (`GLM-5.3-Flash`):** At **$0.15 input / $0.03 cached / $0.50 output per 1M tokens**, Fireworks brings AI support COGS down to **~$0.00074 per incident (`< $0.04/server/month`)**—roughly **50x cheaper** than the frontier baseline at matching verified resolution quality.
+   - **Compounding Memory + Fireworks SFT Flywheel (`export_sft.py`):** Solved quirks write back to fleet memory and verified dev-split traces export straight into Fireworks fine-tuning JSONL.
 4. **Dual Value (Margin Protection + +25% ARPU Pricing Power & TAM Expansion) & SaaS Expansion:**
    - **Margin Protection (Cost Save):** Deflects $13.50 to $16.13 Tier 1 and Tier 2 tickets for under $0.10 per server per month in Fireworks inference.
    - **+25% ARPU Pricing Power (`$11.99 -> $14.99/mo` on 4 GB):** Today, commodity hosts on 4 GB plans are forced to run permanent 25% to 30% promo discounts (knocking $14.99 and $15.99 list prices down to the $11.99 commodity floor) because raw Multicraft/Pterodactyl panels leave the server owner stuck editing `.ini` files and playing unpaid Friday-night IT for their friend group. Bundling Gary + the 1-Click Friend Discord Bot lets a host hold the **$14.99/mo** price point (**+$3.00/mo, +25% realized ARPU**) while spending **~$0.04/month** (~50 turns at `$0.00074/turn`) on Fireworks `GLM-5.3-Flash` (**98.7% gross margin** on the price lift).
@@ -54,22 +54,24 @@
 
 ---
 
-### Slide 2: Why Claude Opus in Claude Code Fails on Live Game Containers
+### Slide 2: Why Frontier Models Break B2B2C COGS ("In B2B2C Hosting, COGS Is Everything")
 
 **On Screen:**
-- **Claude Opus 5.5 in Claude Code (Generalist Baseline):**
-  `Guess from training data` -> `Hit state trap` -> `Hunt filesystem` -> `Vanishes on restart`
-- **Two Concrete Container State Traps from Our Benchmark:**
-  - **Trap 1 · Ephemeral Commands (`smoke-mc-pvp-d1`):** Opus ran an in-game `/pvp` command and declared victory. When the scorer restarted the container, the fix vanished.
-  - **Trap 2 · Shutdown Config Overwrites (`Palworld`):** Palworld's binary overwrites its own `.ini` file on shutdown. Editing while the server is running wipes the fix on restart.
-  - **10.4 turns & $41.35 / 1k incidents:** Far too slow (37.9s p50) and expensive to run on a $12 server.
+- **Controlled Comparison:** We gave `Claude Opus 5.5` (in Claude Code) and `GLM-5.3-Flash` on Fireworks the **exact same Gary MCP tools**.
+- **Claude Opus 5.5 in Claude Code (Frontier Baseline):**
+  `$4 / $20 per 1M tokens` -> `68k–80k tokens / ticket` -> `7–10 turns` -> `$40+ / 1k incidents`
+  - **Frontier Token Rates + Heavy CLI Loop:** On `smoke-mc-pvp-d1`, Claude Code burned 68k–80k prompt tokens across 7 to 10 turns.
+  - **Overthinking into State Traps:** Even with `game_guide` available, Opus ran an ephemeral in-game `/pvp` command that vanished on container restart.
+  - **Kills B2B2C Gross Margin:** When a server owner and 8 friends ask Gary 50 questions a month, frontier COGS wipes out the $3 ARPU lift.
+- **How Gary + Fireworks Cuts COGS by ~50x (`< $0.04/Server/Mo`):**
+  `1. Domain MCP Tools` -> `2. Native Rust Loop` -> `3. Fireworks GLM-5.3-Flash` -> `4. SFT Flywheel`
 
 **Spoken Script (15 sec):**
-> "Even when you give Claude Opus in Claude Code the exact same container tools, it falls into live state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Burning ten turns of frontier tokens on trial and error breaks the math on a $12 server."
+> "In B2B2C game hosting, COGS is everything. Even when we give Claude Opus 5.5 in Claude Code the exact same Gary MCP tools, frontier token rates and a heavy generalist CLI burn seventy to eighty thousand tokens a ticket, over forty dollars per thousand incidents. When a server owner and eight friends ask fifty questions a month, frontier COGS wipes out the host's margin."
 
 ---
 
-### Slide 3: Creating Our Domain Frontier: The 4-Layer Architecture (System Diagram)
+### Slide 3: The Low-COGS Operator Architecture (System Diagram)
 
 **On Screen (Visual System & Closed-Loop Flywheel Diagram):**
 
@@ -99,13 +101,13 @@
                                                                             to Fireworks SFT (export_sft.py)
 ```
 
-1. **Layer 1 — Typed Operator Surface on Fireworks (`GLM-5.3-Flash`):** Bounded container tools (`about_server`, `game_guide`, `edit_file`, `restart_server`, `backup_server`) rather than raw unconstrained bash.
-2. **Layer 2 — Pre-Turn Invariant Priming (`game_guide` + catalog annotations):** Injects per-game operational rules up front (e.g. `config-rewritten-on-shutdown` for Palworld: *stop first, edit second, start third*; `/data/server.properties` for Minecraft).
+1. **Layer 1 — Domain MCP Tool Surface on Fireworks (`GLM-5.3-Flash`):** Bounded container tools (`about_server`, `game_guide`, `edit_file`, `restart_server`, `backup_server`) carry the structure so a **$0.15/$0.50** open model executes the exact same fixes as a **$4/$20** frontier model.
+2. **Layer 2 — Pre-Turn Invariant Priming + Native Rust Loop:** `game_guide` injects per-game operational rules up front while Gary's lean Rust session loop cuts turns and token burn in half vs. Claude Code (`~5 turns / 50k tokens` vs. `10 turns / 80k tokens`).
 3. **Layer 3 — Closed-Loop Post-Restart Verification (`Snapshot` -> `Apply` -> `Restart & Readiness Probe`):** Fixes must survive a container restart and pass Agones readiness, or the harness auto-rolls back.
 4. **Layer 4 — Compounding Memory + Fireworks SFT Flywheel (`export_sft.py`):** Solved quirks write back to fleet memory AND verified dev-split traces export straight into Fireworks fine-tuning JSONL.
 
 **Spoken Script (15 sec):**
-> "To beat Claude Code with GLM 5.3 Flash on Fireworks, we built a four-layer domain frontier harness: first, a typed operator tool surface; second, pre-turn invariant priming so the model knows each game's persistence rules up front; third, a snapshot, apply, and post-restart readiness probe loop; and fourth, compounding fleet memory that exports verified dev traces straight into Fireworks fine-tuning."
+> "Gary solves the COGS equation with four layers: first, our domain MCP tools and game guides encode each game's config and persistence rules so the model never guesses; second, Gary's lean Rust session loop cuts turns and token burn in half compared to Claude Code; third, GLM 5.3 Flash on Fireworks runs at fifteen cents per million tokens with prompt caching; and fourth, verified dev traces export straight into Fireworks fine-tuning."
 
 ---
 
@@ -158,7 +160,7 @@ Per the Fireworks Deploy rules on pre-existing repositories:
   1. **Fireworks Open-Model Integration:** Pointed Gary's operator loop and evaluation profiles at `accounts/fireworks/models/glm-5p3-flash` on Fireworks AI.
   2. **4-Way Held-Out Benchmark & MCP Bridge (`evals/`):** Built `gary_mcp.py` (exposing Gary's exact operator tools to Claude Code over MCP for an un-weakened baseline and ablation), `scenarios.yaml`, and deterministic container state grading in `score.py`.
   3. **Gary Web Console, Host Triage Workbench & 1-Click Discord Bot (`web/`):** Built the complete React/Vite customer console, host incident & benchmark views, and the 1-Click Friend Discord Bot provisioning workflow.
-  4. **57-Second Demo Video Script ("Ask Gary", Chris VO):**
+  4. **55-Second Demo Video Script ("Ask Gary", Chris VO):**
      - **Beat 1 — Problem (0:00–0:11):** *"Game hosts sell four-gigabyte servers for twelve dollars a month. One human support ticket costs fifteen. And a generic frontier agent burns forty cents guessing at config files."*
-     - **Beat 2 — Creating Our Domain Frontier (0:11–0:39):** *"To beat Claude Opus in Claude Code with GLM 5.3 Flash on Fireworks, we moved the frontier from model size into the operator harness. In Claude Code, even Opus falls into game state traps: running in-game commands that vanish on restart, or editing Palworld configs while the server is running so shutdown overwrites the fix. Gary primes the model with per-game invariants, snapshots the container, edits persistent state, and verifies readiness after restart, while a one-click Discord bot lets players self-serve."*
-     - **Beat 3 — Measured Result & SFT Flywheel (0:39–0:57):** *"Across one hundred and one held-out tickets spanning six games, every system gets the exact same MCP tools and must survive a post-fix restart probe. Gary matches frontier resolution at one-fiftieth the cost and twenty times the speed, while exporting verified dev traces straight into Fireworks fine-tuning."*
+     - **Beat 2 — B2B2C COGS & The Domain Operator Surface (0:11–0:37):** *"In B2B2C game hosting, COGS is everything. Even when we give Claude Opus 5.5 in Claude Code our exact Gary MCP tools, frontier token pricing and a heavy CLI loop burn seventy thousand tokens a ticket. So we built a domain operator surface and lean Rust loop around GLM 5.3 Flash on Fireworks. Gary loads per-game invariants, snapshots the container, edits persistent config, and verifies readiness after restart, while a one-click Discord bot lets players self-serve."*
+     - **Beat 3 — Measured Result & SFT Flywheel (0:37–0:55):** *"Across one hundred and one held-out tickets spanning six games, every system gets the exact same Gary MCP tools and must pass a post-restart state probe. GLM 5.3 Flash on Fireworks matches frontier resolution at one-fiftieth the cost, under four cents per server a month, and exports verified dev traces straight into Fireworks fine-tuning."*
