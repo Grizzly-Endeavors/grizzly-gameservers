@@ -1,0 +1,18 @@
+{
+  "_note": "Placeholder rates. Fill input_per_1m_usd, cached_input_per_1m_usd and output_per_1m_usd from the provider pricing pages before the scored run.",
+  "anthropic/claude-opus-5-5": {
+    "input_per_1m_usd": 0,
+    "cached_input_per_1m_usd": 0,
+    "output_per_1m_usd": 0
+  },
+  "fireworks/PLACEHOLDER": {
+    "input_per_1m_usd": 0,
+    "cached_input_per_1m_usd": 0,
+    "output_per_1m_usd": 0
+  },
+  "ollama/glm-5.2": {
+    "input_per_1m_usd": 0,
+    "cached_input_per_1m_usd": 0,
+    "output_per_1m_usd": 0
+  }
+}
