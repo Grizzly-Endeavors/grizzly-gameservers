@@ -42,7 +42,9 @@ use crate::agent::{
     ToolCall, ToolDef, TurnEnding, TurnOrigin,
 };
 use crate::agones::ServerScope;
-use crate::discord::gary::tools::{ConfirmMode, ToolCtx, available_tools, dispatch, known_tool};
+use crate::discord::gary::tools::{
+    ConfirmMode, ToolCtx, available_tools, available_tools_for, dispatch, known_tool,
+};
 use crate::discord::gary::{
     GaryTurn, build_system_prompt_with_memory, framed_turn, game_catalog_list,
     replace_system_prompt, run_gary_turn,
@@ -287,6 +289,13 @@ struct GaryResponse {
     /// Model latency summed across the turn, which is most of its wall clock.
     latency_ms: u64,
     tool_calls: Vec<ToolTrace>,
+    /// The turn's chat messages in order, exactly as sent and received: the
+    /// system prompt, the user turn, then every assistant message (with its
+    /// `tool_calls` and `reasoning_content`) and every `tool` result. Together
+    /// with `tools` this is one `{messages, tools}` fine-tuning record.
+    messages: Vec<ChatMessage>,
+    /// The tools array the model was offered for this turn.
+    tools: Vec<ToolDef>,
 }
 
 /// One model call as the harness reports it.
@@ -511,6 +520,7 @@ async fn run_gary(
     if let Some(reason) = escalation {
         record_harness_escalation(data, actor, guild, reason).await;
     }
+    let transcript = turn_transcript(&messages, mark);
     let turn_slice = messages.get(mark..).unwrap_or_default();
     let tool_calls = tool_trace(turn_slice);
     let rounds = rounds(turn_slice);
@@ -535,6 +545,8 @@ async fn run_gary(
         latency_ms: generations.iter().map(|g| millis(g.latency)).sum(),
         generations: generations.iter().map(generation_trace).collect(),
         tool_calls,
+        messages: transcript,
+        tools: available_tools_for(acting.access, request.memory),
     }))
 }
 
@@ -709,6 +721,18 @@ fn parse_confirm(confirm: bool, access: AccessLevel) -> Result<ConfirmMode, Oper
         ));
     }
     Ok(ConfirmMode::Preapproved)
+}
+
+/// The messages this turn exchanged with the model: the system prompt, then the
+/// user turn (the message at `mark - 1`) and everything the loop appended after
+/// it. Prior-turn history between the two is left out, so a turn run with
+/// `new_session` yields the complete conversation the model saw.
+fn turn_transcript(messages: &[ChatMessage], mark: usize) -> Vec<ChatMessage> {
+    let system = messages
+        .first()
+        .filter(|message| message.role == Role::System);
+    let turn = messages.get(mark.saturating_sub(1)..).unwrap_or_default();
+    system.into_iter().chain(turn).cloned().collect()
 }
 
 /// Every tool call in `slice` paired with the result that answered it, in

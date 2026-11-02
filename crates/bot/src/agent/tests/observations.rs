@@ -26,6 +26,7 @@ fn assistant(text: &str) -> ChatMessage {
         content: Some(text.to_owned()),
         tool_calls: None,
         tool_call_id: None,
+        reasoning_content: None,
     }
 }
 
@@ -146,7 +147,7 @@ fn a_generation_records_the_exact_transcript_it_sent() {
         ChatMessage::system("be helpful"),
         ChatMessage::user("restart minecraft"),
     ];
-    let attributes = generation(&sent, &completion(None), 1);
+    let attributes = generation(&sent, &[], "admin", true, &completion(None), 1);
     let input = text(&attributes, langfuse::INPUT);
     let round_tripped = serde_json::from_str::<Vec<ChatMessage>>(&input).unwrap();
     assert_eq!(round_tripped.len(), 2);
@@ -164,7 +165,7 @@ fn a_generation_reports_the_counts_the_provider_sent() {
         total: Some(150),
         prompt_details: None,
     };
-    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let attributes = generation(&[], &[], "admin", true, &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
@@ -183,7 +184,7 @@ fn cache_hits_are_priced_as_their_own_bucket_not_twice() {
         total: Some(150),
         prompt_details: Some(PromptTokenDetails { cached: Some(100) }),
     };
-    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let attributes = generation(&[], &[], "admin", true, &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
@@ -204,7 +205,7 @@ fn a_reported_zero_cache_hit_still_ships_its_bucket() {
         total: Some(150),
         prompt_details: Some(PromptTokenDetails { cached: Some(0) }),
     };
-    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let attributes = generation(&[], &[], "admin", true, &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
@@ -224,7 +225,7 @@ fn an_unreported_count_is_omitted_rather_than_zeroed() {
         total: None,
         prompt_details: None,
     };
-    let attributes = generation(&[], &completion(Some(usage)), 1);
+    let attributes = generation(&[], &[], "admin", true, &completion(Some(usage)), 1);
     let details = text(&attributes, langfuse::USAGE_DETAILS);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
@@ -234,9 +235,16 @@ fn an_unreported_count_is_omitted_rather_than_zeroed() {
 
 #[test]
 fn a_generation_with_no_usage_at_all_carries_no_usage_attribute() {
-    let all_absent = generation(&[], &completion(Some(TokenUsage::default())), 1);
+    let all_absent = generation(
+        &[],
+        &[],
+        "admin",
+        true,
+        &completion(Some(TokenUsage::default())),
+        1,
+    );
     assert!(find(&all_absent, langfuse::USAGE_DETAILS).is_none());
-    let no_usage_block = generation(&[], &completion(None), 1);
+    let no_usage_block = generation(&[], &[], "admin", true, &completion(None), 1);
     assert!(find(&no_usage_block, langfuse::USAGE_DETAILS).is_none());
 }
 
@@ -307,4 +315,40 @@ fn the_opening_question_is_the_last_user_message_of_the_first_round() {
 #[test]
 fn a_transcript_with_no_user_message_has_no_opening() {
     assert!(opening_input(&[ChatMessage::system("be helpful")]).is_none());
+}
+
+fn one_tool() -> Vec<ToolDef> {
+    vec![ToolDef::function(
+        "list_servers",
+        "List servers",
+        serde_json::json!({ "type": "object" }),
+    )]
+}
+
+#[test]
+fn a_generation_records_tools_hash_access_and_reasoning() {
+    let tools = one_tool();
+    let mut done = completion(None);
+    done.message.reasoning_content = Some("thinking it over".to_owned());
+
+    let first = generation(&[], &tools, "manager", true, &done, 1);
+    let later = generation(&[], &tools, "manager", false, &done, 2);
+
+    let meta = |attrs: &[KeyValue], key: &str| {
+        text(attrs, &format!("{}.{key}", langfuse::OBSERVATION_METADATA))
+    };
+    assert_eq!(meta(&first, "access"), "manager");
+    let advertised: Vec<serde_json::Value> = serde_json::from_str(&meta(&first, "tools")).unwrap();
+    assert_eq!(advertised.len(), 1);
+    assert_eq!(
+        meta(&first, "tools_sha256"),
+        meta(&later, "tools_sha256"),
+        "same tools, same hash"
+    );
+    assert_eq!(meta(&first, "tools_sha256").len(), 64);
+    assert!(
+        find(&later, &format!("{}.tools", langfuse::OBSERVATION_METADATA)).is_none(),
+        "the full array rides only the round that asks for it"
+    );
+    assert!(text(&first, langfuse::OUTPUT).contains("thinking it over"));
 }
