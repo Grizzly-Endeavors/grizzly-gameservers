@@ -19,6 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from operator_conn import OperatorConnError
+from scrub import dumps_scrubbed, known_ids
+
 SCORED = "scored"
 DEV = "dev"
 GARY = "gary"
@@ -89,6 +94,7 @@ def export(
     records: list[tuple[Path, dict[str, Any]]],
     out: Path,
     only_pass: bool,
+    known: frozenset[str] = frozenset(),
 ) -> Tally:
     tally = Tally(records=len(records))
     lines: list[str] = []
@@ -104,7 +110,7 @@ def export(
         if conversation is None:
             tally.skip("no transcript (turn unavailable or never reached the bot)")
             continue
-        lines.append(json.dumps(conversation, ensure_ascii=False))
+        lines.append(dumps_scrubbed(conversation, known, ensure_ascii=False))
     out.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
     tally.exported = len(lines)
     return tally
@@ -134,8 +140,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        tally = export(records, args.out, args.only_pass)
-    except ExportError as err:
+        known = known_ids()
+        tally = export(records, args.out, args.only_pass, known)
+    except (ExportError, OperatorConnError) as err:
         print(f"export_sft: {err}", file=sys.stderr)
         return 1
 
