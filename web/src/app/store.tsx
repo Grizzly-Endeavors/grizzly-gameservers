@@ -62,7 +62,8 @@ interface Store {
 const Ctx = createContext<Store | null>(null);
 
 const HOME: Record<Persona, Screen> = { host: 'overview', customer: 'gary' };
-const CHANNEL = import.meta.env.VITE_GARY_CHANNEL ?? '';
+/** The deployed console gets its channel at pod start (public/runtime-config.js); dev gets it from web/.env. */
+const CHANNEL = window.__GARY__?.channel || import.meta.env.VITE_GARY_CHANNEL || '';
 const LIVE_SLOW_MS = 15_000;
 /** Same ceiling as scripts/operator.sh: a 16-round turn can legitimately run for minutes. */
 const LIVE_TIMEOUT_MS = 900_000;

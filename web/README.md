@@ -37,7 +37,7 @@ The console is served at <https://gameservers.grizzly-endeavors.com> behind HTTP
 
 Every push to `main` that touches `web/` (outside `web/deploy/`) runs `.github/workflows/web.yml`: it builds `web/Dockerfile` (Vite build served by nginx), pushes it to the in-cluster registry, and pins the digest in `web/deploy/kustomization.yaml`. A Flux Kustomization (`grizzly-gameservers-web`, registered in grizzly-platform) applies `web/deploy/` into its own `gary-web` namespace. None of this shares a trigger, image, pin file or namespace with the bot, so a web push never redeploys the bot and a bot push never redeploys the console. Watch a rollout with `gh run list --workflow web.yml`.
 
-The deployed console is replay-only: the operator harness token is admin-level, so nginx never proxies `/operator`, and choosing Live there reports that the harness isn't reachable.
+Live mode works on the deployed console too. The pod's nginx proxies `/operator/*` to the bot and adds the operator token itself, so the token never reaches the browser; the Discord channel arrives at pod start as `/runtime-config.js`. Both come from the `gary-web-live` ExternalSecret. Anyone with the basic-auth password has the harness at admin tier, so see [ADR-043](../docs/decisions/043-web-console-reaches-the-operator-harness.md) before friends' servers come back.
 
 ## Where the numbers come from
 
