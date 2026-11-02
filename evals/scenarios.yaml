@@ -7,6 +7,8 @@
 # explaining instead of doing is a miss.
 #
 # Each scenario is a template the case generator expands into `variants`.
+# `dropped` (a reason string) marks a scenario with no cases; its variants and split are 0.
+# `note` says why the staged variant count is below what the template could produce.
 # `split` assigns whole variants to dev or scored, so a scored case never
 # shares staging parameters (mod, value, world name, phrasing) with anything
 # tuned against.
@@ -58,8 +60,9 @@ scenarios:
     staging: a client-only mod hidden among 5-6 good ones; the trace names a client class, not the mod
     examples: ["we added a bunch of mods tonight and now it crashes on boot"]
     checks: [server Ready with the customer's other mods still installed]
-    variants: 5
-    split: { dev: 1, scored: 4 }
+    note: "only the dev variant is staged; no scored variant has been written"
+    variants: 1
+    split: { dev: 1, scored: 0 }
 
   - id: mc-plugins-on-modded
     game: minecraft
@@ -69,8 +72,9 @@ scenarios:
     staging: Fabric server; customer wants a Bukkit plugin
     examples: ["can you install EssentialsX"]
     checks: [server type supports the plugin, plugin loaded, server Ready]
-    variants: 2
-    split: { dev: 1, scored: 1 }
+    dropped: "not staged in time"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
   - id: mc-switch-world
     game: minecraft
@@ -89,8 +93,9 @@ scenarios:
     staging: server one release behind with mods pinned to that release
     examples: ["update the server to the new version, keep our mods"]
     checks: [VERSION bumped, every mod on a build for the new version, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    dropped: "not staged in time"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
   - id: mc-heap
     game: minecraft
@@ -99,8 +104,9 @@ scenarios:
     staging: heap too small for the mod list (OOM at boot), or heap above the pod limit (silent OOM-kill)
     examples: ["it just dies randomly", "out of memory error on startup"]
     checks: [heap and pod limit coherent, server Ready and survives 2 min]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    note: "only the heap-too-small variant is staged; heap-above-limit variant boots cleanly; not stageable"
+    variants: 2
+    split: { dev: 1, scored: 1 }
 
   - id: mc-access
     game: minecraft
@@ -122,7 +128,7 @@ scenarios:
     variants: 5
     split: { dev: 1, scored: 4 }
 
-  # ═══════════════ Valheim (lloesche + BepInEx, Thunderstore) — 16 scored ═══════════════
+  # ═══════════════ Valheim (lloesche + BepInEx, Thunderstore) — 17 scored ═══════════════
 
   - id: vh-password
     game: valheim
@@ -207,7 +213,7 @@ scenarios:
     variants: 5
     split: { dev: 1, scored: 4 }
 
-  # ═══════════════ Terraria (TShock) — 13 scored ═══════════════
+  # ═══════════════ Terraria (TShock) — 14 scored ═══════════════
 
   - id: tr-custom-world
     game: terraria
@@ -267,10 +273,11 @@ scenarios:
     staging: TShock user account exists in the default group
     examples: ["make Quillon an admin"]
     checks: [user in the admin group, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    dropped: "no way to change TShock groups through Gary's tools"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
-  # ═══════════════ Factorio (factoriotools) — 14 scored ═══════════════
+  # ═══════════════ Factorio (factoriotools) — 22 scored ═══════════════
 
   - id: fa-admins
     game: factorio
@@ -330,8 +337,9 @@ scenarios:
     staging: a save made with Space Age; mod-list.json has space-age/quality/elevated-rails disabled
     examples: ["the server won't load our save, says something about space age"]
     checks: [the three expansion mods enabled, save loads, server Ready]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    dropped: "image force-enables the expansion on every start, so a broken state can't be staged"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
   - id: fa-disable-mod
     game: factorio
@@ -364,8 +372,9 @@ scenarios:
     staging: a WorldOption.sav in the world folder overriding the ini
     examples: ["I changed the settings and nothing happened"]
     checks: [requested setting in effect, server Ready]
-    variants: 2
-    split: { dev: 1, scored: 1 }
+    dropped: "a genuine WorldOption.sav can't be produced without a game client"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
   - id: pw-settings-reset
     game: palworld
@@ -407,7 +416,7 @@ scenarios:
     variants: 3
     split: { dev: 1, scored: 2 }
 
-  # ═══════════════ Enshrouded (Proton) — 12 scored ═══════════════
+  # ═══════════════ Enshrouded (Proton) — 11 scored ═══════════════
 
   - id: en-groups
     game: enshrouded
@@ -447,8 +456,9 @@ scenarios:
     staging: uploaded local save files under their client names in savegame/
     examples: ["I uploaded my single player world, make the server use it"]
     checks: [server loads the uploaded world, prior saves backed up, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    dropped: "no file move/copy tool; issue #129"
+    variants: 0
+    split: { dev: 0, scored: 0 }
 
   - id: en-slots
     game: enshrouded

@@ -49,15 +49,15 @@ The scenario catalog is `evals/scenarios.yaml`. Each scenario is a template. The
 
 | Game | Scored cases |
 |---|---|
-| Minecraft (Fabric) | 23 |
+| Factorio | 22 |
+| Minecraft (Fabric) | 20 |
 | Valheim (BepInEx) | 17 |
-| Factorio | 17 |
-| Terraria (TShock) | 16 |
-| Palworld | 15 |
-| Enshrouded | 13 |
-| **Total** | **101** |
+| Terraria (TShock) | 14 |
+| Palworld | 14 |
+| Enshrouded | 11 |
+| **Total** | **98** |
 
-There are also 41 development cases, one for each template.
+There are also 36 development cases. One development case exists for each of the 35 scenarios in the catalog. The 36th is `smoke-mc-pvp`, a smoke case that is not in the catalog.
 
 ### 3.2 Ticket types
 
@@ -82,10 +82,20 @@ Each scenario has a `source` field. This field gives the host knowledge-base art
 
 ### 3.5 Scenarios that the tools possibly cannot do
 
-Nine scored cases have the mark `reach: verify`. The current tools possibly cannot do these fixes. The staging test examines each one:
+Two scenarios with the mark `reach: verify` keep their scored cases: `vh-upload-world` (2 cases) and `fa-load-save` (3 cases). The current tools possibly cannot do these fixes. The staging test examines each one:
 
 - If a small change to the tools makes the fix possible, we make the change before the freeze. The change applies to all systems.
 - If not, we remove the scenario. We then add cases from other scenarios to keep the scored set at 100 or more.
+
+Six scenarios are dropped. They have no cases, and `scenarios.yaml` marks each one `dropped`:
+
+- `tr-admin`: Gary's tools cannot change TShock groups.
+- `fa-space-age`: the image force-enables the expansion on every start, so the broken state cannot be staged.
+- `pw-settings-ignored`: a real `WorldOption.sav` cannot be made without a game client.
+- `en-transfer-world`: there is no file move or copy tool (issue #129).
+- `mc-plugins-on-modded` and `mc-upgrade-version`: not staged in time.
+
+The scored set is 98 cases. This is below the 100 target in the rule above.
 
 ## 4. Procedure for one case
 
