@@ -1,0 +1,12 @@
+id: smoke-mc-pvp-d1
+scenario: smoke-mc-pvp
+split: dev
+game: minecraft
+kind: config
+task_area: config
+prompt: "turn off pvp please"
+setup:
+  - {wait: ready, timeout_s: 400}
+checks:
+  - {type: ready}
+  - {type: file_regex, path: "/data/server.properties", pattern: "(?m)^pvp=false$", present: true}
