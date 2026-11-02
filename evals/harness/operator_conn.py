@@ -15,12 +15,13 @@ import os
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 DEFAULT_NAMESPACE = "game-servers"
 SERVICE = "svc/grizzly-gameservers-agent"
@@ -39,6 +40,9 @@ POLL_INTERVAL_S = 0.1
 # resolves on its own, so a few spaced retries match scripts/operator.sh.
 BUSY_ATTEMPTS = 3
 BUSY_RETRY_DELAY_S = 3.0
+# After a bot redeploy the port-forward is dead until it is re-established and
+# the new pod answers /health. One delay per reconnect attempt, ~5 minutes in all.
+RECONNECT_BACKOFF_S = (5.0, 15.0, 40.0, 80.0, 150.0)
 
 
 class OperatorError(Exception):
@@ -52,6 +56,75 @@ class OperatorError(Exception):
 
 class OperatorConnError(Exception):
     """The harness could not be reached or configured."""
+
+
+class _ConnectionFailure(Exception):
+    """A transport failure; `maybe_sent` says whether the bot could have received the request."""
+
+    def __init__(self, cause: BaseException, maybe_sent: bool) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+        self.maybe_sent = maybe_sent
+
+
+def _classify(err: BaseException) -> _ConnectionFailure | None:
+    """Sort a transport error into refused (never sent), dropped (maybe sent) or neither."""
+    reason = err.reason if isinstance(err, urllib.error.URLError) else err
+    if isinstance(reason, ConnectionRefusedError):
+        return _ConnectionFailure(err, maybe_sent=False)
+    if isinstance(reason, (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)):
+        return _ConnectionFailure(err, maybe_sent=True)
+    return None
+
+
+class _Link:
+    """The port-forward behind a client, shared by every shallow copy of it.
+
+    A run copies its client per Gary channel; they must all follow one reconnect
+    rather than each holding the dead port.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        forward: subprocess.Popen[bytes] | None,
+        log: Any,
+        reopen: Callable[[], tuple[str, subprocess.Popen[bytes], Any]] | None,
+    ) -> None:
+        self.url = url
+        self.forward = forward
+        self.log = log
+        self.reopen = reopen
+        self.generation = 0
+        self.failure_streak = 0
+        self.lock = threading.Lock()
+
+    def forward_exited(self) -> bool:
+        return self.forward is not None and self.forward.poll() is not None
+
+    def stop_forward(self) -> None:
+        if self.forward is not None:
+            self.forward.terminate()
+            try:
+                self.forward.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.forward.kill()
+                self.forward.wait()
+        if self.log is not None:
+            self.log.close()
+        self.forward = None
+        self.log = None
+
+    def reconnect(self, seen_generation: int) -> None:
+        """Replace the forward unless another thread already did since `seen_generation`."""
+        with self.lock:
+            if self.generation != seen_generation:
+                return
+            if self.reopen is None:
+                raise OperatorConnError("this client has no port-forward to re-establish")
+            self.stop_forward()
+            self.url, self.forward, self.log = self.reopen()
+            self.generation += 1
 
 
 def find_env_file() -> Path:
@@ -153,13 +226,25 @@ class OperatorConn:
         timeout: float = DEFAULT_TIMEOUT_S,
         forward: subprocess.Popen[bytes] | None = None,
         forward_log: Any = None,
+        reopen: Callable[[], tuple[str, subprocess.Popen[bytes], Any]] | None = None,
+        backoff: tuple[float, ...] = RECONNECT_BACKOFF_S,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self.url = url.rstrip("/")
         self.token = token
         self.channel = channel
         self.timeout = timeout
-        self._forward = forward
-        self._forward_log = forward_log
+        self._link = _Link(url.rstrip("/"), forward, forward_log, reopen)
+        self._backoff = backoff
+        self._sleep = sleep
+
+    @property
+    def url(self) -> str:
+        return self._link.url
+
+    @property
+    def failure_streak(self) -> int:
+        """Consecutive requests that failed to reach the bot even after reconnecting."""
+        return self._link.failure_streak
 
     @classmethod
     def connect(cls, *, channel: str | None = None, timeout: float = DEFAULT_TIMEOUT_S) -> OperatorConn:
@@ -181,27 +266,16 @@ class OperatorConn:
             )
         namespace = setting(ENV_NAMESPACE) or DEFAULT_NAMESPACE
         token = setting(ENV_TOKEN) or _read_token_secret(namespace)
-        local_port = int(setting(ENV_LOCAL_PORT) or _free_local_port())
+        fixed_port = setting(ENV_LOCAL_PORT)
 
-        log = tempfile.TemporaryFile()
-        try:
-            process = subprocess.Popen(
-                ["kubectl", "port-forward", "-n", namespace, SERVICE, f"{local_port}:{REMOTE_PORT}"],
-                stdout=subprocess.DEVNULL,
-                stderr=log,
-            )
-        except OSError as err:
-            log.close()
-            raise OperatorConnError(f"could not start kubectl port-forward: {err}") from err
-        url = f"http://127.0.0.1:{local_port}"
-        conn = cls(url, token, resolved_channel, timeout=timeout, forward=process, forward_log=log)
-        try:
-            _poll_until(lambda: _accepts_connections(local_port), process, "the deployed bot", log)
-            _poll_until(lambda: _health_ok(url), process, "the deployed bot", log)
-        except BaseException:
-            conn.close()
-            raise
-        return conn
+        def open_forward() -> tuple[str, subprocess.Popen[bytes], Any]:
+            """A reconnect takes a fresh port: the old one may still be held by the dying forward."""
+            return _open_forward(namespace, _free_local_port())
+
+        url, process, log = _open_forward(namespace, int(fixed_port) if fixed_port else _free_local_port())
+        return cls(
+            url, token, resolved_channel, timeout=timeout, forward=process, forward_log=log, reopen=open_forward
+        )
 
     def __enter__(self) -> OperatorConn:
         return self
@@ -211,18 +285,8 @@ class OperatorConn:
 
     def close(self) -> None:
         """Stop the port-forward this client owns, if it owns one."""
-        if self._forward is None:
-            return
-        self._forward.terminate()
-        try:
-            self._forward.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            self._forward.kill()
-            self._forward.wait()
-        if self._forward_log is not None:
-            self._forward_log.close()
-        self._forward = None
-        self._forward_log = None
+        with self._link.lock:
+            self._link.stop_forward()
 
     def tools(self, access: str = "admin") -> list[dict[str, Any]]:
         """The `function` object of every tool the tier may call, with its JSON schema."""
@@ -274,14 +338,52 @@ class OperatorConn:
         body: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
     ) -> Any:
-        url = self.url + path
-        if query:
-            url += "?" + urllib.parse.urlencode(query)
         data = json.dumps(body).encode("utf-8") if body is not None else None
         headers = {"Authorization": f"Bearer {self.token}"}
         if data is not None:
             headers["Content-Type"] = "application/json"
+        # A Gary turn is not idempotent: once it may have reached the bot, a second send
+        # would run the model twice against the same session and servers.
+        replayable = path != "/operator/gary"
 
+        reconnects = 0
+        while True:
+            generation = self._link.generation
+            try:
+                if self._link.forward_exited():
+                    raise _ConnectionFailure(OSError("port-forward process exited"), maybe_sent=False)
+                result = self._send(method, path, data, headers, query)
+            except _ConnectionFailure as failure:
+                if self._link.reopen is None or (failure.maybe_sent and not replayable):
+                    self._link.failure_streak += 1
+                    raise OperatorConnError(f"{method} {path} failed: {failure.cause}") from failure.cause
+                if reconnects >= len(self._backoff):
+                    self._link.failure_streak += 1
+                    raise OperatorConnError(
+                        f"{method} {path} failed after {reconnects} reconnects: {failure.cause}"
+                    ) from failure.cause
+                self._sleep(self._backoff[reconnects])
+                reconnects += 1
+                try:
+                    self._link.reconnect(generation)
+                except OperatorConnError:
+                    # The bot is likely still rolling out; the next backoff step tries again.
+                    continue
+                continue
+            self._link.failure_streak = 0
+            return result
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        data: bytes | None,
+        headers: dict[str, str],
+        query: dict[str, str] | None,
+    ) -> Any:
+        url = self.url + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
         for attempt in range(1, BUSY_ATTEMPTS + 1):
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
@@ -295,8 +397,39 @@ class OperatorConn:
                     continue
                 raise OperatorError(err.code, message) from None
             except (OSError, http.client.HTTPException) as err:
+                failure = _classify(err)
+                if failure is not None:
+                    raise failure from err
                 raise OperatorConnError(f"{method} {path} failed: {err}") from err
         raise AssertionError("unreachable: the final attempt either returns or raises")
+
+
+def _open_forward(namespace: str, local_port: int) -> tuple[str, subprocess.Popen[bytes], Any]:
+    """Start `kubectl port-forward` and wait until the bot answers /health through it."""
+    log = tempfile.TemporaryFile()
+    try:
+        process = subprocess.Popen(
+            ["kubectl", "port-forward", "-n", namespace, SERVICE, f"{local_port}:{REMOTE_PORT}"],
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+        )
+    except OSError as err:
+        log.close()
+        raise OperatorConnError(f"could not start kubectl port-forward: {err}") from err
+    url = f"http://127.0.0.1:{local_port}"
+    try:
+        _poll_until(lambda: _accepts_connections(local_port), process, "the deployed bot", log)
+        _poll_until(lambda: _health_ok(url), process, "the deployed bot", log)
+    except BaseException:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        log.close()
+        raise
+    return url, process, log
 
 
 def _read_token_secret(namespace: str) -> str:

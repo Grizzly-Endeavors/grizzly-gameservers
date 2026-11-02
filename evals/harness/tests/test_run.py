@@ -6,6 +6,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -172,9 +173,11 @@ class HelpersTest(unittest.TestCase):
             run.resolve_env({"A": "$NOPE_NOT_SET"}, {})
         self.assertNotIn("secret", str(caught.exception))
 
-    def test_ready_timeout_by_game(self):
-        self.assertEqual(run.ready_timeout("palworld"), 900)
-        self.assertEqual(run.ready_timeout("minecraft"), 400)
+    def test_ready_timeout_is_one_configurable_value(self):
+        cluster = run.FakeCluster()
+        self.assertEqual(run.ready_timeout(cluster), 900)
+        cluster.ready_timeout_s = 123.0
+        self.assertEqual(run.ready_timeout(cluster), 123.0)
 
 
 class FakeOperatorConn:
@@ -368,3 +371,65 @@ class ToolRegexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RerunOutcomesTest(unittest.TestCase):
+    def write(self, out, repeat, outcome):
+        (out / f"fake__mc-pvp-d1__r{repeat}.json").write_text(json.dumps({"outcome": outcome}), encoding="utf-8")
+
+    def test_only_selected_outcomes_and_missing_rerun(self):
+        cluster = run.FakeCluster()
+        executor = run.FakeExecutor(cluster, fixes_pvp)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for repeat, outcome in ((1, "pass"), (2, "infra_error"), (3, "fail"), (4, "staging_error")):
+                self.write(out, repeat, outcome)
+            records = run.run_all(
+                cluster, executor, [SYSTEM], [PVP_CASE], 5, 1, out, {},
+                rerun_outcomes=run.parse_rerun_outcomes("infra_error,staging_error,missing"),
+            )
+            self.assertEqual(sorted(r["repeat"] for r in records), [2, 4, 5])
+            self.assertEqual(json.loads((out / "fake__mc-pvp-d1__r1.json").read_text())["outcome"], "pass")
+            self.assertEqual(json.loads((out / "fake__mc-pvp-d1__r3.json").read_text())["outcome"], "fail")
+            self.assertEqual(json.loads((out / "fake__mc-pvp-d1__r2.json").read_text())["outcome"], "pass")
+
+    def test_without_missing_absent_records_are_skipped(self):
+        cluster = run.FakeCluster()
+        executor = run.FakeExecutor(cluster, fixes_pvp)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.write(out, 1, "infra_error")
+            records = run.run_all(cluster, executor, [SYSTEM], [PVP_CASE], 2, 1, out, {},
+                                  rerun_outcomes=frozenset({"infra_error"}))
+            self.assertEqual([r["repeat"] for r in records], [1])
+
+    def test_unknown_outcome_is_rejected(self):
+        with self.assertRaises(ValueError):
+            run.parse_rerun_outcomes("pass")
+
+
+class AbortTest(unittest.TestCase):
+    def test_streak_aborts_and_skips_remaining_jobs(self):
+        cluster = run.FakeCluster()
+        executor = run.FakeExecutor(cluster, fixes_pvp)
+        cluster.failure_streak = run.ABORT_AFTER_FAILURES
+        aborted = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            records = run.run_all(cluster, executor, [SYSTEM], [PVP_CASE], 4, 1, Path(tmp), {}, aborted=aborted)
+        self.assertTrue(aborted.is_set())
+        self.assertEqual(len(records), 1)
+
+
+class ChannelSelectionTest(unittest.TestCase):
+    def test_eval_channels_prefers_arg_then_env_then_file(self):
+        self.assertEqual(run.eval_channels("1, 2", {run.CHANNELS_KEY: "9"}, {}), ["1", "2"])
+        self.assertEqual(run.eval_channels(None, {run.CHANNELS_KEY: "7,8"}, {run.CHANNELS_KEY: "9"}), ["7", "8"])
+        self.assertEqual(run.eval_channels(None, {}, {run.CHANNELS_KEY: "5,6"}), ["5", "6"])
+        self.assertEqual(run.eval_channels(None, {}, {}), [])
+
+    def test_gary_turns_round_robin_while_the_connection_keeps_the_first(self):
+        conn = FakeOperatorConn(GARY_RESPONSE)
+        conn.channel = "first"
+        executor = run.RealExecutor(conn, ["first", "second", "third"], {})
+        self.assertEqual([executor._next_channel() for _ in range(4)], ["first", "second", "third", "first"])
+        self.assertEqual(conn.channel, "first")
