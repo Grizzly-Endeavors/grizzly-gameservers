@@ -30,6 +30,8 @@ export interface Turn {
   replay?: { scenario: string; recorded: boolean };
   approval?: { scenario: string; state: 'pending' | 'approved' | 'denied' };
   error?: string;
+  /** Sent from the previous run's follow-up field, so it reads as a continuation of that run. */
+  followUp?: boolean;
 }
 
 interface Store {
@@ -50,7 +52,7 @@ interface Store {
   setDraft: (s: string) => void;
   turns: Turn[];
   busy: boolean;
-  ask: (prompt: string) => void;
+  ask: (prompt: string, opts?: { followUp?: boolean }) => void;
   decide: (turnId: string, approve: boolean) => void;
   toast: string | null;
   showToast: (s: string) => void;
@@ -291,11 +293,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const ask = useCallback(
-    (prompt: string) => {
+    (prompt: string, opts?: { followUp?: boolean }) => {
       const p = prompt.trim();
       if (!p || busy) return;
       const id = nextId();
-      setTurns((ts) => [...ts, { id, prompt: p, at: Date.now(), status: 'running', steps: [] }]);
+      setTurns((ts) => [...ts, { id, prompt: p, at: Date.now(), status: 'running', steps: [], followUp: opts?.followUp }]);
       setDraft('');
       void (mode === 'live' ? live(id, p) : replay(id, p));
     },

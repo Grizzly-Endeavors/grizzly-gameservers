@@ -750,6 +750,8 @@ function GaryActivityTab() {
 }
 
 function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number; isLatest: boolean }) {
+  const { turns } = useStore();
+  const parent = turns[runNumber - 2];
   const isPendingApproval = turn.approval?.state === 'pending';
   const isEscalated = turn.response?.escalated;
 
@@ -774,11 +776,17 @@ function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number;
           {statusBadge}
           <ServerTags turn={turn} />
         </div>
-        <span className="cx-run-kind muted">Stateless dispatch</span>
+        <span className="cx-run-kind muted">{turn.followUp ? 'Follow-up' : 'Stateless dispatch'}</span>
       </div>
 
       <div className="cx-run-prompt">
-        <span className="cx-run-prompt-label muted">Dispatched instruction</span>
+        {turn.followUp && parent ? (
+          <span className="cx-run-prompt-label cx-run-parent muted">
+            Follow-up to run #{runNumber - 1} · {parent.prompt}
+          </span>
+        ) : (
+          <span className="cx-run-prompt-label muted">Dispatched instruction</span>
+        )}
         <p>{turn.prompt}</p>
       </div>
 
@@ -841,28 +849,48 @@ function RunView({ turn, runNumber, isLatest }: { turn: Turn; runNumber: number;
               <Markdown remarkPlugins={[remarkGfm]}>{turn.response.reply}</Markdown>
             </div>
 
-            {isLatest && !isPendingApproval && (
-              <div className="cx-run-closed">
-                <span className="muted">
-                  Run #{runNumber} complete · Gary operates on single-task dispatches, not open chat sessions.
-                </span>
-                <button
-                  type="button"
-                  className="cx-link-btn"
-                  onClick={() => {
-                    const el = document.getElementById('gary-input') as HTMLTextAreaElement | null;
-                    el?.focus();
-                    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }}
-                >
-                  New dispatch ↗
-                </button>
-              </div>
-            )}
+            {isLatest && !isPendingApproval && <FollowUp runNumber={runNumber} />}
           </>
         )}
       </div>
     </article>
+  );
+}
+
+/**
+ * One line under the latest finished run. A follow-up continues that run as the next
+ * run in the inspector rather than opening a chat thread.
+ */
+function FollowUp({ runNumber }: { runNumber: number }) {
+  const { ask, busy } = useStore();
+  const [text, setText] = useState('');
+  const send = () => {
+    if (!text.trim() || busy) return;
+    ask(text, { followUp: true });
+    setText('');
+  };
+  return (
+    <form
+      className="cx-followup"
+      onSubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      <input
+        type="text"
+        value={text}
+        aria-label={`Follow up on run #${runNumber}`}
+        placeholder={`Follow up on run #${runNumber}`}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setText('');
+        }}
+      />
+      <button type="submit" className="cx-followup-send" disabled={busy || !text.trim()} aria-label="Send follow-up">
+        <Icon name="send" size={14} />
+      </button>
+    </form>
   );
 }
 
