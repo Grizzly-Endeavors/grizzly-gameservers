@@ -9,7 +9,7 @@ setup:
 - tool: write_file
   args:
     path: .grizzly/mods
-    content: 'Advize-PlantEverything-1.21.4
+    content: 'OdinPlus-QuickTeleport-2.0.7
 
       '
 - restart: true
@@ -31,5 +31,5 @@ checks:
   present: true
 - type: file_regex
   path: /config/.grizzly/thunderstore/resolved
-  pattern: (?m)^Advize-PlantEverything-
+  pattern: (?m)^OdinPlus-QuickTeleport-
   present: true

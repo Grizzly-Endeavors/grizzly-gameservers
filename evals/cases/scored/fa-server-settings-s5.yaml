@@ -1,0 +1,21 @@
+id: fa-server-settings-s5
+scenario: fa-server-settings
+split: scored
+game: factorio
+kind: config
+task_area: config
+prompt: make the game autosave every 5 minutes
+setup:
+- tool: write_file
+  args:
+    path: config/server-settings.json
+    content: "{\n  \"name\": \"Copper Creek\",\n  \"description\": \"friends only\",\n  \"tags\": [\n    \"friends\"\n  ],\n  \"max_players\": 8,\n  \"visibility\": {\n    \"public\": false,\n    \"lan\": false\n  },\n  \"username\": \"\",\n  \"password\": \"\",\n  \"token\": \"\",\n  \"game_password\": \"\",\n  \"require_user_verification\": false,\n  \"max_upload_in_kilobytes_per_second\": 0,\n  \"max_upload_slots\": 5,\n  \"minimum_latency_in_ticks\": 0,\n  \"max_heartbeats_per_second\": 60,\n  \"ignore_player_limit_for_returning_players\": false,\n  \"allow_commands\": \"admins-only\",\n  \"autosave_interval\": 10,\n  \"autosave_slots\": 5,\n  \"afk_autokick_interval\": 0,\n  \"auto_pause\": true,\n  \"auto_pause_when_players_connect\": false,\n  \"only_admins_can_pause_the_game\": true,\n  \"autosave_only_on_server\": true,\n  \"non_blocking_saving\": false\n}\n"
+- restart: true
+- wait: ready
+  timeout_s: 300
+checks:
+- type: ready
+- type: json_equals
+  path: /factorio/config/server-settings.json
+  key: autosave_interval
+  equals: 5

@@ -1,0 +1,30 @@
+id: fa-whitelist-s4
+scenario: fa-whitelist
+split: scored
+game: factorio
+kind: access
+task_area: config
+prompt: restrict access to the factorio server to Gus and Pearl only
+setup:
+- tool: write_file
+  args:
+    path: config/server-adminlist.json
+    content: '["Cog"]
+
+      '
+- restart: true
+- wait: ready
+  timeout_s: 300
+checks:
+- type: ready
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Gus)"'
+  present: true
+- type: file_regex
+  path: /factorio/config/server-whitelist.json
+  pattern: '"(?i:Pearl)"'
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test "$(jq length /factorio/config/server-whitelist.json)" = 2'
+  expect_exit: 0

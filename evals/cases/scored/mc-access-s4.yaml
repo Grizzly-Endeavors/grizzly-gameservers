@@ -1,0 +1,53 @@
+id: mc-access-s4
+scenario: mc-access
+split: scored
+game: minecraft
+kind: access
+task_area: config
+prompt: Thistle is helping me run the place now, give her the power to use admin commands
+setup:
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: online-mode=true
+    new_text: online-mode=false
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: white-list=false
+    new_text: white-list=true
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: enforce-whitelist=false
+    new_text: enforce-whitelist=true
+- tool: write_file
+  args:
+    path: whitelist.json
+    content: "[\n  {\n    \"uuid\": \"4eadbc51-6f70-3182-ad9e-af0b1c2d3e4f\",\n    \"name\": \"Mina\"\n  },\n  {\n    \"uuid\": \"5fbecd62-7081-3293-beaf-b01c2d3e4f50\",\n    \"name\": \"Cass\"\n  }\n]\n"
+- tool: write_file
+  args:
+    path: ops.json
+    content: "[\n  {\n    \"uuid\": \"60cfde73-8192-33a4-cfb0-c12d3e4f5061\",\n    \"name\": \"Jory\",\n    \"level\": 4,\n    \"bypassesPlayerLimit\": false\n  }\n]\n"
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/ops.json
+  pattern: (?i)"name":\s*"Thistle"
+  present: true
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^white-list=true$
+  present: true
+- type: file_regex
+  path: /data/ops.json
+  pattern: (?i)"name":\s*"Jory"
+  present: true
+- type: file_regex
+  path: /data/whitelist.json
+  pattern: (?i)"name":\s*"Mina"
+  present: true

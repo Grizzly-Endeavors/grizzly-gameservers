@@ -1,0 +1,27 @@
+id: mc-properties-s4
+scenario: mc-properties
+split: scored
+game: minecraft
+kind: config
+task_area: config
+prompt: I can't build next to spawn, it says it's protected. get rid of that, and cap us at 7 players
+setup:
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: view-distance=10
+    new_text: view-distance=8
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^spawn-protection=0$
+  present: true
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^max-players=7$
+  present: true

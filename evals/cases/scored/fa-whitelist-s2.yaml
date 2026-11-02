@@ -6,6 +6,13 @@ kind: access
 task_area: config
 prompt: 'whitelist only these two people: Hopper and Turing'
 setup:
+- tool: write_file
+  args:
+    path: config/server-adminlist.json
+    content: '["Sprocket"]
+
+      '
+- restart: true
 - wait: ready
   timeout_s: 300
 checks:

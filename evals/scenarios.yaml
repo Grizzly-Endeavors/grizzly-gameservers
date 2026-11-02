@@ -38,8 +38,8 @@ scenarios:
     staging: healthy Fabric server with a few mods
     examples: ["can you add Lithium", "we want the voice chat mod on the server"]
     checks: [mod resolved for this loader+version, server Ready]
-    variants: 5
-    split: { dev: 1, scored: 4 }
+    variants: 6
+    split: { dev: 1, scored: 5 }
 
   - id: mc-mod-missing-dependency
     game: minecraft
@@ -109,8 +109,8 @@ scenarios:
     staging: whitelist enabled; ops.json with existing entries
     examples: ["add Bramblewick to the whitelist", "make Fenwick an op"]
     checks: [named player added, whitelist still enforced, no entries removed]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: mc-properties
     game: minecraft
@@ -119,8 +119,8 @@ scenarios:
     staging: customised server.properties
     examples: ["turn off pvp", "20 players and hard mode", "make it so people can't hurt each other"]
     checks: [target keys set, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   # ═══════════════ Valheim (lloesche + BepInEx, Thunderstore) — 16 scored ═══════════════
 
@@ -279,8 +279,8 @@ scenarios:
     staging: server-adminlist.json with one entry
     examples: ["make TinkerTom an admin"]
     checks: [name in server-adminlist.json (or promoted over RCON and persisted)]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 4
+    split: { dev: 1, scored: 3 }
 
   - id: fa-whitelist
     game: factorio
@@ -289,8 +289,8 @@ scenarios:
     staging: no whitelist
     examples: ["only let me, Ada and Grace in"]
     checks: [whitelist enforced with exactly those names, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   - id: fa-server-settings
     game: factorio
@@ -299,8 +299,8 @@ scenarios:
     staging: customised server-settings.json
     examples: ["put a password on it", "autosave every 5 minutes", "kick people who are afk for 10 min"]
     checks: [target key set, server Ready]
-    variants: 5
-    split: { dev: 1, scored: 4 }
+    variants: 7
+    split: { dev: 1, scored: 6 }
 
   - id: fa-keep-running
     game: factorio
@@ -309,8 +309,8 @@ scenarios:
     staging: auto_pause on
     examples: ["the factory stops when nobody's on, keep it running"]
     checks: [auto_pause false, server Ready]
-    variants: 2
-    split: { dev: 1, scored: 1 }
+    variants: 3
+    split: { dev: 1, scored: 2 }
 
   - id: fa-load-save
     game: factorio
@@ -320,8 +320,8 @@ scenarios:
     staging: an uploaded single-player save .zip beside the current save
     examples: ["I uploaded my singleplayer save 'megabase.zip', load it"]
     checks: [server running the uploaded save, server Ready]
-    variants: 3
-    split: { dev: 1, scored: 2 }
+    variants: 4
+    split: { dev: 1, scored: 3 }
 
   - id: fa-space-age
     game: factorio
@@ -340,8 +340,8 @@ scenarios:
     staging: mod-list.json enables a mod that fails at startup
     examples: ["crashed after we turned on a mod"]
     checks: [server Ready with the customer's other mods still enabled]
-    variants: 4
-    split: { dev: 1, scored: 3 }
+    variants: 5
+    split: { dev: 1, scored: 4 }
 
   # ═══════════════ Palworld — 14 scored ═══════════════
 
