@@ -292,14 +292,20 @@ def read_pod_file(cluster: Any, name: str, path: str) -> tuple[bool, str]:
     return rc == 0, out
 
 
+def check_label(check: dict[str, Any]) -> str:
+    if "path" in check:
+        return f"{check['type']} {check['path']}"
+    if "tool" in check:
+        return f"{check['type']} {check['tool']}"
+    return check["type"]
+
+
 def run_check(cluster: Any, check: dict[str, Any], name: str, reply: str) -> dict[str, Any]:
-    kind = check["type"]
-    label = kind if "path" not in check else f"{kind} {check['path']}"
     try:
         ok, detail = _evaluate(cluster, check, name, reply)
     except ClusterError as err:
         ok, detail = False, f"cluster error: {err}"
-    return {"name": label, "ok": ok, "detail": detail}
+    return {"name": check_label(check), "ok": ok, "detail": detail}
 
 
 def _evaluate(cluster: Any, check: dict[str, Any], name: str, reply: str) -> tuple[bool, str]:
@@ -309,6 +315,20 @@ def _evaluate(cluster: Any, check: dict[str, Any], name: str, reply: str) -> tup
         return state == "Ready", f"state {state}"
     if kind == "reply_regex":
         return bool(re.search(check["pattern"], reply)), ""
+    if kind == "any_of":
+        subs = [run_check(cluster, sub, name, reply) for sub in check["checks"]]
+        if not subs:
+            return False, "any_of has no checks"
+        detail = "; ".join(f"{sub['name']} {'passed' if sub['ok'] else 'failed'}: {sub['detail']}" for sub in subs)
+        return any(sub["ok"] for sub in subs), detail
+    if kind == "tool_regex":
+        args = dict(check.get("args") or {})
+        args["name"] = name
+        result = cluster.tool(check["tool"], args)
+        matched = bool(re.search(check["pattern"], result))
+        present = check.get("present", True)
+        verdict = "matched" if matched else "did not match"
+        return matched == present, f"pattern {check['pattern']!r} {verdict}; result: {result.strip()[-200:]}"
     if kind == "pod_exec":
         rc, out = cluster.exec(name, shlex.split(check["cmd"]))
         expect = check.get("expect_exit", 0)
@@ -804,6 +824,7 @@ class FakeCluster:
         self.destroyed: list[str] = []
         self.restarts: list[str] = []
         self.on_restart: Callable[[str, "FakeCluster"], None] | None = None
+        self.tool_replies: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def now(self) -> float:
@@ -833,6 +854,8 @@ class FakeCluster:
                 self.destroyed.append(name)
                 self.states.pop(name, None)
                 return f"deleted {name} and its world"
+            if tool in self.tool_replies:
+                return self.tool_replies[tool]
         raise ClusterError(f"fake cluster has no tool {tool}")
 
     def state(self, name: str) -> str:
