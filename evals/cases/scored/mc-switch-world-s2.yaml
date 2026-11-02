@@ -1,0 +1,21 @@
+id: mc-switch-world-s2
+scenario: mc-switch-world
+split: scored
+game: minecraft
+kind: world
+task_area: config
+prompt: can you load up the survival-v1 world I uploaded, that's the one with all our builds
+setup:
+- pod_put:
+    src: evals/fixtures/minecraft/survival-v1.tgz
+    dst: /data/survival-v1.tgz
+- pod_exec: sh -c 'cd /data && tar -xzf survival-v1.tgz && rm survival-v1.tgz && chown -R 1000:1000 survival-v1 && test -f /data/survival-v1/level.dat'
+checks:
+- type: ready
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^level-name=survival-v1$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -f /data/survival-v1/level.dat'
+  expect_exit: 0

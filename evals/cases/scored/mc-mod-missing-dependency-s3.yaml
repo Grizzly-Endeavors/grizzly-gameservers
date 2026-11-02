@@ -1,0 +1,33 @@
+id: mc-mod-missing-dependency-s3
+scenario: mc-mod-missing-dependency
+split: scored
+game: minecraft
+kind: fix
+task_area: troubleshooting
+prompt: the server keeps dying on boot after the AppleSkin install, we do want to keep it
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=spark,lithium,appleskin
+
+      '
+- restart: true
+- wait: log
+  pattern: requires any version of fabric-api
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "appleskin"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "fabric-api"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "spark"'
+  expect_exit: 0

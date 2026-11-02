@@ -1,0 +1,27 @@
+id: mc-properties-s1
+scenario: mc-properties
+split: scored
+game: minecraft
+kind: config
+task_area: config
+prompt: set the server to creative mode and make the server description say Mossy Hollow
+setup:
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: motd=A Minecraft Server
+    new_text: motd=Welcome
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^gamemode=creative$
+  present: true
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^motd=Mossy Hollow$
+  present: true

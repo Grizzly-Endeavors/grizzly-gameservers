@@ -1,0 +1,50 @@
+id: mc-access-s1
+scenario: mc-access
+split: scored
+game: minecraft
+kind: access
+task_area: config
+prompt: can you make Fenwick an op
+setup:
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: online-mode=true
+    new_text: online-mode=false
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: white-list=false
+    new_text: white-list=true
+- tool: edit_file
+  args:
+    path: server.properties
+    old_text: enforce-whitelist=false
+    new_text: enforce-whitelist=true
+- tool: write_file
+  args:
+    path: whitelist.json
+    content: "[\n  {\n    \"uuid\": \"bc147014-91b5-3b0a-984d-7b196075ea99\",\n    \"name\": \"Rowan_Ash\"\n  },\n  {\n    \"uuid\": \"9e65e668-8bb6-3521-938c-2258a58c7a4d\",\n    \"name\": \"dusk_fox\"\
+      \n  }\n]\n"
+- tool: write_file
+  args:
+    path: ops.json
+    content: "[\n  {\n    \"uuid\": \"38ba9fb1-6412-318f-8a29-81d1b42a2025\",\n    \"name\": \"Marigold42\",\n    \"level\": 4,\n    \"bypassesPlayerLimit\": false\n  }\n]\n"
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/ops.json
+  pattern: (?i)"name":\s*"Fenwick"
+  present: true
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^white-list=true$
+  present: true
+- type: file_regex
+  path: /data/ops.json
+  pattern: (?i)"name":\s*"Marigold42"
+  present: true
