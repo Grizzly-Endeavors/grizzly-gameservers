@@ -1,8 +1,8 @@
 # Namespace-wide ceiling behind the bot's per-guild caps (ADR-022): a generous
 # backstop that catches a bug in bot-side enforcement, not the policy itself —
 # the per-guild math lives in the bot, where a refusal can name its figures for
-# a non-technical friend. Sized for ~2 full guild allowances (24c/48Gi each)
-# plus the bot's own pod (it runs in this namespace, 2c/2Gi limits) and an
+# a non-technical friend. Sized to host the eval harness's parallel fleet of
+# throwaway servers (roughly 25-30 at once on the cluster's hardware) plus the bot's own pod (it runs in this namespace, 2c/2Gi limits) and an
 # Agones SDK sidecar per game pod (200m/128Mi, declared via the Agones Helm
 # values — a quota on limits.* rejects any new pod whose containers leave them
 # undeclared, which is why those declarations must exist before this object).
@@ -23,16 +23,14 @@ metadata:
   namespace: game-servers
 spec:
   hard:
-    limits.cpu: "56"
-    limits.memory: 120Gi
-    requests.cpu: "28"
-    requests.memory: 64Gi
+    limits.cpu: "112"
+    limits.memory: 240Gi
+    requests.cpu: "48"
+    requests.memory: 120Gi
     # Sized past what CPU/memory can actually host, so the PVC count is never
-    # the first wall: at the default 5-server guild cap this is 6 guilds' worth
-    # of instances, while the CPU and memory figures above run out at roughly
-    # two guilds sitting at their full allowance. Storage is the looser of the
-    # two — 32 claims at the largest in the catalog (25Gi) would want 800Gi, so
-    # a namespace full of Satisfactory worlds hits the storage figure first and
-    # is told so.
-    persistentvolumeclaims: "32"
+    # the first wall: the CPU and memory figures above run out first. Storage
+    # is the looser of the two — 64 claims at the largest in the catalog (25Gi)
+    # would want 1600Gi, so a namespace full of large worlds hits the storage
+    # figure first and is told so.
+    persistentvolumeclaims: "64"
     requests.storage: 600Gi
