@@ -262,6 +262,43 @@ class ClaudeResultTest(unittest.TestCase):
             run.parse_claude_result("not json")
 
 
+class ClaudeStreamTests(unittest.TestCase):
+    def test_stream_yields_events_and_result(self):
+        events = [
+            {"type": "system", "subtype": "init"},
+            {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "read_file"}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "content": "x"}]}},
+            CLAUDE_FIXTURE,
+        ]
+        raw = "\n".join(json.dumps(e) for e in events) + "\nnot json\n"
+        got, parsed = run.parse_claude_stream(raw)
+        self.assertEqual(len(got), 4)
+        self.assertEqual(parsed["turns"], 7)
+        self.assertEqual(parsed["reply"], "all fixed")
+        self.assertEqual(parsed["prompt_tokens"], 1400)
+
+    def test_stream_without_result_is_an_error(self):
+        with self.assertRaises(ValueError):
+            run.parse_claude_stream(json.dumps({"type": "system"}))
+
+
+class ManifestTests(unittest.TestCase):
+    def test_dry_run_writes_manifest_without_secrets(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "o"
+            cluster = run.FakeCluster()
+            manifest = run.build_manifest(["--dry-run"], True)
+            run.run_all(cluster, run.FakeExecutor(cluster), [], [], 1, 1, out, {}, manifest=manifest)
+            written = json.loads((out / "manifest.json").read_text())
+        self.assertEqual(written["args"], ["--dry-run"])
+        self.assertIn("skipped", written["bot_image"])
+        self.assertIsInstance(written["git_dirty"], bool)
+        self.assertEqual(len(written["git_head"]), 40)
+        self.assertIn("$ANTHROPIC_API_KEY", json.dumps(written["systems"]))
+        self.assertTrue(written["models"])
+
+
 ANY_OF_CASE = dict(
     PVP_CASE,
     checks=[
