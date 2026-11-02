@@ -3,59 +3,63 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Gary on Fireworks — Pitch Deck</title>
+  <title>Gary on Fireworks · Pitch Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     :root {
       color-scheme: light;
-      --font-body: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-      --bg: #f6f7f8;
+      --font-body: 'Public Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --bg: #f6f7f6;
       --surface: #ffffff;
-      --surface-2: #f1f3f5;
-      --well: #e9ecef;
-      --ink: #3f4245;
-      --ink-strong: #18191b;
-      --muted: #686b70;
-      --faint: #9aa0a6;
-      --line: #dadee2;
-      --line-soft: #e9ecee;
-      --brand-50: #f1edff;
-      --brand-100: #e2d9ff;
-      --brand-500: #7c5cff;
-      --brand-600: #6847f0;
-      --ok: #2ea043;
-      --ok-tint: #e8f6ec;
-      --warn: #d98a1f;
-      --warn-tint: #fff4dd;
-      --bad: #d6453f;
-      --bad-tint: #fbecec;
-      --radius: 12px;
-      --radius-lg: 16px;
-      --shadow-card: 0 2px 6px rgba(20, 21, 23, 0.06), 0 16px 36px -18px rgba(20, 21, 23, 0.18);
+      --surface-2: #f1f3f1;
+      --well: #eaeeeb;
+      --ink: #26282b;
+      --ink-strong: #111111;
+      --muted: #595d62;
+      --faint: #666a70;
+      --line: #e2e5e3;
+      --line-soft: #ecefed;
+      --brand-50: #e6f4ec;
+      --brand-100: #cce8d9;
+      --brand-500: #247b50;
+      --brand-600: #1d6541;
+      --ok: #247b50;
+      --ok-tint: #dcfae5;
+      --warn: #8a5209;
+      --warn-tint: #fffbeb;
+      --bad: #831c1e;
+      --bad-tint: #ffedea;
+      --radius: 6px;
+      --radius-lg: 6px;
+      --shadow-card: none;
     }
 
     html.dark {
       color-scheme: dark;
-      --bg: #111214;
-      --surface: #181a1d;
-      --surface-2: #202327;
-      --well: #141619;
-      --ink: #c9cdd2;
-      --ink-strong: #f4f5f7;
-      --muted: #8e9399;
-      --faint: #5d6268;
-      --line: #2b2e33;
-      --line-soft: #222529;
-      --brand-50: rgba(124, 92, 255, 0.13);
-      --brand-100: rgba(124, 92, 255, 0.26);
-      --brand-500: #8c70ff;
-      --brand-600: #7c5cff;
-      --ok: #3fb950;
-      --ok-tint: rgba(63, 185, 80, 0.13);
-      --warn: #e9a23b;
-      --warn-tint: rgba(233, 162, 59, 0.14);
-      --bad: #f0524b;
-      --bad-tint: rgba(240, 82, 75, 0.13);
-      --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.35), 0 22px 48px -22px rgba(0, 0, 0, 0.65);
+      --bg: #171719;
+      --surface: #131217;
+      --surface-2: #1b1a1f;
+      --well: #0f0e13;
+      --ink: #d5d6dc;
+      --ink-strong: #ffffff;
+      --muted: #94969e;
+      --faint: #8a8c92;
+      --line: #222224;
+      --line-soft: #1b1a1f;
+      --brand-50: #16231e;
+      --brand-100: #1d3129;
+      --brand-500: #44a282;
+      --brand-600: #5fc39c;
+      --ok: #5fc39c;
+      --ok-tint: #1b2828;
+      --warn: #d9a441;
+      --warn-tint: #2a2416;
+      --bad: #e5566f;
+      --bad-tint: #2c1a20;
+      --shadow-card: none;
     }
 
     * {
@@ -718,13 +722,15 @@
           <text x="258" y="34" class="svg-kicker">GARY SPECIALIZED OPERATOR HARNESS (KUBERNETES + AGONES SIDECAR)</text>
 
           <!-- 1. LEFT INPUT: PLAYER / HOST REQUEST -->
-          <rect x="14" y="152" width="195" height="126" class="svg-box" />
-          <text x="30" y="178" class="svg-kicker">PLAYER / HOST INPUT</text>
-          <text x="30" y="200" class="svg-title">Gary Web Console</text>
-          <rect x="28" y="212" width="167" height="26" class="svg-pill" />
-          <text x="36" y="229" class="svg-sub" style="fill:var(--ink-strong);">"Crash after adding Iris"</text>
-          <rect x="28" y="243" width="167" height="26" class="svg-pill" />
-          <text x="36" y="260" class="svg-sub" style="fill:var(--ink-strong);">"Double Pal spawn rates"</text>
+          <rect x="14" y="142" width="195" height="146" class="svg-box" />
+          <text x="28" y="166" class="svg-kicker">OWNER &amp; FRIEND INPUT</text>
+          <text x="28" y="186" class="svg-title">Web Console + 1-Click Bot</text>
+          <rect x="26" y="198" width="171" height="24" class="svg-pill" />
+          <text x="34" y="214" class="svg-sub" style="fill:var(--ink-strong);">Console: "Crash after Iris"</text>
+          <rect x="26" y="227" width="171" height="24" class="svg-pill" />
+          <text x="34" y="243" class="svg-sub" style="fill:var(--ink-strong);">Console: "Double Pal spawns"</text>
+          <rect x="26" y="256" width="171" height="24" class="svg-pill" />
+          <text x="34" y="272" class="svg-sub" style="fill:var(--brand-600);font-weight:700;">Discord: "@Gary whitelist sara"</text>
 
           <!-- Arrow: Input -> Fireworks Engine -->
           <line x1="209" y1="215" x2="262" y2="215" stroke="var(--brand-500)" stroke-width="2.2" marker-end="url(#arr-brand)" />
@@ -905,7 +911,7 @@
     <section class="slide" data-index="4">
       <div class="slide-header">
         <span class="kicker">05 / Margin Expansion, TAM Expansion &amp; The SaaS Horizon</span>
-        <h1>Winning Both Sides of the Host P&amp;L — Then Expanding Beyond Gaming</h1>
+        <h1>Winning Both Sides of the Host P&amp;L, Then Expanding Beyond Gaming</h1>
         <p class="subtitle">Gary starts by solving the hardest consumer container workload in a $2.05B market, then generalizes to any containerized SaaS business.</p>
       </div>
 
@@ -913,7 +919,7 @@
         <div class="card ok-card">
           <div class="kicker" style="color:var(--ok);">1. Gross Margin Expansion</div>
           <div class="stat-label" style="font-size:20px;">Eliminate $15 Support Tickets</div>
-          <p class="stat-meta">Replaces $13.50 to $16.13 Tier-1/Tier-2 troubleshooting tickets with sub-cent autonomous recovery on Fireworks (<strong>&lt; $0.10 / server / month</strong>).</p>
+          <p class="stat-meta">Replaces $13.50 to $16.13 Tier 1 and Tier 2 troubleshooting tickets with sub-cent autonomous recovery on Fireworks (<strong>&lt; $0.10 / server / month</strong>).</p>
           <ul class="bullet-list">
             <li><span class="dot ok"></span><span><strong>Direct (Grizzly Gameservers):</strong> AI-native hosting where broken servers heal in seconds.</span></li>
             <li><span class="dot ok"></span><span><strong>B2B Licensing:</strong> Drop-in operator API &amp; console for Shockbyte, Bisect, and Apex.</span></li>
@@ -922,14 +928,14 @@
         </div>
 
         <div class="card highlight">
-          <div class="kicker">2. Top-Line TAM Expansion</div>
-          <div class="stat-label" style="font-size:20px;">Replace Config Files with Plain English</div>
-          <p class="stat-meta">In single-player, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into daunting <code>.ini</code> and <code>.properties</code> files.</p>
+          <div class="kicker">2. Top-Line TAM &amp; Viral Retention</div>
+          <div class="stat-label" style="font-size:20px;">Plain-English Configs + 1-Click Discord Bot</div>
+          <p class="stat-meta">In single-player, changing settings is a pause-menu slider. On a hosted server, that menu turns into raw <code>.ini</code> and <code>.properties</code> files, and 10 friends ping the owner at 11 PM.</p>
           <ul class="bullet-list">
-            <li><span class="dot"></span><span>Players just say <em>"turn off PvP and double Pal spawn rates"</em> right in the Gary Web Console.</span></li>
-            <li><span class="dot"></span><span><strong>Unlocks new buyers:</strong> Non-technical friend groups can rent and customize servers without a sysadmin.</span></li>
+            <li><span class="dot"></span><span><strong>Plain-English Console:</strong> Say <em>"turn off PvP and double Pal spawn rates"</em> with zero config editing.</span></li>
+            <li><span class="dot"></span><span><strong>1-Click Friend Discord Bot:</strong> Provision a server-bound bot into the group's Discord with role guardrails so friends self-serve status, whitelists, and safe tuning while destructive actions still require owner approval.</span></li>
           </ul>
-          <div class="cite">Expands host TAM + slashes Day-1 churn</div>
+          <div class="cite">Unlocks non-technical buyers + keeps the whole friend group active</div>
         </div>
 
         <div class="card">
@@ -984,7 +990,7 @@
       },
       {
         timing: "Slide 5 (15s)",
-        text: "\"For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: on a hosted server, changing difficulty or spawn rates requires editing raw config files instead of using an in-game menu. Gary turns those back into plain English requests, opening server hosting to non-technical groups who could never run one before. Live across seven games today, this same architecture expands to autonomous config and Tier 1 and Tier 2 ops for any containerized SaaS.\""
+        text: "\"For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: non-technical owners change settings in plain English instead of editing raw config files, and with one click they drop a role-guarded Gary bot into their Discord so friends can self-serve whitelists and status checks without waking the admin. Live across seven games today, this same architecture expands to autonomous ops for any containerized SaaS.\""
       }
     ];
 

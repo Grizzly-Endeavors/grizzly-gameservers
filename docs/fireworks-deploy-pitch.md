@@ -17,7 +17,7 @@
    - **Fireworks Open Models:** Because the harness, knowledge base, and memory carry the domain structure, a fast open model on Fireworks executes the fix in a few turns for fractions of a cent.
 4. **Dual Value (Margin Protection + TAM Expansion) & SaaS Expansion:**
    - **Margin Protection (Cost Save):** Deflects $13.50 to $16.13 Tier 1 and Tier 2 tickets for under $0.10 per server per month in Fireworks inference.
-   - **TAM Expansion (Revenue Growth):** In single-player games, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into raw `.ini`, `.json`, and `.properties` files. Gary turns server customization back into plain English requests in the Gary Web Console, lowering the barrier to entry so non-technical friend groups can rent servers without a sysadmin.
+   - **TAM Expansion & Viral Retention (Revenue Growth):** In single-player games, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into raw `.ini`, `.json`, and `.properties` files. Gary turns server customization back into plain English requests in the Gary Web Console, and with **1 click** lets the server owner provision a role-guarded Gary bot into their friends' Discord so players can self-serve status checks, whitelists, and safe tuning while destructive actions still require owner approval.
    - **Expansion Beyond Gaming:** Multiplayer game hosting is a **$2.05B market growing at 11.1% CAGR** and the ultimate stress test of messy configs and live state. The same architecture expands to **autonomous configuration and L1/L2 operations for any containerized SaaS business**.
 
 ---
@@ -129,12 +129,12 @@
 
 **On Screen:**
 1. **Protect Host Margins (Cost Save):** Replace $13.50 to $16.13 T1/T2 tickets across a **$2.05B game hosting market** (11.1% CAGR) for `< $0.10/server/month` on Fireworks.
-2. **Expand the Host's TAM (Revenue Growth):**
+2. **Expand the Host's TAM & Group Retention (Revenue Growth):**
    - In single-player, changing difficulty or spawn rates is a settings menu. On a hosted server, it requires editing raw `.ini` and `.properties` files.
-   - Gary turns server settings back into plain English requests, unlocking hosted servers for non-technical friend groups who previously churned or never bought.
+   - Gary turns server settings back into plain English requests in the Web Console, and includes a **1-Click Friend Discord Bot** workflow so the server owner can drop a role-guarded Gary bot into their group's Discord (`Status`, `Whitelist`, and `Safe Tuning` open to friends; destructive actions gated on owner approval).
 3. **Beyond Gaming (Any Containerized SaaS):**
    - Live across **7 games** today (Minecraft, Valheim, Palworld, Factorio, Terraria, Satisfactory, Enshrouded).
    - The same harness + memory + Fireworks architecture expands to **autonomous configuration and L1/L2 operations for any containerized SaaS workload**.
 
 **Spoken Script (15 sec):**
-> "For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: on a hosted server, simple things like changing difficulty or spawn rates require editing raw config files instead of using an in-game menu. Gary turns those back into plain English requests, opening server hosting to non-technical groups who could never run one before. Live across seven games today, this same architecture expands to autonomous config and Tier 1 and Tier 2 ops for any containerized SaaS."
+> "For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: non-technical owners change settings in plain English instead of editing raw config files, and with one click they drop a role-guarded Gary bot into their Discord so friends can self-serve whitelists and status checks without waking the admin. Live across seven games today, this same architecture expands to autonomous ops for any containerized SaaS."
