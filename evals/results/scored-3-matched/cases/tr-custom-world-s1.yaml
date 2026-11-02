@@ -1,0 +1,22 @@
+id: tr-custom-world-s1
+scenario: tr-custom-world
+split: scored
+game: terraria
+kind: world
+task_area: config
+prompt: uploaded my Hallowed Hollow world to the terraria server, can we play on that one instead
+setup:
+- pod_put:
+    src: evals/fixtures/terraria/small-world.wld
+    dst: /data/worlds/Hallowed Hollow.wld
+- wait: ready
+  timeout_s: 600
+checks:
+- type: ready
+- type: file_regex
+  path: /data/config/serverconfig.txt
+  pattern: (?m)^world=.*Hallowed Hollow\.wld\s*$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -s /data/worlds/grizzly.wld'
+  expect_exit: 0

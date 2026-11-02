@@ -1,0 +1,85 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "mc-heap-s1",
+  "game": "minecraft",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "server crashes every time it boots, the log mentions java running out of something. been like this since I tweaked the memory thing",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 6,
+  "tool_calls": [
+    "list_servers",
+    "about_server",
+    "server_resources",
+    "read_logs",
+    "game_guide",
+    "browse_files",
+    "read_file",
+    "edit_file",
+    "restart_server"
+  ],
+  "usage": {
+    "prompt_tokens": 96909,
+    "cached_tokens": 87296,
+    "completion_tokens": 3138
+  },
+  "latency_ms": 42413,
+  "model_ms": 23046,
+  "tool_ms": 19367,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: command terminated with exit code 1"
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-mc-heap-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:27:18+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T22:40:45+00:00"
+}

@@ -1,0 +1,79 @@
+{
+  "system_id": "cc-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Claude Code",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "claude_code",
+  "case_id": "en-config-reset-s1",
+  "game": "enshrouded",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "somehow our enshrouded server is back to its original name and the passwords changed. we had it set up properly last week, put it back like it was",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 13,
+  "tool_calls": [
+    "list_servers",
+    "about_server",
+    "game_guide",
+    "browse_files",
+    "read_file",
+    "read_file",
+    "restore_file",
+    "read_file",
+    "edit_file",
+    "restart_server",
+    "read_logs",
+    "run_when"
+  ],
+  "usage": {
+    "prompt_tokens": 112171,
+    "cached_tokens": 100608,
+    "completion_tokens": 1894
+  },
+  "latency_ms": 21637,
+  "model_ms": 17448,
+  "tool_ms": 4189,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "cluster error: kubectl exec failed: Command '['kubectl', '-n', 'game-servers', 'exec', 'ev-en-config-reset-s1-cc-fw-1', '-c', 'enshrouded', '--', 'bash', '/tmp/wait_server_up.sh']' timed out after 120.0 seconds"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: true"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: true"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: true"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: true"
+    }
+  ],
+  "server": "ev-en-config-reset-s1-cc-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:21:22+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:38:07+00:00"
+}

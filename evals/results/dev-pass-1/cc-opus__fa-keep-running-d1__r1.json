@@ -1,0 +1,63 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-keep-running-d1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "the factory stops running whenever nobody is online, can you keep it going?",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "infra_error",
+  "claimed_done": true,
+  "turns": 17,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "edit_file",
+    "restart_server",
+    "run_shell",
+    "edit_file",
+    "browse_files",
+    "read_file",
+    "run_shell",
+    "write_file",
+    "run_shell",
+    "restart_server",
+    "run_when",
+    "read_logs",
+    "run_shell"
+  ],
+  "usage": {
+    "prompt_tokens": 170859,
+    "cached_tokens": 163947,
+    "completion_tokens": 2935
+  },
+  "latency_ms": 54142,
+  "model_ms": 31643,
+  "tool_ms": 22499,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    }
+  ],
+  "server": "ev-fa-keep-running-d1-cc-opus-1",
+  "destroyed": false,
+  "detail": "operator tool restart_server failed: POST /operator/tool failed: Remote end closed connection without response; destroy failed: operator tool destroy_server failed: POST /operator/tool failed: <urlopen error [Errno 111] Connection refused>",
+  "started_at": "2026-11-02T21:32:09+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:33:44+00:00"
+}

@@ -1,0 +1,56 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-admins-s3",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "RailBaron_99 should be able to use the console commands in game, set that up for him",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 10,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "run_shell",
+    "edit_file",
+    "run_shell",
+    "send_command",
+    "read_logs",
+    "run_shell"
+  ],
+  "usage": {
+    "prompt_tokens": 96355,
+    "cached_tokens": 91124,
+    "completion_tokens": 1891
+  },
+  "latency_ms": 64268,
+  "model_ms": 30832,
+  "tool_ms": 33436,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-adminlist.json",
+      "ok": false,
+      "detail": "pattern absent"
+    }
+  ],
+  "server": "ev-fa-admins-s3-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:55:45+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:58:00+00:00"
+}

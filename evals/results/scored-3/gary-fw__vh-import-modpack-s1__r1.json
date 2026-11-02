@@ -1,0 +1,67 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "vh-import-modpack-s1",
+  "game": "valheim",
+  "task_area": "config",
+  "category": "mods",
+  "prompt": "my friend built a mod profile in r2modman and sent me this code 01a19dfd-180d-a733-48eb-8dff8c631762. can we run that on the server?",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 5,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "browse_files",
+    "backup_server",
+    "read_file",
+    "import_profile"
+  ],
+  "usage": {
+    "prompt_tokens": 51168,
+    "cached_tokens": 48772,
+    "completion_tokens": 1655
+  },
+  "latency_ms": 25976,
+  "model_ms": 12249,
+  "tool_ms": 13727,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": false,
+      "detail": "pattern absent"
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": false,
+      "detail": "pattern absent"
+    },
+    {
+      "name": "after stop: file_regex /config/.grizzly/thunderstore/resolved",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-vh-import-modpack-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:24:12+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T23:40:26+00:00"
+}

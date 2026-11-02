@@ -1,0 +1,87 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "mc-crash-bisect-d1",
+  "game": "minecraft",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "we added a bunch of mods tonight and now it crashes on boot, please get us back up and keep the ones that work",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": false,
+  "turns": 21,
+  "tool_calls": [
+    "list_servers",
+    "game_guide",
+    "browse_files",
+    "start_server",
+    "list_servers",
+    "start_server",
+    "about_server",
+    "start_server",
+    "list_backups",
+    "start_server",
+    "server_resources",
+    "start_server",
+    "start_server",
+    "about_server",
+    "browse_files",
+    "list_servers",
+    "start_server",
+    "start_server",
+    "start_server",
+    "about_server",
+    "escalate"
+  ],
+  "usage": {
+    "prompt_tokens": 231443,
+    "cached_tokens": 227184,
+    "completion_tokens": 2642
+  },
+  "latency_ms": 668965,
+  "model_ms": 27827,
+  "tool_ms": 641138,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": false,
+      "detail": "state Unhealthy"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": false,
+      "detail": "exit 1, wanted 0: error: cannot exec into a container in a completed pod; current phase is Succeeded"
+    }
+  ],
+  "server": "ev-mc-crash-bisect-d1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:12:12+00:00",
+  "notes": {
+    "escalation_kind": "agent_requested"
+  },
+  "finished_at": "2026-11-02T21:33:33+00:00"
+}

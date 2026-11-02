@@ -1,0 +1,31 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "mc-crash-bisect-d1",
+  "game": "minecraft",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "we added a bunch of mods tonight and now it crashes on boot, please get us back up and keep the ones that work",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "staging_error",
+  "claimed_done": false,
+  "turns": 0,
+  "tool_calls": [],
+  "usage": {
+    "prompt_tokens": 0,
+    "cached_tokens": 0,
+    "completion_tokens": 0
+  },
+  "latency_ms": 0,
+  "model_ms": 0,
+  "tool_ms": 0,
+  "checks": [],
+  "server": "ev-mc-crash-bisect-d1-cc-opus-1",
+  "destroyed": false,
+  "detail": "setup[0] tool failed: operator tool write_file failed: POST /operator/tool failed: <urlopen error [Errno 111] Connection refused>; destroy failed: operator tool destroy_server failed: POST /operator/tool failed: <urlopen error [Errno 111] Connection refused>",
+  "started_at": "2026-11-02T21:33:33+00:00",
+  "finished_at": "2026-11-02T21:34:19+00:00"
+}

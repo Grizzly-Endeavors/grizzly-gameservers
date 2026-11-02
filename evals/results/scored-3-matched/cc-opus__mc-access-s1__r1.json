@@ -1,0 +1,78 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "mc-access-s1",
+  "game": "minecraft",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "can you make Fenwick an op",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 2,
+  "tool_calls": [
+    "send_command"
+  ],
+  "usage": {
+    "prompt_tokens": 18546,
+    "cached_tokens": 18193,
+    "completion_tokens": 211
+  },
+  "latency_ms": 17206,
+  "model_ms": 3333,
+  "tool_ms": 13873,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/ops.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /data/ops.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/ops.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /data/server.properties",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /data/ops.json",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-mc-access-s1-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:26:25+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T22:38:31+00:00"
+}

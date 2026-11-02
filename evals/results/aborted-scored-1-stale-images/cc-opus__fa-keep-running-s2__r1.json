@@ -1,0 +1,58 @@
+{
+  "system_id": "cc-opus",
+  "label": "Claude Opus 5.5 in Claude Code",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "fa-keep-running-s2",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "whenever the last person leaves, the whole factory just halts. can it never stop, even with nobody on?",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "fail",
+  "claimed_done": true,
+  "turns": 12,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "run_shell",
+    "edit_file",
+    "run_shell",
+    "read_file",
+    "about_server",
+    "read_file",
+    "run_shell",
+    "edit_file",
+    "escalate"
+  ],
+  "usage": {
+    "prompt_tokens": 136984,
+    "cached_tokens": 130962,
+    "completion_tokens": 2490
+  },
+  "latency_ms": 65632,
+  "model_ms": 32395,
+  "tool_ms": 33237,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": false,
+      "detail": "auto_pause is True"
+    }
+  ],
+  "server": "ev-fa-keep-running-s2-cc-opus-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:55:45+00:00",
+  "notes": {
+    "subtype": "success",
+    "mode": "bare"
+  },
+  "finished_at": "2026-11-02T21:57:36+00:00"
+}

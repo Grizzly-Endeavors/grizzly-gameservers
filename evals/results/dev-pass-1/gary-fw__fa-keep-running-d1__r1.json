@@ -1,0 +1,77 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "fa-keep-running-d1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "config",
+  "prompt": "the factory stops running whenever nobody is online, can you keep it going?",
+  "split": "dev",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 21,
+  "tool_calls": [
+    "list_servers",
+    "game_guide",
+    "browse_files",
+    "browse_files",
+    "read_file",
+    "read_file",
+    "run_shell",
+    "edit_file",
+    "read_file",
+    "edit_file",
+    "run_shell",
+    "edit_file",
+    "write_file",
+    "run_shell",
+    "about_server",
+    "send_command",
+    "read_logs",
+    "run_shell",
+    "read_file",
+    "restart_server",
+    "run_shell"
+  ],
+  "usage": {
+    "prompt_tokens": 225697,
+    "cached_tokens": 220760,
+    "completion_tokens": 4577
+  },
+  "latency_ms": 692042,
+  "model_ms": 37879,
+  "tool_ms": 654163,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: json_equals /factorio/config/server-settings.json",
+      "ok": true,
+      "detail": "auto_pause is False"
+    }
+  ],
+  "server": "ev-fa-keep-running-d1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T21:12:12+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T21:25:47+00:00"
+}

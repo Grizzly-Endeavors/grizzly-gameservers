@@ -1,0 +1,97 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "fa-whitelist-s1",
+  "game": "factorio",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "lock the server down so just Linus, Margaret and Dennis can join",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 11,
+  "tool_calls": [
+    "game_guide",
+    "about_server",
+    "browse_files",
+    "browse_files",
+    "read_file",
+    "read_file",
+    "send_command",
+    "read_logs",
+    "send_command",
+    "write_file",
+    "send_command"
+  ],
+  "usage": {
+    "prompt_tokens": 131119,
+    "cached_tokens": 96256,
+    "completion_tokens": 5473
+  },
+  "latency_ms": 136670,
+  "model_ms": 75195,
+  "tool_ms": 61475,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: file_regex /factorio/config/server-whitelist.json",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-fa-whitelist-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T22:25:49+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T22:38:37+00:00"
+}

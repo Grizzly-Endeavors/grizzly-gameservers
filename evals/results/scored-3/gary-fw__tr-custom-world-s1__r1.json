@@ -1,0 +1,79 @@
+{
+  "system_id": "gary-fw",
+  "label": "GLM 5.3 Flash on Fireworks in Gary",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "harness": "gary",
+  "case_id": "tr-custom-world-s1",
+  "game": "terraria",
+  "task_area": "config",
+  "category": "world",
+  "prompt": "uploaded my Hallowed Hollow world to the terraria server, can we play on that one instead",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 11,
+  "tool_calls": [
+    "about_server",
+    "game_guide",
+    "browse_files",
+    "browse_files",
+    "browse_files",
+    "read_file",
+    "edit_file",
+    "restart_server",
+    "read_logs",
+    "browse_files",
+    "read_file",
+    "run_shell",
+    "read_file"
+  ],
+  "usage": {
+    "prompt_tokens": 110527,
+    "cached_tokens": 88064,
+    "completion_tokens": 8963
+  },
+  "latency_ms": 98497,
+  "model_ms": 89889,
+  "tool_ms": 8608,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /data/config/serverconfig.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-tr-custom-world-s1-gary-fw-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-02T23:07:43+00:00",
+  "notes": {
+    "escalation_kind": null
+  },
+  "finished_at": "2026-11-02T23:14:52+00:00"
+}

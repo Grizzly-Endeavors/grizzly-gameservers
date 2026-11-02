@@ -1,0 +1,37 @@
+id: mc-heap-s1
+scenario: mc-heap
+split: scored
+game: minecraft
+kind: fix
+task_area: troubleshooting
+prompt: server crashes every time it boots, the log mentions java running out of something. been like this since I tweaked the memory thing
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MEMORY=96M
+
+      MODRINTH_PROJECTS=lithium,chunky,krypton
+
+      MODRINTH_DOWNLOAD_DEPENDENCIES=required
+
+      '
+- restart: true
+- wait: log
+  pattern: OutOfMemoryError
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'x=$(ps -eo args | grep -o "Xmx[0-9]*[MG]" | head -1 | sed s/Xmx//); n=${x%?}; u=${x#$n}; [ "$u" = G ] && n=$((n*1024)); [ -n "$n" ] && [ $n -ge 512 ] && [ $n -le 4096 ]'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "lithium"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "chunky"'
+  expect_exit: 0
