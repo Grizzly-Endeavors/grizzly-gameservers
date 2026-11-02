@@ -4,7 +4,9 @@ type: prompt
 annotations:
   sent_when: >-
     tool result when the model calls a tool name that doesn't exist (not a
-    tier-gated one, just unknown) — returned from the tier gate and from either
+    tier-gated one, just unknown), or a real tool that a fixed-directory run
+    (gary-local) never offers because it needs the cluster — returned from the
+    tier gate, from dispatch's fixed-directory gate, and from either
     dispatcher's fallthrough
   used_by:
     - file: discord/gary/tools.rs

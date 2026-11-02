@@ -4,7 +4,8 @@ type: prompt
 annotations:
   sent_when: >-
     tool result when run_when is called but the deferred-task queue isn't
-    configured/available, so nothing can be scheduled
+    configured/available, so nothing can be scheduled, or when the surface has
+    no Discord channel to deliver the deferred result to (gary-local)
   used_by:
     - file: discord/gary/tools.rs
       function: exec_run_when

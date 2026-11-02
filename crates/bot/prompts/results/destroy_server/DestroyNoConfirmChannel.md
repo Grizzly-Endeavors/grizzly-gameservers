@@ -4,10 +4,13 @@ type: prompt
 annotations:
   sent_when: >-
     tool result when destroy_server can't post its confirmation prompt in the
-    channel, so the deletion never gets a chance to be confirmed
+    channel, or when there is no Discord channel to post it in (gary-local), so
+    the deletion never gets a chance to be confirmed
   used_by:
     - file: discord/gary/tools.rs
       function: exec_destroy
+    - file: discord/gary/tools.rs
+      function: confirm_destroy_by_click
   reasoning:
     - >-
       Makes clear nothing was deleted because the human confirmation step
