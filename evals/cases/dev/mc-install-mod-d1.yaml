@@ -1,0 +1,35 @@
+id: mc-install-mod-d1
+scenario: mc-install-mod
+split: dev
+game: minecraft
+kind: mods
+task_area: config
+prompt: hey can you put Lithium on our server, heard it makes everything run smoother
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=ferrite-core,spark
+
+      MODRINTH_DOWNLOAD_DEPENDENCIES=required
+
+      '
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "lithium"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "ferrite[-]?core"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "spark"'
+  expect_exit: 0

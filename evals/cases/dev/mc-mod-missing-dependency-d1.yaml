@@ -1,0 +1,33 @@
+id: mc-mod-missing-dependency-d1
+scenario: mc-mod-missing-dependency
+split: dev
+game: minecraft
+kind: fix
+task_area: troubleshooting
+prompt: server won't start anymore since I asked for Chunky to be added, it just keeps crashing
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=lithium,chunky
+
+      '
+- restart: true
+- wait: log
+  pattern: requires any version of fabric-api
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "chunky"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "fabric-api"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "lithium"'
+  expect_exit: 0

@@ -1,0 +1,21 @@
+id: mc-switch-world-s1
+scenario: mc-switch-world
+split: scored
+game: minecraft
+kind: world
+task_area: config
+prompt: my brother put our family world on the server (it's called family-world). can we switch to it?
+setup:
+- pod_put:
+    src: evals/fixtures/minecraft/family-world.tgz
+    dst: /data/family-world.tgz
+- pod_exec: sh -c 'cd /data && tar -xzf family-world.tgz && rm family-world.tgz && chown -R 1000:1000 family-world && test -f /data/family-world/level.dat'
+checks:
+- type: ready
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^level-name=family-world$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -f /data/family-world/level.dat'
+  expect_exit: 0

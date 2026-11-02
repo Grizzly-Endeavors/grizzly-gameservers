@@ -1,0 +1,35 @@
+id: mc-install-mod-s3
+scenario: mc-install-mod
+split: scored
+game: minecraft
+kind: mods
+task_area: config
+prompt: can you install Carpet, I want to mess with tick speed for farms
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=krypton,ferrite-core
+
+      MODRINTH_DOWNLOAD_DEPENDENCIES=required
+
+      '
+- restart: true
+- wait: log
+  pattern: Done \(
+  timeout_s: 600
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "carpet"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "krypton"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "ferrite[-]?core"'
+  expect_exit: 0

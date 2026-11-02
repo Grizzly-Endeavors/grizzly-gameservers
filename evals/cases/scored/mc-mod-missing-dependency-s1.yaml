@@ -1,0 +1,33 @@
+id: mc-mod-missing-dependency-s1
+scenario: mc-mod-missing-dependency
+split: scored
+game: minecraft
+kind: fix
+task_area: troubleshooting
+prompt: ever since we added No Chat Reports the server crashes on startup, can you get us back online with it?
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=lithium,ferrite-core,no-chat-reports
+
+      '
+- restart: true
+- wait: log
+  pattern: requires any version of fabric-api
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "nochatreports|no-chat-reports"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "fabric-api"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "lithium"'
+  expect_exit: 0

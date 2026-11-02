@@ -1,0 +1,33 @@
+id: mc-mod-missing-dependency-s2
+scenario: mc-mod-missing-dependency
+split: scored
+game: minecraft
+kind: fix
+task_area: troubleshooting
+prompt: added squaremap for a web map and now the server is down, help
+setup:
+- tool: write_file
+  args:
+    path: .grizzly/env
+    content: 'TYPE=FABRIC
+
+      VERSION=26.2
+
+      MODRINTH_PROJECTS=ferrite-core,squaremap
+
+      '
+- restart: true
+- wait: log
+  pattern: requires any version of fabric-api
+  timeout_s: 300
+checks:
+- type: ready
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "squaremap"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "fabric-api"'
+  expect_exit: 0
+- type: pod_exec
+  cmd: sh -c 'ls /data/mods | grep -qiE "ferrite[-]?core"'
+  expect_exit: 0

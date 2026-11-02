@@ -1,0 +1,21 @@
+id: mc-switch-world-d1
+scenario: mc-switch-world
+split: dev
+game: minecraft
+kind: world
+task_area: config
+prompt: I uploaded our old world 'smp-season2', can we play on that instead?
+setup:
+- pod_put:
+    src: evals/fixtures/minecraft/smp-season2.tgz
+    dst: /data/smp-season2.tgz
+- pod_exec: sh -c 'cd /data && tar -xzf smp-season2.tgz && rm smp-season2.tgz && chown -R 1000:1000 smp-season2 && test -f /data/smp-season2/level.dat'
+checks:
+- type: ready
+- type: file_regex
+  path: /data/server.properties
+  pattern: (?m)^level-name=smp-season2$
+  present: true
+- type: pod_exec
+  cmd: sh -c 'test -f /data/smp-season2/level.dat'
+  expect_exit: 0
