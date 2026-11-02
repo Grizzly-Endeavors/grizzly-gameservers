@@ -15,9 +15,10 @@
    - **RAG / Knowledge Base:** Pre-loaded per-game configuration schemas, file paths, and mod loader rules across 7 supported games so the model never hunts blindly.
    - **Compounding Memory:** When Gary solves a new game or mod quirk once, he writes it down. A fix discovered on one server becomes instant knowledge across the entire fleet.
    - **Fireworks Open Models:** Because the harness, knowledge base, and memory carry the domain structure, a fast open model on Fireworks executes the fix in a few turns for fractions of a cent.
-4. **Dual Value (Margin Protection + TAM Expansion) & SaaS Expansion:**
+4. **Dual Value (Margin Protection + +25% ARPU Pricing Power & TAM Expansion) & SaaS Expansion:**
    - **Margin Protection (Cost Save):** Deflects $13.50 to $16.13 Tier 1 and Tier 2 tickets for under $0.10 per server per month in Fireworks inference.
-   - **TAM Expansion & Viral Retention (Revenue Growth):** In single-player games, changing difficulty or spawn rates is a pause-menu slider. On a hosted server, that menu disappears and turns into raw `.ini`, `.json`, and `.properties` files. Gary turns server customization back into plain English requests in the Gary Web Console, and with **1 click** lets the server owner provision a role-guarded Gary bot into their friends' Discord so players can self-serve status checks, whitelists, and safe tuning while destructive actions still require owner approval.
+   - **+25% ARPU Pricing Power (`$11.99 -> $14.99/mo` on 4 GB):** Today, commodity hosts on 4 GB plans are forced to run permanent 25% to 30% promo discounts (knocking $14.99 and $15.99 list prices down to the $11.99 commodity floor) because raw Multicraft/Pterodactyl panels leave the server owner stuck editing `.ini` files and playing unpaid Friday-night IT for their friend group. Bundling Gary + the 1-Click Friend Discord Bot lets a host hold the **$14.99/mo** price point (**+$3.00/mo, +25% realized ARPU**) while spending **~$0.04/month** (~50 turns at `$0.00074/turn`) on Fireworks `GLM-5.3-Flash` (**98.7% gross margin** on the price lift).
+   - **TAM Expansion & Viral Retention:** Plain-English settings in the Gary Web Console plus the **1-Click Friend Discord Bot** let friends self-serve status checks, whitelists, and safe tuning while destructive actions still require owner approval.
    - **Expansion Beyond Gaming:** Multiplayer game hosting is a **$2.05B market growing at 11.1% CAGR** and the ultimate stress test of messy configs and live state. The same architecture expands to **autonomous configuration and L1/L2 operations for any containerized SaaS business**.
 
 ---
@@ -27,6 +28,7 @@
 | Metric | Verified Figure | Source & Date |
 |---|---|---|
 | **Entry / Standard Hosted Game Server ARPU (2 GB to 4 GB)** | **$3.99 to $15.99 / month** | Shockbyte Budget ($3.99 to $5.99), BisectHosting ($5.99 to $11.99), Apex Hosting ($7.99 to $14.99), Shockbyte Regular ($7.99 to $15.99). Checked October 2026 via host pricing pages and DSN Servers 2026 market comparison. |
+| **4 GB Small-Group Plan Price Spread & Promo Discounting** | **$11.99 (Bisect) vs. $14.99 (Apex, +25%) / $15.99 (Shockbyte, +33%)** | Checked Oct 12, 2026 (DSN Servers comparison): Shockbyte runs 30% ongoing promo discounts and Apex runs 25% promo discounts to compete with Bisect's $11.99 commodity floor. Bundling Gary's autonomous operator + friend bot justifies holding the $14.99 price point (+$3/mo at ~$0.04/mo Fireworks inference = 98.7% margin on the lift). |
 | **Modpack Hosted Game Server ARPU (8 GB)** | **$15.99 to $31.99 / month** | Shockbyte Budget ($15.99), BisectHosting ($23.99), Apex Hosting ($27.99), Shockbyte Regular ($31.99). Checked October 2026. |
 | **Assisted Support Contact Cost (Median)** | **$13.50 per contact** | Gartner Customer Service & Support Benchmark (2024). |
 | **Self-Service Resolution Rate** | **14% resolved** ($1.84/contact) | Gartner (2024); MetricNet North American self-service completion average is **10.4%**. |
@@ -125,16 +127,16 @@
 
 ---
 
-### Slide 5: Dual Value (Cost Save + TAM Expansion) & SaaS Horizon
+### Slide 5: Dual Value (Cost Save + +25% ARPU & TAM Expansion) & SaaS Horizon
 
 **On Screen:**
 1. **Protect Host Margins (Cost Save):** Replace $13.50 to $16.13 T1/T2 tickets across a **$2.05B game hosting market** (11.1% CAGR) for `< $0.10/server/month` on Fireworks.
-2. **Expand the Host's TAM & Group Retention (Revenue Growth):**
-   - In single-player, changing difficulty or spawn rates is a settings menu. On a hosted server, it requires editing raw `.ini` and `.properties` files.
-   - Gary turns server settings back into plain English requests in the Web Console, and includes a **1-Click Friend Discord Bot** workflow so the server owner can drop a role-guarded Gary bot into their group's Discord (`Status`, `Whitelist`, and `Safe Tuning` open to friends; destructive actions gated on owner approval).
+2. **+25% ARPU Pricing Power & Viral Retention (`$11.99 -> $14.99/mo` on 4 GB):**
+   - Commodity hosts are forced to discount 25% to 30% because raw control panels leave the owner stuck editing `.ini` files and playing unpaid Friday-night IT for friends.
+   - Bundling Gary + the **1-Click Friend Discord Bot** lets hosts command **$14.99/mo instead of $11.99/mo (+25% ARPU)** for **~$0.04/mo** in Fireworks inference (**98.7% gross margin** on the +$3 lift), while friends self-serve status, whitelists, and safe tuning in Discord.
 3. **Beyond Gaming (Any Containerized SaaS):**
    - Live across **7 games** today (Minecraft, Valheim, Palworld, Factorio, Terraria, Satisfactory, Enshrouded).
    - The same harness + memory + Fireworks architecture expands to **autonomous configuration and L1/L2 operations for any containerized SaaS workload**.
 
 **Spoken Script (15 sec):**
-> "For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he expands their TAM: non-technical owners change settings in plain English instead of editing raw config files, and with one click they drop a role-guarded Gary bot into their Discord so friends can self-serve whitelists and status checks without waking the admin. Live across seven games today, this same architecture expands to autonomous ops for any containerized SaaS."
+> "For game hosts, Gary wins on both sides of the P&L. On cost, he replaces $15 support tickets for pennies on Fireworks. On revenue, he breaks commodity RAM pricing: hosts can command $15 a month instead of discounting to $12, a 25% ARPU lift at 98% margin, because owners get plain-English configs and a one-click Discord bot so their friends self-serve without waking the admin. Live across seven games today, this expands to autonomous ops for any containerized SaaS."
