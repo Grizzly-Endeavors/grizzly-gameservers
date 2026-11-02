@@ -60,7 +60,7 @@ pub(crate) fn render_gameserver(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
 ) -> Result<DynamicObject> {
-    let mut obj: DynamicObject = serde_yaml_ng::from_str(&entry.gameserver_yaml)
+    let mut obj: DynamicObject = serde_saphyr::from_str(&entry.gameserver_yaml)
         .with_context(|| format!("failed to parse gameserver template for game {}", entry.id))?;
     obj.metadata.name = Some(identity.name.as_str().to_owned());
     obj.metadata.namespace = Some(identity.namespace.clone());
@@ -183,7 +183,7 @@ fn set_container_resources(data: &mut Value, sizing: Sizing) -> Result<()> {
 /// `games/_template/gameserver.yaml`). Three of four figures would describe a
 /// sizing no instance actually gets, so the caller reports it unknown instead.
 pub(crate) fn catalog_sizing(entry: &GameCatalogEntry) -> Option<Sizing> {
-    let template: Value = serde_yaml_ng::from_str(&entry.gameserver_yaml).ok()?;
+    let template: Value = serde_saphyr::from_str(&entry.gameserver_yaml).ok()?;
     let spec = template.get("spec")?;
     // Same container the resize path picks: without `spec.container` the game is
     // indistinguishable from the injected Agones sidecar, whose footprint is not
@@ -273,7 +273,7 @@ pub(crate) fn render_service(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
 ) -> Result<Service> {
-    let mut svc: Service = serde_yaml_ng::from_str(&entry.service_yaml)
+    let mut svc: Service = serde_saphyr::from_str(&entry.service_yaml)
         .with_context(|| format!("failed to parse service template for game {}", entry.id))?;
     svc.metadata.name = Some(identity.name.as_str().to_owned());
     svc.metadata.namespace = Some(identity.namespace.clone());
@@ -328,7 +328,7 @@ pub(crate) fn render_pvc(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
 ) -> Result<PersistentVolumeClaim> {
-    let mut pvc: PersistentVolumeClaim = serde_yaml_ng::from_str(&entry.pvc_yaml)
+    let mut pvc: PersistentVolumeClaim = serde_saphyr::from_str(&entry.pvc_yaml)
         .with_context(|| format!("failed to parse pvc template for game {}", entry.id))?;
     pvc.metadata.name = Some(pvc_name(identity.name.as_str()));
     pvc.metadata.namespace = Some(identity.namespace.clone());

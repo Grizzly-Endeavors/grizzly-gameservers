@@ -248,7 +248,7 @@ async fn provision_under_lock(
 
     // The game's Service template decides its port model: how many edge-band
     // ports to lease and how each maps into the game's env. Parsed once up front.
-    let template: Service = serde_yaml_ng::from_str(&entry.service_yaml)
+    let template: Service = serde_saphyr::from_str(&entry.service_yaml)
         .with_context(|| format!("failed to parse service template for game {}", entry.id))?;
     let plan = port_plan_from_service(&template)
         .with_context(|| format!("invalid port plan for game {}", entry.id))?;

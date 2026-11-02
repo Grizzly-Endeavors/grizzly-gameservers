@@ -319,7 +319,12 @@ pub fn extract_within<R: Read + Seek>(
         // a path, so an entry declaring `/etc/passwd` would arrive here already
         // rewritten to `etc/passwd` and sail through the check below. What has
         // to be judged is what the archive actually claims.
-        let name = entry.name().to_owned();
+        let name = entry
+            .name()
+            .with_context(|| {
+                format!("an entry name in the archive for {release} is not valid text")
+            })?
+            .into_owned();
         // The normalised form is what everything downstream must use: planning
         // the layout on the raw name would treat a Windows-packed `a\\b.dll` as
         // one filename and write a file with a backslash in its name.

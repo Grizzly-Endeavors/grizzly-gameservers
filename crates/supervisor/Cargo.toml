@@ -60,7 +60,7 @@ tokio-stream = "0.1.18"
 # against musl, which the C-backed compressors can't satisfy. Deflate is the only
 # method Thunderstore packages use, so the rest of the vocabulary (bzip2, lzma,
 # zstd, AES) is dropped rather than carried along unused.
-zip = { version = "8.6", default-features = false, features = [
+zip = { version = "9.2.2", default-features = false, features = [
     "deflate-flate2-zlib-rs",
 ] }
 

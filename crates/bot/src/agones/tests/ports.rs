@@ -211,7 +211,7 @@ fn real_satisfactory_manifest_is_on_the_advertise_path() {
         "/../../games/satisfactory/service.yaml"
     );
     let yaml = std::fs::read_to_string(path).unwrap();
-    let svc: Service = serde_yaml_ng::from_str(&yaml).unwrap();
+    let svc: Service = serde_saphyr::from_str(&yaml).unwrap();
     let PortPlan::Advertised(ports) = port_plan_from_service(&svc).unwrap() else {
         panic!("satisfactory should be on the advertise path");
     };

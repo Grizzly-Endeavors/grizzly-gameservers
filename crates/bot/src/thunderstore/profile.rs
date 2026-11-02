@@ -97,7 +97,7 @@ pub(crate) fn decode(payload: &[u8]) -> Result<Vec<ProfileMod>> {
         zip::ZipArchive::new(std::io::Cursor::new(zipped)).context("profile is not a zip")?;
     let manifest = read_manifest(&mut archive)?;
     let export: Export =
-        serde_yaml_ng::from_str(&manifest).context("profile's export.r2x is not readable")?;
+        serde_saphyr::from_str(&manifest).context("profile's export.r2x is not readable")?;
     if export.mods.len() > MAX_PACKAGES {
         bail!(
             "profile lists {} packages, over the {MAX_PACKAGES}-package limit",
@@ -166,7 +166,7 @@ pub(crate) fn encode(profile_name: &str, mods: &[ProfileMod]) -> Result<Vec<u8>>
         profile_name: name.to_owned(),
         mods: mods.iter().map(ExportMod::from).collect(),
     };
-    let manifest = serde_yaml_ng::to_string(&export).context("failed to render export.r2x")?;
+    let manifest = serde_saphyr::to_string(&export).context("failed to render export.r2x")?;
 
     let mut zipped = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     zipped

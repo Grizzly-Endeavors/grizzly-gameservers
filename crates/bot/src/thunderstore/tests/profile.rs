@@ -113,7 +113,10 @@ fn an_encoded_payload_carries_only_the_manifest() {
         .collect();
     let zipped = BASE64.decode(body).unwrap();
     let archive = zip::ZipArchive::new(std::io::Cursor::new(zipped)).unwrap();
-    assert_eq!(archive.file_names().collect::<Vec<_>>(), vec![MANIFEST]);
+    assert_eq!(
+        archive.file_names().collect::<Result<Vec<_>, _>>().unwrap(),
+        vec![MANIFEST]
+    );
 }
 
 #[test]

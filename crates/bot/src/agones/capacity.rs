@@ -134,7 +134,7 @@ fn pod_admission(entry: &GameCatalogEntry, sizing: Option<Sizing>) -> Admission 
 
 /// The storage a game's PVC template claims.
 fn catalog_storage_bytes(entry: &GameCatalogEntry) -> Option<i64> {
-    let pvc: PersistentVolumeClaim = serde_yaml_ng::from_str(&entry.pvc_yaml).ok()?;
+    let pvc: PersistentVolumeClaim = serde_saphyr::from_str(&entry.pvc_yaml).ok()?;
     let claim = pvc
         .spec?
         .resources?
