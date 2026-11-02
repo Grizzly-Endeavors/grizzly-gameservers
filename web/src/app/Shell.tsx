@@ -23,7 +23,7 @@ const TITLES: Record<Screen, string> = {
   incidents: 'Incidents',
   arena: 'Model arena',
   benchmark: 'Benchmark',
-  server: 'Server',
+  gary: 'Ask Gary',
   activity: 'Activity',
 };
 
@@ -35,13 +35,18 @@ interface Row {
   hot?: boolean;
 }
 
-function railGroups(persona: Persona, open: number): { label: string; rows: Row[] }[] {
+/**
+ * The owner's rail is about Gary, not about one server: one Gary looks after all of
+ * them from one conversation, and the servers themselves sit in the conversation's
+ * side panel. A count on Ask Gary means he is waiting on an approval.
+ */
+function railGroups(persona: Persona, open: number, waiting: number): { label: string; rows: Row[] }[] {
   if (persona === 'customer')
     return [
       {
-        label: 'Your server',
+        label: 'Friday Night Crew',
         rows: [
-          { key: 'server', label: 'mc-friends-smp', icon: 'server' },
+          { key: 'gary', label: 'Ask Gary', icon: 'ask', count: waiting, hot: true },
           { key: 'activity', label: 'Activity', icon: 'activity' },
         ],
       },
@@ -76,13 +81,14 @@ export function GaryMark({ size = 22 }: { size?: number }) {
 }
 
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { persona, screen, go } = useStore();
+  const { persona, screen, go, turns, servers } = useStore();
   const { collapsed, collapsible, toggle } = useSidebarCollapse();
-  const groups = railGroups(persona, INCIDENTS.filter((i) => i.outcome === 'escalated').length);
+  const waiting = turns.filter((t) => t.approval?.state === 'pending').length;
+  const groups = railGroups(persona, INCIDENTS.filter((i) => i.outcome === 'escalated').length, waiting);
   const sig = `${persona}|${groups.map((g) => g.rows.map((r) => r.key).join(',')).join('|')}`;
   const { ref: navRef, markerRef, style: indicatorStyle, follow } = useRailIndicator<HTMLElement>('button[aria-current="page"]', [screen, sig, collapsed], 0);
   useEffect(() => follow(COLLAPSE_SEQUENCE_MS), [collapsed, follow]);
-  const who = persona === 'host' ? { name: 'Pinecrest Hosting', sub: 'Support operations', initials: 'PH' } : { name: 'Sam Rivera', sub: 'Server owner', initials: 'SR' };
+  const who = persona === 'host' ? { name: 'Pinecrest Hosting', sub: 'Support operations', initials: 'PH' } : { name: 'Sam Rivera', sub: `Server owner · ${servers.length} servers`, initials: 'SR' };
 
   return (
     <>

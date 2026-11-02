@@ -1,10 +1,10 @@
 /* The server owner's console (customer/ServerConsole.tsx). */
 
 /* The console fills the viewport: the thread scrolls, the composer stays put. */
-.main-server {
+.main-gary {
   padding-bottom: 22px;
 }
-.main-server .screen-wrap {
+.main-gary .screen-wrap {
   height: 100%;
 }
 .cx {
@@ -202,6 +202,22 @@
 .cx-reply strong {
   font-weight: 650;
 }
+.cx-reply ul,
+.cx-reply ol {
+  margin-top: 8px;
+  padding-left: 20px;
+  display: grid;
+  gap: 2px;
+}
+.cx-reply ul {
+  list-style: disc;
+}
+.cx-reply ol {
+  list-style: decimal;
+}
+.cx-reply li::marker {
+  color: var(--faint);
+}
 
 .cx-working {
   color: var(--muted);
@@ -344,12 +360,107 @@
   height: 42px;
 }
 
-/* ── vitals ───────────────────────────────────────────────────────────── */
-.cx-vitals {
-  transition: border-color var(--dur-slow) var(--ease-out-soft);
+/* ── servers ──────────────────────────────────────────────────────────── */
+.cx-down {
+  color: var(--bad);
+  font-weight: 600;
 }
-.cx-vitals.is-crashed {
-  border-color: color-mix(in srgb, var(--bad) 55%, var(--line));
+.cx-menu-text {
+  display: flex;
+  flex-direction: column;
+}
+.cx-menu-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.cx-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cx-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: all var(--dur-fast) var(--ease-out-soft);
+}
+.cx-tag:hover {
+  color: var(--ink-strong);
+  border-color: var(--line-strong);
+}
+.cx-tag.is-on {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--brand-500) 45%, transparent);
+  background: var(--brand-50);
+}
+.cx-servers {
+  padding-bottom: 10px;
+}
+.cx-srv-list {
+  display: grid;
+  gap: 2px;
+  margin: 0 -8px;
+}
+.cx-srv {
+  border-radius: var(--radius);
+  transition: background-color var(--dur-base) var(--ease-out-soft);
+}
+.cx-srv.is-open {
+  background: var(--surface-2);
+}
+.cx-srv-btn {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'name badge' 'game badge';
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+}
+.cx-srv-btn:hover {
+  background: var(--hover);
+}
+.cx-srv.is-open .cx-srv-btn:hover {
+  background: none;
+}
+.cx-srv-name {
+  grid-area: name;
+  font-weight: 650;
+  color: var(--ink-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cx-srv-game {
+  grid-area: game;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.cx-srv-btn .badge {
+  grid-area: badge;
+}
+.cx-srv.is-crashed .cx-srv-name {
+  color: var(--bad);
+}
+.cx-srv-body {
+  padding: 0 10px 12px;
+  animation: fade-in var(--dur-base) var(--ease-out-soft) both;
+}
+.cx-srv-detail {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 10px;
 }
 .cx-stats {
   display: grid;
@@ -590,6 +701,16 @@
   color: var(--muted);
   margin-top: 2px;
 }
+.cx-act-srv {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--tint);
+  color: var(--tag-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
 .cx-act-time {
   font-size: 12.5px;
   color: var(--muted);
@@ -598,7 +719,7 @@
 
 /* ── smaller screens: one column, the page scrolls instead of the panes ─ */
 @media (max-width: 1080px) {
-  .main-server .screen-wrap {
+  .main-gary .screen-wrap {
     height: auto;
   }
   .cx {

@@ -96,6 +96,16 @@ export function describeTool(t: ToolTrace): string {
   }
 }
 
+/** The servers a turn's tool calls named, in first-touched order. */
+export function serversTouched(calls: ToolTrace[]): string[] {
+  const seen: string[] = [];
+  for (const t of calls) {
+    const s = str(args(t).server);
+    if (s && !seen.includes(s)) seen.push(s);
+  }
+  return seen;
+}
+
 export function isMutating(t: ToolTrace): boolean {
   return MUTATING.has(t.name);
 }

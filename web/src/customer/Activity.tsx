@@ -1,10 +1,10 @@
 /**
- * Everything Gary has done on this server, newest first. Changes are marked apart from
+ * Everything Gary has done across the owner's servers, newest first. Changes are marked apart from
  * reads, because "what did it change?" is the question an owner comes here to answer.
  */
 import { Icon } from '../app/icons';
 import { useStore } from '../app/store';
-import { describeTool, isMutating } from '../gary/derive';
+import { describeTool, isMutating, serversTouched } from '../gary/derive';
 import { Card } from '../ui/ui';
 
 function clock(at: number) {
@@ -33,8 +33,8 @@ export function Activity() {
             <div className="empty-title">Gary hasn&rsquo;t done anything on this server yet</div>
             <div className="empty-body">
               Ask him something on the{' '}
-              <button type="button" className="btn btn-quiet" onClick={() => go('server')}>
-                server page
+              <button type="button" className="btn btn-quiet" onClick={() => go('gary')}>
+                Ask Gary page
               </button>
             </div>
           </div>
@@ -47,7 +47,14 @@ export function Activity() {
                   <Icon name={change ? 'wrench' : 'check'} size={16} />
                   <div>
                     <div className="cx-act-what">{describeTool(r.step)}</div>
-                    <div className="cx-act-why">Asked: &ldquo;{r.prompt}&rdquo;</div>
+                    <div className="cx-act-why">
+                      {serversTouched([r.step]).map((id) => (
+                        <span key={id} className="cx-act-srv">
+                          {id}
+                        </span>
+                      ))}
+                      Asked: &ldquo;{r.prompt}&rdquo;
+                    </div>
                   </div>
                   <span className="cx-act-time">{clock(r.at)}</span>
                 </li>

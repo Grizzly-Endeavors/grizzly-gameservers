@@ -1,18 +1,20 @@
 /**
  * App state: who's looking (the hosting company or the server's owner), which screen,
- * Live or Replay, and the customer's conversation with Gary.
+ * Live or Replay, and the owner's one conversation with Gary, who looks after all of
+ * their servers from it.
  *
  * Replay plays a scenario's recorded GaryResponse back a tool call at a time, paced by
  * the trace's own latency, so the demo never depends on the venue's network. Live posts
  * to Gary's operator harness through the dev-server proxy (see vite.config.ts).
  */
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
-import { INITIAL_SERVER, SCENARIOS, type Scenario, type ServerState } from '../data/scenarios';
+import { SCENARIOS, SERVERS, type OwnedServer, type Scenario, type ServerState } from '../data/scenarios';
+import { serversTouched } from '../gary/derive';
 import type { GaryRequest, GaryResponse, ToolTrace } from '../gary/types';
 
 export type Persona = 'host' | 'customer';
 export type HostScreen = 'overview' | 'servers' | 'incidents' | 'arena' | 'benchmark';
-export type CustomerScreen = 'server' | 'activity';
+export type CustomerScreen = 'gary' | 'activity';
 export type Screen = HostScreen | CustomerScreen;
 export type Mode = 'replay' | 'live';
 
@@ -37,10 +39,13 @@ interface Store {
   go: (s: Screen) => void;
   mode: Mode;
   setMode: (m: Mode) => void;
-  server: ServerState;
+  servers: OwnedServer[];
+  /** The server the side panel is showing: the last one Gary touched, or one clicked. */
+  focus: string;
+  setFocus: (id: string) => void;
   scenario: Scenario | null;
   breakServer: (id: string) => void;
-  resetServer: () => void;
+  resetDemo: () => void;
   draft: string;
   setDraft: (s: string) => void;
   turns: Turn[];
@@ -53,7 +58,7 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null);
 
-const HOME: Record<Persona, Screen> = { host: 'overview', customer: 'server' };
+const HOME: Record<Persona, Screen> = { host: 'overview', customer: 'gary' };
 const CHANNEL = import.meta.env.VITE_GARY_CHANNEL ?? '';
 const LIVE_SLOW_MS = 15_000;
 const LIVE_TIMEOUT_MS = 120_000;
@@ -63,26 +68,23 @@ const nextId = () => `t${Date.now().toString(36)}${(seq++).toString(36)}`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A read-only answer for a free-typed question in Replay with nothing broken. */
-function statusAnswer(server: ServerState): GaryResponse {
+function statusAnswer(servers: OwnedServer[]): GaryResponse {
+  const up = servers.filter((x) => x.state.status === 'Running');
+  const line = (x: OwnedServer) => `${x.id} · ${x.state.status} · ${x.state.players[0]}/${x.state.players[1]} players · ${x.state.detail}`;
+  const lines = servers.map((x) => `- **${x.id}**: ${x.state.status.toLowerCase()}${x.state.status === 'Running' ? `, ${x.state.players[0]} of ${x.state.players[1]} players on` : ''}`);
   return {
-    reply: `The server is **${server.status.toLowerCase()}**: ${server.players[0]} of ${server.players[1]} players on, using ${server.memory[0]} of ${server.memory[1]} GB of memory. Nothing in the recent logs needs attention.`,
+    reply: `${up.length} of your ${servers.length} servers are running and nothing in the recent logs needs attention.\n\n${lines.join('\n')}`,
     escalated: false,
     escalation_kind: null,
     escalation_reason: null,
     rounds: 2,
     generations: [
       { model: 'accounts/fireworks/models/glm-5p2', prompt_tokens: 9010, cached_tokens: 8704, completion_tokens: 61, total_tokens: 9071, finish_reason: 'tool_calls', latency_ms: 318 },
-      { model: 'accounts/fireworks/models/glm-5p2', prompt_tokens: 9190, cached_tokens: 8960, completion_tokens: 88, total_tokens: 9278, finish_reason: 'stop', latency_ms: 296 },
+      { model: 'accounts/fireworks/models/glm-5p2', prompt_tokens: 9230, cached_tokens: 8960, completion_tokens: 132, total_tokens: 9362, finish_reason: 'stop', latency_ms: 341 },
     ],
-    usage: { prompt_tokens: 18200, cached_tokens: 17664, completion_tokens: 149, total_tokens: 18349 },
-    latency_ms: 614,
-    tool_calls: [
-      {
-        name: 'about_server',
-        arguments: '{"server":"mc-friends-smp"}',
-        result: `mc-friends-smp · ${server.status} · ${server.players[0]}/${server.players[1]} players · ${server.detail}`,
-      },
-    ],
+    usage: { prompt_tokens: 18240, cached_tokens: 17664, completion_tokens: 193, total_tokens: 18433 },
+    latency_ms: 659,
+    tool_calls: [{ name: 'list_servers', arguments: '{}', result: servers.map(line).join('\n') }],
   };
 }
 
@@ -90,7 +92,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [persona, setPersonaState] = useState<Persona>(() => (new URLSearchParams(location.search).get('as') === 'host' ? 'host' : 'customer'));
   const [screen, setScreen] = useState<Screen>(HOME[persona]);
   const [mode, setMode] = useState<Mode>('replay');
-  const [server, setServer] = useState<ServerState>(INITIAL_SERVER);
+  const [servers, setServers] = useState<OwnedServer[]>(SERVERS);
+  const [focus, setFocus] = useState<string>(SERVERS[0].id);
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [draft, setDraft] = useState('');
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -112,6 +115,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     history.replaceState(null, '', u);
   }, []);
 
+  const setState = useCallback((id: string, state: ServerState) => setServers((xs) => xs.map((x) => (x.id === id ? { ...x, state } : x))), []);
+
   const patch = useCallback((id: string, f: (t: Turn) => Turn) => setTurns((ts) => ts.map((t) => (t.id === id ? f(t) : t))), []);
 
   /** Reveal a response's tool calls one by one, paced by its generations' latency. */
@@ -130,7 +135,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const replay = useCallback(
     async (id: string, prompt: string) => {
       const sc = scenario ?? SCENARIOS.find((s) => s.prompt === prompt) ?? null;
-      const r = sc ? sc.response : statusAnswer(server);
+      const r = sc ? sc.response : statusAnswer(servers);
+      if (sc) setFocus(sc.server);
       await play(id, r);
       patch(id, (t) => ({
         ...t,
@@ -141,11 +147,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         approval: sc?.approval ? { scenario: sc.id, state: 'pending' } : undefined,
       }));
       if (sc && !sc.approval) {
-        setServer(sc.after);
+        setState(sc.server, sc.after);
         setScenario(null);
       }
     },
-    [play, patch, scenario, server],
+    [play, patch, scenario, servers, setState],
   );
 
   const live = useCallback(
@@ -160,6 +166,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!res.ok) throw new Error((json as { error?: string } | null)?.error ?? `Gary's harness answered ${res.status}`);
         const r = json as GaryResponse;
         patch(id, (t) => ({ ...t, status: 'done', steps: r.tool_calls, response: r }));
+        const touched = serversTouched(r.tool_calls);
+        if (touched.length) setFocus(touched[touched.length - 1]);
       } catch (e) {
         const msg = ctl.signal.aborted ? 'Gary took longer than two minutes.' : e instanceof Error ? e.message : String(e);
         patch(id, (t) => ({ ...t, status: 'error', error: msg }));
@@ -202,12 +210,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await play(id, r);
         patch(id, (t) => ({ ...t, status: 'done', steps: r.tool_calls, response: r, replay: { scenario: sc.id, recorded: sc.recorded } }));
         if (approve) {
-          setServer(sc.after);
+          setState(sc.server, sc.after);
           setScenario(null);
         }
       })();
     },
-    [turns, mode, patch, play, live],
+    [turns, mode, patch, play, live, setState],
   );
 
   const breakServer = useCallback(
@@ -215,16 +223,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const sc = SCENARIOS.find((s) => s.id === id);
       if (!sc || busy) return;
       setScenario(sc);
-      setServer(sc.before);
+      setState(sc.server, sc.before);
+      setFocus(sc.server);
       setDraft(sc.prompt);
       requestAnimationFrame(() => document.getElementById('gary-input')?.focus());
     },
-    [busy],
+    [busy, setState],
   );
 
-  const resetServer = useCallback(() => {
+  const resetDemo = useCallback(() => {
     setScenario(null);
-    setServer(INITIAL_SERVER);
+    setServers(SERVERS);
+    setFocus(SERVERS[0].id);
     setTurns([]);
     setDraft('');
   }, []);
@@ -233,7 +243,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ persona, setPersona, screen, go: setScreen, mode, setMode, server, scenario, breakServer, resetServer, draft, setDraft, turns, busy, ask, decide, toast, showToast }}
+      value={{ persona, setPersona, screen, go: setScreen, mode, setMode, servers, focus, setFocus, scenario, breakServer, resetDemo, draft, setDraft, turns, busy, ask, decide, toast, showToast }}
     >
       {children}
     </Ctx.Provider>

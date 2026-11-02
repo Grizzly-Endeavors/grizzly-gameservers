@@ -5,7 +5,7 @@ import { SidebarCollapseProvider } from './app/sidebar-collapse';
 import { StoreProvider, useStore } from './app/store';
 import { ThemeProvider } from './app/theme';
 import { Activity } from './customer/Activity';
-import { ServerConsole } from './customer/ServerConsole';
+import { GaryConsole } from './customer/GaryConsole';
 import { Arena } from './host/Arena';
 import { Benchmark } from './host/Benchmark';
 import { Incidents } from './host/Incidents';
@@ -27,7 +27,7 @@ function App() {
         Skip to content
       </a>
       <Shell>
-        {screen === 'server' && <ServerConsole />}
+        {screen === 'gary' && <GaryConsole />}
         {screen === 'activity' && <Activity />}
         {screen === 'overview' && <Overview />}
         {screen === 'servers' && <Servers />}

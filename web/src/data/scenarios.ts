@@ -15,6 +15,7 @@ export type ServerStatus = 'Running' | 'Starting' | 'Stopped' | 'Crashed';
 
 export interface ServerState {
   status: ServerStatus;
+
   detail: string;
   players: [number, number];
   memory: [number, number];
@@ -38,6 +39,8 @@ export interface ArenaRun {
 
 export interface Scenario {
   id: string;
+  /** Which of the owner's servers this scenario breaks. */
+  server: string;
   label: string;
   short: string;
   prompt: string;
@@ -96,12 +99,15 @@ const healthy: ServerState = {
   restarts: 2,
 };
 
+const CREATIVE: ServerState = { status: 'Running', detail: 'Vanilla 1.21.1', players: [2, 8], memory: [1.9, 3], restarts: 0 };
+
 export const SCENARIOS: Scenario[] = [
   {
     id: 'crash-fabric-api',
+    server: 'mc-friends-smp',
     label: 'Crash: missing Fabric API',
     short: 'Missing mod',
-    prompt: "Server won't start after I added Iris shaders, can you fix it?",
+    prompt: "The SMP won't start after I added Iris shaders, can you fix it?",
     before: {
       status: 'Crashed',
       detail: 'Startup crashed · exit code 1',
@@ -118,7 +124,7 @@ export const SCENARIOS: Scenario[] = [
     after: { ...healthy, players: [0, 10], memory: [2.6, 4], restarts: 4, detail: 'Fabric 1.21.1 · ready in 48 s' },
     recorded: false,
     response: respond(
-      "Iris crashed on startup because it needs **Fabric API**, which wasn't installed. I added Fabric API to your mod list, restarted the server, and it came back online in 48 seconds. Nothing else changed.",
+      "**mc-friends-smp** crashed on startup because Iris needs **Fabric API**, which wasn't installed. I added Fabric API to your mod list, restarted the server, and it came back online in 48 seconds. Nothing else changed.",
       [
         t('read_logs', { server: 'mc-friends-smp', lines: 120 }, "Mod 'Iris' (iris) 1.8.1 requires any version of mod 'fabric-api', which is missing!\n[main/INFO]: Stopping server"),
         t('mod_info', { game: 'minecraft', slug: 'fabric-api' }, 'Fabric API (fabric-api) · Modrinth · latest 0.116.6+1.21.1 · loader: fabric · server-side: required'),
@@ -173,9 +179,10 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'lag-entity',
+    server: 'mc-friends-smp',
     label: 'Lag: entity spike',
     short: 'Lag',
-    prompt: 'Why is the server so laggy right now?',
+    prompt: 'Why is the SMP so laggy right now?',
     before: {
       status: 'Running',
       detail: 'Fabric 1.21.1 · TPS 11.4',
@@ -237,9 +244,10 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'world-corruption',
+    server: 'mc-friends-smp',
     label: 'World corruption (approval)',
     short: 'Corrupt world',
-    prompt: "The server crashed while saving and won't load the world.",
+    prompt: "The SMP crashed while saving and won't load the world.",
     before: {
       status: 'Crashed',
       detail: 'Crash loop · 3 restarts in 5 min',
@@ -319,17 +327,18 @@ export const SCENARIOS: Scenario[] = [
   },
   {
     id: 'false-alarm',
+    server: 'mc-creative',
     label: 'False alarm: client issue',
     short: 'False alarm',
-    prompt: 'My friend says connection timed out, is the server broken?',
-    before: { ...healthy, players: [5, 10] },
-    after: { ...healthy, players: [5, 10] },
+    prompt: 'My friend gets "connection timed out" on the creative server. Is it broken?',
+    before: CREATIVE,
+    after: CREATIVE,
     recorded: false,
     response: respond(
-      "The server is fine: it's up, 5 players are on, and nothing in the logs points to a problem. Your friend's game is on **1.21.3**, but the server runs **1.21.1**, and their launcher shows that as a timeout. They should pick the 1.21.1 profile in their launcher. I didn't change anything.",
+      "**mc-creative** is fine: it's up, 2 players are on, and nothing in the logs points to a problem. Your friend's game is on **1.21.3**, but the server runs **1.21.1**, and their launcher shows that as a timeout. They should pick the 1.21.1 profile in their launcher. I didn't change anything.",
       [
-        t('about_server', { server: 'mc-friends-smp' }, 'mc-friends-smp · Running · 5/10 players · Fabric 1.21.1 · up 3 h 12 m'),
-        t('read_logs', { server: 'mc-friends-smp', lines: 60 }, 'Disconnecting /203.0.113.24: Outdated server! I\'m still on 1.21.1 (client 1.21.3)'),
+        t('about_server', { server: 'mc-creative' }, 'mc-creative · Running · 2/8 players · Vanilla 1.21.1 · up 3 h 12 m'),
+        t('read_logs', { server: 'mc-creative', lines: 60 }, 'Disconnecting /203.0.113.24: Outdated server! I\'m still on 1.21.1 (client 1.21.3)'),
       ],
       [gen(9020, 8704, 79, 334), gen(9210, 8960, 68, 262), gen(9390, 9216, 124, 377, 'stop')],
     ),
@@ -374,4 +383,16 @@ export const SCENARIOS: Scenario[] = [
   },
 ];
 
-export const INITIAL_SERVER: ServerState = healthy;
+/** The owner's servers. One Gary looks after all of them from one conversation. */
+export interface OwnedServer {
+  id: string;
+  game: string;
+  state: ServerState;
+}
+
+export const SERVERS: OwnedServer[] = [
+  { id: 'mc-friends-smp', game: 'Minecraft', state: healthy },
+  { id: 'mc-creative', game: 'Minecraft', state: CREATIVE },
+  { id: 'valheim-vikings', game: 'Valheim', state: { status: 'Running', detail: 'Valheim 0.219.16', players: [3, 10], memory: [5.1, 8], restarts: 1 } },
+  { id: 'terraria-weekend', game: 'Terraria', state: { status: 'Stopped', detail: 'Terraria 1.4.4.9 · asleep, wakes on join', players: [0, 8], memory: [0, 2], restarts: 0 } },
+];

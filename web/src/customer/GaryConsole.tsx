@@ -1,8 +1,8 @@
 /**
- * The server owner's console: their server, and Gary. Talking to Gary is the main
- * thing, so the conversation takes the room; the server's vitals and what Gary
- * actually did sit beside it, because "what did it change?" is the first question
- * anyone has about an agent that edits their server.
+ * The server owner's console: one conversation with Gary, who looks after all of their
+ * servers. The conversation takes the room; the servers sit beside it, with the one
+ * Gary last touched opened up, and what he actually did underneath, because "what did
+ * it change?" is the first question anyone has about an agent that edits their server.
  *
  * Gary's response carries no card markup. Every card here is read off the tool trace
  * the harness already returns (see gary/derive.ts).
@@ -13,22 +13,21 @@ import remarkGfm from 'remark-gfm';
 import { GaryMark } from '../app/Shell';
 import { Icon } from '../app/icons';
 import { useStore, type Turn } from '../app/store';
-import { SCENARIOS, type ServerState } from '../data/scenarios';
-import { describeTool, fmtMs, fmtTokens, fmtUsd, safetyOf, shortModel, turnCost, type SafetyStage } from '../gary/derive';
+import { SCENARIOS, type OwnedServer } from '../data/scenarios';
+import { describeTool, fmtMs, fmtTokens, fmtUsd, safetyOf, serversTouched, shortModel, turnCost, type SafetyStage } from '../gary/derive';
 import { RATES, RATES_ARE_PLACEHOLDER } from '../gary/rates';
 import { Card, Provenance, StatusBadge } from '../ui/ui';
 
-const STARTERS = ['Is the server up?', 'Who is online right now?'];
+const STARTERS = ['How are my servers doing?', 'Who is online right now?'];
 
-export function ServerConsole() {
-  const { server } = useStore();
+export function GaryConsole() {
   return (
     <div className="screen cx">
-      <ServerHeader server={server} />
+      <ConsoleHeader />
       <div className="cx-grid">
         <Conversation />
-        <aside className="cx-side">
-          <Vitals server={server} />
+        <aside className="cx-side" aria-label="Your servers">
+          <ServerList />
           <ActionLog />
         </aside>
       </div>
@@ -36,8 +35,9 @@ export function ServerConsole() {
   );
 }
 
-function ServerHeader({ server }: { server: ServerState }) {
-  const { breakServer, resetServer, busy, scenario, turns } = useStore();
+function ConsoleHeader() {
+  const { breakServer, resetDemo, busy, scenario, turns, servers } = useStore();
+  const down = servers.filter((x) => x.state.status === 'Crashed').length;
   const [open, setOpen] = useState(false);
   const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -54,9 +54,11 @@ function ServerHeader({ server }: { server: ServerState }) {
   return (
     <header className="cx-head">
       <div className="cx-title">
-        <h1>mc-friends-smp</h1>
-        <StatusBadge status={server.status} />
-        <span className="cx-detail">{server.detail}</span>
+        <h1>Gary</h1>
+        <span className="cx-detail">
+          Looking after your {servers.length} servers
+          {down > 0 && <span className="cx-down"> · {down} down</span>}
+        </span>
       </div>
       <div className="cx-demo" ref={menu}>
         <button type="button" className="btn btn-secondary btn-small" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(!open)}>
@@ -78,13 +80,16 @@ function ServerHeader({ server }: { server: ServerState }) {
                 }}
               >
                 <span className="cx-menu-n">{i + 1}</span>
-                {s.label}
+                <span className="cx-menu-text">
+                  {s.label}
+                  <span className="cx-menu-sub">{s.server}</span>
+                </span>
               </button>
             ))}
           </div>
         )}
         {(turns.length > 0 || scenario) && (
-          <button type="button" className="icon-btn" onClick={resetServer} disabled={busy} aria-label="Reset the demo" title="Reset the demo">
+          <button type="button" className="icon-btn" onClick={resetDemo} disabled={busy} aria-label="Reset the demo" title="Reset the demo">
             <Icon name="reset" size={17} />
           </button>
         )}
@@ -108,7 +113,7 @@ function Conversation() {
           <div className="cx-empty">
             <GaryMark size={40} />
             <h2>Hi, I&rsquo;m Gary.</h2>
-            <p>I look after this server. Tell me what&rsquo;s wrong in plain English and I&rsquo;ll read the logs, fix it, and check it came back healthy. I ask before touching your world.</p>
+            <p>I look after all of your servers. Tell me what&rsquo;s wrong in plain English and I&rsquo;ll work out which server, read its logs, fix it, and check it came back healthy. I ask before touching a world.</p>
             <div className="cx-starters">
               {STARTERS.map((s) => (
                 <button key={s} type="button" className="chip" onClick={() => ask(s)}>
@@ -170,6 +175,7 @@ function TurnView({ turn }: { turn: Turn }) {
           )}
           {turn.status === 'done' && turn.response && (
             <>
+              <ServerTags turn={turn} />
               {turn.response.escalated && (
                 <div className="cx-escalation">
                   <Icon name="alert" size={16} />
@@ -188,6 +194,23 @@ function TurnView({ turn }: { turn: Turn }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Which servers this turn touched, each a way to open that server beside the chat. */
+function ServerTags({ turn }: { turn: Turn }) {
+  const { setFocus, focus } = useStore();
+  const ids = serversTouched(turn.steps);
+  if (!ids.length) return null;
+  return (
+    <div className="cx-tags">
+      {ids.map((id) => (
+        <button key={id} type="button" className={`cx-tag ${focus === id ? 'is-on' : ''}`} onClick={() => setFocus(id)}>
+          <Icon name="server" size={13} />
+          {id}
+        </button>
+      ))}
     </div>
   );
 }
@@ -270,40 +293,68 @@ function Telemetry({ turn }: { turn: Turn }) {
   );
 }
 
-function Vitals({ server }: { server: ServerState }) {
-  const mem = Math.min(1, server.memory[0] / server.memory[1]);
+/**
+ * Every server the owner has, as one list. The focused one (the last Gary touched, or
+ * the last clicked) opens up with its vitals and, when it's down, its last log lines.
+ */
+function ServerList() {
+  const { servers, focus, setFocus } = useStore();
   return (
-    <Card title="Server" aside={<StatusBadge status={server.status} />} className={`cx-vitals is-${server.status.toLowerCase()}`}>
-      <dl className="cx-stats">
-        <div>
-          <dt>Players</dt>
-          <dd>
-            {server.players[0]}
-            <span className="muted"> / {server.players[1]}</span>
-          </dd>
-        </div>
-        <div>
-          <dt>Memory</dt>
-          <dd>
-            {server.memory[0].toFixed(1)}
-            <span className="muted"> / {server.memory[1]} GB</span>
-          </dd>
-          <div className="cx-bar" aria-hidden="true">
-            <span style={{ width: `${mem * 100}%` }} className={mem > 0.9 ? 'is-hot' : ''} />
-          </div>
-        </div>
-        <div>
-          <dt>Restarts</dt>
-          <dd>{server.restarts}</dd>
-        </div>
-      </dl>
-      {server.logTail && server.status !== 'Running' && (
-        <pre className="cx-log" aria-label="Latest log lines">
-          {server.logTail.join('\n')}
-        </pre>
-      )}
-      {server.logTail && server.status === 'Running' && <p className="cx-warnline">{server.logTail[0]}</p>}
+    <Card title="Your servers" aside={`${servers.filter((x) => x.state.status === 'Running').length} of ${servers.length} running`} className="cx-servers">
+      <ul className="cx-srv-list">
+        {servers.map((x) => (
+          <ServerRow key={x.id} server={x} open={x.id === focus} onOpen={() => setFocus(x.id)} />
+        ))}
+      </ul>
     </Card>
+  );
+}
+
+function ServerRow({ server: x, open, onOpen }: { server: OwnedServer; open: boolean; onOpen: () => void }) {
+  const st = x.state;
+  const mem = st.memory[1] ? Math.min(1, st.memory[0] / st.memory[1]) : 0;
+  return (
+    <li className={`cx-srv ${open ? 'is-open' : ''} is-${st.status.toLowerCase()}`}>
+      <button type="button" className="cx-srv-btn" aria-expanded={open} onClick={onOpen}>
+        <span className="cx-srv-name">{x.id}</span>
+        <span className="cx-srv-game">{x.game}</span>
+        <StatusBadge status={st.status} />
+      </button>
+      {open && (
+        <div className="cx-srv-body">
+          <div className="cx-srv-detail">{st.detail}</div>
+          <dl className="cx-stats">
+            <div>
+              <dt>Players</dt>
+              <dd>
+                {st.players[0]}
+                <span className="muted"> / {st.players[1]}</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Memory</dt>
+              <dd>
+                {st.memory[0].toFixed(1)}
+                <span className="muted"> / {st.memory[1]} GB</span>
+              </dd>
+              <div className="cx-bar" aria-hidden="true">
+                <span style={{ width: `${mem * 100}%` }} className={mem > 0.9 ? 'is-hot' : ''} />
+              </div>
+            </div>
+            <div>
+              <dt>Restarts</dt>
+              <dd>{st.restarts}</dd>
+            </div>
+          </dl>
+          {st.logTail && st.status !== 'Running' && (
+            <pre className="cx-log" aria-label="Latest log lines">
+              {st.logTail.join('\n')}
+            </pre>
+          )}
+          {st.logTail && st.status === 'Running' && <p className="cx-warnline">{st.logTail[0]}</p>}
+        </div>
+      )}
+    </li>
   );
 }
 
