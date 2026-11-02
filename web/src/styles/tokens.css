@@ -1,91 +1,92 @@
 /**
- * Design tokens. A screen never names a hex: it names one of these, and dark mode is
- * the same names redefined under `.dark` on <html>.
+ * Design tokens — Data terminal direction (seed 1212898426) for Gary / Grizzly Gameservers.
  *
- * Typeface: Inter, self-hosted, with tabular figures for every number.
+ * Typeface: Public Sans with tabular numerals across every metric, table, and counter;
+ * IBM Plex Mono for server IDs, tool calls, and log output.
  *
- * Colour: one violet accent for anything you can act on (white text on it). Status
- * colours are kept apart from it on purpose: green means healthy, amber means
- * "needs you", red means down. Gary's own work wears the accent's tint.
+ * Colour: Pinecrest hunter green (#44a282 / #5fc39c on dark, #247b50 on light) serves as
+ * the single data/selection accent and positive signal (one green family per app-screens §9.3).
+ * Panels sit flat with a 1px border (#222224 on #171719) and zero resting shadow.
  */
 @import '@fontsource-variable/inter/wght.css';
 
 :root {
   color-scheme: light;
 
-  --font-body: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-body: 'Public Sans', 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-head: var(--font-body);
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
-  /* surfaces: paper → surface → raised */
-  --bg: #f6f7f8;
+  /* surfaces: light mode */
+  --bg: #f6f7f6;
   --paper-light: #ffffff;
   --surface: #ffffff;
-  --surface-2: #f1f3f5;
-  --well: #e9ecef;
+  --surface-2: #f1f3f1;
+  --well: #eaeeeb;
   --raised: #ffffff;
-  --hover: #eef0f0;
+  --hover: #ecefed;
 
-  /* ink */
-  --ink: #3f4245;
-  --ink-strong: #26282b;
-  --muted: #717174;
-  --faint: #a3a8ad;
+  /* ink (all >= 4.5:1 on white and #f6f7f6) */
+  --ink: #26282b;
+  --ink-strong: #111111;
+  --muted: #595d62;
+  --faint: #666a70;
 
   /* lines */
-  --line: #dadee2;
-  --line-soft: #e9ecee;
-  --line-strong: #cfd3d7;
+  --line: #e2e5e3;
+  --line-soft: #ecefed;
+  --line-strong: #c9cecb;
 
-  /* accent · violet */
-  --brand-50: #f1edff;
-  --brand-100: #e2d9ff;
-  --brand-500: #7c5cff;
-  --brand-600: #6847f0;
-  --brand-700: #5236c9;
-  --primary-bg: #6d4dfa;
-  --primary-hover: #7c5fff;
+  /* accent · Pinecrest hunter green (single green family for brand + positive) */
+  --brand-50: #e6f4ec;
+  --brand-100: #cce8d9;
+  --brand-500: #247b50;
+  --brand-600: #1d6541;
+  --brand-700: #164f33;
+  --primary-bg: #1d1f20;
+  --primary-hover: #2c2f31;
   --primary-ink: #ffffff;
-  --link: #5a3de0;
-  --focus: #6847f0;
+  --link: #1d6541;
+  --focus: #247b50;
 
   /* status */
-  --ok: #41823c;
-  --ok-tint: #eef7e9;
-  --warn: #94590b;
-  --warn-tint: #fff4dd;
-  --warn-line: #f1c97a;
-  --bad: #b0272b;
-  --bad-tint: #fbecec;
+  --ok: #247b50;
+  --ok-tint: #dcfae5;
+  --warn: #8a5209;
+  --warn-tint: #fffbeb;
+  --warn-line: #fde68a;
+  --bad: #831c1e;
+  --bad-tint: #ffedea;
   --bad-fill: #b0272b;
-  --attn: #d98a1f; /* the "needs you" lamp and ping ring; never text */
-  --tint: #eef0f0;
-  --tint-line: #e1e4e7;
-  --tag-bg: #eef0f0;
-  --tag-ink: #5d6166;
+  --attn: #d9a441;
+  --tint: #eef1ef;
+  --tint-line: #dfe3e0;
+  --tag-bg: #eef1ef;
+  --tag-ink: #4f5459;
 
-  --conf-high: #41823c;
-  --conf-med: #717174;
-  --conf-low: #d98a1f;
-  --evidence-rule: #7c5cff;
-  --evidence-bg: #f1edff;
-  --lamp-ok: #3fb950;
-  --lamp-warn: #e9a23b;
-  --lamp-bad: #d6453f;
-  --toast-bg: #26282b;
+  --conf-high: #247b50;
+  --conf-med: #595d62;
+  --conf-low: #8a5209;
+  --evidence-rule: #247b50;
+  --evidence-bg: #f1f6f3;
+  --lamp-ok: #247b50;
+  --lamp-warn: #d9a441;
+  --lamp-bad: #c4242a;
+  --toast-bg: #1d1f20;
   --toast-ink: #f1f2f3;
 
-  /* radius: control, panel, shell */
+  /* tight data-terminal radius */
   --radius-sm: 4px;
-  --radius-btn: 8px;
-  --radius: 10px;
-  --radius-lg: 14px;
-  --radius-tag: 6px;
+  --radius-btn: 6px;
+  --radius: 6px;
+  --radius-lg: 6px;
+  --radius-tag: 4px;
 
-  /* elevation: two depths */
-  --shadow-card: 0 1px 2px rgba(38, 40, 43, 0.05), 0 12px 28px -18px rgba(38, 40, 43, 0.22);
-  --shadow-lift: 0 2px 6px rgba(38, 40, 43, 0.06), 0 26px 54px -28px rgba(38, 40, 43, 0.3);
+  /* flat resting surfaces; shadow only on floating overlays */
+  --shadow-card: none;
+  --shadow-lift: 0 12px 28px rgba(0, 0, 0, 0.16);
 
-  /* motion · the house ease and three durations */
+  /* motion */
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-swoop: cubic-bezier(0.34, 1.28, 0.5, 1);
   --dur-fast: 130ms;
@@ -94,65 +95,74 @@
 
   /* tracking, keyed to size */
   --tracking-display: -0.02em;
-  --tracking-title: -0.016em;
-  --tracking-heading: -0.012em;
+  --tracking-title: -0.015em;
+  --tracking-heading: -0.01em;
 
-  --h1: 26px;
+  --h1: 24px;
 }
 
 .dark {
   color-scheme: dark;
 
-  --bg: #141517;
-  --paper-light: #1a1c1e;
-  --surface: #1c1e21;
-  --surface-2: #232529;
-  --well: #17181b;
-  --raised: #3b3e44;
-  --hover: #282a2e;
+  /* data-terminal dark surfaces: cards (#131217) sit one step darker than ground (#171719) */
+  --bg: #171719;
+  --paper-light: #1b1a1f;
+  --surface: #131217;
+  --surface-2: #1b1a1f;
+  --well: #0f0e13;
+  --raised: #212023;
+  --hover: #212023;
 
-  --ink: #c6c9cd;
-  --ink-strong: #f1f2f3;
-  --muted: #8e9297;
-  --faint: #5d6166;
+  /* ink (all >= 4.5:1 against #131217 and #171719) */
+  --ink: #d5d6dc;
+  --ink-strong: #ffffff;
+  --muted: #94969e;
+  --faint: #8a8c92;
 
-  --line: #2e3135;
-  --line-soft: #26282c;
-  --line-strong: #3c4045;
+  /* structural 1px lines */
+  --line: #222224;
+  --line-soft: #1b1a1f;
+  --line-strong: #3a3a3e;
 
-  --brand-50: #1c1733;
-  --brand-100: #251d47;
-  --brand-500: #8f74ff;
-  --brand-600: #9a82ff;
-  --brand-700: #b8a6ff;
-  --link: #b3a1ff;
-  --focus: #9a82ff;
+  /* Pinecrest hunter/emerald accent — unified with positive status */
+  --brand-50: #16231e;
+  --brand-100: #1d3129;
+  --brand-500: #44a282;
+  --brand-600: #5fc39c;
+  --brand-700: #7cd4b1;
+  --primary-bg: #f2f2f3;
+  --primary-hover: #ffffff;
+  --primary-ink: #131217;
+  --link: #5fc39c;
+  --focus: #5fc39c;
 
-  --ok: #8fcf6b;
-  --ok-tint: #13220f;
-  --warn: #ffbb42;
-  --warn-tint: #2a2110;
-  --warn-line: #5b4417;
-  --bad: #f09a9f;
-  --bad-tint: #2c1618;
-  --bad-fill: #c2373b;
-  --attn: #ffb23e;
-  --tint: #24262a;
-  --tint-line: #303337;
-  --tag-bg: #26292d;
-  --tag-ink: #a9adb2;
+  --ok: #5fc39c;
+  --ok-tint: #1b2828;
+  --warn: #d9a441;
+  --warn-tint: #2a2416;
+  --warn-line: #4d3e1e;
+  --bad: #e5566f;
+  --bad-tint: #2c1a20;
+  --bad-fill: #c4243e;
+  --attn: #d9a441;
+  --tint: #212023;
+  --tint-line: #2c2b30;
+  --tag-bg: #212023;
+  --tag-ink: #bdbdc0;
 
-  --conf-high: #8fcf6b;
-  --conf-med: #8e9297;
-  --conf-low: #ffb23e;
-  --evidence-bg: #1a1630;
-  --primary-bg: #7457ff;
-  --primary-hover: #8468ff;
-  --toast-bg: #f1f2f3;
-  --toast-ink: #26282b;
+  --conf-high: #5fc39c;
+  --conf-med: #94969e;
+  --conf-low: #d9a441;
+  --evidence-rule: #44a282;
+  --evidence-bg: #16211d;
+  --lamp-ok: #44a282;
+  --lamp-warn: #d9a441;
+  --lamp-bad: #e5566f;
+  --toast-bg: #f2f2f3;
+  --toast-ink: #131217;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 16px 36px -20px rgba(0, 0, 0, 0.6);
-  --shadow-lift: 0 2px 8px rgba(0, 0, 0, 0.4), 0 34px 70px -30px rgba(0, 0, 0, 0.7);
+  --shadow-card: none;
+  --shadow-lift: 0 12px 28px rgba(0, 0, 0, 0.35);
 }
 
 html,
@@ -169,7 +179,7 @@ body {
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -179,7 +189,7 @@ body {
 @keyframes pop {
   from {
     opacity: 0;
-    transform: translateY(4px) scale(0.96);
+    transform: translateY(3px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -196,11 +206,10 @@ body {
     opacity: 0.55;
   }
 }
-/* A feed row arriving: it makes its own room, then fades up into it. */
 @keyframes feed-in {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(-4px);
     max-height: 0;
   }
   40% {
@@ -213,7 +222,6 @@ body {
     max-height: 160px;
   }
 }
-/* The wash a fresh row wears for a few seconds, then lets go of. */
 @keyframes fresh-wash {
   from {
     background-color: var(--brand-50);
@@ -225,19 +233,11 @@ body {
 @keyframes ping-in {
   from {
     opacity: 0;
-    transform: translateY(-18px) scale(0.98);
+    transform: translateY(-12px) scale(0.98);
   }
   to {
     opacity: 1;
     transform: none;
-  }
-}
-@keyframes ring {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--attn) 55%, transparent);
-  }
-  100% {
-    box-shadow: 0 0 0 12px transparent;
   }
 }
 @keyframes beat {
@@ -259,14 +259,12 @@ body {
 }
 @keyframes slide-in-right {
   from {
-    transform: translateX(24px);
+    transform: translateX(18px);
     opacity: 0;
   }
 }
 
-/* ── reduced motion · one global floor ─────────────────────────────────────
- * Anyone who asks for less motion gets essentially none, including the rail
- * collapse, the feed and the ping. */
+/* ── reduced motion · one global floor ───────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

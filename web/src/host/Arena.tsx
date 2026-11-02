@@ -4,7 +4,8 @@
  * over the same open model in a generic agent. The traces are illustrative until
  * recorded runs replace them, and every column says so.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useStore } from '../app/store';
 import { SCENARIOS, type ArenaRun } from '../data/scenarios';
 import { fmtMs, fmtTokens, shortModel } from '../gary/derive';
 import { Provenance } from '../ui/ui';
@@ -58,6 +59,7 @@ function Column({ run }: { run: ArenaRun }) {
 
       <div className="ev-tokens muted">
         {fmtTokens(run.prompt_tokens)} prompt · {fmtTokens(run.cached_tokens)} cached · {fmtTokens(run.completion_tokens)} out
+        {c != null && <span> · ${(c * 1000).toFixed(2)} / 1k turns</span>}
       </div>
 
       <ol className="ev-tools" aria-label="Tool calls">
@@ -74,8 +76,13 @@ function Column({ run }: { run: ArenaRun }) {
 }
 
 export function Arena() {
-  const [id, setId] = useState(SCENARIOS[0].id);
+  const { arenaScenario } = useStore();
+  const [id, setId] = useState(arenaScenario || SCENARIOS[0].id);
   const [ablation, setAblation] = useState(true);
+
+  useEffect(() => {
+    if (arenaScenario) setId(arenaScenario);
+  }, [arenaScenario]);
   const sc = SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0];
   const by = (k: ArenaRun['system_id']) => sc.arena.find((r) => r.system_id === k);
   const gary = by('gary_fireworks');

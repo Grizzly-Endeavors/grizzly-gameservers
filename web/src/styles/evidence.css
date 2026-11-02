@@ -13,21 +13,22 @@
 }
 .ev-toolbar .filters {
   margin-bottom: 0;
+  flex: 1;
 }
 .ev-toggle {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 13.5px;
   color: var(--muted);
 }
 .ev-toggle input {
-  accent-color: var(--primary-bg);
+  accent-color: var(--brand-500);
 }
 .ev-prompt {
-  margin: 22px 0 18px;
-  font-size: 17px;
+  margin: 18px 0 16px;
+  font-size: 15px;
   color: var(--ink-strong);
 }
 
@@ -37,31 +38,32 @@
   align-items: baseline;
   gap: 8px 28px;
   margin-bottom: 18px;
-  padding: 14px 20px;
+  padding: 12px 18px;
   border-radius: var(--radius-lg);
   background: var(--brand-50);
-  border: 1px solid color-mix(in srgb, var(--brand-500) 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-500) 35%, transparent);
 }
 .ev-delta {
-  font-size: 15px;
+  font-size: 14px;
   color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 .ev-delta strong {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 600;
   letter-spacing: var(--tracking-title);
   color: var(--link);
-  margin-right: 2px;
+  margin-right: 4px;
 }
 .ev-deltas-note {
   margin-left: auto;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .ev-cols {
   display: grid;
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
 }
 .ev-cols-3 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -70,38 +72,34 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .ev-col {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 18px 20px 20px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
   min-width: 0;
   animation: rise var(--dur-slow) var(--ease-out-soft) both;
 }
 .ev-col.is-ours {
-  border-color: color-mix(in srgb, var(--brand-500) 65%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--brand-500) 35%, transparent),
-    var(--shadow-card);
+  border-color: var(--brand-500);
 }
 .ev-col-head {
   display: grid;
   gap: 3px;
 }
 .ev-col-sub {
-  font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
 }
 .ev-col.is-ours .ev-col-sub {
   color: var(--link);
 }
 .ev-col-title {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.25;
   letter-spacing: var(--tracking-heading);
 }
@@ -109,7 +107,7 @@
   color: var(--muted);
 }
 .ev-verdict {
-  justify-self: start;
+  align-self: flex-start;
 }
 .ev-stats {
   display: grid;
@@ -123,18 +121,20 @@
 .ev-stats dt {
   font-size: 12px;
   color: var(--muted);
-  font-weight: 600;
+  font-weight: 500;
 }
 .ev-stats dd {
   margin: 2px 0 0;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 19px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--ink-strong);
   letter-spacing: var(--tracking-title);
 }
 .ev-tokens {
-  font-size: 12.5px;
-  margin-top: -6px;
+  font-size: 12px;
+  margin-top: -4px;
+  font-variant-numeric: tabular-nums;
 }
 .ev-tools {
   display: flex;
@@ -153,12 +153,12 @@
   color: var(--link);
 }
 .ev-reply {
-  margin: 0;
+  margin: auto 0 0;
   padding: 10px 12px;
-  border-left: 3px solid var(--line-strong);
+  border-left: 2px solid var(--line-strong);
   background: var(--surface-2);
   border-radius: 0 var(--radius) var(--radius) 0;
-  font-size: 14px;
+  font-size: 13.5px;
   color: var(--ink);
 }
 .ev-col.is-ours .ev-reply {
@@ -170,27 +170,39 @@
   align-items: center;
   gap: 6px 14px;
   margin-top: 18px;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 /* ── benchmark ─────────────────────────────────────────────────────────── */
 .ev-kpis {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.ev-kpis .kpi {
+  border: 0;
+  border-radius: 0;
+  padding: 16px 20px;
+}
+.ev-kpis .kpi + .kpi {
+  border-left: 1px solid var(--line);
 }
 .ev-kpi-prov {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
-  margin: 10px 0 22px;
-  font-size: 13px;
+  margin: 10px 0 20px;
+  font-size: 12.5px;
 }
 .ev-charts {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   gap: 16px;
+  align-items: stretch;
 }
 .ev-chart {
   width: 100%;
@@ -204,7 +216,7 @@
   flex-wrap: wrap;
   gap: 8px 16px;
   margin-top: 10px;
-  font-size: 13px;
+  font-size: 12.5px;
   color: var(--ink);
 }
 .ev-legend li {
@@ -215,7 +227,7 @@
 .ev-swatch {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: 2px;
   flex: none;
 }
 .ev-block {
@@ -225,14 +237,14 @@
   background: var(--brand-50);
 }
 .ev-systems tr.is-ours td:first-child {
-  box-shadow: inset 3px 0 0 var(--primary-bg);
+  border-left: 3px solid var(--brand-500);
 }
 .ev-sys-name {
   font-weight: 600;
   color: var(--ink-strong);
 }
 .ev-sys-note {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 
 .ev-cases {
@@ -265,11 +277,11 @@
 }
 .ev-ok {
   color: var(--ok);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ev-bad {
   color: var(--bad);
-  font-weight: 700;
+  font-weight: 600;
 }
 .ev-case-detail td {
   background: var(--surface-2);
@@ -287,13 +299,13 @@
   border-radius: var(--radius);
   background: var(--surface);
   border: 1px solid var(--line);
-  font-size: 13.5px;
+  font-size: 13px;
 }
 .ev-case-sys.is-ours {
-  border-color: color-mix(in srgb, var(--brand-500) 55%, transparent);
+  border-color: var(--brand-500);
 }
 .ev-case-sys-name {
-  font-weight: 650;
+  font-weight: 600;
   color: var(--ink-strong);
   margin-bottom: 2px;
 }
@@ -304,6 +316,10 @@
   .ev-kpis,
   .ev-charts {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .ev-kpis .kpi + .kpi {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
   .ev-toggle {
     margin-left: 0;

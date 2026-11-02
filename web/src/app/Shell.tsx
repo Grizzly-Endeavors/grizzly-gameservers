@@ -2,11 +2,13 @@
  * The frame every screen sits in: the rail, a top bar, and the scrolling content.
  * The frame is fixed and only <main> scrolls, so the rail and top bar never move.
  *
- * One app, two audiences. The hosting company sees its fleet and the evidence; the
- * server's owner sees their server and Gary. The switch in the top bar flips between
- * them for the demo; each keeps its own rail.
+ * One app, two audiences. The hosting company sees its triage queue, fleet, and eval
+ * evidence; the server owner sees their operator console, live server list, and audit
+ * activity.
  */
-import { useEffect, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { GARY_MODEL, SCENARIOS } from '../data/scenarios';
+import { shortModel } from '../gary/derive';
 import { INCIDENTS } from '../host/fleet';
 import { Icon, type IconName } from './icons';
 import { RailTip } from './RailTip';
@@ -18,13 +20,13 @@ import { useRailIndicator } from './useRailIndicator';
 const COLLAPSE_SEQUENCE_MS = 460;
 
 const TITLES: Record<Screen, string> = {
-  overview: 'Overview',
-  servers: 'Servers',
-  incidents: 'Incidents',
+  overview: 'Triage queue',
+  servers: 'Fleet servers',
+  incidents: 'Incident log',
   arena: 'Model arena',
   benchmark: 'Benchmark',
-  gary: 'Ask Gary',
-  activity: 'Activity',
+  gary: 'Operator console',
+  activity: 'Activity log',
 };
 
 interface Row {
@@ -35,19 +37,14 @@ interface Row {
   hot?: boolean;
 }
 
-/**
- * The owner's rail is about Gary, not about one server: one Gary looks after all of
- * them from one conversation, and the servers themselves sit in the conversation's
- * side panel. A count on Ask Gary means he is waiting on an approval.
- */
-function railGroups(persona: Persona, open: number, waiting: number): { label: string; rows: Row[] }[] {
+function railGroups(persona: Persona, openEscalations: number, waitingApprovals: number): { label: string; rows: Row[] }[] {
   if (persona === 'customer')
     return [
       {
-        label: 'Friday Night Crew',
+        label: 'Operator',
         rows: [
-          { key: 'gary', label: 'Ask Gary', icon: 'ask', count: waiting, hot: true },
-          { key: 'activity', label: 'Activity', icon: 'activity' },
+          { key: 'gary', label: 'Operator console', icon: 'ask', count: waitingApprovals || undefined, hot: true },
+          { key: 'activity', label: 'Activity log', icon: 'activity' },
         ],
       },
     ];
@@ -55,40 +52,54 @@ function railGroups(persona: Persona, open: number, waiting: number): { label: s
     {
       label: 'Operations',
       rows: [
-        { key: 'overview', label: 'Overview', icon: 'home' },
-        { key: 'servers', label: 'Servers', icon: 'server' },
-        { key: 'incidents', label: 'Incidents', icon: 'bolt', count: open, hot: true },
+        { key: 'overview', label: 'Triage queue', icon: 'bolt', count: openEscalations || undefined, hot: openEscalations > 0 },
+        { key: 'servers', label: 'Fleet servers', icon: 'server', count: openEscalations || undefined, hot: false },
+        { key: 'incidents', label: 'Incident log', icon: 'home' },
       ],
     },
     {
-      label: 'Evidence',
+      label: 'Evaluation',
       rows: [
-        { key: 'arena', label: 'Model arena', icon: 'versus' },
         { key: 'benchmark', label: 'Benchmark', icon: 'chart' },
+        { key: 'arena', label: 'Model arena', icon: 'versus' },
       ],
     },
   ];
 }
 
-/** Gary's mark: a rounded speech square with a spark, in the accent. */
+/**
+ * Gary's mark: a two-blade server chassis with a live status LED and operator prompt,
+ * drawn in the Pinecrest hunter accent (never an AI sparkle).
+ */
 export function GaryMark({ size = 22 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
-      <rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="var(--primary-bg)" />
-      <path d="M12 6.2v3.1M12 14.7v3.1M6.2 12h3.1M14.7 12h3.1M8.4 8.4l1.6 1.6M14 14l1.6 1.6M8.4 15.6l1.6-1.6M14 10l1.6-1.6" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" />
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" aria-hidden="true">
+      <rect x="2" y="3" width="20" height="8" rx="2" fill="var(--surface-2)" stroke="var(--brand-600)" strokeWidth="1.5" />
+      <circle cx="6" cy="7" r="1.4" fill="var(--brand-600)" />
+      <path d="M10 7h8" stroke="var(--ink-strong)" strokeWidth="1.5" strokeLinecap="round" />
+      <rect x="2" y="13" width="20" height="8" rx="2" fill="var(--surface-2)" stroke="var(--line-strong)" strokeWidth="1.5" />
+      <path d="M5.5 15.6L7.5 17l-2 1.4" stroke="var(--brand-600)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 17h6" stroke="var(--muted)" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }
 
+const LAMP_TONE: Record<string, string> = {
+  Running: 'ok',
+  Starting: 'warn',
+  Crashed: 'bad',
+  Stopped: 'off',
+};
+
 function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { persona, screen, go, turns, servers } = useStore();
+  const { persona, screen, go, turns, servers, focus, setFocus, mode, resolvedIds } = useStore();
   const { collapsed, collapsible, toggle } = useSidebarCollapse();
   const waiting = turns.filter((t) => t.approval?.state === 'pending').length;
-  const groups = railGroups(persona, INCIDENTS.filter((i) => i.outcome === 'escalated').length, waiting);
+  const openEscalations = INCIDENTS.filter((i) => i.outcome === 'escalated' && !resolvedIds.includes(i.id)).length;
+  const groups = railGroups(persona, openEscalations, waiting);
   const sig = `${persona}|${groups.map((g) => g.rows.map((r) => r.key).join(',')).join('|')}`;
   const { ref: navRef, markerRef, style: indicatorStyle, follow } = useRailIndicator<HTMLElement>('button[aria-current="page"]', [screen, sig, collapsed], 0);
   useEffect(() => follow(COLLAPSE_SEQUENCE_MS), [collapsed, follow]);
-  const who = persona === 'host' ? { name: 'Pinecrest Hosting', sub: 'Support operations', initials: 'PH' } : { name: 'Sam Rivera', sub: `Server owner · ${servers.length} servers`, initials: 'SR' };
 
   return (
     <>
@@ -100,7 +111,7 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           </span>
           <span className="rail-word">
             Gary
-            <span className="rail-sub">{persona === 'host' ? 'for hosting teams' : 'your server operator'}</span>
+            <span className="rail-sub">{persona === 'host' ? 'fleet control plane' : 'server operator'}</span>
           </span>
           {!collapsed && collapsible && (
             <button type="button" className="rail-toggle" onClick={toggle} aria-expanded="true" aria-label="Collapse sidebar" title="Collapse sidebar">
@@ -149,6 +160,43 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
               </ul>
             </div>
           ))}
+
+          {persona === 'customer' && !collapsed && (
+            <div className="rail-group">
+              <div className="rail-heading">
+                <h3>Attached servers</h3>
+              </div>
+              <ul className="rail-servers">
+                {servers.map((srv) => {
+                  const isFocused = screen === 'gary' && focus === srv.id;
+                  const tone = LAMP_TONE[srv.state.status] ?? 'off';
+                  return (
+                    <li key={srv.id}>
+                      <button
+                        type="button"
+                        className={`rail-srv-row ${isFocused ? 'is-focused' : ''} ${srv.state.status === 'Crashed' ? 'is-crashed' : ''}`}
+                        onClick={() => {
+                          setFocus(srv.id);
+                          go('gary');
+                          onClose();
+                        }}
+                      >
+                        <span className={`lamp lamp-${tone}`} aria-hidden="true" />
+                        <span className="rail-srv-id">{srv.id}</span>
+                        <span className="rail-srv-meta">
+                          {srv.state.status === 'Crashed'
+                            ? 'Crashed'
+                            : srv.state.status === 'Running'
+                              ? `${srv.state.players[0]}/${srv.state.players[1]}`
+                              : srv.state.status}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
         </nav>
 
         <div className="rail-foot">
@@ -162,13 +210,20 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
               </button>
             </RailTip>
           )}
-          <div className="rail-me">
-            <span className="rail-avatar" aria-hidden="true">
-              {who.initials}
-            </span>
-            <span className="rail-label rail-me-text">
-              <span className="rail-me-name">{who.name}</span>
-              <span className="rail-me-mail">{who.sub}</span>
+          <div className="rail-runtime">
+            <span className={`lamp ${persona === 'host' ? (mode === 'live' ? 'lamp-ok' : 'lamp-off') : 'lamp-ok'}`} aria-hidden="true" />
+            <span className="rail-label rail-runtime-text">
+              {persona === 'host' ? (
+                <>
+                  <span className="rail-runtime-model mono">{shortModel(GARY_MODEL)} · Fireworks</span>
+                  <span className="rail-runtime-mode">{mode === 'live' ? 'Live operator harness' : 'Replay harness'}</span>
+                </>
+              ) : (
+                <>
+                  <span className="rail-runtime-model">Friday Night Crew</span>
+                  <span className="rail-runtime-mode">Write guard · auto-snapshot</span>
+                </>
+              )}
             </span>
           </div>
         </div>
@@ -206,27 +261,13 @@ function PersonaSwitch() {
   );
 }
 
-/** Live or Replay. Replay plays bundled traces so a demo never waits on the network. */
-function ModePill() {
-  const { mode, setMode, busy } = useStore();
-  const next = mode === 'live' ? 'replay' : 'live';
-  const label = mode === 'live' ? 'Live cluster' : 'Recorded replay';
-  return (
-    <button
-      type="button"
-      className={`sys-pill ${mode === 'live' ? 'sys-ok' : 'sys-off'}`}
-      onClick={() => setMode(next)}
-      disabled={busy}
-      title={`Switch to ${next === 'live' ? 'the live cluster' : 'recorded replay'}`}
-    >
-      <span className="sys-dot" aria-hidden="true" />
-      <span>{label}</span>
-    </button>
-  );
-}
-
 function TopBar({ onMenu }: { onMenu: () => void }) {
-  const { screen } = useStore();
+  const { screen, persona, go, servers, turns, resolvedIds, setFocus } = useStore();
+  const scope = persona === 'host' ? 'Pinecrest Hosting' : 'Friday Night Crew';
+  const openEscalations = INCIDENTS.filter((i) => i.outcome === 'escalated' && !resolvedIds.includes(i.id)).length;
+  const crashedServer = servers.find((s) => s.state.status === 'Crashed');
+  const pendingApproval = turns.some((t) => t.approval?.state === 'pending');
+
   return (
     <header className="topbar">
       <button type="button" className="icon-btn topbar-menu" onClick={onMenu} aria-label="Open navigation">
@@ -234,13 +275,199 @@ function TopBar({ onMenu }: { onMenu: () => void }) {
           <path d="M4 7h16M4 12h16M4 17h16" />
         </svg>
       </button>
-      <h1 className="topbar-title">{TITLES[screen]}</h1>
+      <div className="topbar-crumb" aria-label="Workspace scope">
+        <span className="topbar-scope">{scope}</span>
+        <span className="topbar-sep" aria-hidden="true">/</span>
+        <span className="topbar-title">{TITLES[screen]}</span>
+      </div>
+
+      {persona === 'host' && openEscalations > 0 && screen !== 'overview' && (
+        <button type="button" className="topbar-alert" onClick={() => go('overview')}>
+          <span className="lamp lamp-bad" aria-hidden="true" />
+          <span>{openEscalations} waiting on staff decision</span>
+        </button>
+      )}
+      {persona === 'customer' && (crashedServer || pendingApproval) && (
+        <button
+          type="button"
+          className="topbar-alert"
+          onClick={() => {
+            if (crashedServer) setFocus(crashedServer.id);
+            go('gary');
+          }}
+        >
+          <span className={`lamp ${pendingApproval ? 'lamp-warn' : 'lamp-bad'}`} aria-hidden="true" />
+          <span>{pendingApproval ? 'Approval required to modify world' : `${crashedServer?.id} crashed`}</span>
+        </button>
+      )}
+
       <div className="topbar-right">
         <PersonaSwitch />
-        <ModePill />
         <ThemeToggle />
       </div>
     </header>
+  );
+}
+
+/**
+ * Floating Next.js-style dev/chaos harness overlay in the bottom-left corner.
+ * Keeps Replay/Live switching and fault injection completely out of the product UI.
+ */
+function DevHarnessOverlay() {
+  const { mode, setMode, breakServer, resetDemo, busy, scenario, turns, ask, setFocus, openArena } = useStore();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const dirty = turns.length > 0 || !!scenario;
+
+  return (
+    <div ref={wrapRef} className={`dev-harness ${open ? 'is-open' : ''}`}>
+      {open && (
+        <div className="dev-popover" role="dialog" aria-label="Chaos and fault injection harness">
+          <div className="dev-pop-head">
+            <span className="dev-pop-title">
+              <Icon name="bolt" size={14} />
+              Fault &amp; Runtime Harness
+            </span>
+            <div className="dev-mode-switch" role="group" aria-label="Harness mode">
+              <button
+                type="button"
+                className={`dev-mode-btn ${mode === 'replay' ? 'is-on' : ''}`}
+                disabled={busy}
+                onClick={() => setMode('replay')}
+              >
+                Replay
+              </button>
+              <button
+                type="button"
+                className={`dev-mode-btn ${mode === 'live' ? 'is-on' : ''}`}
+                disabled={busy}
+                onClick={() => setMode('live')}
+              >
+                Live
+              </button>
+            </div>
+          </div>
+
+          <div className="dev-pop-sub">Inject a server fault into the workspace</div>
+          <ul className="dev-fault-list">
+            {SCENARIOS.map((s, i) => {
+              const isStaged = scenario?.id === s.id;
+              return (
+                <li key={s.id} className={`dev-fault-item ${isStaged ? 'is-staged' : ''}`}>
+                  <div className="dev-fault-meta">
+                    <span className="dev-fault-n">{i + 1}</span>
+                    <div className="dev-fault-text">
+                      <strong>{s.label}</strong>
+                      <span className="mono">{s.server}</span>
+                    </div>
+                  </div>
+                  <div className="dev-fault-btns">
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-small"
+                      disabled={busy}
+                      onClick={() => {
+                        breakServer(s.id);
+                        setOpen(false);
+                      }}
+                    >
+                      Break
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-small"
+                      disabled={busy}
+                      onClick={() => {
+                        if (mode === 'replay') breakServer(s.id);
+                        setFocus(s.server);
+                        ask(s.prompt);
+                        setOpen(false);
+                      }}
+                    >
+                      Break &amp; run
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="dev-pop-foot">
+            <button
+              type="button"
+              className="btn btn-quiet btn-small"
+              onClick={() => {
+                const lastReplay = [...turns].reverse().find((t) => t.replay?.scenario && t.replay.scenario !== 'status')?.replay?.scenario;
+                openArena(scenario?.id ?? lastReplay ?? SCENARIOS[0].id);
+                setOpen(false);
+              }}
+            >
+              <Icon name="versus" size={14} />
+              Compare in Model Arena ↗
+            </button>
+            {dirty && (
+              <button
+                type="button"
+                className="btn btn-quiet btn-small"
+                disabled={busy}
+                onClick={() => {
+                  resetDemo();
+                  setOpen(false);
+                }}
+              >
+                <Icon name="reset" size={14} />
+                Reset session
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className={`dev-pill-bar ${scenario ? 'is-fault' : mode === 'live' ? 'is-live' : ''}`}>
+        <button
+          type="button"
+          className={`dev-pill ${scenario ? 'is-fault' : mode === 'live' ? 'is-live' : ''}`}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className="dev-pill-tag mono">CHAOS</span>
+          <Icon name="bolt" size={14} />
+          <span className="dev-pill-label">
+            {scenario ? `Fault: ${scenario.short}` : 'Inject fault'}
+          </span>
+          <span className="dev-pill-mode mono">{mode === 'live' ? 'LIVE' : 'REPLAY'}</span>
+        </button>
+        {dirty && (
+          <button
+            type="button"
+            className="dev-pill-reset"
+            disabled={busy}
+            onClick={resetDemo}
+            title="Reset servers and session"
+            aria-label="Reset servers and session"
+          >
+            <Icon name="reset" size={13} />
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -263,6 +490,7 @@ export function Shell({ children }: { children: ReactNode }) {
           </div>
         </main>
       </div>
+      <DevHarnessOverlay />
       {toast && (
         <div className="toast" role="status">
           {toast}

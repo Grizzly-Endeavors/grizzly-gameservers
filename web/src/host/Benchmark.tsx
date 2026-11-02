@@ -8,7 +8,7 @@ import { Fragment, useMemo, useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ErrorBar, LabelList, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts';
 import results from '../data/eval_results.sample.json';
 import type { EvalCase, EvalResults, EvalSystem } from '../gary/types';
-import { Card, Kpi, Provenance } from '../ui/ui';
+import { Card, Provenance } from '../ui/ui';
 import { dur, pct, ratio, usd } from './evidence-shared';
 
 const DATA = results as unknown as EvalResults;
@@ -28,7 +28,7 @@ const shortLabel = (s: EvalSystem) => SHORT[s.system_id] ?? s.label;
 const provOf = (s: EvalSystem) => (DATA.sample && s.kind === 'measured' ? 'sample' : s.kind);
 
 function colorOf(s: EvalSystem): string {
-  if (s.system_id === OURS) return 'var(--primary-bg)';
+  if (s.system_id === OURS) return 'var(--brand-500)';
   if (s.kind === 'estimated') return 'var(--lamp-warn)';
   return 'var(--faint)';
 }
@@ -189,20 +189,32 @@ function SystemsTable({ systems }: { systems: EvalSystem[] }) {
   );
 }
 
-type Area = 'all' | EvalCase['task_area'];
+type Area = 'all' | 'diffs' | EvalCase['task_area'];
+
+function hasDiffOrFail(c: EvalCase, measured: EvalSystem[]): boolean {
+  const outcomes = measured.map((s) => c.results_by_system[s.system_id]?.verified_success);
+  return outcomes.some((v) => v === false);
+}
 
 function CaseInspector({ cases, measured }: { cases: EvalCase[]; measured: EvalSystem[] }) {
-  const [area, setArea] = useState<Area>('all');
-  const [open, setOpen] = useState<string | null>(null);
-  const shown = cases.filter((c) => area === 'all' || c.task_area === area);
-  const n = (a: Area) => cases.filter((c) => a === 'all' || c.task_area === a).length;
+  const [area, setArea] = useState<Area>('diffs');
+  const [open, setOpen] = useState<string | null>(() => cases.find((c) => hasDiffOrFail(c, measured))?.case_id ?? cases[0]?.case_id ?? null);
+  const match = (c: EvalCase, a: Area) => (a === 'all' ? true : a === 'diffs' ? hasDiffOrFail(c, measured) : c.task_area === a);
+  const shown = cases.filter((c) => match(c, area));
+  const n = (a: Area) => cases.filter((c) => match(c, a)).length;
+  const tabs: { key: Area; label: string }[] = [
+    { key: 'diffs', label: 'Disagreements & failures' },
+    { key: 'all', label: 'All cases' },
+    { key: 'troubleshooting', label: 'Troubleshooting' },
+    { key: 'config', label: 'Config changes' },
+  ];
   return (
     <>
       <div className="filters" role="group" aria-label="Task area">
-        {(['all', 'troubleshooting', 'config'] as Area[]).map((a) => (
-          <button key={a} type="button" className={`filter ${area === a ? 'is-on' : ''}`} aria-pressed={area === a} onClick={() => setArea(a)}>
-            {a === 'all' ? 'All' : a === 'config' ? 'Config changes' : 'Troubleshooting'}
-            <span className="filter-n">{n(a)}</span>
+        {tabs.map((t) => (
+          <button key={t.key} type="button" className={`filter ${area === t.key ? 'is-on' : ''}`} aria-pressed={area === t.key} onClick={() => setArea(t.key)}>
+            {t.label}
+            <span className="filter-n">{n(t.key)}</span>
           </button>
         ))}
       </div>
@@ -235,7 +247,7 @@ function CaseInspector({ cases, measured }: { cases: EvalCase[]; measured: EvalS
                     const r = c.results_by_system[s.system_id];
                     return (
                       <td key={s.system_id} className="ev-mark-col">
-                        {r ? <span className={r.verified_success ? 'ev-ok' : 'ev-bad'}>{r.verified_success ? '✓' : '✗'}</span> : <span className="muted">–</span>}
+                        {r ? <span className={r.verified_success ? 'ev-ok' : 'ev-bad'}>{r.verified_success ? 'Pass' : 'Fail'}</span> : <span className="muted">n/a</span>}
                       </td>
                     );
                   })}
@@ -283,10 +295,43 @@ export function Benchmark() {
 
   return (
     <div className="screen ev-screen">
-      <div className="screen-head">
-        <h1>Benchmark (N={n})</h1>
-        <p className="screen-sub">Verified recovery on held-out support cases. Success means the server came back healthy and the intended change took effect.</p>
-      </div>
+      <header className="triage-top">
+        <div className="triage-title-block">
+          <div className="triage-h1-row">
+            <h1>Benchmark evaluation (N={n})</h1>
+            <Provenance kind={DATA.sample ? 'sample' : 'measured'} />
+          </div>
+          <p className="screen-sub">
+            Verified recovery on held-out support cases. Success means the server came back healthy and the intended change took effect.
+          </p>
+        </div>
+
+        {ours && base && (
+          <dl className="triage-strip" aria-label="Headline comparison vs frontier baseline">
+            <div>
+              <dt>Verified success</dt>
+              <dd>
+                <strong>{pct(ours.verified_success_rate)}</strong>{' '}
+                <span className="muted">vs {pct(base.verified_success_rate)} frontier</span>
+              </dd>
+            </div>
+            <div>
+              <dt>Cost / 1,000 cases</dt>
+              <dd>
+                <strong>{usd(ours.cost_per_1k_usd)}</strong>{' '}
+                <span className="muted">{ratio(base.cost_per_1k_usd, ours.cost_per_1k_usd)} cheaper</span>
+              </dd>
+            </div>
+            <div>
+              <dt>p50 resolution</dt>
+              <dd>
+                <strong>{dur(ours.latency_p50_ms)}</strong>{' '}
+                <span className="muted">{ratio(base.latency_p50_ms, ours.latency_p50_ms)} faster</span>
+              </dd>
+            </div>
+          </dl>
+        )}
+      </header>
 
       {DATA.sample && (
         <div className="banners">
@@ -296,47 +341,15 @@ export function Benchmark() {
         </div>
       )}
 
-      {ours && base && (
-        <div className="ev-kpis">
-          <Kpi
-            label="Verified success"
-            tone="brand"
-            value={pct(ours.verified_success_rate)}
-            sub={
-              <>
-                95% CI {pct(ours.success_ci_95[0])} to {pct(ours.success_ci_95[1])}. Frontier {pct(base.verified_success_rate)} ({pct(base.success_ci_95[0])} to{' '}
-                {pct(base.success_ci_95[1])})
-              </>
-            }
-          />
-          <Kpi
-            label="Cost per 1,000 incidents"
-            tone="brand"
-            value={usd(ours.cost_per_1k_usd)}
-            sub={
-              <>
-                Frontier {usd(base.cost_per_1k_usd)}, {ratio(base.cost_per_1k_usd, ours.cost_per_1k_usd)} more
-              </>
-            }
-          />
-          <Kpi
-            label="p50 time to resolution"
-            tone="brand"
-            value={dur(ours.latency_p50_ms)}
-            sub={
-              <>
-                Frontier {dur(base.latency_p50_ms)}, {ratio(base.latency_p50_ms, ours.latency_p50_ms)} slower
-              </>
-            }
-          />
-        </div>
-      )}
-      <div className="ev-kpi-prov">
-        <Provenance kind={DATA.sample ? 'sample' : 'measured'} />
-        <span className="muted">Gary on Fireworks vs the frontier model in Claude Code, same {n} cases, same scoring.</span>
-      </div>
+      <Card title="Head-to-head system comparison" aside={<span>Same {n} held-out cases · identical container state &amp; scoring</span>}>
+        <SystemsTable systems={systems} />
+      </Card>
 
-      <div className="ev-charts">
+      <Card title="Case inspector: audit individual runs" aside={<span>Click any case to inspect per-system turns, latency, and cost</span>} className="ev-block">
+        <CaseInspector cases={DATA.cases} measured={measured} />
+      </Card>
+
+      <div className="ev-charts ev-block">
         <Card title="Verified success rate" aside={<span>with 95% confidence interval</span>}>
           <SuccessChart systems={systems} />
           <ul className="ev-legend">
@@ -352,14 +365,6 @@ export function Benchmark() {
           <CostLatencyChart systems={systems} />
         </Card>
       </div>
-
-      <Card title="All systems" className="ev-block">
-        <SystemsTable systems={systems} />
-      </Card>
-
-      <Card title="Case inspector" aside={<span>{DATA.cases.length} cases</span>} className="ev-block">
-        <CaseInspector cases={DATA.cases} measured={measured} />
-      </Card>
     </div>
   );
 }

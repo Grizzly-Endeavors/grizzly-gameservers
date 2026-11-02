@@ -57,6 +57,12 @@ interface Store {
   /** The incident the Incidents screen should open with, set by "Open" elsewhere. */
   incident: string | null;
   openIncident: (id: string | null) => void;
+  /** Scenario ID selected in the Model Arena, settable from cross-screen links. */
+  arenaScenario: string;
+  openArena: (scenarioId: string) => void;
+  /** Escalation incident IDs resolved by staff during the session. */
+  resolvedIds: string[];
+  resolveIncident: (id: string, actionLabel: string) => void;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -165,6 +171,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [incident, setIncident] = useState<string | null>(null);
+  const [arenaScenario, setArenaScenario] = useState<string>(SCENARIOS[0].id);
+  const [resolvedIds, setResolvedIds] = useState<string[]>([]);
   const toastTimer = useRef<number>();
   const busy = turns.some((t) => t.status === 'running');
 
@@ -347,6 +355,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (id) setScreen('incidents');
   }, []);
 
+  const openArena = useCallback((scenarioId: string) => {
+    setArenaScenario(scenarioId);
+    setPersonaState('host');
+    setScreen('arena');
+    const u = new URL(location.href);
+    u.searchParams.set('as', 'host');
+    history.replaceState(null, '', u);
+  }, []);
+
+  const resolveIncident = useCallback(
+    (id: string, actionLabel: string) => {
+      setResolvedIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      showToast(`${actionLabel}. Handed back to Gary for verification.`);
+    },
+    [showToast],
+  );
+
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
   return (
@@ -374,6 +399,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         showToast,
         incident,
         openIncident,
+        arenaScenario,
+        openArena,
+        resolvedIds,
+        resolveIncident,
       }}
     >
       {children}
