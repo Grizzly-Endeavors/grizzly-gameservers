@@ -47,10 +47,10 @@ Via `just` (convenience, not required):
 
 ## Git Hooks
 
-Pre-commit and commit-msg hooks live under `.githooks/`. Install with:
+Install once per clone with `just hooks` (or `./.githooks/install.sh`). Every push to `main` deploys, so the hooks are the check before code goes live:
 
-```bash
-./.githooks/install.sh
-```
+- **pre-commit** (a few seconds): `cargo fmt --check`, clippy, and no `dbg!` or `#[allow]` in staged Rust.
+- **pre-push**: the tests of the crates the pushed commits touch (`.githooks/lib/select-checks.sh` maps paths to crates), plus offline `cargo deny` when dependencies change. Docs-only pushes run nothing.
+- **commit-msg**: conventional commit format.
 
-They enforce formatting, clippy, tests, and conventional commit message format. Bypass is not supported.
+Bypass is not supported.
