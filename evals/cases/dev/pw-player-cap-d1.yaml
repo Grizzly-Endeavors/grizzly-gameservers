@@ -1,0 +1,32 @@
+id: pw-player-cap-d1
+scenario: pw-player-cap
+split: dev
+game: palworld
+kind: config
+task_area: config
+prompt: let 20 people on the server at the same time please
+setup:
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_open.sh
+    dst: /tmp/wait_rcon_open.sh
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_closed.sh
+    dst: /tmp/wait_rcon_closed.sh
+- tool: stop_server
+  args: {}
+- pod_put:
+    src: evals/fixtures/palworld/pw-player-cap-d1.ini
+    dst: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+- tool: start_server
+  args: {}
+- pod_exec: bash /tmp/wait_rcon_open.sh
+- pod_exec: grep -q -E 'ServerPlayerMaxNum=8' /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_rcon_open.sh
+  expect_exit: 0
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\(.*[(,]ServerPlayerMaxNum=20[,)]
+  present: true

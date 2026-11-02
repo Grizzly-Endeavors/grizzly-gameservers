@@ -1,0 +1,28 @@
+id: en-game-settings-d1
+scenario: en-game-settings
+split: dev
+game: enshrouded
+kind: config
+task_area: config
+prompt: enemies hit way too hard for us, can you make them hit less hard
+setup:
+- pod_put:
+    src: evals/fixtures/enshrouded/wait_server_up.sh
+    dst: /tmp/wait_server_up.sh
+- pod_put:
+    src: evals/fixtures/enshrouded/en-game-settings-d1.json
+    dst: /home/steam/enshrouded/enshrouded_server.json
+- pod_exec: jq -e '.gameSettingsPreset=="Default" and .gameSettings.enemyDamageFactor' /home/steam/enshrouded/enshrouded_server.json
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_server_up.sh
+  expect_exit: 0
+- type: any_of
+  checks:
+  - type: pod_exec
+    cmd: jq -e '.gameSettingsPreset=="Custom" and .gameSettings.enemyDamageFactor<1 and .gameSettings.enemyDamageFactor>0' /home/steam/enshrouded/enshrouded_server.json
+    expect_exit: 0
+  - type: pod_exec
+    cmd: jq -e '.gameSettingsPreset=="Relaxed"' /home/steam/enshrouded/enshrouded_server.json
+    expect_exit: 0

@@ -1,0 +1,23 @@
+id: en-slots-s2
+scenario: en-slots
+split: scored
+game: enshrouded
+kind: config
+task_area: config
+prompt: bump the player limit up to the max please, we have a big group tonight
+setup:
+- pod_put:
+    src: evals/fixtures/enshrouded/wait_server_up.sh
+    dst: /tmp/wait_server_up.sh
+- pod_put:
+    src: evals/fixtures/enshrouded/en-slots-s2.json
+    dst: /home/steam/enshrouded/enshrouded_server.json
+- pod_exec: jq -e --argjson b 5 '.slotCount==$b' /home/steam/enshrouded/enshrouded_server.json
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_server_up.sh
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --argjson n 16 '.slotCount==$n' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0

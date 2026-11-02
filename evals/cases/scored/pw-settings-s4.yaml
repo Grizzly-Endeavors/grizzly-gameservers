@@ -1,0 +1,32 @@
+id: pw-settings-s4
+scenario: pw-settings
+split: scored
+game: palworld
+kind: config
+task_area: config
+prompt: days go by way too fast, could you make daytime last twice as long
+setup:
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_open.sh
+    dst: /tmp/wait_rcon_open.sh
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_closed.sh
+    dst: /tmp/wait_rcon_closed.sh
+- tool: stop_server
+  args: {}
+- pod_put:
+    src: evals/fixtures/palworld/pw-settings-s4.ini
+    dst: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+- tool: start_server
+  args: {}
+- pod_exec: bash /tmp/wait_rcon_open.sh
+- pod_exec: grep -q -E 'DayTimeSpeedRate=1.000000' /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_rcon_open.sh
+  expect_exit: 0
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\(.*[(,]DayTimeSpeedRate=0\.5(0*)?[,)]
+  present: true

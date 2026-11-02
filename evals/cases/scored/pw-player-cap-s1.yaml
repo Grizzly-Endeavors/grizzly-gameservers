@@ -1,0 +1,32 @@
+id: pw-player-cap-s1
+scenario: pw-player-cap
+split: scored
+game: palworld
+kind: config
+task_area: config
+prompt: our friend group got bigger, can the server hold 28 players now
+setup:
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_open.sh
+    dst: /tmp/wait_rcon_open.sh
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_closed.sh
+    dst: /tmp/wait_rcon_closed.sh
+- tool: stop_server
+  args: {}
+- pod_put:
+    src: evals/fixtures/palworld/pw-player-cap-s1.ini
+    dst: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+- tool: start_server
+  args: {}
+- pod_exec: bash /tmp/wait_rcon_open.sh
+- pod_exec: grep -q -E 'ServerPlayerMaxNum=16' /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_rcon_open.sh
+  expect_exit: 0
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\(.*[(,]ServerPlayerMaxNum=28[,)]
+  present: true

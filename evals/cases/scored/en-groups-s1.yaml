@@ -1,0 +1,29 @@
+id: en-groups-s1
+scenario: en-groups
+split: scored
+game: enshrouded
+kind: access
+task_area: config
+prompt: 'need two passwords on our enshrouded server: cobblestone for my buddies, and overlord9 only for me since I run it'
+setup:
+- pod_put:
+    src: evals/fixtures/enshrouded/wait_server_up.sh
+    dst: /tmp/wait_server_up.sh
+- pod_put:
+    src: evals/fixtures/enshrouded/en-groups-s1.json
+    dst: /home/steam/enshrouded/enshrouded_server.json
+- pod_exec: jq -e --arg n Admin --arg p x7Qm2LpA '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_server_up.sh
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg n Admin --arg p overlord9 '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg n Friend --arg p cobblestone '.userGroups | any(.name==$n and .password==$p)' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0
+- type: pod_exec
+  cmd: jq -e --arg p overlord9 '.userGroups | map(select(.password==$p)) | length == 1' /home/steam/enshrouded/enshrouded_server.json
+  expect_exit: 0

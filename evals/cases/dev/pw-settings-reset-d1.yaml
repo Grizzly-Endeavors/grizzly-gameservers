@@ -1,0 +1,40 @@
+id: pw-settings-reset-d1
+scenario: pw-settings-reset
+split: dev
+game: palworld
+kind: fix
+task_area: troubleshooting
+prompt: all our palworld settings went back to default!! the xp rate and everything. I only changed a couple of things in the file
+setup:
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_open.sh
+    dst: /tmp/wait_rcon_open.sh
+- pod_put:
+    src: evals/fixtures/palworld/wait_rcon_closed.sh
+    dst: /tmp/wait_rcon_closed.sh
+- tool: stop_server
+  args: {}
+- pod_put:
+    src: evals/fixtures/palworld/pw-settings-reset-d1.ini
+    dst: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+- tool: start_server
+  args: {}
+- pod_exec: bash /tmp/wait_rcon_closed.sh
+- pod_exec: grep -q -E 'ExpRate=3.000000' /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+checks:
+- type: ready
+- type: pod_exec
+  cmd: bash /tmp/wait_rcon_open.sh
+  expect_exit: 0
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\([A-Za-z]
+  present: true
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\(.*[(,]ExpRate=3(\.0*)?[,)]
+  present: true
+- type: file_regex
+  path: /palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+  pattern: (?m)^OptionSettings=\(.*[(,]DeathPenalty=None[,)]
+  present: true
