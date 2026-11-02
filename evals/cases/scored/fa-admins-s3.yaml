@@ -19,5 +19,5 @@ checks:
 - type: ready
 - type: file_regex
   path: /factorio/config/server-adminlist.json
-  pattern: '"RailBaron_99"'
+  pattern: '"(?i:RailBaron_99)"'
   present: true

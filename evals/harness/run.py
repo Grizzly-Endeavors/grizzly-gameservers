@@ -875,12 +875,21 @@ def run_all(
             print(f"{stem}: {record['outcome']} {scrub_text(record['detail'][:120], known)}", flush=True)
         return record
 
-    jobs = [(s, c, r) for s in systems for c in cases for r in range(1, repeats + 1)]
+    # Case-major, first variant of every scenario first: a run cut short at a deadline still holds
+    # paired results across every system and an even spread over scenarios.
+    ordered = sorted(cases, key=_variant_order)
+    jobs = [(s, c, r) for r in range(1, repeats + 1) for c in ordered for s in systems]
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         records = [record for record in pool.map(one, jobs) if record is not None]
     if aborted.is_set():
         _sweep_undestroyed(cluster, records)
     return records
+
+
+def _variant_order(case: dict[str, Any]) -> tuple[int, str]:
+    """Sort key: variant number (the `-sN`/`-dN` suffix), then id."""
+    match = re.search(r"-[sd](\d+)$", case["id"])
+    return (int(match.group(1)) if match else 0, case["id"])
 
 
 def _sweep_undestroyed(cluster: Any, records: list[dict[str, Any]]) -> None:

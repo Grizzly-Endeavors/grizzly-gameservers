@@ -18,5 +18,8 @@ checks:
   expect_exit: 0
 - type: file_regex
   path: /factorio/mods/mod-list.json
-  pattern: (?s)"name":\s*"lamp-dimmer",\s*"enabled":\s*true
-  present: true
+  pattern: (?s)"name":\s*"lamp-dimmer",\s*"enabled":\s*false
+  present: false
+- type: pod_exec
+  cmd: sh -c 'ls -d /factorio/mods/lamp-dimmer_* >/dev/null'
+  expect_exit: 0
