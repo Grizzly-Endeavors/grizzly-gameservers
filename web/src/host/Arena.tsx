@@ -78,7 +78,7 @@ function Column({ run }: { run: ArenaRun }) {
 export function Arena() {
   const { arenaScenario } = useStore();
   const [id, setId] = useState(arenaScenario || SCENARIOS[0].id);
-  const [ablation, setAblation] = useState(true);
+  const [ablation] = useState(false);
 
   useEffect(() => {
     if (arenaScenario) setId(arenaScenario);
@@ -109,10 +109,6 @@ export function Arena() {
             </button>
           ))}
         </div>
-        <label className="ev-toggle">
-          <input type="checkbox" checked={ablation} onChange={(e) => setAblation(e.target.checked)} />
-          Show ablation
-        </label>
       </div>
 
       <p className="ev-prompt">

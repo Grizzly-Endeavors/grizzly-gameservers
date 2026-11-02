@@ -331,10 +331,10 @@ export function Benchmark() {
               </dd>
             </div>
             <div>
-              <dt>Open-model in CC</dt>
+              <dt>Mean turns</dt>
               <dd>
-                <strong>$5.36 / 1k</strong>{' '}
-                <span className="muted">78.6% (18.1x cheaper)</span>
+                <strong>{ours.mean_turns?.toFixed(1)} turns</strong>{' '}
+                <span className="muted">vs {base.mean_turns?.toFixed(1)} in Claude Code</span>
               </dd>
             </div>
           </dl>

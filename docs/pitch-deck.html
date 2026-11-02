@@ -569,7 +569,7 @@
       <button class="slide-tab active" onclick="goToSlide(0)">1. Unit Economics</button>
       <button class="slide-tab" onclick="goToSlide(1)">2. Why Frontier Fails</button>
       <button class="slide-tab" onclick="goToSlide(2)">3. Gary Architecture</button>
-      <button class="slide-tab" onclick="goToSlide(3)">4. 4-Way Proof</button>
+      <button class="slide-tab" onclick="goToSlide(3)">4. Benchmark Proof</button>
       <button class="slide-tab" onclick="goToSlide(4)">5. TAM &amp; SaaS Horizon</button>
     </nav>
 
@@ -820,38 +820,38 @@
       </div>
     </section>
 
-    <!-- SLIDE 4: THE PROOF (DEMO + 4-WAY BENCHMARK) -->
+    <!-- SLIDE 4: THE PROOF (DEMO + 3-WAY BENCHMARK) -->
     <section class="slide" data-index="3">
       <div class="slide-header">
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
-          <span class="kicker">04 / The Proof: Held-Out Benchmark (89 Committed Records · 14 Matched 3-Way · 17 Pairwise)</span>
+          <span class="kicker">04 / The Proof: Held-Out Benchmark (N = 17 Paired Graded Cases · 89 Total Records)</span>
           <span id="dataStatusBadge" class="badge measured">Locked Scored Eval Data Loaded (evals/results/scored-3)</span>
         </div>
-        <h1>Same Domain MCP Tools. Statistical Parity. 13.5x to 18.1x Lower COGS.</h1>
+        <h1>Same Domain MCP Tools. Statistical Parity. 14.6x Lower COGS.</h1>
       </div>
 
       <!-- 3 Headline Multipliers (Auto-computed from table) -->
       <div class="grid-3">
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num accent" id="kpiCostMultiplier">13.5x – 18.1x Cheaper</div>
+          <div class="stat-num accent" id="kpiCostMultiplier">14.6x Cheaper</div>
           <div class="stat-label">vs. Claude Opus 5.5 Baseline</div>
-          <p class="stat-meta" id="kpiCostSub">$7.19 (Gary) &amp; $5.36 (CC) vs. $97.04 per 1,000 tickets (6,700x cheaper than human)</p>
+          <p class="stat-meta" id="kpiCostSub">$6.81 (Gary on Fireworks) vs. $99.24 per 1,000 tickets (7,090x cheaper than human)</p>
         </div>
 
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num ok" id="kpiSpeedMultiplier">p = 1.00 (Tied)</div>
-          <div class="stat-label">Verified Resolution Parity</div>
-          <p class="stat-meta" id="kpiSpeedSub">GLM-5.3-Flash ties Opus 5.5 at 78.6% in CC (11/14) &amp; 71.4% in Gary (10/14; 12/17 pairwise)</p>
+          <div class="stat-num ok" id="kpiSpeedMultiplier">p = 1.00 (Parity)</div>
+          <div class="stat-label">Verified Resolution Rate</div>
+          <p class="stat-meta" id="kpiSpeedSub">12/17 (70.6%) on Fireworks GLM-5.3-Flash vs. 13/17 (76.5%) on Opus 5.5 (1-case diff)</p>
         </div>
 
         <div class="card highlight" style="padding:18px 22px;">
-          <div class="stat-num" id="kpiHarnessLift">$0.0072 / ticket</div>
+          <div class="stat-num" id="kpiHarnessLift">$0.0068 / ticket</div>
           <div class="stat-label">Enables B2B2C Bundling</div>
-          <p class="stat-meta" id="kpiHarnessSub">~9.4 turns vs. 10.4–11.6 turns &middot; Waits for post-restart readiness probe before completing</p>
+          <p class="stat-meta" id="kpiHarnessSub">9.0 mean turns vs. 10.8 in Claude Code &middot; Waits for post-restart readiness probe</p>
         </div>
       </div>
 
-      <!-- 4-Way Comparison Table -->
+      <!-- 3-Way Comparison Table -->
       <div class="table-wrap">
         <table>
           <thead>
@@ -859,7 +859,7 @@
               <th>System Compared (Same Held-Out Cases &amp; Gary MCP Tools)</th>
               <th>Type</th>
               <th>Verified Success (95% CI)</th>
-              <th>Pairwise vs. Opus</th>
+              <th>Paired Passes (N=17)</th>
               <th>Mean Turns</th>
               <th>p50 / p95 Time</th>
               <th>Cost / 1,000 Tickets</th>
@@ -869,32 +869,23 @@
             <tr id="row-frontier_cc">
               <td><strong>1. Claude Opus 5.5 in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(cc-opus baseline)</span></td>
               <td><span class="badge measured">Measured Baseline</span></td>
-              <td contenteditable="true">78.6% <span style="color:var(--muted);font-size:12px;">(52.4–92.4%)</span></td>
-              <td contenteditable="true">Baseline (20/28 total)</td>
-              <td contenteditable="true">10.4</td>
-              <td contenteditable="true">65.9s / 119.6s</td>
-              <td contenteditable="true">$97.04</td>
-            </tr>
-            <tr id="row-ablation_cc">
-              <td><strong>2. GLM-5.3-Flash on Fireworks in Claude Code</strong> <span style="color:var(--muted);font-size:12px;">(cc-fw + Gary MCP)</span></td>
-              <td><span class="badge measured">Measured Open + MCP</span></td>
-              <td contenteditable="true">78.6% <span style="color:var(--muted);font-size:12px;">(52.4–92.4%)</span></td>
-              <td contenteditable="true">12/15 vs. 12/15 (p=1.0)</td>
-              <td contenteditable="true">11.6</td>
-              <td contenteditable="true">34.4s / 115.9s</td>
-              <td contenteditable="true">$5.36 <span style="color:var(--ok);font-size:11.5px;">(18.1x cheaper)</span></td>
+              <td contenteditable="true">76.5% <span style="color:var(--muted);font-size:12px;">(52.7–90.4%)</span></td>
+              <td contenteditable="true">13 / 17</td>
+              <td contenteditable="true">10.8</td>
+              <td contenteditable="true">72.9s / 135.3s</td>
+              <td contenteditable="true">$99.24</td>
             </tr>
             <tr class="ours-row" id="row-gary_fireworks">
-              <td><strong>3. GLM-5.3-Flash on Fireworks in Gary</strong> <span style="color:var(--brand-500);font-size:12px;">(gary-fw native loop)</span></td>
+              <td><strong>2. GLM-5.3-Flash on Fireworks in Gary</strong> <span style="color:var(--brand-500);font-size:12px;">(gary-fw native loop)</span></td>
               <td><span class="badge ours">Measured Ours</span></td>
-              <td contenteditable="true">71.4% <span style="font-weight:500;font-size:12px;">(45.4–88.3%)</span></td>
-              <td contenteditable="true">12/17 vs. 13/17 (p=1.0)</td>
-              <td contenteditable="true">9.4</td>
-              <td contenteditable="true">86.7s / 611.9s*</td>
-              <td contenteditable="true">$7.19 <span style="font-weight:600;font-size:11.5px;">(13.5x cheaper)</span></td>
+              <td contenteditable="true">70.6% <span style="font-weight:500;font-size:12px;">(46.9–86.7%)</span></td>
+              <td contenteditable="true">12 / 17 (McNemar p=1.0)</td>
+              <td contenteditable="true">9.0</td>
+              <td contenteditable="true">80.5s / 611.9s*</td>
+              <td contenteditable="true">$6.81 <span style="font-weight:600;font-size:11.5px;">(14.6x cheaper)</span></td>
             </tr>
             <tr id="row-human_t1t2">
-              <td><strong>4. Human T1/T2 Support</strong> <span style="color:var(--muted);font-size:12px;">(MetricNet / HDI 70/30 T1/T2 blend)</span></td>
+              <td><strong>3. Human T1/T2 Support</strong> <span style="color:var(--muted);font-size:12px;">(MetricNet / HDI 70/30 T1/T2 blend)</span></td>
               <td><span class="badge estimated">Industry Estimate</span></td>
               <td contenteditable="true">~85–90%</td>
               <td contenteditable="true">n/a (Estimated)</td>
@@ -911,9 +902,9 @@
         <div>
           <strong>Methodology, Latency Note &amp; Limitations Disclosure (<code>evals/results/scored-3</code>):</strong>
           <span style="color:var(--ink);">
-            <strong>1. Controlled Tool Surface:</strong> All 3 measured systems received Gary's exact domain MCP tools (<code>game_guide</code>, snapshot-first file edits, restart with verify/auto-rollback). Held equal, <code>GLM-5.3-Flash</code> on Fireworks matches <code>Claude Opus 5.5</code> (McNemar <code>p = 1.0</code>) at <strong>13.5x to 18.1x lower COGS</strong> (and <strong>6,700x cheaper</strong> than the $48.31 blended T1/T2 human estimate).
-            <strong>2. *Why Gary's Wall Time Is Longer (87s vs 66s):</strong> Gary's <code>restart_server</code> tool blocks until the game container boots Ready and confirms the change held before ending the turn; Claude Code returns immediately without waiting for boot.
-            <strong>3. Sample Size Limitation:</strong> 89 run records committed before the 3:40 PM cutoff (14 matched 3-way, 17 pairwise) due to homelab ZFS storage saturation on parallel game boots.
+            <strong>1. Controlled Tool Surface:</strong> Both measured systems received Gary's exact domain MCP tools (<code>game_guide</code>, snapshot-first file edits, restart with verify/auto-rollback). Held equal, <code>GLM-5.3-Flash</code> on Fireworks matches <code>Claude Opus 5.5</code> (12/17 vs 13/17, McNemar <code>p = 1.0</code>) in fewer turns (9.0 vs 10.8) at <strong>14.6x lower COGS</strong> (and <strong>7,090x cheaper</strong> than the $48.31 blended T1/T2 human estimate).
+            <strong>2. *Why Gary's Wall Time Is 80.5s vs 72.9s:</strong> Gary's <code>restart_server</code> tool blocks until the game container boots Ready and confirms the change held before ending the turn; Claude Code returns immediately without waiting for boot.
+            <strong>3. Sample Size Limitation:</strong> 17 paired graded cases across 5 games (from 89 total committed records before the 3:40 PM cutoff) due to homelab ZFS storage saturation on parallel game boots.
           </span>
         </div>
       </div>
