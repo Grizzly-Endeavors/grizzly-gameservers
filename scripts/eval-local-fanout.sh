@@ -218,6 +218,8 @@ python3 -c "import yaml" || { echo "python3 cannot import yaml (PyYAML is missin
     local run_script
     run_script="$(printf '%s\n' \
         "cd \"\$HOME/grizzly-eval\" || exit 1" \
+        "export PATH=\"\$HOME/.local/bin:\$PATH\"" \
+        "export GAMESERVERS_CATALOG_DIR=\"\$HOME/grizzly-eval/games\"" \
         "export GARY_LOCAL_BIN=\"\$HOME/grizzly-eval/bin/grizzly-gameservers\"" \
         "exec python3 evals/harness/run.py --local --cases $(printf '%q' "$cases_rel") --systems $(printf '%q' "$systems") --concurrency $workers --case-file \"\$HOME/grizzly-eval/shards/$run_id.shard\" --out \"\$HOME/grizzly-eval/runs/$run_id\"")"
     note "$host: running $(case_count "$host") case(s) at concurrency $workers"
@@ -350,7 +352,7 @@ if ((dry_run)); then
 fi
 
 note "building the release binary"
-(cd "$repo_root" && cargo build --release --quiet --bin grizzly-gameservers)
+[[ -n "${SKIP_BUILD:-}" ]] || (cd "$repo_root" && cargo build --release --quiet --bin grizzly-gameservers)
 [[ -x "$bin" ]] || die "no binary at $bin after the build"
 
 mkdir -p "$stage"

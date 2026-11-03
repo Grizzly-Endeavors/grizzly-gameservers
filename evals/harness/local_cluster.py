@@ -307,6 +307,12 @@ class DockerCluster:
             server = self._servers.get(name)
         if server is None:
             raise ClusterError(f"no local server named {name}")
+        # `docker restart` republishes the control port on a new host port, so the URL
+        # recorded at create time goes stale; resolve it again on every lookup.
+        try:
+            server.control_url = self._control_url(name)
+        except ClusterError:
+            pass
         return server
 
     # ---- lifecycle the harness owns
@@ -438,9 +444,9 @@ class DockerCluster:
             return "Scheduled"
         if container_state != "running":
             return "Unhealthy"
-        with self._lock:
-            server = self._servers.get(name)
-        if server is None:
+        try:
+            server = self._server(name)
+        except ClusterError:
             return "unknown"
         status = self.status(f"{server.control_url}/status")
         if status is None:
