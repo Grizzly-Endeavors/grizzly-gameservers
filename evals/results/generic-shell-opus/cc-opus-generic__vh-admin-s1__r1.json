@@ -1,0 +1,63 @@
+{
+  "system_id": "cc-opus-generic",
+  "label": "Claude Opus 5.5 in Claude Code, generic shell access",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "vh-admin-s1",
+  "game": "valheim",
+  "task_area": "config",
+  "category": "access",
+  "prompt": "can you give my wife admin rights on the server? her steam id is 76561198087654321",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 7,
+  "tool_calls": [
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash"
+  ],
+  "usage": {
+    "prompt_tokens": 23376,
+    "cached_tokens": 17249,
+    "completion_tokens": 1692
+  },
+  "latency_ms": 54659,
+  "model_ms": 22816,
+  "tool_ms": 31843,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: file_regex /config/adminlist.txt",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: file_regex /config/adminlist.txt",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "server": "ev-vh-admin-s1-cc-opus-generic-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-03T00:06:33+00:00",
+  "notes": {
+    "subtype": "success",
+    "access": "generic-shell"
+  },
+  "finished_at": "2026-11-03T00:10:24+00:00"
+}
