@@ -1,0 +1,83 @@
+{
+  "system_id": "cc-opus-generic",
+  "label": "Claude Opus 5.5 in Claude Code, generic shell access",
+  "model": "claude-opus-5-5",
+  "harness": "claude_code",
+  "case_id": "mc-heap-s1",
+  "game": "minecraft",
+  "task_area": "troubleshooting",
+  "category": "fix",
+  "prompt": "server crashes every time it boots, the log mentions java running out of something. been like this since I tweaked the memory thing",
+  "split": "scored",
+  "repeat": 1,
+  "outcome": "pass",
+  "claimed_done": true,
+  "turns": 7,
+  "tool_calls": [
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash",
+    "Bash"
+  ],
+  "usage": {
+    "prompt_tokens": 38564,
+    "cached_tokens": 32012,
+    "completion_tokens": 1660
+  },
+  "latency_ms": 111797,
+  "model_ms": 18776,
+  "tool_ms": 93021,
+  "checks": [
+    {
+      "name": "after stop: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after stop: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: ready",
+      "ok": true,
+      "detail": "state Ready"
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    },
+    {
+      "name": "after restart: pod_exec",
+      "ok": true,
+      "detail": "exit 0, wanted 0: "
+    }
+  ],
+  "server": "ev-mc-heap-s1-cc-opus-generic-1",
+  "destroyed": true,
+  "detail": "",
+  "started_at": "2026-11-03T00:20:25+00:00",
+  "notes": {
+    "subtype": "success",
+    "access": "generic-shell"
+  },
+  "finished_at": "2026-11-03T00:24:09+00:00"
+}

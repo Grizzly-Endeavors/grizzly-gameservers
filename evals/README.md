@@ -199,6 +199,19 @@ Graded-only rates over everything each system finished: Opus 20/28, Gary 12/17, 
 
 Both Claude Code rows used Gary's tool surface through MCP: `game_guide`, file edits that snapshot first, restart with verify and auto-rollback, the mod-list tools. That is the strongest baseline we could give Claude Code, not a weakened one. With the tools held equal, GLM in Claude Code matches Opus, so most of what lets a cheap open model do this work is Gary's tool surface rather than his agent loop. A baseline with generic shell access only (no Gary tools) is built on the local Docker backend (`cc-opus-generic`) but was not run on the scored set before the deadline.
 
+### Generic-shell baseline (13 of the 14 matched cases)
+
+`evals/results/generic-shell-opus/` holds `cc-opus-generic`: Opus 5.5 in Claude Code with no Gary tools, only `docker exec`, `docker logs` and `docker restart` on the server's container, run on the local Docker backend against the same matched cases. `vh-import-modpack-s1` did not finish before the deadline and is left out of every row below.
+
+| System (same 13 cases) | Passed | Cost per 1,000 tickets | p50 time | Mean turns |
+|---|---|---|---|---|
+| Opus 5.5, generic shell only | 13/13 | $94.13 | 82 s | 8.2 |
+| Opus 5.5 + Gary's tools (Claude Code) | 11/13 | $97.98 | 66 s | 10.3 |
+| GLM 5.3 Flash in Gary | 10/13 | $7.54 | 92 s | 9.7 |
+| GLM 5.3 Flash + Gary's tools (Claude Code) | 11/13 | $5.56 | 34 s | 11.9 |
+
+A frontier model with a raw shell solves these tickets without Gary's tools. Gary's result is economic: GLM 5.3 Flash in Gary resolves 10 of the 13 at about 1/12th the cost of generic Opus. The generic run is on Docker rather than the cluster, so it is not a strict pair with the other rows. The run surfaced a harness bug (a `docker restart` republishes the control port, so the runner polled a stale address); the fix is on `feat/cc-generic`, and every case it affected was rerun.
+
 ### Limitations of this run
 
 - **Small N.** 14 three-way cases and 15–17 pairwise, against a target of 100+. The cluster's storage (a ZFS pool on the R730xd, provisioned over SSH by democratic-csi) saturated on game-server boots and capped how many servers could start; 27 cases timed out booting (staging errors, excluded from their system's denominator and from the matched set).
