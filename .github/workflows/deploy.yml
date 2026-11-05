@@ -1,36 +1,25 @@
-# Build → deploy. On push to main: build the bot/ops-agent image, then pin its
-# digest into deploy/values.yaml and commit so Flux reconciles it. No checks run
-# here: the git hooks (.githooks/) are the check before code reaches main.
+# Build → GATE → deploy. On push to main: build the bot/ops-agent image, hand it
+# to the centrally-owned gate (which cosign-signs the digest ONLY on a clean
+# pass), then pin that signed digest into deploy/values.yaml and commit so Flux
+# reconciles it. The deploy job runs only if the gate passed, so an unsigned
+# image never reaches the cluster — and the bot-scoped Kyverno policy in
+# grizzly-platform (enforce-gameservers-bot-signature) refuses it at admission
+# anyway. See grizzly-platform .github/workflows/gate.yaml and the root
+# gate-config.json honest map.
 name: Build and Deploy
 on:
   push:
     branches: [main]
-    # Exactly the inputs of the bot image (Dockerfile COPY . . after .dockerignore):
-    # the workspace, its lockfile and toolchain, the baked game catalog, and the
-    # build definition. Anything else (docs, evals, web, cluster, scripts, deploy
-    # chart, agent config, tests) cannot change the image and must not restart
-    # the live bot. A new input to the image must be added here.
-    paths:
-      - "crates/**"
-      - "!crates/**/tests/**"
-      - "games/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "Dockerfile"
-      - ".dockerignore"
-      - ".github/workflows/deploy.yml"
-  workflow_dispatch:
 
-# One deploy at a time, in push order. Runs are serialized rather than
-# cancelled: with several people pushing, cancel-in-progress restarts the build
-# on every push and nothing deploys until pushes stop. GitHub keeps at most one
-# run pending per group and a newer push replaces it, so a burst of pushes
-# builds the run in flight plus the newest. Serializing also keeps an older
-# run's pin commit from landing after a newer one's.
+# One deploy at a time, newest wins. Without this, two pushes close together
+# race: each run pins the digest *it* built, and whichever finishes last commits
+# last — so a run started from an older commit can overwrite a newer pin and
+# hand Flux an image missing the change that was merged after it. Cancelling the
+# older run is safe because the pin commit is its only side effect and it
+# happens at the very end.
 concurrency:
   group: deploy-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   REGISTRY: registry.registry.svc.cluster.local:5000
@@ -71,8 +60,9 @@ jobs:
             --config /tmp/buildkitd.toml
           # oci-mediatypes+image-manifest make zot accept the cache manifest (ADR-057);
           # mode=max caches the intermediate stages too. provenance/sbom are disabled so
-          # the push stays a single image manifest, which is the digest deploy/values.yaml
-          # pins; an attestation index would change what the digest refers to.
+          # the push stays a single image manifest — the gate cosign-signs this exact
+          # digest and Kyverno verifies it at admission; an attestation index would change
+          # what the digest refers to.
           docker buildx build --builder ci -f Dockerfile \
             --cache-from "type=registry,ref=$REGISTRY/$IMAGE_NAME:buildcache" \
             --cache-to "type=registry,ref=$REGISTRY/$IMAGE_NAME:buildcache,mode=max,oci-mediatypes=true,image-manifest=true" \
@@ -82,15 +72,22 @@ jobs:
             .
           digest=$(node -pe "require('/tmp/build-metadata.json')['containerimage.digest']")
           # Fail loud on a missing/garbage digest: an empty digest silently poisons the
-          # deploy job (pins `@`). Guard the whole pipeline at the source.
+          # gate (scans `@`) and deploy (pins `@`). Guard the whole pipeline at the source.
           case "$digest" in
             sha256:*) : ;;
             *) echo "::error::empty/invalid image digest from buildx metadata: '${digest}'"; exit 1 ;;
           esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-  deploy:
+  gate:
     needs: build
+    uses: grizzly-endeavors/grizzly-platform/.github/workflows/gate.yaml@master
+    with:
+      image: registry.registry.svc.cluster.local:5000/grizzly-gameservers@${{ needs.build.outputs.digest }}
+      gate_version: v0.7.7 # pinned for reproducibility; bump deliberately
+
+  deploy:
+    needs: gate # only runs if the gate passed and signed the image
     runs-on: lab-runners
     permissions:
       contents: write
@@ -98,17 +95,19 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: main
-      # Pin deploy/values.yaml to the built digest and
+      # ADR-020 model: pin deploy/values.yaml to the gate-signed digest and
       # commit [skip ci]; Flux reconciles. [skip ci] keeps this commit from
       # re-triggering the workflow.
-      - name: Resolve digest, pin, and commit
+      - name: Resolve signed digest, pin, and commit
         run: |
           set -euo pipefail
           # Resolve the digest from the registry by the immutable per-run tag
           # rather than needs.build.outputs.digest: GitHub Actions drops job
-          # outputs on workflow re-runs, so this job would see '' and pin a
-          # garbage `@`. The ${GITHUB_SHA} tag is exactly what build pushed; a
-          # HEAD on the manifest returns Docker-Content-Digest without pulling any layers, and yields
+          # outputs for this (regular) job on workflow re-runs — the gate job
+          # (a reusable workflow) still receives the value, but this job sees ''
+          # and would pin a garbage `@`. The ${GITHUB_SHA} tag is exactly what
+          # build pushed and what the gate signed; a HEAD on the manifest
+          # returns Docker-Content-Digest without pulling any layers, and yields
           # the identical digest whether this is a first run or a re-run.
           DIGEST=$(curl -fsSI \
             -H "Accept: application/vnd.oci.image.manifest.v1+json" \
@@ -141,6 +140,6 @@ jobs:
             echo "deploy/values.yaml already pins ${DIGEST}; nothing to reconcile"
             exit 0
           fi
-          git commit -m "ci: deploy bot image [skip ci]" \
+          git commit -m "ci: deploy gate-signed bot image [skip ci]" \
             -m "image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
           git push origin HEAD:main

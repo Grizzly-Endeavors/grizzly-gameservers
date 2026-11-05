@@ -42,7 +42,6 @@ fn entry(gameserver: &str, pvc: &str) -> GameCatalogEntry {
         mod_registry: None,
         mods_file: None,
         env_overlay: None,
-        config_rewritten_on_shutdown: None,
     }
 }
 

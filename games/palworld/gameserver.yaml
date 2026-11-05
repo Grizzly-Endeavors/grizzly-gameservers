@@ -15,10 +15,6 @@ kind: GameServer
 metadata:
   name: palworld
   namespace: game-servers
-  annotations:
-    # Palworld writes this file from its in-memory settings on shutdown, so an
-    # edit made while it runs is lost on restart; Gary stops, edits, then starts.
-    grizzly-gameservers.grizzly-endeavors.com/config-rewritten-on-shutdown: "Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 spec:
   container: palworld
   ports:

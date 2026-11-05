@@ -304,7 +304,7 @@ pub(crate) async fn run_session(
                 return Err(err);
             }
         };
-        recorder.record_generation(messages, &tools, &completion);
+        recorder.record_generation(messages, &completion);
         generations.push(Generation::from(&completion));
         let assistant = completion.message;
 

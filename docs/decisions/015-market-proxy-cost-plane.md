@@ -4,7 +4,7 @@
 
 ## Context
 
-The two data planes (ADR-013, ADR-014) capture what friends do and what Gary's turns cost in tokens, but nothing about what a running server costs to operate — and the business question the productization assessment ([`docs/product/productization-assessment.md`](https://github.com/Grizzly-Endeavors/grizzly-gameservers/blob/pre-hackathon/docs/product/productization-assessment.md)) leaves open is exactly that: whether the service can be priced above cost at scale. Its §6 model rests on a rented-dedicated price per GB of RAM and a peak packing ratio it explicitly names as unmeasured. Homelab hardware has no meaningful marginal cost, so "what does this cost me right now" is not the useful number; "what would this workload cost on hardware you can actually rent" is.
+The two data planes (ADR-013, ADR-014) capture what friends do and what Gary's turns cost in tokens, but nothing about what a running server costs to operate — and the business question the productization assessment (`docs/product/productization-assessment.md`) leaves open is exactly that: whether the service can be priced above cost at scale. Its §6 model rests on a rented-dedicated price per GB of RAM and a peak packing ratio it explicitly names as unmeasured. Homelab hardware has no meaningful marginal cost, so "what does this cost me right now" is not the useful number; "what would this workload cost on hardware you can actually rent" is.
 
 Three sub-decisions needed making: what cost model to record against, where the resource quantities come from, and where money enters the system.
 

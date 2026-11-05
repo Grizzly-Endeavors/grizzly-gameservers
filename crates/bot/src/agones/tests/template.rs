@@ -1,29 +1,5 @@
 use super::*;
 
-#[test]
-fn the_shutdown_rewrite_annotation_is_read_off_the_yaml() {
-    let yaml = format!(
-        "kind: GameServer\nmetadata:\n  annotations:\n    {CONFIG_REWRITTEN_ON_SHUTDOWN_ANNOTATION}: Pal/Saved/x.ini\n"
-    );
-    assert_eq!(
-        config_rewritten_on_shutdown_or_warn("palworld", &yaml).as_deref(),
-        Some("Pal/Saved/x.ini")
-    );
-    assert_eq!(
-        config_rewritten_on_shutdown_or_warn("valheim", "kind: GameServer\n"),
-        None
-    );
-}
-
-#[test]
-fn the_palworld_template_declares_its_shutdown_rewritten_ini() {
-    let yaml = include_str!("../../../../../games/palworld/gameserver.yaml");
-    assert_eq!(
-        config_rewritten_on_shutdown_or_warn("palworld", yaml).as_deref(),
-        Some("Pal/Saved/Config/LinuxServer/PalWorldSettings.ini")
-    );
-}
-
 fn template(env: &str) -> String {
     format!(
         "apiVersion: agones.dev/v1

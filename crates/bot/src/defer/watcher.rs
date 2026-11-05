@@ -262,8 +262,6 @@ async fn run_batch(
         access: AccessLevel::Manager,
         scope,
         confirmations: ConfirmMode::Interactive,
-        connection: None,
-        memory_tools: true,
     };
     let outcome = run_gary_turn(&turn, &mut messages).await;
     deliver_extras(ctx, primary_channel, &tasks, &outcome).await;

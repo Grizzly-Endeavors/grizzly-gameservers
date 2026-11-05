@@ -31,13 +31,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json -p grizzly-gameservers
 COPY . .
-# Move the binary out and drop target/ in the same layer. The registry cache
-# (mode=max) exports every layer, and a layer holding the post-build target/
-# runs to gigabytes and took ~9 minutes to upload per deploy. The cooked deps
-# above are unchanged by a source edit, so their layer is already cached.
-RUN cargo build --release --locked -p grizzly-gameservers \
-    && mv target/release/grizzly-gameservers /usr/local/bin/grizzly-gameservers \
-    && rm -rf target
+RUN cargo build --release --locked -p grizzly-gameservers
 
 FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 # `upgrade` as well as `install`, and it is load-bearing rather than tidiness.
@@ -66,7 +60,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home --shell /usr/sbin/nologin appuser
-COPY --from=builder /usr/local/bin/grizzly-gameservers /usr/local/bin/grizzly-gameservers
+COPY --from=builder /app/target/release/grizzly-gameservers /usr/local/bin/grizzly-gameservers
 # The per-game catalog the shim renders per instance. Read-only at runtime;
 # GAMESERVERS_CATALOG_DIR defaults to this path.
 COPY --from=builder /app/games /usr/local/share/grizzly-gameservers/games

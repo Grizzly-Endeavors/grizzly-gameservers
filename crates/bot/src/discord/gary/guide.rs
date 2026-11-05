@@ -50,7 +50,6 @@ pub(crate) fn render_guide(
     game: &str,
     subject: &GuideSubject<'_>,
     overlay: Option<&EnvOverlay>,
-    rewritten_on_shutdown: Option<&str>,
     games: &str,
 ) -> String {
     // An id that isn't in the catalog has no settings and no mods to describe —
@@ -72,10 +71,6 @@ pub(crate) fn render_guide(
         .render(),
         None => prompts::GameGuideSettingsInFiles { game }.render(),
     }];
-
-    if let Some(file) = rewritten_on_shutdown {
-        sections.push(prompts::GameGuideConfigRewrittenOnShutdown { file }.render());
-    }
 
     let registry = match subject {
         // Returned above; repeated here because the match must be exhaustive and

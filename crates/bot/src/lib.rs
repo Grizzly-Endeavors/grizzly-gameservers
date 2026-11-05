@@ -153,7 +153,6 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
     .await;
 
     let ollama = build_ollama(config.ollama_api_key, &effective);
-    let fireworks_api_key = config.fireworks_api_key;
 
     // A token-only serenity HTTP client (no gateway) shared by both Gary surfaces
     // to DM operators on escalation. Built here so the in-game endpoint — spawned
@@ -177,7 +176,6 @@ pub async fn run(mut config: BotConfig) -> Result<()> {
         settings: std::sync::Arc::clone(&settings),
         guild_config,
         ollama,
-        fireworks_api_key,
         sessions: std::sync::Arc::new(SessionStore::new()),
         home_channels,
         memory,
@@ -495,7 +493,6 @@ fn build_ollama(
         api_key,
         base_url: effective.gary_base_url.clone(),
         model: effective.gary_model.clone(),
-        max_tokens: None,
     })
 }
 

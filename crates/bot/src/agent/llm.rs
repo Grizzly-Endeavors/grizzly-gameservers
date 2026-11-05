@@ -20,8 +20,6 @@ pub(crate) struct OllamaConfig {
     /// Base URL ending before `/chat/completions` (e.g. `https://ollama.com/v1`).
     pub(crate) base_url: String,
     pub(crate) model: String,
-    /// Completion ceiling sent as `max_tokens`; `None` leaves the provider's default.
-    pub(crate) max_tokens: Option<u32>,
 }
 
 /// Who authored a message in the conversation.
@@ -46,11 +44,6 @@ pub(crate) struct ChatMessage {
     pub(crate) tool_calls: Option<Vec<ToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) tool_call_id: Option<String>,
-    /// The model's reasoning text, when the provider returns it. Kept in the
-    /// transcript and traces for training-data capture, but never echoed back:
-    /// [`send_chat_completion`] strips it from every message it sends.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -75,7 +68,6 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
-            reasoning_content: None,
         }
     }
 
@@ -85,7 +77,6 @@ impl ChatMessage {
             content: Some(content.into()),
             tool_calls: None,
             tool_call_id: None,
-            reasoning_content: None,
         }
     }
 
@@ -165,8 +156,6 @@ struct ChatRequest<'a> {
     tools: &'a [ToolDef],
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,18 +233,6 @@ pub(crate) struct Completion {
     pub(crate) latency: Duration,
 }
 
-/// The transcript as the provider should receive it: reasoning text stays in the
-/// recorded copy but is never echoed back.
-fn without_reasoning(messages: &[ChatMessage]) -> Vec<ChatMessage> {
-    messages
-        .iter()
-        .map(|message| ChatMessage {
-            reasoning_content: None,
-            ..message.clone()
-        })
-        .collect()
-}
-
 /// Send one chat-completion turn and return the assistant message with the call's
 /// usage, finish reason, and measured latency. Advertises `tools` (with
 /// `tool_choice: auto`) when any are supplied.
@@ -272,13 +249,11 @@ pub(crate) async fn send_chat_completion(
     tools: &[ToolDef],
 ) -> Result<Completion> {
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let outbound = without_reasoning(messages);
     let request = ChatRequest {
         model: &cfg.model,
-        messages: &outbound,
+        messages,
         tools,
         tool_choice: (!tools.is_empty()).then_some("auto"),
-        max_tokens: cfg.max_tokens,
     };
 
     let started = Instant::now();

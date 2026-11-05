@@ -25,7 +25,6 @@ fn tool_turn(id: &str, name: &str, arguments: &str, content: Option<&str>) -> Ch
             },
         }]),
         tool_call_id: None,
-        reasoning_content: None,
     }
 }
 
@@ -36,7 +35,6 @@ fn text_turn(text: &str) -> ChatMessage {
         content: Some(text.to_owned()),
         tool_calls: None,
         tool_call_id: None,
-        reasoning_content: None,
     }
 }
 

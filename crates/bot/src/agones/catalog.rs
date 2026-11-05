@@ -5,7 +5,6 @@ use anyhow::{Context, Result, bail};
 
 use super::env_overlay::{EnvOverlay, env_overlay_or_warn};
 use super::mod_registry::{ModRegistry, mod_registry_or_warn, mods_file_or_warn};
-use super::template::config_rewritten_on_shutdown_or_warn;
 
 /// One game's raw, version-controlled templates as read from `games/<id>/`. The
 /// strings are deserialized per instance by the renderer rather than at load
@@ -31,11 +30,6 @@ pub(crate) struct GameCatalogEntry {
     /// none, which is most of them — their settings live in the game's own
     /// config files instead.
     pub(crate) env_overlay: Option<EnvOverlay>,
-    /// The data-root-relative config file this game rewrites from its running
-    /// settings at shutdown, read off the template's
-    /// `config-rewritten-on-shutdown` annotation. `None` for a game that keeps
-    /// whatever is on disk.
-    pub(crate) config_rewritten_on_shutdown: Option<String>,
 }
 
 /// The per-game catalog: every game the shim can provision, keyed by id.
@@ -104,7 +98,6 @@ async fn load_entry(id: &str, dir: &Path) -> Result<GameCatalogEntry> {
     let mod_registry = mod_registry_or_warn(id, &gameserver_yaml);
     let mods_file = mods_file_or_warn(id, &gameserver_yaml);
     let env_overlay = env_overlay_or_warn(id, &gameserver_yaml);
-    let config_rewritten_on_shutdown = config_rewritten_on_shutdown_or_warn(id, &gameserver_yaml);
     Ok(GameCatalogEntry {
         id: id.to_owned(),
         gameserver_yaml,
@@ -113,7 +106,6 @@ async fn load_entry(id: &str, dir: &Path) -> Result<GameCatalogEntry> {
         mod_registry,
         mods_file,
         env_overlay,
-        config_rewritten_on_shutdown,
     })
 }
 

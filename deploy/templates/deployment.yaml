@@ -88,28 +88,12 @@ spec:
                   name: ollama-api
                   key: api_key
                   optional: true
-            # Fireworks credential for operator-harness turns that select that
-            # provider; optional, and no Discord or in-game path reads it.
-            - name: FIREWORKS_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: fireworks-api
-                  key: api_key
-                  optional: true
             - name: OLLAMA_MODEL
               value: {{ .Values.bot.ollamaModel | quote }}
             {{- if .Values.bot.ollamaBaseUrl }}
             - name: OLLAMA_BASE_URL
               value: {{ .Values.bot.ollamaBaseUrl | quote }}
             {{- end }}
-            # Per-guild cap defaults (ADR-022). A stored per-guild override or a
-            # settings-table value still wins over these.
-            - name: GAMESERVERS_GUILD_MAX_SERVERS
-              value: {{ .Values.bot.guildLimits.servers | quote }}
-            - name: GAMESERVERS_GUILD_MAX_CPU
-              value: {{ .Values.bot.guildLimits.cpu | quote }}
-            - name: GAMESERVERS_GUILD_MAX_MEMORY
-              value: {{ .Values.bot.guildLimits.memory | quote }}
             {{- if .Values.bot.catalogDir }}
             - name: GAMESERVERS_CATALOG_DIR
               value: {{ .Values.bot.catalogDir | quote }}

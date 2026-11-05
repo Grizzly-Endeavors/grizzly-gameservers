@@ -13,7 +13,6 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use tracing::warn;
 
 /// A parsed template, reduced to the annotations and container environment.
 #[derive(Default, serde::Deserialize)]
@@ -39,14 +38,6 @@ impl AnnotatedTemplate {
         self.metadata.annotations.as_ref()
     }
 
-    /// The annotation `name`, trimmed, with an empty value reported as absent.
-    pub(crate) fn annotation(&self, name: &str) -> Option<&str> {
-        self.annotations()?
-            .get(name)
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-    }
-
     /// The literal value of `name` in the pod's container environment, trimmed,
     /// with an empty value reported as absent — an env var set to `""` in a
     /// template means "declared but off", which every caller here treats the
@@ -65,33 +56,6 @@ impl AnnotatedTemplate {
             .and_then(|var| var.value.as_deref())
             .map(str::trim)
             .filter(|value| !value.is_empty())
-    }
-}
-
-/// Annotation naming the config file a game rewrites from its running settings
-/// when it shuts down, relative to the data root.
-const CONFIG_REWRITTEN_ON_SHUTDOWN_ANNOTATION: &str =
-    "grizzly-gameservers.grizzly-endeavors.com/config-rewritten-on-shutdown";
-
-/// Read the shutdown-rewritten config path off a raw `GameServer` template,
-/// degraded to "none" with a warning: a malformed manifest for one game must not
-/// stop the bot serving the others.
-pub(crate) fn config_rewritten_on_shutdown_or_warn(
-    id: &str,
-    gameserver_yaml: &str,
-) -> Option<String> {
-    match AnnotatedTemplate::parse(gameserver_yaml) {
-        Ok(template) => template
-            .annotation(CONFIG_REWRITTEN_ON_SHUTDOWN_ANNOTATION)
-            .map(str::to_owned),
-        Err(err) => {
-            warn!(
-                error = ?err,
-                game = %id,
-                "catalog: unparseable template; shutdown-rewrite guidance is off"
-            );
-            None
-        }
     }
 }
 

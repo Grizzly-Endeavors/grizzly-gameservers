@@ -297,16 +297,3 @@ fn a_read_only_caller_is_not_told_about_a_tool_they_cannot_call() {
     let prompt = build_system_prompt(AccessLevel::ReadOnly, "minecraft, valheim", "");
     assert!(!prompt.contains("game_guide"), "{prompt}");
 }
-
-#[test]
-fn memory_off_prompt_omits_the_habit_and_saved_notes() {
-    let memories = "palworld:\n  - #3: soft-stop before editing configs";
-    let prompt = build_system_prompt_with_memory(AccessLevel::Manager, "palworld", memories, false);
-    assert!(!prompt.contains("soft-stop before editing configs"));
-    assert!(!prompt.contains("save it with remember"));
-    let with = build_system_prompt_with_memory(AccessLevel::Manager, "palworld", memories, true);
-    assert_eq!(
-        with,
-        build_system_prompt(AccessLevel::Manager, "palworld", memories)
-    );
-}

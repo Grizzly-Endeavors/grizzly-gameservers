@@ -123,9 +123,6 @@ pub(crate) struct Data {
     /// Agent ("Gary") model connection, or `None` when no key is configured —
     /// in which case mentions reply that Gary isn't set up.
     pub(crate) ollama: Option<OllamaConfig>,
-    /// Fireworks credential for operator-harness turns that pick that provider.
-    /// No Discord or in-game path reads it.
-    pub(crate) fireworks_api_key: Option<String>,
     /// Short-lived per-channel conversation transcripts giving Gary follow-up
     /// continuity across messages, shared by everyone talking in that channel.
     pub(crate) sessions: Arc<SessionStore>,
@@ -218,7 +215,6 @@ pub(crate) fn ollama_now(
         api_key: boot.api_key.clone(),
         base_url: effective.gary_base_url.clone(),
         model: effective.gary_model.clone(),
-        max_tokens: None,
     })
 }
 
