@@ -29,7 +29,6 @@ pub(crate) use self::tools::ConfirmMode;
 use super::auth::{AccessLevel, Speaker, access_level_for};
 use super::chunking::{DISCORD_MAX_CHARS, chunk_text};
 use super::{Data, Error};
-use crate::agent::OllamaConfig;
 use crate::agent::commit_turn;
 use crate::agent::{
     ChatMessage, Completion, EscalationReason, Role, SessionCallbacks, SessionEvent, SessionId,
@@ -271,8 +270,6 @@ async fn handle_message(
         access,
         scope,
         confirmations: ConfirmMode::Interactive,
-        connection: None,
-        memory_tools: true,
     };
     // On a hard error, run_gary_turn already logged and posted a friendly message;
     // the prior session is left untouched so a retry doesn't inherit a half-finished
@@ -313,12 +310,6 @@ pub(crate) struct GaryTurn<'a> {
     /// How this turn's destructive tools obtain their confirmation. Spelled out
     /// at every construction site rather than defaulted — see [`ConfirmMode`].
     pub(crate) confirmations: ConfirmMode,
-    /// Model connection to use instead of the live settings' one. Only the
-    /// operator harness sets it; every other surface passes `None`.
-    pub(crate) connection: Option<OllamaConfig>,
-    /// Whether `remember`/`forget` are offered this turn. Only the operator
-    /// harness turns it off, and the system prompt it built must agree.
-    pub(crate) memory_tools: bool,
 }
 
 impl GaryTurn<'_> {
@@ -355,7 +346,7 @@ pub(crate) async fn run_gary_turn(
     // Resolved once, here, and used for every round below: the model tag is an
     // operator setting, and re-reading it per round could swap models partway
     // through a conversation.
-    let Some(connection) = turn.connection.clone().or_else(|| turn.data.ollama_now()) else {
+    let Some(connection) = turn.data.ollama_now() else {
         // Callers gate on Gary being configured; this is defense in depth.
         send_chunks(turn.ctx, turn.channel_id, GARY_NOT_CONFIGURED_REPLY).await;
         return Ok(SessionOutcome {
@@ -367,7 +358,7 @@ pub(crate) async fn run_gary_turn(
     let ollama = &connection;
     let max_rounds = turn.data.settings.snapshot().gary_max_rounds;
 
-    let tool_defs = tools::available_tools_for(turn.access, turn.memory_tools);
+    let tool_defs = tools::available_tools(turn.access);
     let tool_ctx = tools::ToolCtx {
         data: turn.data,
         serenity: turn.ctx,
@@ -601,18 +592,6 @@ pub(crate) fn game_catalog_list(data: &Data) -> String {
 /// lookups. The escalation guidance is tier-independent: a read-only asker's
 /// question can be just as unanswerable, and they have the fewest other options.
 pub(crate) fn build_system_prompt(access: AccessLevel, games: &str, memories: &str) -> String {
-    build_system_prompt_with_memory(access, games, memories, true)
-}
-
-/// [`build_system_prompt`] with the memory block switchable: `with_memory`
-/// false drops both the remember/forget habit and the saved notes, matching a
-/// turn that isn't offered those tools.
-pub(crate) fn build_system_prompt_with_memory(
-    access: AccessLevel,
-    games: &str,
-    memories: &str,
-    with_memory: bool,
-) -> String {
     let mut prompt = prompts::DiscordPersona::render();
     push_block(&mut prompt, &prompts::DiscordSharedChannel::render());
     push_block(&mut prompt, &prompts::DiscordReporting::render());
@@ -623,7 +602,7 @@ pub(crate) fn build_system_prompt_with_memory(
         &prompts::DiscordGamesLine { games: games_value }.render(),
     );
     if access >= AccessLevel::Manager {
-        append_manager_guidance(&mut prompt, memories, with_memory);
+        append_manager_guidance(&mut prompt, memories);
     }
     if access >= AccessLevel::Admin {
         push_block(&mut prompt, &prompts::DiscordAdminDestructive::render());
@@ -654,16 +633,13 @@ fn push_block(prompt: &mut String, block: &str) {
 /// Each game's mod workflow is deliberately *not* here: it is per-game, it is
 /// long, and every guild paid for every game's copy of it on every message. The
 /// pointer block is what survives; [`guide`](super::guide) holds the rest.
-fn append_manager_guidance(prompt: &mut String, memories: &str, with_memory: bool) {
+fn append_manager_guidance(prompt: &mut String, memories: &str) {
     push_block(prompt, &prompts::DiscordManagerLifecycle::render());
     push_block(prompt, &prompts::DiscordManagerTuning::render());
     push_block(prompt, &prompts::DiscordManagerGameGuide::render());
     push_block(prompt, &prompts::DiscordManagerResources::render());
     push_block(prompt, &prompts::DiscordManagerOccupancy::render());
     push_block(prompt, &prompts::DiscordManagerScheduling::render());
-    if !with_memory {
-        return;
-    }
     push_block(prompt, &prompts::DiscordMemoryHabit::render());
     if !memories.is_empty() {
         push_block(prompt, &prompts::DiscordSavedNotes { memories }.render());

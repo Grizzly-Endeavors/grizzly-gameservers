@@ -1382,23 +1382,3 @@ fn a_rollback_points_at_the_preserved_crash_output() {
     assert!(note.contains(".grizzly/crashes/"));
     assert!(note.contains("run_shell"));
 }
-
-#[test]
-fn memory_off_drops_only_remember_and_forget() {
-    let names = |memory_tools| -> Vec<String> {
-        available_tools_for(AccessLevel::Admin, memory_tools)
-            .into_iter()
-            .map(|tool| tool.function.name)
-            .collect()
-    };
-    let with = names(true);
-    let without = names(false);
-    assert!(with.iter().any(|n| n == Remember::NAME));
-    assert!(with.iter().any(|n| n == Forget::NAME));
-    assert!(
-        !without
-            .iter()
-            .any(|n| n == Remember::NAME || n == Forget::NAME)
-    );
-    assert_eq!(without.len() + 2, with.len());
-}

@@ -4,7 +4,7 @@
 
 ## Context
 
-[`docs/archive/data-collection/design.md`](https://github.com/Grizzly-Endeavors/grizzly-gameservers/blob/pre-hackathon/docs/archive/data-collection/design.md) settled the transport questions: traces go to Langfuse over OTLP/HTTP (v4's default write mode rejects trace events on the legacy ingestion endpoint), scores go over the REST API, and the client is the vendor-maintained `opentelemetry` / `opentelemetry-otlp` crates rather than any community Langfuse crate. What it could not settle — because it depends on the shape of a specific crate version — is *how* a span gets built, and what that costs the dependency tree.
+`docs/archive/data-collection/design.md` settled the transport questions: traces go to Langfuse over OTLP/HTTP (v4's default write mode rejects trace events on the legacy ingestion endpoint), scores go over the REST API, and the client is the vendor-maintained `opentelemetry` / `opentelemetry-otlp` crates rather than any community Langfuse crate. What it could not settle — because it depends on the shape of a specific crate version — is *how* a span gets built, and what that costs the dependency tree.
 
 Two constraints from the bot make this non-obvious. The recorder must know a turn's trace id **before any span exists**, because the scores API attaches to a trace by id. And a turn's generation and tool observations must name the root span as their parent while the root is still running, since the root only ends when the turn does.
 

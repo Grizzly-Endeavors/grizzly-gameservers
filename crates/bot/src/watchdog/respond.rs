@@ -307,8 +307,6 @@ async fn run_incident_turn(
         access: AccessLevel::Manager,
         scope,
         confirmations: ConfirmMode::Interactive,
-        connection: None,
-        memory_tools: true,
     };
     match run_gary_turn(&turn, &mut messages).await {
         Ok(SessionOutcome {

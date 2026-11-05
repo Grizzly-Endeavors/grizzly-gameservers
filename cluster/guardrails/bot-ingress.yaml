@@ -25,7 +25,6 @@
 #   - `kubectl port-forward` for the operator harness (ADR-011), also 9360
 #   - game-server pods POSTing in-game `@Gary` triggers to 9360
 #   - the gary-landing service forwarding signup submissions to 9360
-#   - the gary-web console proxying its live mode to the operator routes on 9360
 #   - ingress-nginx forwarding admin panel requests to 9361
 #
 # Residual, and accepted: the host entity reaches the pod on any port, so anyone
@@ -74,20 +73,6 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: gary-landing
             app.kubernetes.io/name: gary-landing
-      toPorts:
-        - ports:
-            # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs (issue
-            # #42 — YAML can't import a Rust const, and a mismatch is a silent
-            # drop rather than an error).
-            - port: "9360"
-              protocol: TCP
-    # gary-web → the operator harness (ADR-043). The console's nginx holds the
-    # operator token and adds it to each proxied /operator request, behind the
-    # console's own basic auth. Selected by label like gary-landing above.
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: gary-web
-            app.kubernetes.io/name: gary-web
       toPorts:
         - ports:
             # Must match DEFAULT_AGENT_PORT in crates/bot/src/config.rs (issue

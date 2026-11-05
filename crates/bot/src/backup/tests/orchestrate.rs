@@ -4,7 +4,7 @@ fn target() -> LiveInstance {
     LiveInstance {
         instance: InstanceName::new("minecraft-7sar1"),
         game: GameId::new("minecraft"),
-        guild: GuildId::new("111111111111111111"),
+        guild: GuildId::new("989178118180847666"),
         running: true,
         unhealthy: false,
     }
@@ -29,7 +29,7 @@ fn scheduled_snapshot_event_carries_the_instance_it_backed_up() {
     );
     assert_eq!(
         event.guild.as_ref().map(GuildId::as_str),
-        Some("111111111111111111"),
+        Some("989178118180847666"),
         "the owning guild comes off the target's labels"
     );
 }

@@ -138,25 +138,21 @@ spec:
             # baked defaults are final for the life of the instance.
             #
             # The allowlist is the whole mutable surface, and it is deliberately
-            # five keys:
+            # four keys:
             #   SERVER_PASS    the join password; Valheim refuses <5 chars, and
             #                  refuses one contained in the world name
             #   SERVER_NAME    how the server appears in the browser
             #   SERVER_PUBLIC  1 lists it in the community browser, 0 hides it
             #   CROSSPLAY      Xbox/PC crossplay
-            #   WORLD_NAME     which world directory under worlds_local/ the
-            #                  server loads; this is how an uploaded or
-            #                  previously saved world is switched to. A name
-            #                  with no world behind it starts a fresh one, so
-            #                  the previous world stays on the volume untouched
-            #                  and switching back restores it.
             #
-            # Two neighbours are held off it on purpose. SERVER_ARGS takes
-            # arbitrary launch arguments, the same open surface that keeps
-            # MODS/PLUGINS off Minecraft's allowlist. VALHEIM_PLUS cannot be
-            # combined with BEPINEX (see games/valheim/Dockerfile), so setting
-            # it would take down the baked RCON plugin and with it Gary's
-            # console and the player count.
+            # Three neighbours are held off it on purpose. WORLD_NAME switches
+            # the server to a *different world* — recoverable, but it reads as
+            # total data loss to whoever is playing, and no guardrail here can
+            # tell the two apart. SERVER_ARGS takes arbitrary launch arguments,
+            # the same open surface that keeps MODS/PLUGINS off Minecraft's
+            # allowlist. VALHEIM_PLUS cannot be combined with BEPINEX (see
+            # games/valheim/Dockerfile), so setting it would take down the baked
+            # RCON plugin and with it Gary's console and the player count.
             #
             # Like the mod list, these live here rather than in the Dockerfile
             # ENV because an allowlist is per-game *policy*: widening it should
@@ -165,7 +161,7 @@ spec:
             - name: SUPERVISOR_CHILD_ENV_FILE
               value: ".grizzly/env"
             - name: SUPERVISOR_CHILD_ENV_ALLOWLIST
-              value: "SERVER_PASS,SERVER_NAME,SERVER_PUBLIC,CROSSPLAY,WORLD_NAME"
+              value: "SERVER_PASS,SERVER_NAME,SERVER_PUBLIC,CROSSPLAY"
           volumeMounts:
             - name: data
               mountPath: /config

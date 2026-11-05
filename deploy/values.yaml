@@ -5,7 +5,7 @@ image:
   # CI (deploy.yml) overwrites `digest` with the gate-signed digest per ADR-020;
   # when set, the chart pins repository@digest (immutable — what cosign signs and
   # Kyverno verifies) and ignores tag/pullPolicy below.
-  digest: "sha256:9179863961c9f6ec896c0743f403a1e86bc3abe935f8c41cf1ae747f2f214305"
+  digest: "sha256:0fe4dc12602a898815090ccb556592150d7529ae0588a525db66566f8930ebb3"
   # Dev fallback: a mutable tag pushed by hand (just bot-push). Used only when
   # digest is empty.
   tag: "dev"
@@ -38,13 +38,6 @@ bot:
   # an absent key disables Gary). Override the model here without a rebuild.
   ollamaModel: glm-5.2
   ollamaBaseUrl: "" # override only for a non-default (e.g. self-hosted) endpoint
-  # Per-guild cap defaults: server count, summed CPU limits, summed memory
-  # limits (Kubernetes quantities). The namespace ResourceQuota stays the
-  # hardware ceiling behind them.
-  guildLimits:
-    servers: 40
-    cpu: 120000m
-    memory: 240Gi
   # Super-admin web panel (ADR-026). Its own port, its own Service, and its own
   # Ingress: the agent port above must stay reachable by game pods, while this
   # one is reachable only by ingress-nginx — the CiliumNetworkPolicy in

@@ -21,7 +21,6 @@ fn assistant_calling(names: &[&str]) -> ChatMessage {
         content: None,
         tool_calls: Some(calls),
         tool_call_id: None,
-        reasoning_content: None,
     }
 }
 

@@ -1,6 +1,6 @@
 # ADR-011 — An operator harness for driving the deployed bot
 
-**Status:** Accepted (2026-08-01). The web console also reaches these routes, through its own proxy: see [ADR-043](043-web-console-reaches-the-operator-harness.md).
+**Status:** Accepted (2026-08-01)
 
 ## Context
 

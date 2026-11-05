@@ -4,7 +4,6 @@ target/
 .git/
 .github/
 docs/
-web/
 deploy/
 cluster/
 # games/ is intentionally NOT excluded: the bot image bakes the per-game catalog

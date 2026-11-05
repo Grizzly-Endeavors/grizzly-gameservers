@@ -57,7 +57,6 @@ fn empty_tool_calls_reads_as_no_tool_calls() {
         content: Some("all set".to_owned()),
         tool_calls: Some(Vec::new()),
         tool_call_id: None,
-        reasoning_content: None,
     };
     assert!(
         msg.requested_tool_calls().is_none(),
@@ -186,37 +185,5 @@ fn tool_def_serializes_as_openai_function() {
                 "parameters": { "type": "object", "properties": {} }
             }
         })
-    );
-}
-
-#[test]
-fn parses_reasoning_content_from_a_provider_message() {
-    let raw = serde_json::json!({
-        "role": "assistant",
-        "content": "done",
-        "reasoning_content": "the user wants a restart"
-    });
-    let msg: ChatMessage = serde_json::from_value(raw).unwrap();
-    assert_eq!(
-        msg.reasoning_content.as_deref(),
-        Some("the user wants a restart")
-    );
-}
-
-#[test]
-fn reasoning_is_stripped_from_what_is_sent_but_kept_in_the_record() {
-    let mut assistant = ChatMessage::assistant("done");
-    assistant.reasoning_content = Some("private thoughts".to_owned());
-    let history = vec![ChatMessage::user("hi"), assistant];
-
-    let outbound = without_reasoning(&history);
-    let wire = serde_json::to_string(&outbound).unwrap();
-    assert!(!wire.contains("reasoning_content"));
-    assert!(!wire.contains("private thoughts"));
-    assert!(
-        history
-            .iter()
-            .any(|m| m.reasoning_content.as_deref() == Some("private thoughts")),
-        "the recorded copy keeps its reasoning"
     );
 }
