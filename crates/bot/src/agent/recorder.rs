@@ -1,14 +1,3 @@
-//! Observes one Gary turn from inside the session loop.
-//!
-//! The loop hands the recorder every model call and every tool call as they
-//! happen, so coverage is structural: a surface wired into the loop cannot opt
-//! out of being observed by forgetting a wrapper.
-//!
-//! Trace and span ids are minted up front rather than assigned by the exporter.
-//! That is what lets each observation ship the moment it finishes — a turn cut
-//! short by a redeploy still leaves its model and tool calls behind — and it is
-//! also what gives the scores API a trace to attach to before any span exists.
-
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -24,42 +13,20 @@ use super::store::SessionId;
 use super::turn::TurnIdentity;
 use crate::telemetry::{Observation, ScorePost, ScoreValue, Telemetry, ids};
 
-/// Name of the boolean score carried by every turn.
 const ESCALATED_SCORE: &str = "escalated";
-/// Name of the categorical score carried only by turns that escalated, saying
-/// which kind it was. Kept separate from [`ESCALATED_SCORE`] rather than
-/// replacing it, because the escalation-rate metric is defined on the boolean
-/// and every turn must contribute to that denominator.
 const ESCALATION_KIND_SCORE: &str = "escalation_kind";
-/// Name of the boolean score carried by every turn, saying whether a person
-/// stopped it. A sibling of [`ESCALATED_SCORE`] rather than a value inside it:
-/// a stopped turn is not the agent giving up, and folding the two together
-/// would mix a product signal (how often Gary can't finish) with an operator
-/// action (how often somebody pulled the plug). Boolean on every turn for the
-/// same reason `escalated` is — so the rate has an honest denominator.
 const CANCELLED_SCORE: &str = "cancelled";
-/// Name of the categorical score carried by turns that restarted into a config
-/// change.
 const GUARDRAIL_SCORE: &str = "guardrail";
 
 const ROOT_SPAN_NAME: &str = "gary.turn";
 const GENERATION_SPAN_NAME: &str = "model.completion";
 
-/// How a turn's config change came out, once the restart guardrail had its say.
-/// A turn gets at most one of these — the final verdict; per-cycle history is
-/// already visible in the turn's tool observations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GuardrailVerdict {
-    /// Came back up on the new config.
     Healthy,
-    /// Crashed, and the automatic rollback recovered it.
     RolledBack,
-    /// The rollback story ended badly — a second crash, a restore that didn't
-    /// come back, or a restore that couldn't be issued at all.
     RollbackFailed,
-    /// Verification ran but couldn't reach a verdict.
     Inconclusive,
-    /// The restart path couldn't run verification at all.
     Unverified,
 }
 
@@ -75,18 +42,12 @@ impl GuardrailVerdict {
     }
 }
 
-/// Records one turn's model and tool activity against the turn's identity.
 pub(crate) struct TurnRecorder {
     identity: TurnIdentity,
     telemetry: Arc<Telemetry>,
     trace_id: TraceId,
-    /// Minted alongside the trace id so generation and tool observations can name
-    /// their parent long before the root span is built.
     root_span_id: SpanId,
-    /// Set once, by `turn_started`.
     started: OnceLock<SystemTime>,
-    /// The question that opened the turn, lifted from the first request's
-    /// transcript — the recorder is never handed it directly.
     opening: OnceLock<String>,
     rounds: AtomicU32,
     tools: AtomicUsize,
@@ -106,7 +67,6 @@ impl TurnRecorder {
         }
     }
 
-    /// Note that the loop is about to run, with the full identity it runs under.
     pub(crate) fn turn_started(&self) {
         let id = &self.identity;
         self.started.get_or_init(SystemTime::now);
@@ -123,7 +83,6 @@ impl TurnRecorder {
         );
     }
 
-    /// One model call: what was sent, what came back, and what it cost.
     pub(crate) fn record_generation(&self, sent: &[ChatMessage], completion: &Completion) {
         let round = self.rounds.fetch_add(1, Ordering::Relaxed) as usize + 1;
         if round == 1
@@ -149,7 +108,6 @@ impl TurnRecorder {
         );
     }
 
-    /// One dispatched tool call, with the arguments and result the model saw.
     pub(crate) fn record_tool(
         &self,
         name: &str,
@@ -175,8 +133,6 @@ impl TurnRecorder {
         );
     }
 
-    /// The turn reached a reply — by answering, by escalating, or by being
-    /// stopped.
     pub(crate) fn turn_finished(&self, outcome: &SessionOutcome) {
         trace!(
             trace_id = %self.trace_id,
@@ -214,10 +170,6 @@ impl TurnRecorder {
         }
     }
 
-    /// The turn died on the model endpoint. Recorded separately from a finished
-    /// turn so a provider outage stays visible instead of looking like silence.
-    /// The partial observations are kept and no outcome scores are attached — a
-    /// provider failure is not an agent result.
     pub(crate) fn turn_failed(&self, error: &anyhow::Error) {
         let rendered = format!("{error:#}");
         trace!(
@@ -232,8 +184,6 @@ impl TurnRecorder {
         );
     }
 
-    /// How this turn's config change came out. Called by the shell after the loop
-    /// returns, because the verdict is produced inside a tool, not by the loop.
     pub(crate) fn record_guardrail(&self, verdict: GuardrailVerdict) {
         trace!(
             trace_id = %self.trace_id,
@@ -248,8 +198,6 @@ impl TurnRecorder {
         });
     }
 
-    /// A child observation, timed backwards from now by the duration the loop
-    /// already measured.
     fn emit(
         &self,
         name: Cow<'static, str>,
@@ -299,7 +247,6 @@ impl TurnRecorder {
     }
 }
 
-/// Render an optional session id for a log field, since a deferred batch has none.
 fn session_field(session: Option<&SessionId>) -> &str {
     session.map_or("-", SessionId::as_str)
 }

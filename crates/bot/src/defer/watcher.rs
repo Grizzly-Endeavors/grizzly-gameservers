@@ -1,10 +1,3 @@
-//! The background poll loops behind the deferred-task queue. One watcher per
-//! `(server, condition)` waits — cancellably — until the condition holds, then
-//! drains the queue and runs the batch as one manager-tier Gary turn. Detection
-//! reuses the bot's existing supervisor clients (`wait_for_ready_within` for
-//! `startup`, `supervisor_occupancy` for `empty`/`idle`); nothing new touches the
-//! cluster.
-
 use std::time::Duration;
 
 use poise::serenity_prelude as serenity;
@@ -26,25 +19,12 @@ use crate::events::{Actor, Attribution, Surface, mapping};
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 
-/// How long the `startup` watchdog waits for a (re)start to settle before calling
-/// it stuck. No real server takes this long to come up, so exceeding it is itself
-/// the signal that a boot is wedged.
 const STARTUP_CEILING: Duration = Duration::from_mins(20);
-/// Poll cadence for the `empty` condition — brisk, since "empty now" changes are
-/// wanted promptly as the last player logs off.
 const EMPTY_POLL_INTERVAL: Duration = Duration::from_secs(30);
-/// Poll cadence for the `idle` condition — relaxed; idle waits are no-rush.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_mins(1);
-/// How long a server must stay continuously empty before `idle` fires.
 const IDLE_GRACE: Duration = Duration::from_mins(5);
-/// Give-up ceiling for an occupancy wait that never resolves (server unreachable
-/// forever, etc.). Matches the queue TTL so the watcher and the key retire together.
 const OCCUPANCY_CEILING: Duration = Duration::from_hours(24);
 
-/// Drive one `(server, condition)` watcher to completion. Waits for the condition
-/// (cancellable on shutdown), drains and runs the batch, then retires — re-arming
-/// only if a task slipped in after the drain. On shutdown it exits leaving the
-/// queue in Valkey, which [`super::DeferRuntime::reconcile`] rebuilds next boot.
 pub(crate) async fn run_watcher(
     data: Data,
     ctx: serenity::Context,
@@ -77,9 +57,6 @@ pub(crate) async fn run_watcher(
             run_batch(&data, &ctx, &server, condition, &trigger_note, raw).await;
         }
 
-        // Retire, then re-check: a task pushed after the drain but before we left
-        // the registry would otherwise be stranded (its enqueue saw us registered
-        // and didn't spawn). If one landed, re-arm and keep going.
         data.defer.deregister(&server, condition);
         match data.defer.valkey.is_empty(&key).await {
             Ok(true) => return,
@@ -92,9 +69,6 @@ pub(crate) async fn run_watcher(
     }
 }
 
-/// Wait until `condition` holds for `server`, returning a plain-language note for
-/// the batch prompt describing what happened (which is *not* always success —
-/// `startup` also returns when a boot fails or stalls, so Gary can react).
 async fn wait_for_condition(data: &Data, server: &str, condition: Condition) -> String {
     match condition {
         Condition::Startup => wait_startup(data, server).await,
@@ -103,9 +77,6 @@ async fn wait_for_condition(data: &Data, server: &str, condition: Condition) -> 
     }
 }
 
-/// Watch a (re)start to its outcome and describe it. Every [`ReadyWait`] variant
-/// is terminal and maps to a note; a cluster error can't be watched through, so it
-/// too resolves to a note rather than hanging.
 async fn wait_startup(data: &Data, server: &str) -> String {
     match wait_for_ready_within(
         &data.kube_client,
@@ -130,10 +101,6 @@ async fn wait_startup(data: &Data, server: &str) -> String {
     }
 }
 
-/// Poll occupancy until the server is empty. With `grace = None` this fires the
-/// moment the count reaches zero (`empty`); with `Some(window)` it fires only
-/// after the server has stayed empty for `window` (`idle`). An unknown count never
-/// counts as empty and resets any idle streak.
 async fn wait_occupancy(
     data: &Data,
     server: &str,
@@ -173,8 +140,6 @@ async fn wait_occupancy(
             Ok(FsOutcome::NotManaged) => {
                 return prompts::OccupancyNotManaged::render();
             }
-            // Transient: the console isn't reachable this tick. Treat as "unknown"
-            // (reset any idle streak) and keep polling until the ceiling.
             Ok(FsOutcome::PodNotReady | FsOutcome::Unreachable | FsOutcome::Rejected(_)) => {
                 empty_since = None;
             }
@@ -190,8 +155,6 @@ async fn wait_occupancy(
     }
 }
 
-/// Run the drained tasks as one manager-tier Gary turn scoped to the server's
-/// guild, delivering the result to the channel(s) the tasks came from.
 async fn run_batch(
     data: &Data,
     ctx: &serenity::Context,
@@ -216,18 +179,10 @@ async fn run_batch(
     let primary_channel = latest.channel_id;
     let author_id = latest.requested_by;
 
-    // Scope the batch to the server's own guild (the enqueue was already gated on
-    // the caller's scope), running at the manager tier per the shared-queue design.
-    // The same read carries the game, which the turn stamps on its telemetry.
     let owner = match owner_of(&data.kube_client, &data.namespace, server).await {
         Ok(owner) => owner.unwrap_or_default(),
         Err(err) => {
             error!(error = ?err, server = %server, "deferred batch: failed to resolve guild scope");
-            // Abandon the batch rather than run it unscoped. Falling through here
-            // used to yield an owner with no guild, which `ServerScope::All`
-            // reads as the cross-guild operator view — so a transient API error
-            // silently widened an unattended manager-tier turn to every tenant's
-            // servers. A dropped batch is recoverable; a cross-tenant edit is not.
             return;
         }
     };
@@ -253,8 +208,6 @@ async fn run_batch(
         ctx,
         data,
         origin: TurnOrigin::Deferred,
-        // A batch is a one-shot conversation built from scratch, so there is no
-        // session-store transcript for it to belong to.
         session: None,
         channel_id: serenity::ChannelId::new(primary_channel),
         guild: guild_id,
@@ -285,8 +238,6 @@ async fn run_batch(
             compose_batch_prompt(server, trigger_note, &tasks),
             summarize_attempts(&messages),
         );
-        // Attributed to whoever queued the batch, on the `deferred` surface —
-        // nobody was waiting on this turn when it gave up.
         data.events
             .record(mapping::escalation_event(
                 &escalation,
@@ -298,9 +249,6 @@ async fn run_batch(
     }
 }
 
-/// Echo the final reply to any channels a task came from *other* than the primary
-/// (which `run_gary_turn` already posted to), so a friend who queued from a
-/// different channel still hears the outcome. Almost always a no-op (one channel).
 async fn deliver_extras(
     ctx: &serenity::Context,
     primary_channel: u64,

@@ -15,8 +15,6 @@ fn backup_keys_nest_under_guild_and_instance() {
 
 #[test]
 fn two_guilds_reusing_one_instance_name_get_separate_prefixes() {
-    // The whole point of the layout: `/destroy` frees a friend-chosen name for the
-    // next guild to claim, and the previous owner's backups outlive the instance.
     assert_ne!(backup_prefix("111", "smp"), backup_prefix("222", "smp"));
 }
 
@@ -66,7 +64,6 @@ fn manifest_key_for_derives_the_sidecar_from_the_tarball() {
 
 #[test]
 fn keys_to_prune_keeps_the_newest_and_returns_the_rest_oldest_first() {
-    // Deliberately unsorted; lexicographic == chronological for the stamp format.
     let keys = vec![
         "backups/x/20260707T120000Z.tar.zst".to_owned(),
         "backups/x/20260707T150000Z.tar.zst".to_owned(),
@@ -103,8 +100,6 @@ fn keys_to_prune_with_zero_keep_returns_every_key() {
         "backups/x/20260707T150000Z.tar.zst".to_owned(),
         "backups/x/20260707T090000Z.tar.zst".to_owned(),
     ];
-    // keep == 0 deletes everything — the documented contract callers must reject
-    // upstream. Pinned so a future "helpful" floor-guard can't silently soften it.
     assert_eq!(
         keys_to_prune(keys.clone(), 0).len(),
         keys.len(),

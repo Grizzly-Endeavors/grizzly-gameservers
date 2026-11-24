@@ -20,12 +20,8 @@ mod tests {
     use crate::modrinth::{Kind, SearchQuery};
     use crate::registry::Side;
 
-    /// Terralith ships as both a datapack and a jar mod, so it is the one
-    /// project that tells a correct kind filter from a plausible-looking one.
     const DATAPACK_AND_MOD: &str = "terralith";
 
-    /// Run a real search through the same [`SearchQuery`] the tools use, so
-    /// these check the shipped facet construction rather than a copy of it.
     async fn slugs(query: &SearchQuery) -> Vec<String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
@@ -70,10 +66,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live Modrinth API"]
     async fn a_kind_filter_narrows_without_emptying_the_result() {
-        // The regression this module exists for: the broken filter returned a
-        // single unrelated hit where the unfiltered query returns a full page.
-        // A kind filter is a narrowing, so it must keep a healthy share rather
-        // than collapse — which is what two near-disjoint terms produce.
         let unfiltered = slugs(&seeking(None)).await.len();
         for kind in [Kind::Mod, Kind::Datapack] {
             let filtered = slugs(&seeking(Some(kind))).await.len();
@@ -87,9 +79,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live Modrinth API"]
     async fn the_side_facets_narrow_without_emptying_the_result() {
-        // The same trap the kind filter fell into: `server_side` is a real facet
-        // field, but a wrong support vocabulary would be well-formed and match
-        // nothing. A side filter is a narrowing, so it must keep a healthy share.
         let unfiltered = slugs(&seeking(None)).await.len();
         for side in [Side::Server, Side::Client, Side::Both] {
             let filtered = slugs(&SearchQuery {
@@ -108,7 +97,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live Modrinth API"]
     async fn a_jar_only_mod_is_absent_from_a_datapack_search() {
-        // The other direction: the filter must actually exclude, not just include.
         let found = slugs(&SearchQuery {
             text: "xaeros minimap".to_owned(),
             kind: Some(Kind::Datapack),

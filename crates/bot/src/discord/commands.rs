@@ -54,7 +54,6 @@ fn truncate_option_label(label: &str) -> String {
     truncated
 }
 
-/// List the game servers currently running and how to connect to them.
 #[poise::command(slash_command)]
 pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
@@ -99,7 +98,6 @@ pub(crate) async fn servers(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Spin up a new game server. Pick the game from the menu that appears.
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn create(
     ctx: Context<'_>,
@@ -107,9 +105,6 @@ pub(crate) async fn create(
 ) -> Result<(), Error> {
     let data = ctx.data();
 
-    // Validate a supplied name before the game picker so a bad one fails fast
-    // rather than after the friend has already picked a game (the check is
-    // game-independent — build_instance_name uses the same validation).
     if let Some(supplied) = name.as_deref()
         && let Err(err) = validate_world_name(supplied)
     {
@@ -180,9 +175,6 @@ pub(crate) async fn create(
     finish_create(ctx, &reply, &game, name.as_deref()).await
 }
 
-/// Validate the picked game and provision the instance, writing the result back
-/// over the original ephemeral `/create` reply. Split out of [`create`] so the
-/// command body stays under the line cap.
 async fn finish_create(
     ctx: Context<'_>,
     reply: &poise::ReplyHandle<'_>,
@@ -290,9 +282,6 @@ async fn finish_create(
     Ok(())
 }
 
-/// Map a provision outcome onto its [`CreateOutcome`] for rendering. `Provisioned`
-/// is finalized via [`await_ready`] instead, so its arm here only exists to keep
-/// the match exhaustive.
 fn provision_to_create(outcome: ProvisionOutcome) -> CreateOutcome {
     match outcome {
         ProvisionOutcome::Provisioned { address } => CreateOutcome::Created {
@@ -307,9 +296,6 @@ fn provision_to_create(outcome: ProvisionOutcome) -> CreateOutcome {
     }
 }
 
-/// Record a create that never got as far as booting. A successful provision is
-/// deliberately silent here: its terminal outcome is the readiness resolution,
-/// which [`await_ready`] records once it knows how long the boot took.
 async fn record_provision(
     ctx: Context<'_>,
     server: &str,
@@ -336,10 +322,6 @@ async fn record_provision(
     }
 }
 
-/// Show the connection address immediately, then poll until the server reports
-/// Ready and write the final embed. Shared by `/create` and `/start`, whose
-/// readiness wait can run for minutes — `finalize` builds the done-embed from the
-/// resolved address and readiness so each caller keeps its own wording.
 async fn await_ready(
     ctx: Context<'_>,
     reply: &poise::ReplyHandle<'_>,
@@ -361,8 +343,6 @@ async fn await_ready(
         )
         .await?;
 
-    // This is where a create or cold start becomes terminal, so it is also where
-    // it is recorded — and the only place that can time the boot.
     let started = std::time::Instant::now();
     let booted = address.clone();
     match wait_for_instance_ready(&data.kube_client, &data.namespace, server).await {
@@ -389,7 +369,6 @@ async fn await_ready(
                     )),
                 )
                 .await?;
-            // The objects exist; only the answer to "is it up yet" is missing.
             record_boot(
                 ctx,
                 kind,
@@ -403,7 +382,6 @@ async fn await_ready(
     Ok(())
 }
 
-/// Pause a server — keep it warm so /start resumes in seconds. World is saved.
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn stop(
     ctx: Context<'_>,
@@ -455,7 +433,6 @@ pub(crate) async fn stop(
     Ok(())
 }
 
-/// Fully shut a server down to free the slot, keeping the world so /start can bring it back.
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn shutdown(
     ctx: Context<'_>,
@@ -499,7 +476,6 @@ pub(crate) async fn shutdown(
     Ok(())
 }
 
-/// Restart a running server in place — a quick reboot that keeps the world and address.
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn restart(
     ctx: Context<'_>,
@@ -551,7 +527,6 @@ pub(crate) async fn restart(
     Ok(())
 }
 
-/// Start a server: a paused one resumes in seconds, a shut-down one is rescheduled (slower).
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn start(
     ctx: Context<'_>,
@@ -569,7 +544,6 @@ pub(crate) async fn start(
 
     match instance_runtime_state(&data.kube_client, &data.namespace, &server).await {
         Ok(RuntimeState::PodUp) => {
-            // Warm path: the pod is alive, just resume the process in place.
             match supervisor_start(
                 &data.kube_client,
                 &data.control_http,
@@ -606,9 +580,6 @@ pub(crate) async fn start(
             }
         }
         Ok(RuntimeState::Down) => start_cold(ctx, &reply, &server).await?,
-        // Neither path is available mid-teardown: there's no live pod to resume
-        // and the outgoing GameServer still owns the name. Say so plainly rather
-        // than dialling a pod that is on its way out.
         Ok(RuntimeState::Terminating) => {
             reply
                 .edit(
@@ -640,17 +611,12 @@ pub(crate) async fn start(
     Ok(())
 }
 
-/// Cold start: recreate a shut-down instance's `GameServer` and wait for it to come
-/// up. Split out of [`start`] so the command body stays under the line cap.
 async fn start_cold(
     ctx: Context<'_>,
     reply: &poise::ReplyHandle<'_>,
     server: &str,
 ) -> Result<(), Error> {
     let data = ctx.data();
-    // One hold of the provision lock covers the cap gate and the GameServer
-    // create, so a concurrent create can't add load in between (ADR-022). The
-    // returns inside the block release it before any long wait.
     let begin = {
         let _guard = data.provision_lock.lock().await;
         match super::cold_start_refusal(data, server).await {
@@ -710,8 +676,6 @@ async fn start_cold(
     };
 
     if let StartBegin::Starting { address } = begin {
-        // Terminal outcome and timing come from the readiness wait, exactly as
-        // they do for a create — a cold start is the same shape.
         await_ready(
             ctx,
             reply,
@@ -734,9 +698,6 @@ async fn start_cold(
     Ok(())
 }
 
-/// Map the non-`Starting` start outcomes onto their [`StartOutcome`] for
-/// rendering. `Starting` is excluded — it carries an address and is finalized via
-/// [`await_ready`] only after readiness is known.
 fn begin_to_outcome(begin: StartBegin) -> StartOutcome {
     match begin {
         StartBegin::Starting { address } => StartOutcome::Started {
@@ -751,7 +712,6 @@ fn begin_to_outcome(begin: StartBegin) -> StartOutcome {
     }
 }
 
-/// Permanently destroy a server and delete its world. Cannot be undone.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn destroy(
     ctx: Context<'_>,
@@ -779,8 +739,6 @@ pub(crate) async fn destroy(
 
     match destroy_instance(&data.kube_client, &data.namespace, &server).await {
         Ok(outcome) => {
-            // Same reason as Gary's destroy tool: names get reused, and a stale
-            // override would size an unrelated future world.
             if let Err(err) = data.sizing.forget(&server).await {
                 error!(error = ?err, server = %server, "failed to clear the destroyed server's resource override");
             }
@@ -811,11 +769,6 @@ pub(crate) async fn destroy(
     Ok(())
 }
 
-/// Permanently delete a server's archives from cold storage. Cannot be undone.
-///
-/// Admin-only and separate from `/destroy` on purpose: destroying a server leaves
-/// its archive standing as the way back, so this is the only command that makes a
-/// world unrecoverable.
 #[poise::command(slash_command, rename = "delete-archive", check = "require_admin")]
 pub(crate) async fn delete_archive(
     ctx: Context<'_>,
@@ -840,9 +793,6 @@ pub(crate) async fn delete_archive(
         return Ok(());
     };
 
-    // Priced before the confirmation: `/archives` lists only the newest copy per
-    // name, so the entry the admin is looking at routinely understates what a
-    // delete removes.
     let (generations, freed) = match service.archive_footprint(&scope, &name).await {
         Ok(Some(footprint)) => footprint,
         Ok(None) => {
@@ -913,8 +863,6 @@ pub(crate) async fn delete_archive(
     Ok(())
 }
 
-/// Complete against archived names rather than live servers — an archived world
-/// has no instance, so the server autocomplete would offer nothing.
 async fn autocomplete_archive(ctx: Context<'_>, partial: &str) -> impl Iterator<Item = String> {
     let data = ctx.data();
     let needle = partial.to_owned();
@@ -953,10 +901,8 @@ async fn autocomplete_server(ctx: Context<'_>, partial: &str) -> impl Iterator<I
         .filter(move |name| name.starts_with(&needle))
 }
 
-/// Toggle whether Gary answers in this channel without being @mentioned.
 #[poise::command(slash_command, rename = "gary-home", check = "require_admin")]
 pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
-    // DMs are always no-mention, so there's nothing to toggle there.
     let Some(guild_id) = ctx.guild_id() else {
         ctx.send(
             reply_with(neutral_embed(
@@ -997,11 +943,8 @@ pub(crate) async fn gary_home(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Start fresh with Gary, forgetting the recent back-and-forth.
 #[poise::command(slash_command, rename = "new-session")]
 pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
-    // The conversation belongs to the channel, so this clears it for everyone in
-    // it — which is what "start fresh" means when the back-and-forth was shared.
     ctx.data()
         .sessions
         .clear(SessionKey::Channel(ctx.channel_id().get()));
@@ -1016,12 +959,8 @@ pub(crate) async fn new_session(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Stop the Gary turn running in this channel.
 #[poise::command(slash_command, rename = "gary-stop")]
 pub(crate) async fn gary_stop(ctx: Context<'_>) -> Result<(), Error> {
-    // Ungated, like /new-session and for the same reason: the conversation
-    // belongs to the channel, so anyone who can add to it can end a turn against
-    // it. The cost of a stop nobody wanted is that somebody asks again.
     let stopped = ctx.data().interrupts.cancel(ctx.channel_id().get());
     if stopped {
         let data = ctx.data();
@@ -1044,14 +983,10 @@ pub(crate) async fn gary_stop(ctx: Context<'_>) -> Result<(), Error> {
             "I'm not working on anything in this channel right now.",
         )
     };
-    // Not ephemeral: the conversation is shared, so a stop is something everyone
-    // in the channel needs to see — otherwise Gary going quiet mid-answer looks
-    // like a fault to whoever didn't run the command.
     ctx.send(reply_with(embed)).await?;
     Ok(())
 }
 
-/// Review and prune the durable facts Gary has learned about each game.
 #[poise::command(
     slash_command,
     rename = "gary-memory",
@@ -1071,7 +1006,6 @@ pub(crate) async fn gary_memory(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Show every durable fact Gary has saved, grouped by game.
 #[poise::command(slash_command, rename = "list", check = "require_admin")]
 async fn gary_memory_list(ctx: Context<'_>) -> Result<(), Error> {
     let memories = ctx.data().memory.all().await;
@@ -1088,7 +1022,6 @@ async fn gary_memory_list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Delete one of Gary's saved facts by its id (from `/gary-memory list`).
 #[poise::command(slash_command, rename = "forget", check = "require_admin")]
 async fn gary_memory_forget(
     ctx: Context<'_>,
@@ -1111,8 +1044,6 @@ async fn gary_memory_forget(
     Ok(())
 }
 
-/// Gary's saved facts grouped by scope (game id or `general`), each with its id
-/// so an admin can `/gary-memory forget` it.
 fn format_memory_list(memories: &[Memory]) -> String {
     let mut by_scope: std::collections::BTreeMap<&str, Vec<&Memory>> =
         std::collections::BTreeMap::new();
@@ -1136,8 +1067,6 @@ fn format_memory_list(memories: &[Memory]) -> String {
         .join("\n\n")
 }
 
-/// Configure who can administer and who can operate this Discord server's game
-/// servers.
 #[poise::command(
     slash_command,
     subcommands(
@@ -1154,8 +1083,6 @@ pub(crate) async fn config(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// The reply for a `/config` group invoked without a subcommand — defensive, as
-/// Discord normally forces a subcommand choice.
 async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
     ctx.send(
         reply_with(neutral_embed(
@@ -1169,8 +1096,6 @@ async fn config_group_hint(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Show this Discord server's admins and managers (roles and users) and config
-/// status.
 #[poise::command(slash_command, rename = "view", check = "require_admin")]
 async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
@@ -1205,7 +1130,6 @@ async fn config_view(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Manage which roles can administer this server's game servers (full control).
 #[poise::command(
     slash_command,
     rename = "admin-role",
@@ -1215,7 +1139,6 @@ async fn config_admin_role(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a role administer this Discord server's game servers (full control).
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_admin_role_add(
     ctx: Context<'_>,
@@ -1240,7 +1163,6 @@ async fn config_admin_role_add(
     .await
 }
 
-/// Stop letting a role administer this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_admin_role_remove(
     ctx: Context<'_>,
@@ -1265,7 +1187,6 @@ async fn config_admin_role_remove(
     .await
 }
 
-/// Manage which people can administer this server's game servers (full control).
 #[poise::command(
     slash_command,
     rename = "admin-user",
@@ -1275,7 +1196,6 @@ async fn config_admin_user(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a person administer this Discord server's game servers (full control).
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_admin_user_add(
     ctx: Context<'_>,
@@ -1294,7 +1214,6 @@ async fn config_admin_user_add(
     respond_grant_change(ctx, change, GrantRole::Admin, &format!("**{}**", user.name)).await
 }
 
-/// Stop letting a person administer this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_admin_user_remove(
     ctx: Context<'_>,
@@ -1313,7 +1232,6 @@ async fn config_admin_user_remove(
     respond_grant_change(ctx, change, GrantRole::Admin, &format!("**{}**", user.name)).await
 }
 
-/// Manage which roles can operate this server's game servers day-to-day.
 #[poise::command(
     slash_command,
     rename = "manager-role",
@@ -1323,7 +1241,6 @@ async fn config_manager_role(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a role operate this Discord server's game servers day-to-day.
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_manager_role_add(
     ctx: Context<'_>,
@@ -1348,7 +1265,6 @@ async fn config_manager_role_add(
     .await
 }
 
-/// Stop letting a role operate this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_manager_role_remove(
     ctx: Context<'_>,
@@ -1373,7 +1289,6 @@ async fn config_manager_role_remove(
     .await
 }
 
-/// Manage which people can operate this server's game servers day-to-day.
 #[poise::command(
     slash_command,
     rename = "manager-user",
@@ -1383,7 +1298,6 @@ async fn config_manager_user(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Let a person operate this Discord server's game servers day-to-day.
 #[poise::command(slash_command, rename = "add", check = "require_admin")]
 async fn config_manager_user_add(
     ctx: Context<'_>,
@@ -1408,7 +1322,6 @@ async fn config_manager_user_add(
     .await
 }
 
-/// Stop letting a person operate this Discord server's game servers.
 #[poise::command(slash_command, rename = "remove", check = "require_admin")]
 async fn config_manager_user_remove(
     ctx: Context<'_>,
@@ -1433,8 +1346,6 @@ async fn config_manager_user_remove(
     .await
 }
 
-/// This Discord server's resource caps: view for admins, adjust for the bot
-/// operator.
 #[poise::command(
     slash_command,
     rename = "limits",
@@ -1449,7 +1360,6 @@ async fn config_limits(ctx: Context<'_>) -> Result<(), Error> {
     config_group_hint(ctx).await
 }
 
-/// Show this Discord server's resource caps and what's in use against them.
 #[poise::command(slash_command, rename = "view", check = "require_admin")]
 async fn config_limits_view(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
@@ -1495,7 +1405,6 @@ async fn config_limits_view(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Set how many servers this Discord server may have, or `default` to clear.
 #[poise::command(slash_command, rename = "max-servers", check = "require_operator")]
 async fn config_limits_max_servers(
     ctx: Context<'_>,
@@ -1510,7 +1419,6 @@ async fn config_limits_max_servers(
     apply_limit_change(ctx, change).await
 }
 
-/// Set this Discord server's total CPU allowance, or `default` to clear.
 #[poise::command(slash_command, rename = "max-cpu", check = "require_operator")]
 async fn config_limits_max_cpu(
     ctx: Context<'_>,
@@ -1527,7 +1435,6 @@ async fn config_limits_max_cpu(
     apply_limit_change(ctx, change).await
 }
 
-/// Set this Discord server's total memory allowance, or `default` to clear.
 #[poise::command(slash_command, rename = "max-memory", check = "require_operator")]
 async fn config_limits_max_memory(
     ctx: Context<'_>,
@@ -1542,8 +1449,6 @@ async fn config_limits_max_memory(
     apply_limit_change(ctx, change).await
 }
 
-/// Parse a limit argument: the literal `default` clears the override, anything
-/// else must survive `parse`.
 fn parse_limit_value<T>(raw: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Option<T>, ()> {
     let trimmed = raw.trim();
     if trimmed.eq_ignore_ascii_case("default") {
@@ -1563,7 +1468,6 @@ async fn limit_value_rejected(ctx: Context<'_>, raw: &str, expected: &str) -> Re
     Ok(())
 }
 
-/// Persist one cap adjustment and confirm with the guild's new effective caps.
 async fn apply_limit_change(ctx: Context<'_>, change: LimitChange) -> Result<(), Error> {
     let Some(guild) = ctx.guild_id() else {
         ctx.send(reply_with(guild_required_embed()).ephemeral(true))
@@ -1613,7 +1517,6 @@ async fn apply_limit_change(ctx: Context<'_>, change: LimitChange) -> Result<(),
     Ok(())
 }
 
-/// Join a set of ids into a Discord mention list, or an em dash when empty.
 fn mention_list(ids: &std::collections::HashSet<u64>, mention: impl Fn(u64) -> String) -> String {
     if ids.is_empty() {
         return "—".to_owned();
@@ -1624,8 +1527,6 @@ fn mention_list(ids: &std::collections::HashSet<u64>, mention: impl Fn(u64) -> S
         .join(", ")
 }
 
-/// Which access tier a `/config` grant mutation targets — picks the wording of
-/// the confirmation reply.
 #[derive(Clone, Copy)]
 enum GrantRole {
     Admin,
@@ -1633,7 +1534,6 @@ enum GrantRole {
 }
 
 impl GrantRole {
-    /// What the grant lets the subject do, for the "Added" reply.
     fn can_now(self) -> &'static str {
         match self {
             Self::Admin => "administer this Discord server's game servers (full control)",
@@ -1641,7 +1541,6 @@ impl GrantRole {
         }
     }
 
-    /// The revoked capability, for the "Removed" reply.
     fn can_no_longer(self) -> &'static str {
         match self {
             Self::Admin => "administer this Discord server's game servers",
@@ -1650,8 +1549,6 @@ impl GrantRole {
     }
 }
 
-/// The reply for a `/config` grant mutation, mapping the store outcome to plain
-/// text tailored to the tier being changed.
 async fn respond_grant_change(
     ctx: Context<'_>,
     change: Result<ConfigChange, anyhow::Error>,
@@ -1681,7 +1578,6 @@ async fn respond_grant_change(
     Ok(())
 }
 
-/// Take a backup of a running server's world to durable storage right now.
 #[poise::command(slash_command, check = "require_manager")]
 pub(crate) async fn backup(
     ctx: Context<'_>,
@@ -1728,7 +1624,6 @@ pub(crate) async fn backup(
     Ok(())
 }
 
-/// List a server's saved backups, newest first.
 #[poise::command(slash_command)]
 pub(crate) async fn backups(
     ctx: Context<'_>,
@@ -1769,7 +1664,6 @@ pub(crate) async fn backups(
     Ok(())
 }
 
-/// List the servers archived in this Discord server (in cold storage, recoverable).
 #[poise::command(slash_command)]
 pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
@@ -1813,7 +1707,6 @@ pub(crate) async fn archives(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Archive a server: save a durable backup, then release its storage. Recoverable.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn archive(
     ctx: Context<'_>,
@@ -1874,7 +1767,6 @@ pub(crate) async fn archive(
     Ok(())
 }
 
-/// Restore a server to one of its backups. Pick which backup from the menu.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn restore(
     ctx: Context<'_>,
@@ -1956,8 +1848,6 @@ pub(crate) async fn restore(
     finish_restore(ctx, &service, &reply, &server, &backups).await
 }
 
-/// Collect the backup pick and the overwrite confirmation, then run the restore.
-/// Split out of [`restore`] so each stays under the line cap.
 async fn finish_restore(
     ctx: Context<'_>,
     service: &BackupService,
@@ -2057,7 +1947,6 @@ async fn finish_restore(
     Ok(())
 }
 
-/// Recover an archived server: recreate it and restore its world. Pick from the menu.
 #[poise::command(slash_command, check = "require_admin")]
 pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
@@ -2115,9 +2004,6 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
         .iter()
         .take(MAX_SELECT_OPTIONS)
         .map(|archive| {
-            // The pick value carries the archive's owning guild so recover can
-            // recreate it in its original tenant (a cross-guild operator may see
-            // archives from several guilds at once).
             CreateSelectMenuOption::new(
                 truncate_option_label(&format!("{} · {}", archive.name, archive.created_at)),
                 format!("{}:{}", archive.guild, archive.name),
@@ -2140,8 +2026,6 @@ pub(crate) async fn recover(ctx: Context<'_>) -> Result<(), Error> {
     finish_recover(ctx, &service, &reply).await
 }
 
-/// Collect the archive pick and run the recovery. Split out of [`recover`] so each
-/// stays under the line cap. The pick value is `guild:name` (see [`recover`]).
 async fn finish_recover(
     ctx: Context<'_>,
     service: &BackupService,
@@ -2210,21 +2094,14 @@ async fn finish_recover(
     Ok(())
 }
 
-/// Who ran this command, for the product event log. Every slash command is the
-/// `command` surface by construction — that is what makes a friend's own action
-/// separable from one Gary took on their behalf.
 fn attribution(ctx: Context<'_>) -> Attribution {
     Attribution::new(Actor::Discord(ctx.author().id.get()), Surface::Command)
 }
 
-/// Record a lifecycle action against the server it acted on. Emitted after the
-/// friend already has their answer, so the record is never in their way.
 async fn record_action(ctx: Context<'_>, kind: EventKind, server: &str, outcome: &'static str) {
     record_boot(ctx, kind, server, outcome, None).await;
 }
 
-/// Record a lifecycle action that carries a boot payload (address, time to
-/// ready) — the create and cold-start paths.
 async fn record_boot(
     ctx: Context<'_>,
     kind: EventKind,
@@ -2247,7 +2124,6 @@ async fn record_boot(
         .await;
 }
 
-/// Danger/Cancel button row for a destructive confirmation.
 fn confirm_buttons(confirm_id: &str) -> CreateActionRow {
     CreateActionRow::Buttons(vec![
         CreateButton::new(confirm_id)
@@ -2259,8 +2135,6 @@ fn confirm_buttons(confirm_id: &str) -> CreateActionRow {
     ])
 }
 
-/// Collect one component interaction on `message`, scoped to the invoking user,
-/// within [`COMPONENT_TIMEOUT`]. `None` means the prompt expired.
 async fn collect_component(ctx: Context<'_>, message: MessageId) -> Option<ComponentInteraction> {
     serenity::ComponentInteractionCollector::new(ctx.serenity_context())
         .author_id(ctx.author().id)
@@ -2281,7 +2155,6 @@ async fn acknowledge(ctx: Context<'_>, interaction: &ComponentInteraction) -> Re
     Ok(())
 }
 
-/// The chosen value of a string-select interaction, if that's what it was.
 fn string_select_value(interaction: &ComponentInteraction) -> Option<String> {
     if let ComponentInteractionDataKind::StringSelect { values } = &interaction.data.kind {
         values.first().cloned()
@@ -2290,8 +2163,6 @@ fn string_select_value(interaction: &ComponentInteraction) -> Option<String> {
     }
 }
 
-/// Send a Confirm/Cancel prompt and return the reply handle to continue editing
-/// when confirmed, or `None` (already resolved to a cancel/timeout embed) otherwise.
 async fn confirm_action<'a>(
     ctx: Context<'a>,
     prompt: CreateEmbed,
@@ -2328,10 +2199,6 @@ async fn confirm_action<'a>(
     Ok(Some(reply))
 }
 
-/// The set of servers this invocation may see and act on: a cross-guild operator
-/// sees every guild, everyone else only the guild they ran the command in.
-/// `None` for a non-operator with no guild (a DM), which has no tenant to scope
-/// to — slash commands don't register in DMs, so this is defensive.
 fn command_scope(ctx: Context<'_>) -> Option<ServerScope> {
     let data = ctx.data();
     visibility_scope(
@@ -2341,24 +2208,16 @@ fn command_scope(ctx: Context<'_>) -> Option<ServerScope> {
     )
 }
 
-/// The owning-guild id to stamp on a server being created, as a string. Empty
-/// when there's no guild (a DM) — which leaves the guild label off, matching the
-/// pre-scoping convention; slash commands don't register in DMs, so in practice
-/// this is always the guild the command ran in.
 fn guild_id_string(ctx: Context<'_>) -> String {
     ctx.guild_id()
         .map(|guild| guild.get().to_string())
         .unwrap_or_default()
 }
 
-/// A non-ephemeral reply carrying a single embed — the shape every
-/// non-interactive command response uses.
 fn reply_with(embed: serenity::CreateEmbed) -> poise::CreateReply {
     poise::CreateReply::default().embed(embed)
 }
 
-/// An edit that replaces an interactive reply with a final embed and strips its
-/// now-spent components (dropdown / buttons).
 fn cleared(embed: serenity::CreateEmbed) -> poise::CreateReply {
     poise::CreateReply::default()
         .embed(embed)

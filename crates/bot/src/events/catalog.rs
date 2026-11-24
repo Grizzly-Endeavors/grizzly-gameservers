@@ -1,70 +1,28 @@
-//! The event vocabulary: what happened, who did it, and which surface they did
-//! it from.
-//!
-//! The three enums here are **closed sets** whose `as_str` renderings land in the
-//! `events` table and are queried by the derivation layer, so they are a
-//! published vocabulary rather than a rendering detail — the same contract
-//! [`crate::agent::Environment`] carries for Langfuse. Adding a variant is a
-//! schema change in everything but name.
-
 use crate::agent::{TurnActor, TurnOrigin};
 use crate::domain::{GameId, GuildId, InstanceName};
 
-/// A product-meaningful action worth a permanent record. One variant per row in
-/// the design's event catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EventKind {
     ServerCreated,
     ServerStarted,
     ServerStopped,
     ServerRestarted,
-    /// The `GameServer` was deleted but the world's PVC kept — a cold `/start`
-    /// brings it back.
     ServerShutdown,
     ServerDestroyed,
     ServerArchived,
     ServerRecovered,
-    /// An archive was deleted — the tarball, its manifest, and the index rows.
-    /// Distinct from `ServerDestroyed`: destroying a server deliberately leaves
-    /// its archives standing, so this is the only kind that records a world
-    /// becoming unrecoverable.
     ArchiveDeleted,
     BackupTaken,
     ServerRestored,
-    /// The scheduled snapshot cycle finished a pass.
     BackupCycle,
-    /// Gary gave up — round budget spent, or a crash rollback that didn't recover.
     Escalation,
-    /// A person stopped a running Gary turn with `/gary-stop`. Deliberately not
-    /// an [`Self::Escalation`]: nothing was handed to a human and nobody was
-    /// paged, and counting it as one would put an operator action into the
-    /// escalation rate, which measures how often Gary can't finish. Recorded at
-    /// all because "how often does a turn have to be stopped, and on what" is
-    /// the question a runaway turn raises.
     TurnCancelled,
-    /// First-ever sighting of a guild, backed by the known-guilds table so a
-    /// gateway reconnect can't re-fire it.
     GuildJoined,
-    /// An operator let a beta applicant in.
     BetaApproved,
-    /// An operator turned a beta applicant down.
     BetaDenied,
-    /// The approval email was sent — separate from the approval itself so a
-    /// Resend produces an event, and "approved but never told" stays visible.
     SignupEmailed,
-    /// The proactive watchdog detected a problem on a running server. One row
-    /// per fired incident whatever its disposition (shadow, responded,
-    /// suppressed), so detection is auditable even when nothing acted.
     Incident,
-    /// A server's CPU/memory allocation was changed. The other half of the cost
-    /// plane's right-sizing question: `resource_samples` says what a server was
-    /// given at each tick, this says when somebody decided to change it and how
-    /// that landed.
     ResourcesChanged,
-    /// An operator changed a runtime setting from the admin panel. Details carry
-    /// the key and both values, so a behaviour change that starts at a given
-    /// moment can be traced to the knob that caused it — the same question the
-    /// release digest answers for a deploy.
     SettingChanged,
 }
 
@@ -96,40 +54,18 @@ impl EventKind {
     }
 }
 
-/// Where an action was driven from. Deliberately *not* [`TurnOrigin`]: origin
-/// answers "how did a Gary turn arrive", surface answers "what drove this
-/// action" — and two of these have no turn behind them at all (a slash command,
-/// an automatic cycle) while [`Surface::Agent`] collapses the two production
-/// Gary origins that are equally "the model did it".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Surface {
-    /// A slash command a friend ran.
     Command,
-    /// A tool inside a production Gary turn — Discord or in-game.
     Agent,
-    /// A tool inside a deferred (`run_when`) batch.
     Deferred,
-    /// Anything driven through the operator harness, whether a direct tool
-    /// dispatch or a tool inside an operator-origin turn. Separable here for the
-    /// same reason the `operator` environment is separable in Langfuse: harness
-    /// traffic must never count as product signal.
     Operator,
-    /// A tool inside a proactive watchdog turn — the model acting on its own
-    /// detection, with no asker on any surface. Not [`Surface::System`] (that
-    /// vocabulary means "no model behind it") and not [`Surface::Deferred`]
-    /// (a friend queued those; nobody queued this).
     Watchdog,
-    /// An automatic cycle — scheduled backups, stranded-instance recovery.
     System,
-    /// The super-admin web panel. Separate from [`Self::Operator`] even though
-    /// both are the operator acting: the harness is a coding agent driving the
-    /// bot, and this is a human clicking a button. Telling them apart is what
-    /// keeps "what did I actually do by hand" answerable.
     Admin,
 }
 
 impl Surface {
-    /// The surface a Gary tool call belongs to, given the turn it runs inside.
     pub(crate) fn from_origin(origin: TurnOrigin) -> Self {
         match origin {
             TurnOrigin::Discord | TurnOrigin::Ingame => Self::Agent,
@@ -152,24 +88,15 @@ impl Surface {
     }
 }
 
-/// Who acted. In-game players have no Discord identity, so their name is
-/// prefixed on the way into the column — otherwise a player called `12345` would
-/// be indistinguishable from a snowflake, and one called `system` from an
-/// automatic action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Actor {
     Discord(u64),
     Player(String),
-    /// An action nobody asked for: a scheduled cycle or a reconciler.
     System,
-    /// Someone signed in to the admin panel, by their identity-provider
-    /// username. Prefixed on the way into the column for the same reason a
-    /// player name is: an admin called `12345` must not read as a snowflake.
     Admin(String),
 }
 
 impl Actor {
-    /// Who triggered a Gary turn, as an event actor.
     pub(crate) fn from_turn(actor: &TurnActor) -> Self {
         match actor {
             TurnActor::Discord(id) => Self::Discord(*id),
@@ -177,7 +104,6 @@ impl Actor {
         }
     }
 
-    /// The `actor` column value.
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Discord(id) => id.to_string(),
@@ -188,8 +114,6 @@ impl Actor {
     }
 }
 
-/// Who did it and what drove them — the attribution every event row carries, and
-/// the thing lifecycle orchestration has always dropped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Attribution {
     pub(crate) actor: Actor,
@@ -201,15 +125,11 @@ impl Attribution {
         Self { actor, surface }
     }
 
-    /// An automatic action: no actor, driven by a cycle.
     pub(crate) fn system() -> Self {
         Self::new(Actor::System, Surface::System)
     }
 }
 
-/// One row bound for the `events` table. `guild`, `game`, and `instance` are each
-/// optional because the catalog is one wide table: a `guild_joined` has no
-/// server, a `backup_cycle` has no guild.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProductEvent {
     pub(crate) kind: EventKind,
@@ -218,8 +138,6 @@ pub(crate) struct ProductEvent {
     pub(crate) instance: Option<InstanceName>,
     pub(crate) actor: Actor,
     pub(crate) surface: Surface,
-    /// How the action ended, from [`super::mapping`] — never free text, so the
-    /// derivation layer can group on it.
     pub(crate) outcome: &'static str,
     pub(crate) details: serde_json::Value,
 }

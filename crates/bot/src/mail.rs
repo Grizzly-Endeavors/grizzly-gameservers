@@ -33,36 +33,22 @@ use tracing::{error, info, warn};
 
 use crate::config::MailConfig;
 
-/// The domain DMARC alignment is anchored on. A `From:` outside it is filtered
-/// rather than bounced, so the mail simply never arrives and nothing says so.
 const ALIGNED_DOMAIN: &str = "grizzly-endeavors.com";
 
-/// What became of one send.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MailOutcome {
     Sent,
-    /// Not configured, or the credential latch has tripped. Nothing was dialed.
     Unavailable,
-    /// The server refused the message permanently — a bad address, or a 5xx.
-    /// Retrying would fail identically.
-    Rejected {
-        reason: String,
-    },
-    /// The credential was refused. Latches the mailer off; see the module docs.
+    Rejected { reason: String },
     AuthRefused,
-    /// Anything else: a timeout, a TLS failure, a transient 4xx.
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 impl MailOutcome {
-    /// Whether the message actually went.
     pub(crate) fn is_sent(&self) -> bool {
         matches!(self, Self::Sent)
     }
 
-    /// A sentence for the operator, naming what to do where that isn't obvious.
     pub(crate) fn describe(&self) -> String {
         match self {
             Self::Sent => "The invite email is on its way.".to_owned(),
@@ -80,23 +66,16 @@ impl MailOutcome {
     }
 }
 
-/// One-way latch that turns sending off after an authentication refusal.
-///
-/// Separated from [`Mailer`] so the interesting half is testable without a
-/// socket: the rule that matters is "once refused, never dial again", and that
-/// is pure state.
 #[derive(Debug, Default)]
 pub(crate) struct SendGate {
     credential_rejected: AtomicBool,
 }
 
 impl SendGate {
-    /// Whether a send may be attempted.
     pub(crate) fn is_open(&self) -> bool {
         !self.credential_rejected.load(Ordering::SeqCst)
     }
 
-    /// Latch closed. Idempotent — repeated refusals report the remedy once.
     pub(crate) fn close(&self) {
         if !self.credential_rejected.swap(true, Ordering::SeqCst) {
             error!(
@@ -109,7 +88,6 @@ impl SendGate {
     }
 }
 
-/// Sends the queue's outbound mail.
 pub(crate) struct Mailer {
     transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
     from: Option<Mailbox>,
@@ -117,8 +95,6 @@ pub(crate) struct Mailer {
 }
 
 impl Mailer {
-    /// Build the transport, or a disabled mailer. Never fails: a mail problem
-    /// costs the approval email, never the boot.
     pub(crate) fn connect(config: Option<&MailConfig>) -> Self {
         let Some(config) = config else {
             warn!(
@@ -139,9 +115,6 @@ impl Mailer {
                 return Self::disabled();
             }
         };
-        // A misaligned sender fails DMARC at the recipient, which looks like
-        // nothing happening rather than an error — worth a log line at startup
-        // rather than a comment nobody reads.
         if !from.email.domain().eq_ignore_ascii_case(ALIGNED_DOMAIN) {
             warn!(
                 from = %config.from,
@@ -184,16 +157,10 @@ impl Mailer {
         }
     }
 
-    /// Whether mail can be sent right now — configured, and not latched off.
     pub(crate) fn is_enabled(&self) -> bool {
         self.transport.is_some() && self.gate.is_open()
     }
 
-    /// Send one plain-text message.
-    ///
-    /// Never returns an error: every failure is a [`MailOutcome`] the caller
-    /// shows the operator and records, because "the decision stuck but the mail
-    /// didn't" is a real state that needs a Resend rather than an error page.
     pub(crate) async fn send(&self, to: &str, subject: &str, body: &str) -> MailOutcome {
         let (Some(transport), Some(from)) = (self.transport.as_ref(), self.from.as_ref()) else {
             return MailOutcome::Unavailable;
@@ -210,11 +177,6 @@ impl Mailer {
             .from(from.clone())
             .to(recipient)
             .subject(subject)
-            // Explicit charset. Without it the body goes out as bare `text/plain`,
-            // which readers decode as ASCII/latin-1 — the em dashes in the copy
-            // then arrive as mojibake in the first message an applicant ever
-            // gets. The subject header is encoded separately and looks fine, so
-            // this only shows up in the body.
             .header(ContentType::TEXT_PLAIN)
             .body(body.to_owned())
         {
@@ -233,14 +195,8 @@ impl Mailer {
         }
     }
 
-    /// Turn a transport error into an outcome, latching the gate on an
-    /// authentication refusal.
     fn classify(&self, err: &lettre::transport::smtp::Error) -> MailOutcome {
         if err.is_permanent() {
-            // A 535 arrives as a permanent error carrying an auth status. Treat
-            // any permanent failure that mentions authentication as the
-            // credential being wrong: over-latching costs a restart, while
-            // under-latching costs the household's outbound mail.
             let text = err.to_string();
             if text.contains("authentication") || text.contains("Authentication") {
                 self.gate.close();
@@ -256,14 +212,8 @@ impl Mailer {
     }
 }
 
-/// The subject line of the approval email.
 pub(crate) const APPROVAL_SUBJECT: &str = "You're in — Gary beta access";
 
-/// The approval email's body.
-///
-/// Plain text on purpose: it is four sentences and a link, and an HTML part
-/// would only add a way for it to render badly. The community link is omitted
-/// entirely when unset rather than rendered as an empty sentence.
 pub(crate) fn approval_body(invite_url: &str, community_url: Option<&str>) -> String {
     let mut body = String::new();
     body.push_str(

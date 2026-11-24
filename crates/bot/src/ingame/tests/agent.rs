@@ -33,7 +33,6 @@ fn session_key_separates_players_and_guilds() {
 
 #[test]
 fn session_key_hashes_non_numeric_guild() {
-    // A guild id that somehow doesn't parse still yields a stable key.
     let key = session_key("not-a-snowflake", "Steve");
     assert_eq!(session_key("not-a-snowflake", "Steve"), key);
 }

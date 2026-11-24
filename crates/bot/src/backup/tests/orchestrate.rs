@@ -12,9 +12,6 @@ fn target() -> LiveInstance {
 
 #[test]
 fn scheduled_snapshot_event_carries_the_instance_it_backed_up() {
-    // The scheduled cycle's per-instance row is what answers "when was this
-    // server last backed up". A cycle-level row alone can't: it has no instance,
-    // so a nightly-only server would read as never backed up.
     let event = BackupService::snapshot_event(
         EventKind::BackupTaken,
         &Attribution::system(),
@@ -36,8 +33,6 @@ fn scheduled_snapshot_event_carries_the_instance_it_backed_up() {
 
 #[test]
 fn a_failed_scheduled_snapshot_is_still_recorded_against_its_instance() {
-    // A server the cycle could not reach is exactly the one an operator needs to
-    // find, so the row must exist and name it rather than being dropped.
     let event = BackupService::snapshot_event(
         EventKind::BackupTaken,
         &Attribution::system(),

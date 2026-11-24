@@ -9,7 +9,6 @@ fn a_healthy_process_reports_no_failing_cycles() {
 
 #[test]
 fn one_panic_does_not_fail_the_probe() {
-    // Restarting the pod for a single bad tick would cost more than the tick did.
     let health = CycleHealth::default();
     health.record_panic("backup");
     assert!(health.failing().is_empty());
@@ -29,7 +28,6 @@ fn repeated_panics_in_one_cycle_fail_the_probe() {
 
 #[test]
 fn cycles_are_counted_separately() {
-    // One flaky cycle must not drag another over the threshold with it.
     let health = CycleHealth::default();
     for _ in 0..UNHEALTHY_PANIC_THRESHOLD {
         health.record_panic("sampler");
@@ -56,12 +54,10 @@ async fn a_panicking_cycle_is_restarted_and_counted() {
         async move {
             let attempt = counter.fetch_add(1, Ordering::SeqCst);
             assert!(attempt >= 2, "boom");
-            // Third attempt: stay alive until shutdown, like a real cycle.
             stop.cancelled().await;
         }
     });
 
-    // Two panics, each waiting out the restart backoff before the next attempt.
     tokio::time::sleep(RESTART_BACKOFF * 2 + Duration::from_secs(2)).await;
     assert!(
         attempts.load(Ordering::SeqCst) >= 3,

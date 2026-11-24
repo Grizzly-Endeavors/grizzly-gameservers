@@ -10,9 +10,6 @@ fn stored(value: &str) -> StoredOverride {
     }
 }
 
-/// A restart-class override that the running process hasn't picked up must be
-/// called out, or the settings page shows a number the bot isn't using with
-/// nothing to say so.
 #[test]
 fn a_recorded_restart_setting_that_is_not_in_force_is_flagged() {
     let booted = SettingsSnapshot::for_test();
@@ -27,8 +24,6 @@ fn a_recorded_restart_setting_that_is_not_in_force_is_flagged() {
     assert!(rendered.contains("restart"), "{rendered}");
 }
 
-/// A hot setting takes effect immediately, so it is never "waiting" — flagging
-/// one would train the operator to ignore the warning.
 #[test]
 fn a_hot_setting_is_never_flagged_as_waiting() {
     let booted = SettingsSnapshot::for_test();
@@ -45,8 +40,6 @@ fn a_hot_setting_is_never_flagged_as_waiting() {
     );
 }
 
-/// An override set to the value the process already booted with is in force
-/// whatever its class, so there is nothing to wait for.
 #[test]
 fn a_restart_setting_matching_the_booted_value_is_not_flagged() {
     let booted = SettingsSnapshot::for_test();
@@ -90,8 +83,6 @@ fn blank_filter_fields_do_not_narrow_the_query() {
     assert_eq!(filter.before_id, None);
 }
 
-/// Paging must not silently drop the filters the operator set, or "older" would
-/// jump from a narrowed view back to the whole log.
 #[test]
 fn paging_preserves_the_active_filters() {
     let query = EventQuery {
@@ -129,8 +120,6 @@ fn human_bytes_reads_the_way_a_person_would_say_it() {
     assert_eq!(human_bytes(900), "900 B");
 }
 
-/// The warning has to name the consequence, not just the state: "the allowlist
-/// is empty" means nothing to someone about to click approve.
 #[test]
 fn an_empty_allowlist_warns_that_approving_grants_access_immediately() {
     let rendered = allowlist_open_notice(true).into_string();
@@ -163,8 +152,6 @@ fn an_absent_note_renders_as_a_dash_rather_than_an_empty_cell() {
     );
 }
 
-/// A note from a public form is untrusted length as well as untrusted content;
-/// maud handles the escaping, this handles the length.
 #[test]
 fn a_long_note_is_cut_for_the_table() {
     let long = "x".repeat(NOTE_PREVIEW_CHARS * 2);
@@ -176,9 +163,6 @@ fn a_long_note_is_cut_for_the_table() {
     assert!(rendered.contains('…'), "{rendered}");
 }
 
-/// CSV injection is the risk this export is shaped around: a field starting `=`
-/// is a formula in Excel, aimed at the one person who opens the file. Quoting
-/// every field and dropping control characters is the whole defence.
 #[test]
 fn csv_fields_are_quoted_and_escaped() {
     assert_eq!(csv_row(&["plain"]), "\"plain\"\n");
@@ -194,8 +178,6 @@ fn csv_fields_drop_control_characters() {
     assert_eq!(csv_row(&["tab\there"]), "\"tabhere\"\n");
 }
 
-/// A leading `=` survives as text because the field is quoted — the point is
-/// that it can't escape the field and become a formula's argument.
 #[test]
 fn a_formula_looking_field_stays_inside_its_quotes() {
     assert_eq!(csv_row(&["=1+1"]), "\"=1+1\"\n");

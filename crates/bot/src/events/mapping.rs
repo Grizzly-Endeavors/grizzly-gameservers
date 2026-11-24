@@ -1,15 +1,3 @@
-//! Outcome enums and payloads → the `outcome` and `details` columns.
-//!
-//! Every mapper here is pure and exhaustive, which is what makes the outcome
-//! vocabulary safe to query: `wildcard_enum_match_arm` is denied workspace-wide,
-//! so a new variant on any orchestration outcome breaks this file rather than
-//! silently landing in the table as an unmapped row.
-//!
-//! One vocabulary, read across all kinds: the happy path names the action that
-//! happened (`created`, `stopped`, `archived`), a refusal names why it couldn't
-//! (`name_taken`, `ports_exhausted`, `not_managed`), and [`FAILED`] is the single
-//! name for an `Err` the caller couldn't classify.
-
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -28,52 +16,28 @@ use crate::watchdog::{Incident, IncidentFacts};
 
 use super::catalog::{Attribution, EventKind, ProductEvent};
 
-/// The outcome for an action that returned `Err` — a cluster or internal fault
-/// the caller had no classified value for.
 pub(crate) const FAILED: &str = "failed";
 
-/// The outcome for a scheduled cycle that finished a pass. A cycle has no failure
-/// outcome of its own: per-server failures are counted in the details.
 pub(crate) const COMPLETED: &str = "completed";
 
-/// The outcome for a first-ever guild sighting.
 pub(crate) const JOINED: &str = "joined";
 
-/// The outcome for a runtime setting an operator changed from the admin panel.
-/// A setting change has no partial result — it either landed or the write failed
-/// — so this and [`FAILED`] are the whole vocabulary.
 pub(crate) const CHANGED: &str = "changed";
 
-/// An archive was deleted on request.
 pub(crate) const DELETED: &str = "deleted";
 
-/// An archive was deleted by the retention cycle rather than by a person, which
-/// is the difference between "someone decided this world was finished with" and
-/// "it aged out". Separable so an unexpected disappearance can be attributed.
 pub(crate) const PRUNED: &str = "pruned";
 
-/// Gary spent his whole round budget on a request without resolving it.
 pub(crate) const ROUND_BUDGET_EXHAUSTED: &str = "round_budget_exhausted";
 
-/// Gary called the escalation tool: he stopped and asked for a human while he
-/// still had budget left. Separable from [`ROUND_BUDGET_EXHAUSTED`] because the
-/// two say opposite things about how the agent is behaving — deliberate handoff
-/// is the guardrail working, budget exhaustion is thrashing.
 pub(crate) const AGENT_REQUESTED: &str = "agent_requested";
 
-/// An automatic crash rollback didn't bring the server back, or couldn't be
-/// issued at all.
 pub(crate) const CRASH_ROLLBACK: &str = "crash_rollback";
 
-/// How an in-place resize landed. Separable because "the setting is saved" and
-/// "the server is running on it" are different states, and only the first is
-/// guaranteed — the kubelet can decline a live change it can't action.
 pub(crate) fn resize(outcome: &ResizeOutcome) -> &'static str {
     match *outcome {
         ResizeOutcome::Applied => "applied",
         ResizeOutcome::InProgress => "in_progress",
-        // A stopped instance and an absent pod are the same story for the record:
-        // saved, waiting for a start.
         ResizeOutcome::NoPod | ResizeOutcome::NotFound | ResizeOutcome::NotManaged => {
             "recorded_for_next_start"
         }
@@ -81,34 +45,20 @@ pub(crate) fn resize(outcome: &ResizeOutcome) -> &'static str {
     }
 }
 
-/// A watchdog incident was detected in shadow mode: recorded, nothing acted.
 pub(crate) const SHADOW: &str = "shadow";
 
-/// A watchdog incident ran a proactive Gary turn.
 pub(crate) const RESPONDED: &str = "responded";
 
-/// A watchdog incident was suppressed by the storm guard — too many proactive
-/// turns in the window, so operators got a one-line DM instead.
 pub(crate) const SUPPRESSED_STORM: &str = "suppressed_storm";
 
-/// A watchdog crash incident was left to an armed deferred `startup` watcher,
-/// which runs its own investigation batch for the same event.
 pub(crate) const DEFERRED_TO_BATCH: &str = "deferred_to_batch";
 
-/// A watchdog incident had nowhere to go — no gateway, or no home channel and
-/// no operator DM could be opened.
 pub(crate) const UNDELIVERABLE: &str = "undeliverable";
 
-/// A watchdog incident's proactive turn errored before producing a reply.
 pub(crate) const TURN_FAILED: &str = "turn_failed";
 
-/// A person stopped a running turn. The only outcome `turn_cancelled` carries —
-/// there is no partial or failed stop, since a token that has been tripped
-/// always ends the turn at the next round boundary.
 pub(crate) const STOPPED: &str = "stopped";
 
-/// Which way Gary gave up. The escalation kind *is* the outcome, so the two
-/// escalation shapes are separable without reaching into the details payload.
 pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
     match escalation {
         Escalation::AgentRequested { .. } => AGENT_REQUESTED,
@@ -117,18 +67,12 @@ pub(crate) fn escalation(escalation: &Escalation) -> &'static str {
     }
 }
 
-/// The row for an escalation, with whichever locators its kind carries — a
-/// Discord give-up has neither a server nor a file, an in-game or deferred one
-/// names its server, an agent-requested one names whichever server the model
-/// said it was about, and a crash rollback names both.
 pub(crate) fn escalation_event(
     escalation: &Escalation,
     attribution: &Attribution,
     guild: Option<GuildId>,
 ) -> ProductEvent {
     let (server, path) = match escalation {
-        // The model names the server itself, which is the only locator a Discord
-        // handoff has — so it wins over the context, which carries none.
         Escalation::AgentRequested {
             server: Some(server),
             ..
@@ -155,11 +99,6 @@ pub(crate) fn escalation_event(
     event
 }
 
-/// The row for a turn somebody stopped.
-///
-/// The actor is whoever ran the command rather than whoever started the turn:
-/// the conversation is shared, so those are often different people, and the
-/// useful audit answer is who pulled the plug.
 pub(crate) fn turn_cancelled_event(
     attribution: &Attribution,
     guild: Option<GuildId>,
@@ -167,9 +106,6 @@ pub(crate) fn turn_cancelled_event(
     ProductEvent::new(EventKind::TurnCancelled, attribution, STOPPED).guild(guild)
 }
 
-/// The row for a watchdog incident: which signal fired, its numbers, and where
-/// the response went (`delivery` is null when nothing was delivered — shadow,
-/// suppressed, undeliverable).
 pub(crate) fn incident_event(
     incident: &Incident,
     outcome: &'static str,
@@ -182,8 +118,6 @@ pub(crate) fn incident_event(
         .details(incident_details(incident, delivery))
 }
 
-/// Payload for a watchdog incident: the signal name plus its kind-specific
-/// numbers, flattened so SQL reaches each figure without knowing the kind.
 fn incident_details(incident: &Incident, delivery: Option<&str>) -> Value {
     let facts = match &incident.facts {
         IncidentFacts::CrashLoop {
@@ -203,7 +137,6 @@ fn incident_details(incident: &Incident, delivery: Option<&str>) -> Value {
         IncidentFacts::Unreachable { minutes } => json!({
             "unreachable_minutes": minutes,
         }),
-        // The supervisor that held the numbers died with the pod.
         IncidentFacts::Unhealthy => json!({}),
         IncidentFacts::MemoryPressure {
             used_bytes,
@@ -224,9 +157,6 @@ fn incident_details(incident: &Incident, delivery: Option<&str>) -> Value {
     Value::Object(details)
 }
 
-/// How the provisioning phase of a create ended. A successful provision is not
-/// yet terminal — the caller resolves readiness and reports [`readiness`]
-/// instead, so `provisioned` only ever lands when readiness was never awaited.
 pub(crate) fn provision(outcome: &ProvisionOutcome) -> &'static str {
     match outcome {
         ProvisionOutcome::Provisioned { .. } => "provisioned",
@@ -238,9 +168,6 @@ pub(crate) fn provision(outcome: &ProvisionOutcome) -> &'static str {
     }
 }
 
-/// The outcome name for a namespace-ceiling refusal — split by dimension, and
-/// for CPU/memory by which side of the quota bound, because "raise the ceiling"
-/// is a different action for each and the counts are what say which to raise.
 pub(crate) fn capacity_refusal(refusal: CapacityRefusal) -> &'static str {
     match refusal {
         CapacityRefusal::Servers { .. } => "cluster_full_servers",
@@ -265,8 +192,6 @@ pub(crate) fn capacity_refusal(refusal: CapacityRefusal) -> &'static str {
     }
 }
 
-/// The outcome name for a guild-cap refusal (ADR-022) — split by which cap, so
-/// "too many servers" and "too much CPU/memory" stay separately countable.
 pub(crate) fn limit_refusal(refusal: LimitRefusal) -> &'static str {
     match refusal {
         LimitRefusal::ServerCount { .. } => "guild_limit_servers",
@@ -276,8 +201,6 @@ pub(crate) fn limit_refusal(refusal: LimitRefusal) -> &'static str {
     }
 }
 
-/// How the start-up phase of a cold start ended. As with [`provision`], a
-/// successful start is resolved by [`readiness`].
 pub(crate) fn start_begin(outcome: &StartBegin) -> &'static str {
     match outcome {
         StartBegin::Starting { .. } => "starting",
@@ -289,15 +212,10 @@ pub(crate) fn start_begin(outcome: &StartBegin) -> &'static str {
     }
 }
 
-/// The terminal outcome of a create or cold start, once the readiness wait has
-/// resolved. `unconfirmed` means the wait elapsed with the server still coming
-/// up — the objects exist, but nobody can connect yet.
 pub(crate) fn readiness(ready: bool) -> &'static str {
     if ready { "ready" } else { "unconfirmed" }
 }
 
-/// How a warm supervisor action ended. The event kind already says which action
-/// was asked for, so the three success variants map to their own past tense.
 pub(crate) fn supervisor(outcome: &SupervisorOutcome) -> &'static str {
     match outcome {
         SupervisorOutcome::Paused => "stopped",
@@ -397,9 +315,6 @@ fn millis(elapsed: Duration) -> u64 {
     u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Payload for a create or cold start. `time_to_ready_ms` is null whenever
-/// readiness wasn't confirmed, never zero — an unconfirmed boot is unknown, not
-/// instant.
 pub(crate) fn boot_details(address: Option<&str>, time_to_ready: Option<Duration>) -> Value {
     json!({
         "address": address,
@@ -407,30 +322,22 @@ pub(crate) fn boot_details(address: Option<&str>, time_to_ready: Option<Duration
     })
 }
 
-/// Payload for a backup or an archive.
 pub(crate) fn size_details(size_bytes: u64) -> Value {
     json!({ "size_bytes": size_bytes })
 }
 
-/// Payload for a recover: the server is new, so it reports where it landed and
-/// how it came up.
 pub(crate) fn recover_details(address: &str, boot: BootState) -> Value {
     json!({ "address": address, "boot": boot_state(boot) })
 }
 
-/// Payload for a restore: how the server came back, and whether the overwrite
-/// left an undo point.
 pub(crate) fn restore_details(boot: BootState, safety: SafetyBackup) -> Value {
     json!({ "boot": boot_state(boot), "safety_backup": safety_backup(safety) })
 }
 
-/// Payload for a scheduled backup pass.
 pub(crate) fn cycle_details(servers: usize, succeeded: usize, failed: usize) -> Value {
     json!({ "servers": servers, "succeeded": succeeded, "failed": failed })
 }
 
-/// Payload for an escalation. Both locators are null for a Discord give-up,
-/// which has neither.
 pub(crate) fn escalation_details(server: Option<&str>, path: Option<&str>) -> Value {
     json!({ "server": server, "path": path })
 }
@@ -439,35 +346,21 @@ pub(crate) fn escalation_details(server: Option<&str>, path: Option<&str>) -> Va
 #[path = "tests/mapping.rs"]
 mod tests;
 
-/// A beta applicant was let in.
 pub(crate) const APPROVED: &str = "approved";
 
-/// A beta applicant was turned down.
 pub(crate) const DENIED: &str = "denied";
 
-/// The approval email left the process for the mail server.
 pub(crate) const SENT: &str = "sent";
 
-/// Mail isn't configured, or the credential latch has tripped — nothing was
-/// dialed, and the approval is waiting for a Resend.
 pub(crate) const MAIL_UNAVAILABLE: &str = "mail_unavailable";
 
-/// The mail server refused the credential. Sending is off until the bot
-/// restarts; see `crate::mail::SendGate`.
 pub(crate) const AUTH_REFUSED: &str = "auth_refused";
 
-/// How one attempt to send the approval email came out.
-///
-/// Exhaustive on purpose: `wildcard_enum_match_arm` is denied, so a new
-/// [`MailOutcome`](crate::mail::MailOutcome) variant is a compile error here
-/// rather than an unmapped string landing in the events table.
 pub(crate) fn mail(outcome: &crate::mail::MailOutcome) -> &'static str {
     match outcome {
         crate::mail::MailOutcome::Sent => SENT,
         crate::mail::MailOutcome::Unavailable => MAIL_UNAVAILABLE,
         crate::mail::MailOutcome::AuthRefused => AUTH_REFUSED,
-        // A permanent rejection is the address being undeliverable, which is
-        // exactly what this outcome already means elsewhere.
         crate::mail::MailOutcome::Rejected { .. } => UNDELIVERABLE,
         crate::mail::MailOutcome::Failed { .. } => FAILED,
     }

@@ -1,7 +1,3 @@
-//! The backup/archive/restore/recover flows. Each composes existing Agones
-//! lifecycle actions (`crate::agones`) with the supervisor's streaming archive
-//! routes and the [`super::s3`] shell — the bot is the only thing that touches S3.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -31,17 +27,11 @@ use crate::config::{DbConfig, S3Config};
 use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::{Attribution, EventKind, ProductEvent, mapping};
 
-/// `created_by` recorded for a safety backup the restore path takes before it
-/// overwrites a world, so an overwrite is always undoable.
 const CREATED_BY_PRE_RESTORE: &str = "auto-pre-restore";
 
-/// How long to wait for a supervisor or S3 to accept a connection.
 const BACKUP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long a transfer may stall between chunks before it counts as wedged.
-/// Generous: a big world pauses while the game flushes it to disk.
 const BACKUP_READ_TIMEOUT: Duration = Duration::from_mins(5);
 
-/// A streaming `GET /archive` against a supervisor, or why it couldn't be opened.
 enum ArchiveSource {
     Ready(reqwest::Response),
     NotFound,
@@ -50,7 +40,6 @@ enum ArchiveSource {
     Unreachable(String),
 }
 
-/// The result of streaming an archive into a supervisor's `POST /archive`.
 enum ExtractResult {
     Ok,
     NotFound,
@@ -60,13 +49,6 @@ enum ExtractResult {
 }
 
 impl BackupService {
-    /// Build the service from config. Connects the archive index (degrading to
-    /// disabled if Postgres is down), but performs no S3 IO yet.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if the S3 client can't be constructed from config
-    /// (an invalid endpoint URL) — connectivity is checked lazily on first use.
     pub(crate) async fn new(
         s3_config: &S3Config,
         db_config: Option<&DbConfig>,
@@ -76,14 +58,6 @@ impl BackupService {
         interval: Duration,
         events: std::sync::Arc<crate::events::EventLog>,
     ) -> Result<Self> {
-        // No *total* timeout: a multi-gigabyte world legitimately streams for
-        // minutes. A read timeout instead, which resets on every chunk — so a
-        // healthy slow transfer runs as long as it needs while a peer that
-        // accepts the connection and then stops answering (a wedged JVM, a
-        // blackholed node) fails instead of hanging. That distinction matters
-        // because `run_backup_cycle` walks servers serially inside the tick loop:
-        // one socket waiting forever silently stops backups for every guild, and
-        // the last thing logged is that the cycle started.
         let stream_http = reqwest::Client::builder()
             .connect_timeout(BACKUP_CONNECT_TIMEOUT)
             .read_timeout(BACKUP_READ_TIMEOUT)
@@ -103,22 +77,16 @@ impl BackupService {
         })
     }
 
-    /// Record a backup-flow event. Guild and game are filled from the instance's
-    /// labels when the flow didn't already have a target in hand.
     async fn record(&self, ctx: &BackupCtx<'_>, event: ProductEvent) {
         self.events
             .record_lifecycle(ctx.client, ctx.namespace, event)
             .await;
     }
 
-    /// How often the scheduled backup cycle should run.
     pub(crate) fn interval(&self) -> Duration {
         self.interval
     }
 
-    /// Snapshot every live managed server to S3, pruning each to the retention
-    /// limit. Driven by the scheduled timer in `crate::run`; logs a summary once
-    /// rather than a line per server.
     pub(crate) async fn run_backup_cycle(&self, ctx: &BackupCtx<'_>) {
         let targets = match list_live_instances(ctx.client, ctx.namespace).await {
             Ok(targets) => targets,
@@ -127,15 +95,9 @@ impl BackupService {
                 return;
             }
         };
-        // An empty pass still gets a row: a cycle that recorded nothing and a
-        // cycle that never ran look identical otherwise.
         let servers = targets.len();
         if targets.is_empty() {
             self.record_cycle(servers, 0, 0).await;
-            // Archives belong to servers that no longer exist, so an empty fleet
-            // is precisely when there is aged archive storage to reclaim and
-            // nothing else to do — pruning must not ride on there being live
-            // servers to back up.
             self.prune_archives(ctx).await;
             return;
         }
@@ -145,11 +107,6 @@ impl BackupService {
         for target in targets {
             match self.snapshot_target(ctx, &target, CREATED_BY_AUTO).await {
                 Ok(outcome) => {
-                    // The same per-instance row the on-demand path writes, so
-                    // "when was this server last backed up" has one answer
-                    // regardless of who took the backup. Without it a server the
-                    // cycle backs up nightly reads as last-backed-up whenever a
-                    // human happened to ask for one.
                     self.record(
                         ctx,
                         Self::snapshot_event(
@@ -186,8 +143,6 @@ impl BackupService {
         self.prune_archives(ctx).await;
     }
 
-    /// Record one completed pass of the scheduled cycle. Not per-server: each
-    /// snapshot already emits its own `backup_taken`.
     async fn record_cycle(&self, servers: usize, succeeded: usize, failed: usize) {
         self.events
             .record(
@@ -201,12 +156,6 @@ impl BackupService {
             .await;
     }
 
-    /// Take one on-demand backup of a live server.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only on an unexpected cluster/S3 fault; expected outcomes
-    /// (not found, not running) are values.
     pub(crate) async fn backup_instance(
         &self,
         ctx: &BackupCtx<'_>,
@@ -243,8 +192,6 @@ impl BackupService {
         Ok(outcome)
     }
 
-    /// Build a snapshot event from a target the flow already resolved, so the
-    /// guild and game come from the labels it read rather than a second lookup.
     fn snapshot_event(
         kind: EventKind,
         attribution: &Attribution,
@@ -266,19 +213,6 @@ impl BackupService {
         }
     }
 
-    /// List a server's backups, newest first.
-    ///
-    /// The prefix is keyed by the guild that owns the instance *now*, read off its
-    /// Service — the one object of the trio that outlives both `/stop` and
-    /// `/shutdown`, so this answers for a shut-down server too. An instance with no
-    /// Service has been destroyed and has no owner to answer for, so it lists
-    /// nothing: whatever sits under a previous owner's prefix is theirs, not the
-    /// caller's, even when the caller now holds the same name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the owner can't be read, the bucket can't be listed, or
-    /// a manifest can't be read.
     pub(crate) async fn list_backups(
         &self,
         ctx: &BackupCtx<'_>,
@@ -296,22 +230,11 @@ impl BackupService {
         self.summaries(tarballs).await
     }
 
-    /// The guild that currently owns `instance`, or `None` when no Service names
-    /// it. An owned instance whose guild label is absent (a pre-scoping object)
-    /// resolves to the empty string, which [`backup_prefix`] maps to its reserved
-    /// unscoped segment rather than treating as "no owner".
     async fn owning_guild(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<Option<String>> {
         let owner = owner_of(ctx.client, ctx.namespace, instance).await?;
         Ok(owner.map(|owner| owner.guild.map(GuildId::into_string).unwrap_or_default()))
     }
 
-    /// List the archives visible under `scope` (latest per name), newest first.
-    /// A guild scope lists that guild's archives; the cross-guild operator scope
-    /// lists every guild's.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the archive catalog is disabled or the query fails.
     pub(crate) async fn list_archives(&self, scope: &ServerScope) -> Result<Vec<ArtifactSummary>> {
         let records = match scope {
             ServerScope::All => self.archives.list_all_latest_per_name().await?,
@@ -329,29 +252,10 @@ impl BackupService {
             .collect())
     }
 
-    /// Whether the archive catalog (Postgres) is available — archive/recover need
-    /// it, so the command layer checks this before offering them.
     pub(crate) fn archives_enabled(&self) -> bool {
         self.archives.enabled()
     }
 
-    /// Delete every archive generation of `name` within `scope`, freeing the S3
-    /// objects and dropping the index rows.
-    ///
-    /// This is the only operation that makes a world unrecoverable, so it is
-    /// deliberately not reachable from `destroy_server`: an archive is the escape
-    /// hatch *from* a destroy, and cascading the two would turn one confirmation
-    /// into two irreversible acts.
-    ///
-    /// Objects go before rows. A failure between the two leaves index entries
-    /// pointing at absent objects — visible in `/archives` and fixable by
-    /// re-running the delete — whereas the reverse order would orphan gigabytes in
-    /// S3 that nothing references and no listing would ever show again.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only on an unexpected S3/DB fault that isn't classified
-    /// into the outcome.
     pub(crate) async fn delete_archives(
         &self,
         ctx: &BackupCtx<'_>,
@@ -380,9 +284,6 @@ impl BackupService {
         for record in &records {
             for key in [&record.tarball_key, &record.manifest_key] {
                 if let Err(err) = self.s3.delete_object(key).await {
-                    // Stop rather than press on to the row deletes: dropping the
-                    // index for an object still in S3 is the leak this ordering
-                    // exists to avoid, and a retry is safe.
                     error!(error = ?err, key, name, "failed to delete an archive object");
                     self.record(
                         ctx,
@@ -420,17 +321,6 @@ impl BackupService {
         })
     }
 
-    /// How many archive generations of `name` exist within `scope`, and their
-    /// combined size — what a delete would actually remove. `None` when there is
-    /// no such archive.
-    ///
-    /// Separate from the delete so the confirmation card can state the real cost
-    /// before anyone approves it: `/archives` shows only the newest copy per name,
-    /// so the visible entry routinely understates what goes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the archive catalog can't be read.
     pub(crate) async fn archive_footprint(
         &self,
         scope: &ServerScope,
@@ -450,10 +340,6 @@ impl BackupService {
         Ok(Some((records.len(), total)))
     }
 
-    /// The guild whose archive of `name` this caller may act on. A guild-scoped
-    /// caller can only ever mean their own; a cross-guild operator's `name` is
-    /// resolved through the listing, so an operator can't delete an archive by
-    /// guessing a name they were never shown.
     async fn guild_owning_archive(
         &self,
         scope: &ServerScope,
@@ -475,17 +361,6 @@ impl BackupService {
         }
     }
 
-    /// Delete archive generations older than the retention window, always keeping
-    /// the newest of each name.
-    ///
-    /// Runs on the same cycle as the backup prune so archives stop growing without
-    /// bound, but with a far longer window and that keep-newest floor: a backup is
-    /// one of several rolling snapshots of a *live* server, while an archive may be
-    /// the only remaining copy of a world nobody has touched in a year. Age alone
-    /// is never sufficient reason to delete the last one.
-    ///
-    /// Best-effort throughout — a failure is logged and the cycle continues, since
-    /// this runs unattended and must not wedge the backup cycle it rides on.
     async fn prune_archives(&self, ctx: &BackupCtx<'_>) {
         if !self.archives.enabled() {
             return;
@@ -510,8 +385,6 @@ impl BackupService {
                     objects_gone = false;
                 }
             }
-            // Leave the row when an object survived, so the pair is retried next
-            // cycle instead of the object being orphaned beyond reach.
             if !objects_gone {
                 continue;
             }
@@ -542,21 +415,12 @@ impl BackupService {
         }
     }
 
-    /// Stop a server, back it up to the archive area, record it, and release the
-    /// whole trio (PVC included).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only on an unexpected cluster/S3/DB fault.
     pub(crate) async fn archive_instance(
         &self,
         ctx: &BackupCtx<'_>,
         instance: &str,
         attribution: &Attribution,
     ) -> Result<ArchiveOutcome> {
-        // Resolve the tenant *first*: a successful archive releases the Service
-        // the guild and game labels live on, so afterwards there is nothing left
-        // to read them off.
         let owner = owner_before(ctx, instance).await;
         let archived = self
             .run_archive(ctx, instance, &attribution.actor.label())
@@ -588,8 +452,6 @@ impl BackupService {
         archived
     }
 
-    /// The archive flow itself. Split from [`Self::archive_instance`] so its many
-    /// early returns are all covered by one emission point.
     async fn run_archive(
         &self,
         ctx: &BackupCtx<'_>,
@@ -599,8 +461,6 @@ impl BackupService {
         if !self.archives.enabled() {
             return Ok(ArchiveOutcome::Unavailable);
         }
-        // Ensure a pod is up (cold-start a shut-down server) so its /data is
-        // reachable to stream.
         match self.ensure_pod_reachable(ctx, instance).await? {
             EnsurePod::Ready => {}
             EnsurePod::NotFound => return Ok(ArchiveOutcome::NotFound),
@@ -611,7 +471,6 @@ impl BackupService {
             return Ok(ArchiveOutcome::NotFound);
         };
 
-        // Stop for a saved, consistent snapshot (SIGTERM flushes the world).
         if let Some(outcome) = stop_for_snapshot(ctx, instance).await? {
             return Ok(match outcome {
                 StopBlock::NotFound => ArchiveOutcome::NotFound,
@@ -666,20 +525,11 @@ impl BackupService {
             .await
             .with_context(|| format!("failed to record archive for {instance}"))?;
 
-        // The archive is durable in S3 + Postgres. Releasing the trio is the last
-        // step; if it *errors* now, the archive still stands and is recover-able,
-        // so surface a distinct partial success (safe to retry) instead of letting
-        // `?` collapse it into the generic "nothing was saved" failure — the
-        // archive was saved, and the GameServer may already be half-torn-down.
         match destroy_instance(ctx.client, ctx.namespace, instance).await {
             Ok(DestroyOutcome::Destroyed | DestroyOutcome::NotFound) => {}
             Ok(DestroyOutcome::NotManaged) => {
                 warn!(instance, "archived server was unmanaged at teardown");
             }
-            // The teardown refused rather than failed: the server wouldn't
-            // confirm it had stopped, so its storage is deliberately still
-            // there. Same partial success as an errored release — the archive
-            // stands and re-running `/archive` clears the storage up.
             Ok(DestroyOutcome::Blocked) => {
                 warn!(
                     instance,
@@ -710,12 +560,6 @@ impl BackupService {
         })
     }
 
-    /// Roll a live server back to one of its backups (`tarball_key`), taking a
-    /// safety backup of the current world first so the overwrite is undoable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only on an unexpected cluster/S3 fault.
     pub(crate) async fn restore_backup(
         &self,
         ctx: &BackupCtx<'_>,
@@ -746,20 +590,12 @@ impl BackupService {
         restored
     }
 
-    /// The restore flow itself. Split from [`Self::restore_backup`] so its early
-    /// returns are all covered by one emission point.
     async fn run_restore(
         &self,
         ctx: &BackupCtx<'_>,
         instance: &str,
         tarball_key: &str,
     ) -> Result<RestoreOutcome> {
-        // Every caller picks the key out of a `list_backups` result, which is
-        // already confined to the instance's owner — so this only fires if a key
-        // reaches here by some other route. It is the step that writes one world
-        // over another, which is worth not resting solely on the caller. Reported
-        // as NotFound, never "that isn't yours", so a probe learns nothing about
-        // another tenant's artifacts.
         let owner = self.owning_guild(ctx, instance).await?;
         let expected = owner
             .as_deref()
@@ -781,11 +617,6 @@ impl BackupService {
             EnsurePod::Failed(reason) => return Ok(RestoreOutcome::Failed(reason)),
         }
 
-        // Best-effort safety net: snapshot the current world before overwriting
-        // it, so the friend has the undo point promised in the restore confirm.
-        // Track whether it actually landed — the restore still proceeds if it
-        // didn't, but the "Restored" result must then drop the undo promise
-        // rather than imply an undo point that doesn't exist.
         let safety_backup = if let Some(target) = self.find_target(ctx, instance).await? {
             match self
                 .snapshot_target(ctx, &target, CREATED_BY_PRE_RESTORE)
@@ -855,12 +686,6 @@ impl BackupService {
         })
     }
 
-    /// Recover an archived server: recreate the trio held paused, reseed `/data`
-    /// from the archive, then launch the game.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only on an unexpected cluster/S3/DB fault.
     pub(crate) async fn recover_archive(
         &self,
         ctx: &BackupCtx<'_>,
@@ -893,14 +718,10 @@ impl BackupService {
             )
             | Err(_) => event,
         };
-        // Recorded after the flow, not before: the server the guild and game
-        // labels live on is what a recover creates.
         self.record(ctx, event).await;
         recovered
     }
 
-    /// The recover flow itself. Split from [`Self::recover_archive`] so its many
-    /// early returns are all covered by one emission point.
     async fn run_recover(
         &self,
         ctx: &BackupCtx<'_>,
@@ -923,10 +744,6 @@ impl BackupService {
             return Ok(RecoverOutcome::UnknownGame(record.game.into_string()));
         };
 
-        // Stamp the recovered server with the archive's *own* owning guild, not
-        // whatever guild the caller happens to be in — so a cross-guild operator
-        // recovering an archive returns it to its original tenant. The caps
-        // checked are that owning guild's for the same reason.
         let caps = ctx.guild_limits.caps_for(record.guild.as_str()).await;
         let address = match provision_paused_instance(
             ctx.client,
@@ -958,17 +775,14 @@ impl BackupService {
         let outcome = self
             .seed_and_launch(ctx, name, &record.tarball_key, address)
             .await?;
-        if let RecoverOutcome::Failed(_) = &outcome {
-            // Free the name so a retry (or a different recovery) isn't blocked by a
-            // half-built server; the archive itself is untouched.
-            if let Err(err) = destroy_instance(ctx.client, ctx.namespace, name).await {
-                warn!(error = ?err, name, "failed to clean up after a failed recover");
-            }
+        if let RecoverOutcome::Failed(_) = &outcome
+            && let Err(err) = destroy_instance(ctx.client, ctx.namespace, name).await
+        {
+            warn!(error = ?err, name, "failed to clean up after a failed recover");
         }
         Ok(outcome)
     }
 
-    /// Seed a freshly provisioned (paused) server from its archive and launch it.
     async fn seed_and_launch(
         &self,
         ctx: &BackupCtx<'_>,
@@ -1003,7 +817,6 @@ impl BackupService {
             .download_stream(tarball_key)
             .await
             .with_context(|| format!("failed to download archive {tarball_key}"))?;
-        // Fresh PVC, so no purge needed before extracting.
         match self.push_archive_stream(ctx, name, false, download).await? {
             ExtractResult::Ok => {}
             ExtractResult::NotFound | ExtractResult::NotManaged | ExtractResult::PodNotReady => {
@@ -1020,9 +833,6 @@ impl BackupService {
         })
     }
 
-    /// Snapshot one already-resolved live server to `backups/<instance>/`, then
-    /// prune to the retention limit. Quiesces (flushes) only when the process is
-    /// running — a paused server's `/data` is already saved and its RCON is down.
     async fn snapshot_target(
         &self,
         ctx: &BackupCtx<'_>,
@@ -1064,8 +874,6 @@ impl BackupService {
         Ok(BackupOutcome::BackedUp { size_bytes: size })
     }
 
-    /// Delete backups older than the newest `retention` under a server's prefix.
-    /// Best-effort: a prune failure is logged, never fatal to the backup itself.
     async fn prune_backups(&self, guild: &str, instance: &str) {
         let tarballs = match self.s3.list_tarballs(&backup_prefix(guild, instance)).await {
             Ok(tarballs) => tarballs,
@@ -1087,10 +895,6 @@ impl BackupService {
         }
     }
 
-    /// Read each tarball's manifest to build display summaries, newest-first order
-    /// preserved from the caller. A tarball whose manifest can't be read is skipped
-    /// with a warning rather than failing the whole listing — one corrupt or
-    /// missing manifest must not hide a friend's other, healthy backups.
     async fn summaries(&self, tarballs: Vec<String>) -> Result<Vec<ArtifactSummary>> {
         let mut summaries = Vec::with_capacity(tarballs.len());
         for tarball in tarballs {
@@ -1120,7 +924,6 @@ impl BackupService {
         Ok(summaries)
     }
 
-    /// Open a streaming `GET /archive` against an instance's supervisor.
     async fn open_archive_stream(
         &self,
         ctx: &BackupCtx<'_>,
@@ -1154,8 +957,6 @@ impl BackupService {
         }
     }
 
-    /// Stream `source` into an instance's supervisor `POST /archive`, purging its
-    /// data root first when `purge` is set (overwrite-restore).
     async fn push_archive_stream(
         &self,
         ctx: &BackupCtx<'_>,
@@ -1192,7 +993,6 @@ impl BackupService {
         }
     }
 
-    /// Warm-start a server and wait for it to accept players again.
     async fn start_and_wait(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<StartResult> {
         match supervisor_start(
             ctx.client,
@@ -1230,9 +1030,6 @@ impl BackupService {
             ReadyWait::Crashed => BootState::Crashed,
             ReadyWait::Stopped => BootState::Stopped,
             ReadyWait::TimedOut => BootState::TimedOut,
-            // The start we just issued succeeded, so the pod vanishing out from
-            // under the wait is an unexpected race rather than a normal outcome
-            // — surface it as a failure instead of quietly reporting "ready: no".
             ReadyWait::NotFound | ReadyWait::NotManaged => {
                 return Ok(StartResult::Failed(
                     "the server disappeared while waiting for it to come back up".to_owned(),
@@ -1242,13 +1039,10 @@ impl BackupService {
         Ok(StartResult::Ready(boot))
     }
 
-    /// Ensure an instance has a live pod, cold-starting a shut-down one.
     async fn ensure_pod_reachable(&self, ctx: &BackupCtx<'_>, instance: &str) -> Result<EnsurePod> {
         match instance_runtime_state(ctx.client, ctx.namespace, instance).await? {
             RuntimeState::Absent => return Ok(EnsurePod::NotFound),
             RuntimeState::PodUp => return Ok(EnsurePod::Ready),
-            // Cold-starting now would collide with the in-flight teardown: the
-            // create is rejected while the old object still holds the name.
             RuntimeState::Terminating => {
                 return Ok(EnsurePod::Failed(
                     "the server is still shutting down; try again in a few minutes".to_owned(),
@@ -1301,7 +1095,6 @@ impl BackupService {
         )
     }
 
-    /// Look up a live server's labels (game/guild/running) by name.
     async fn find_target(
         &self,
         ctx: &BackupCtx<'_>,
@@ -1314,7 +1107,6 @@ impl BackupService {
     }
 }
 
-/// The result of ensuring a server has a reachable pod.
 enum EnsurePod {
     Ready,
     NotFound,
@@ -1322,25 +1114,17 @@ enum EnsurePod {
     Failed(String),
 }
 
-/// A non-happy result from [`stop_for_snapshot`].
 enum StopBlock {
     NotFound,
     NotManaged,
     Failed(String),
 }
 
-/// The result of starting a server and waiting for readiness.
 enum StartResult {
     Ready(BootState),
     Failed(String),
 }
 
-/// Stop a server's process so its `/data` is flushed and consistent before a
-/// snapshot. Returns `None` when the stop landed (paused or already stopped), or
-/// the blocking reason otherwise.
-/// The guild and game owning `instance`, read before a flow that may remove the
-/// object those labels live on. Best-effort by design: a failed lookup costs the
-/// event its tenant columns, never the action its result.
 async fn owner_before(ctx: &BackupCtx<'_>, instance: &str) -> InstanceOwner {
     match owner_of(ctx.client, ctx.namespace, instance).await {
         Ok(Some(owner)) => owner,
@@ -1382,8 +1166,6 @@ async fn stop_for_snapshot(ctx: &BackupCtx<'_>, instance: &str) -> Result<Option
     )
 }
 
-/// Build a manifest for a just-uploaded artifact. The identity trio is typed so a
-/// transposed `game`/`guild` or `instance`/`created_by` is a compile error.
 fn manifest(
     kind: ArtifactKind,
     instance: &InstanceName,
@@ -1406,8 +1188,6 @@ fn manifest(
     }
 }
 
-/// Read a supervisor error reply's [`ControlError`] message for logging/relay,
-/// falling back to the HTTP status when the body isn't parseable.
 async fn control_error(response: reqwest::Response, op: &str) -> String {
     let status = response.status();
     match response.json::<ControlError>().await {

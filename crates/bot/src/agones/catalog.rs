@@ -6,33 +6,17 @@ use anyhow::{Context, Result, bail};
 use super::env_overlay::{EnvOverlay, env_overlay_or_warn};
 use super::mod_registry::{ModRegistry, mod_registry_or_warn, mods_file_or_warn};
 
-/// One game's raw, version-controlled templates as read from `games/<id>/`. The
-/// strings are deserialized per instance by the renderer rather than at load
-/// time, so a malformed template surfaces against a specific `/create` instead
-/// of preventing the bot from starting.
 #[derive(Clone, Debug)]
 pub(crate) struct GameCatalogEntry {
     pub(crate) id: String,
     pub(crate) gameserver_yaml: String,
     pub(crate) service_yaml: String,
     pub(crate) pvc_yaml: String,
-    /// Where this game's mods come from, read off the `GameServer` template's
-    /// annotations at load time. `None` for a game that declares none — and, by
-    /// the lenient wrapper, for one whose declaration is malformed.
     pub(crate) mod_registry: Option<ModRegistry>,
-    /// The data-root-relative mod list an instance of this game keeps, read off
-    /// the same template's `SUPERVISOR_MODS_FILE`. `None` for a game whose
-    /// supervisor reconciles no mods.
     pub(crate) mods_file: Option<String>,
-    /// The settings an instance of this game may override for itself, read off
-    /// the same template's `SUPERVISOR_CHILD_ENV_FILE` /
-    /// `SUPERVISOR_CHILD_ENV_ALLOWLIST` pair. `None` for a game that declares
-    /// none, which is most of them — their settings live in the game's own
-    /// config files instead.
     pub(crate) env_overlay: Option<EnvOverlay>,
 }
 
-/// The per-game catalog: every game the shim can provision, keyed by id.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GameCatalog {
     entries: BTreeMap<String, GameCatalogEntry>,
@@ -43,20 +27,11 @@ impl GameCatalog {
         self.entries.get(id)
     }
 
-    /// Game ids in sorted order, for autocomplete and listings.
     pub(crate) fn game_ids(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
 }
 
-/// Load every game directory under `dir` into a [`GameCatalog`]. Directories
-/// whose name starts with `_` (e.g. the `_template` skeleton) are skipped.
-///
-/// # Errors
-///
-/// Returns an error if `dir` cannot be read, a game id is not a valid RFC1123
-/// label, a game directory is missing one of its three templates, or no games
-/// are found at all.
 pub(crate) async fn load_catalog(dir: &Path) -> Result<GameCatalog> {
     let mut read_dir = tokio::fs::read_dir(dir)
         .await
@@ -116,9 +91,6 @@ async fn read_template(dir: &Path, file: &str) -> Result<String> {
         .with_context(|| format!("failed to read catalog template {}", path.display()))
 }
 
-/// A game id becomes the prefix of every instance name, so it must itself be a
-/// valid RFC1123 label segment: lowercase alphanumerics and dashes, starting and
-/// ending with an alphanumeric.
 fn validate_game_id(id: &str) -> Result<()> {
     let valid = !id.is_empty()
         && id

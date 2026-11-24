@@ -15,9 +15,6 @@ fn lookups(pairs: &[(&str, Lookup)]) -> BTreeMap<String, Lookup> {
         .collect()
 }
 
-/// The verified sample profile, which breaks in every interesting place: a
-/// loader pack the image supplies, an untagged library, a client-only mod, a
-/// both-sided mod, and one nobody tagged at all.
 fn sample() -> Vec<ProfileMod> {
     vec![
         entry("denikson-BepInExPack_Valheim", "5.4.2333", true),
@@ -92,8 +89,6 @@ fn a_disabled_entry_is_dropped_before_anything_else_is_asked_about_it() {
 
 #[test]
 fn an_entry_the_community_has_no_record_of_is_left_out_and_named() {
-    // Writing it anyway would stop the server on its next launch and be rolled
-    // back — spending a restart to say what the lookup already said.
     let mods = vec![entry("Author-Typo", "1.0.0", true)];
     let plan = plan_import(&mods, &[], &lookups(&[("Author-Typo", Lookup::Missing)]));
     assert_eq!(plan.missing, vec!["Author-Typo-1.0.0".to_owned()]);
@@ -128,8 +123,6 @@ fn lookups_are_asked_for_once_per_package() {
     );
     assert_eq!(needed.len(), 1);
 }
-
-// ---- export ----
 
 fn resolved() -> ResolvedMods {
     ResolvedMods {
@@ -172,8 +165,6 @@ fn an_unreadable_resolved_line_costs_one_entry_not_the_export() {
     assert_eq!(mods.len(), 1, "{mods:?}");
 }
 
-// ---- the cached code ----
-
 #[test]
 fn the_cache_round_trips() {
     let cached = CachedProfile {
@@ -192,8 +183,6 @@ fn a_cached_code_is_reused_for_the_same_set_and_not_for_a_changed_one() {
     };
     assert!(cached.describes(&mods));
 
-    // A version moving is a different pack, and the old code still describes the
-    // old one — which is exactly why it can't be handed out for this one.
     let mut moved = mods.clone();
     moved.first_mut().unwrap().version = "1.21.0".to_owned();
     assert!(!cached.describes(&moved));
@@ -215,9 +204,6 @@ fn a_cache_file_that_isnt_one_reads_as_absent() {
     );
 }
 
-// ---- what an import changes about the list already there ----
-
-/// A plan as an import builds one: pinned releases on both sides.
 fn plan_of(install: &[&str], client_only: &[&str]) -> ImportPlan {
     ImportPlan {
         install: install.iter().map(|entry| (*entry).to_owned()).collect(),
@@ -256,8 +242,6 @@ fn adopting_the_pack_a_server_already_runs_changes_nothing() {
 
 #[test]
 fn a_mod_the_profile_does_not_name_is_reported_as_removed() {
-    // The category an import produces by accident, since it replaces rather
-    // than merges — and the one a friend never thinks to check.
     let current = "ValheimModding-Jotunn-2.30.0\nblacks7ar-OreMines-1.2.0\n";
     let diff = diff_import(current, &plan_of(&["ValheimModding-Jotunn-2.30.0"], &[]));
 
@@ -292,8 +276,6 @@ fn pinning_a_previously_floating_entry_is_a_change() {
 
 #[test]
 fn changing_sides_is_neither_an_addition_nor_a_removal() {
-    // Still in the pack, no longer running here. Reporting it as removed would
-    // be a wrong answer to the only question the distinction affects.
     let diff = diff_import(
         "Advize-PlantEasily-2.2.0\n",
         &plan_of(&[], &["Advize-PlantEasily-2.2.0"]),
@@ -317,8 +299,6 @@ fn changing_sides_is_neither_an_addition_nor_a_removal() {
 
 #[test]
 fn a_side_change_outranks_a_version_change_on_the_same_entry() {
-    // Which side it goes on decides whether the server runs it at all; the
-    // version is a detail of an entry that has moved.
     let diff = diff_import(
         "Advize-PlantEasily-2.1.0\n",
         &plan_of(&[], &["Advize-PlantEasily-2.2.0"]),
@@ -338,8 +318,6 @@ fn comments_and_junk_in_the_old_list_are_not_removals() {
 
 #[test]
 fn the_diff_is_ordered_by_package_rather_than_by_file_position() {
-    // So the same change always reads the same way, whatever order the
-    // exporting launcher listed the pack in.
     let diff = diff_import(
         "",
         &plan_of(

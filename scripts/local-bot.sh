@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Start/stop the grizzly-gameservers Discord bot locally for manual testing.
-#
-# Secrets (DISCORD_BOT_TOKEN, GAMESERVERS_ADMIN_USER_IDS, ...)
-# are read from the repo-root .env by the binary itself via dotenvy. This script
-# only overrides GAMESERVERS_CATALOG_DIR to the in-repo games/ directory, since
-# the compiled default points at the in-container path. The bot talks to the
-# cluster in your current kubeconfig context.
-#
-# Usage: scripts/local-bot.sh {start|stop|restart|status|logs}
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

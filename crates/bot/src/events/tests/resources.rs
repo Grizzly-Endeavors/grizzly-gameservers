@@ -3,8 +3,6 @@ use super::*;
 use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, PersistentVolumeClaimStatus, PodSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
-/// Build against a fresh report log — the tests that don't care about the
-/// warn-once bookkeeping get the plain three-argument shape back.
 fn samples_from(
     pvcs: &[PersistentVolumeClaim],
     pods: &[Pod],
@@ -86,7 +84,6 @@ fn container(requests: &[(&str, &str)], limits: &[(&str, &str)]) -> Container {
 
 #[test]
 fn cpu_quantities_parse_across_the_suffixes() {
-    // metrics-server nanocores, spec millicores, bare and fractional cores.
     assert_eq!(parse_cpu_millicores("3578906n"), Some(4));
     assert_eq!(parse_cpu_millicores("500m"), Some(500));
     assert_eq!(parse_cpu_millicores("2"), Some(2000));
@@ -114,8 +111,6 @@ fn byte_quantities_parse_across_the_suffixes() {
 
 #[test]
 fn a_pod_backed_instance_gets_a_full_row_running_or_paused() {
-    // Whether the game process is up or paused never enters this module: a pod
-    // holding its reservation is sampled identically either way.
     let pvcs = [labelled_pvc("otter", Some("5Gi"), None)];
     let pods = [game_pod(
         "otter",
@@ -174,15 +169,12 @@ fn a_metrics_miss_keeps_the_row_with_null_actuals() {
     let sample = samples.first().expect("one sample");
     assert_eq!(sample.cpu_millicores, None);
     assert_eq!(sample.mem_bytes, None);
-    // Declared figures survive: null actuals mean "no reading", not "no pod".
     assert_eq!(sample.cpu_request_millicores, Some(500));
     assert_eq!(sample.mem_request_bytes, Some(2_147_483_648));
 }
 
 #[test]
 fn declared_figures_sum_over_containers_that_declare_them() {
-    // Game container with requests+limits, Agones-style sidecar with requests
-    // only: requests sum both, limits carry the game container's alone.
     let pvcs = [labelled_pvc("otter", Some("5Gi"), None)];
     let pods = [game_pod(
         "otter",
@@ -215,9 +207,6 @@ fn a_managed_pvc_without_an_instance_label_is_skipped() {
 
 #[test]
 fn an_unlabelled_pvc_is_reported_once_however_many_ticks_pass() {
-    // The condition never self-heals, so re-warning every tick would bury the
-    // log without adding information. Ticking the same PVC repeatedly must
-    // report it exactly once, while a second offender still gets its own line.
     let mut orphan = labelled_pvc("otter", Some("5Gi"), None);
     if let Some(labels) = orphan.metadata.labels.as_mut() {
         labels.remove(INSTANCE_KEY);
@@ -225,14 +214,11 @@ fn an_unlabelled_pvc_is_reported_once_however_many_ticks_pass() {
     let pvcs = [orphan];
     let mut reported = ReportedUnlabelledPvcs::default();
 
-    // Three ticks against one shared log: the row stays absent every time, but
-    // only the first tick counts as a sighting worth warning about.
     for _ in 0..3 {
         assert!(build_resource_samples(&pvcs, &[], &[], &mut reported).is_empty());
     }
     assert!(!reported.first_sighting("otter-data"));
 
-    // A different offender is still its own first sighting.
     assert!(reported.first_sighting("badger-data"));
 }
 
@@ -250,8 +236,6 @@ fn whole_pod_usage_sums_all_containers() {
     let usage = sum_parsed(["120m", "30m"].into_iter(), parse_cpu_millicores, "otter");
     assert_eq!(usage, Some(150));
 
-    // An unparseable value is dropped, not zeroed — and no value at all is
-    // unknown, not zero.
     let partial = sum_parsed(["120m", "junk"].into_iter(), parse_cpu_millicores, "otter");
     assert_eq!(partial, Some(120));
     let none = sum_parsed(std::iter::empty(), parse_cpu_millicores, "otter");

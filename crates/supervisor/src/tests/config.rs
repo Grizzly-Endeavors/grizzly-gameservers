@@ -186,8 +186,6 @@ fn child_env_assembles_when_configured() {
 
 #[test]
 fn child_env_allowlist_tolerates_spacing_and_stray_commas() {
-    // YAML makes it easy to hand-wrap or trailing-comma this value; neither
-    // should produce a key that can never match.
     let env = lookup_from(&[
         ("SUPERVISOR_CHILD_ENV_FILE", ".grizzly/env"),
         ("SUPERVISOR_CHILD_ENV_ALLOWLIST", " TYPE , ,VERSION ,"),
@@ -199,8 +197,6 @@ fn child_env_allowlist_tolerates_spacing_and_stray_commas() {
 
 #[test]
 fn child_env_absent_without_a_file() {
-    // An allowlist alone has nothing to read; the config warns and stays off
-    // rather than half-arming the injection path.
     let env = lookup_from(&[("SUPERVISOR_CHILD_ENV_ALLOWLIST", "TYPE")]);
     let config = SupervisorConfig::from_env_with(&env).unwrap();
     assert_eq!(config.child_env, None);
@@ -343,8 +339,6 @@ fn rejects_out_of_range_port() {
     );
 }
 
-// ---- thunderstore mod reconciler ----
-
 #[test]
 fn thunderstore_assembles_when_the_manifest_and_the_image_agree() {
     let env = lookup_from(&[
@@ -399,8 +393,6 @@ fn a_settings_directory_and_its_protected_entries_come_off_the_image() {
 
 #[test]
 fn protected_entries_without_a_settings_directory_are_inert() {
-    // Warns rather than failing: there is nothing to sweep, so the list protects
-    // nothing and a live server has no reason to refuse to start over it.
     let env = lookup_from(&[
         ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
         ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
@@ -418,16 +410,12 @@ fn protected_entries_without_a_settings_directory_are_inert() {
 
 #[test]
 fn thunderstore_is_off_for_a_game_that_declares_nothing() {
-    // Every existing image sets none of these and must behave exactly as before.
     let config = SupervisorConfig::from_env_with(&lookup_from(&[])).unwrap();
     assert_eq!(config.thunderstore, None);
 }
 
 #[test]
 fn a_mod_list_without_a_community_disables_the_reconciler() {
-    // The two halves come from different places — the manifest and the image —
-    // so a half-rolled deploy is a real state. It warns and stays off rather
-    // than refusing to start a live server on its next restart.
     let env = lookup_from(&[("SUPERVISOR_MODS_FILE", ".grizzly/mods")]);
     assert_eq!(
         SupervisorConfig::from_env_with(&env).unwrap().thunderstore,
@@ -446,8 +434,6 @@ fn a_community_without_a_mod_list_disables_the_reconciler() {
 
 #[test]
 fn an_unknown_layout_is_a_hard_error() {
-    // Unlike a missing half, a wrong value would install every mod into the
-    // wrong place — a failure that looks like the game being broken.
     let env = lookup_from(&[
         ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
         ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
@@ -459,8 +445,6 @@ fn an_unknown_layout_is_a_hard_error() {
 
 #[test]
 fn an_unparseable_provided_package_is_a_hard_error() {
-    // Silently dropping it would install a second loader pack over the image's,
-    // which is how a working loader stops loading.
     let env = lookup_from(&[
         ("SUPERVISOR_MODS_FILE", ".grizzly/mods"),
         ("SUPERVISOR_THUNDERSTORE_COMMUNITY", "valheim"),
@@ -548,8 +532,6 @@ fn a2s_is_addressed_by_its_port() {
     assert_eq!(config.occupancy, Some(OccupancyEndpoint::A2s(7042)));
 }
 
-/// Each of these would otherwise leave a game reporting unknown occupancy forever
-/// with nothing pointing at why, so each refuses to start instead.
 #[test]
 fn a_half_configured_occupancy_source_is_an_error() {
     let cases: [&[(&str, &str)]; 6] = [

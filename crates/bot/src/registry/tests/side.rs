@@ -16,8 +16,6 @@ fn flags_classify_all_four_combinations() {
 
 #[test]
 fn a_both_sided_mod_answers_a_server_search() {
-    // The filter reads "applies to", not "applies only to" — a mod the players
-    // also need still has to be installed on the server.
     assert!(SideSupport::Both.matches(Side::Server));
     assert!(SideSupport::Both.matches(Side::Client));
     assert!(SideSupport::Both.matches(Side::Both));
@@ -34,7 +32,6 @@ fn a_one_sided_mod_answers_only_its_own_side() {
 
 #[test]
 fn an_unclassified_mod_answers_no_side_filter() {
-    // Surviving a `server` filter would read as the registry vouching for it.
     for side in [Side::Server, Side::Client, Side::Both] {
         assert!(!SideSupport::Unknown.matches(side));
     }

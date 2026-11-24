@@ -10,8 +10,6 @@ fn a_package_id_round_trips() {
 
 #[test]
 fn underscores_are_part_of_a_name_and_dashes_are_not() {
-    // The real loader pack's name carries an underscore; allowing a dash inside
-    // a component would make every identifier ambiguous to split.
     assert!("denikson-BepInExPack_Valheim".parse::<PackageId>().is_ok());
     assert!("a-b-c".parse::<PackageId>().is_err());
     assert!("Jotunn".parse::<PackageId>().is_err());
@@ -58,8 +56,6 @@ fn a_release_splits_the_version_off_the_right() {
 
 #[test]
 fn an_unversioned_package_is_not_a_release() {
-    // The distinction the mod-list parser leans on to tell a pin from a bare
-    // package without a second grammar.
     assert!("ValheimModding-Jotunn".parse::<PackageRelease>().is_err());
 }
 

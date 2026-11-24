@@ -3,8 +3,6 @@ use super::*;
 use crate::config::ThunderstoreMods;
 use types::PackageId;
 
-/// A minimal package zip carrying nothing but its manifest — enough for the
-/// cache checks, which only read that.
 fn package_zip(name: &str, version: &str) -> Vec<u8> {
     use std::io::Write as _;
 
@@ -35,8 +33,6 @@ fn mods(file: &str) -> ThunderstoreMods {
 
 #[test]
 fn seeding_creates_the_list_and_never_truncates_an_authored_one() {
-    // The seed runs before every launch, so truncating here would erase a mod
-    // list on the next restart.
     let dir = tempfile::tempdir().unwrap();
     let path = seed_mods_file(dir.path(), ".grizzly/mods").unwrap();
     assert!(path.is_file());
@@ -58,8 +54,6 @@ fn a_list_path_escaping_the_data_root_is_refused() {
 
 #[test]
 fn the_resolved_file_lists_installs_and_explains_the_skips() {
-    // Plain data the agent reads back to confirm an install, and the answer to
-    // "why isn't the loader pack in here".
     let dir = tempfile::tempdir().unwrap();
     let installed = vec![
         "Author-Mod-1.0.0".parse::<PackageRelease>().unwrap(),
@@ -95,8 +89,6 @@ fn the_log_summary_names_packages_and_the_skipped_pack() {
 
 #[test]
 fn an_empty_list_still_says_so_rather_than_staying_silent() {
-    // Silence after a restart reads as "the reconciler didn't run", which is a
-    // different problem from "you haven't asked for any mods".
     let logs = LogBuffer::new();
     report(&logs, &[], &[], &[], 0);
     let lines = logs.tail(10);
@@ -108,10 +100,6 @@ fn an_empty_list_still_says_so_rather_than_staying_silent() {
 
 #[test]
 fn resolved_records_the_client_only_half_of_the_modpack() {
-    // The file is what an exported profile code is built from, so a package the
-    // pack carries for players' machines has to survive into it — otherwise
-    // every code minted off a running server drops exactly the entries a player
-    // most needs.
     let dir = tempfile::tempdir().unwrap();
     let installed = vec!["Author-Mod-1.0.0".parse::<PackageRelease>().unwrap()];
     let client_only = vec![
@@ -159,8 +147,6 @@ fn the_log_summary_names_the_packages_this_server_did_not_install() {
 
 #[tokio::test]
 async fn a_game_that_did_not_opt_in_reconciles_nothing() {
-    // Every image that sets none of the variables must behave exactly as it did
-    // before this subsystem existed.
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = crate::config::SupervisorConfig::from_env_with(&|_| None).unwrap();
     cfg.data_dir = dir.path().to_owned();
@@ -173,8 +159,6 @@ async fn a_game_that_did_not_opt_in_reconciles_nothing() {
 
 #[tokio::test]
 async fn a_malformed_list_fails_the_launch_and_names_the_line() {
-    // The failure the whole "report it as a crash" path exists for: the bot
-    // restores the file's snapshot on the strength of this.
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = crate::config::SupervisorConfig::from_env_with(&|_| None).unwrap();
     cfg.data_dir = dir.path().to_owned();
@@ -226,9 +210,6 @@ fn a_missing_archive_is_not_a_cache_hit() {
 
 #[test]
 fn a_damaged_archive_is_not_a_cache_hit_either() {
-    // Otherwise the download is skipped, staging fails on the damaged file, and
-    // every restart afterwards fails identically — a permanent break with no way
-    // out short of deleting the file by hand.
     let dir = tempfile::tempdir().unwrap();
     let release: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
     cache::store(dir.path(), &release, b"not a zip at all").unwrap();
@@ -237,7 +218,6 @@ fn a_damaged_archive_is_not_a_cache_hit_either() {
 
 #[test]
 fn an_archive_for_a_different_release_is_not_a_cache_hit() {
-    // The manifest cross-check is what makes a cache hit trustworthy at all.
     let dir = tempfile::tempdir().unwrap();
     let wanted: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
     let other: PackageRelease = "Author-Mod-2.0.0".parse().unwrap();
@@ -245,7 +225,6 @@ fn an_archive_for_a_different_release_is_not_a_cache_hit() {
     cache::store(dir.path(), &wanted, &bytes).unwrap();
 
     assert!(!usable_in_cache(dir.path(), &wanted).unwrap());
-    // Sanity: the same bytes *are* a hit for the release they actually describe.
     cache::store(dir.path(), &other, &bytes).unwrap();
     assert!(usable_in_cache(dir.path(), &other).unwrap());
 }

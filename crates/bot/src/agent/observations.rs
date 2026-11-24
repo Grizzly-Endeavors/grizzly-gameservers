@@ -16,7 +16,6 @@ use crate::telemetry::{Level, ObservationType, langfuse};
 /// the two id spaces can't collide in Langfuse's user filter.
 const PLAYER_PREFIX: &str = "ingame:";
 
-/// The trace-level block, repeated on every span of the turn.
 pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
     let mut attributes = vec![
         KeyValue::new(langfuse::TRACE_NAME, trace_name(id)),
@@ -33,16 +32,12 @@ pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
         metadata(langfuse::TRACE_METADATA, "origin", id.origin.as_str()),
         metadata(langfuse::TRACE_METADATA, "access", id.access.as_str()),
     ];
-    // A deferred batch is a one-shot conversation with no session. Omitting the
-    // key is what keeps it out of Langfuse's session view; an empty string would
-    // read as a session literally named "".
     if let Some(session) = id.session.as_ref() {
         attributes.push(KeyValue::new(
             langfuse::SESSION_ID,
             session.as_str().to_owned(),
         ));
     }
-    // Snowflakes go in as strings, matching how the bot's own tables store them.
     if let Some(guild) = id.guild {
         attributes.push(metadata(
             langfuse::TRACE_METADATA,
@@ -57,10 +52,6 @@ pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
             channel.to_string(),
         ));
     }
-    // Omitted rather than defaulted when the surface knows no game, for the same
-    // reason as `session` above: a placeholder would show up in Langfuse as a real
-    // game with real cost attributed to it. An absent key reads as "not broken
-    // down", which is the truth.
     if let Some(game) = id.game.as_ref() {
         attributes.push(metadata(
             langfuse::TRACE_METADATA,
@@ -71,7 +62,6 @@ pub(crate) fn identity(id: &TurnIdentity, release: &str) -> Vec<KeyValue> {
     attributes
 }
 
-/// The root observation: the turn as a whole.
 pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValue> {
     let level = if outcome.escalated() {
         Level::Warning
@@ -96,11 +86,6 @@ pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValu
     if let Some(input) = input {
         attributes.push(KeyValue::new(langfuse::INPUT, input.to_owned()));
     }
-    // The endings read very differently to whoever opens the trace, so the
-    // status line says which one rather than describing the budget path for all
-    // of them. A stopped turn says so explicitly: without it, a trace that ends
-    // mid-investigation looks like the agent losing the thread rather than
-    // somebody pulling the plug.
     match &outcome.ending {
         TurnEnding::Answered => {}
         TurnEnding::Cancelled => attributes.push(KeyValue::new(
@@ -121,8 +106,6 @@ pub(crate) fn root(input: Option<&str>, outcome: &SessionOutcome) -> Vec<KeyValu
     attributes
 }
 
-/// The root observation for a turn that died on the model endpoint. No outcome
-/// scores follow it — a provider outage isn't an agent result.
 pub(crate) fn failed_root(input: Option<&str>, error: &str) -> Vec<KeyValue> {
     let mut attributes = vec![
         KeyValue::new(langfuse::OBSERVATION_TYPE, ObservationType::Agent.as_str()),
@@ -135,8 +118,6 @@ pub(crate) fn failed_root(input: Option<&str>, error: &str) -> Vec<KeyValue> {
     attributes
 }
 
-/// One model call. `sent` is the exact message array the request carried, which
-/// is what makes a trace replayable rather than a summary of one.
 pub(crate) fn generation(
     sent: &[ChatMessage],
     completion: &Completion,
@@ -173,25 +154,16 @@ pub(crate) fn generation(
     attributes
 }
 
-/// One dispatched tool call. Arguments and result go in **verbatim**: they are
-/// already the strings the model produced and read, and re-encoding them would
-/// bury a config edit's old/new text under a layer of escaping.
 pub(crate) fn tool(arguments: &str, result: &str, index: usize) -> Vec<KeyValue> {
     vec![
         KeyValue::new(langfuse::OBSERVATION_TYPE, ObservationType::Tool.as_str()),
         KeyValue::new(langfuse::INPUT, arguments.to_owned()),
         KeyValue::new(langfuse::OUTPUT, result.to_owned()),
-        // Deliberately never ERROR: the loop feeds tool failures back to the
-        // model as ordinary result text, so a failure here is the agent working,
-        // not the tool breaking.
         KeyValue::new(langfuse::LEVEL, Level::Default.as_str()),
         metadata(langfuse::OBSERVATION_METADATA, "index", index.to_string()),
     ]
 }
 
-/// The turn's opening question, recovered from the transcript the first model
-/// call sent. The recorder is never handed the prompt directly, but the last
-/// user message of round one is exactly it.
 pub(crate) fn opening_input(sent: &[ChatMessage]) -> Option<String> {
     sent.iter()
         .rev()

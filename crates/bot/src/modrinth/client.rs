@@ -1,8 +1,3 @@
-//! The IO shell: build a request, check the status, hand the body to
-//! [`types`](super::types). Holds no client of its own — it borrows the bot's
-//! shared one and overrides the timeout per request, the same way the
-//! chat-completions client does.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -25,7 +20,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// identifier into a public repo.
 const AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// Search the registry, newest-relevance first, bounded to [`SEARCH_LIMIT`].
 pub(crate) async fn search_projects(http: &Client, query: &SearchQuery) -> Result<Vec<SearchHit>> {
     let url = format!("{API_BASE}/search");
     let limit = SEARCH_LIMIT.to_string();

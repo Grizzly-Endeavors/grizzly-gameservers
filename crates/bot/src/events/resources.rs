@@ -1,35 +1,3 @@
-//! The resource sampler: the cost time series of the product plane.
-//!
-//! Every tick it walks the managed instances and records what each one holds of
-//! the hardware — actual whole-pod CPU and memory from metrics-server, the
-//! declared requests and limits off the live pod spec, and the provisioned PVC
-//! capacity. Integrating those rows over time gives GB-hours and core-hours per
-//! instance, which the query layer prices against a market-proxy rate card
-//! (`scripts/queries/`). The bot itself never computes money — the same boundary
-//! the Langfuse plane holds for token pricing — so a rate revision reprices all
-//! of history instead of being baked into rows.
-//!
-//! The sampling universe is the managed PVC list, not the running set, because
-//! cost outlives the process: a paused instance still reserves its pod's RAM,
-//! and a shut-down instance still holds its volume. Three row shapes follow,
-//! and they are what the tests pin:
-//!
-//! - **Pod exists** (running *or* paused — this module never asks which): full
-//!   row — actuals from metrics-server, declared from the pod spec, PVC
-//!   capacity. Unlike the occupancy sampler, paused instances are not skipped.
-//! - **Shut down** (no pod, PVC retained): PVC-only row — every compute column
-//!   null, `pvc_bytes` set.
-//! - **Destroyed**: no row at all; absence is how "gone" reads.
-//!
-//! A null quantity always means *that reading wasn't available this tick* —
-//! metrics-server hadn't seen a young pod yet, or a listing failed — never zero.
-//!
-//! Declared resources come off the live pod spec rather than the catalog YAML:
-//! the pod is what admission actually applied, and it includes the Agones SDK
-//! sidecar's own footprint, which the catalog templates never mention. Both the
-//! declared and actual figures are whole-pod sums so that the packing ratio
-//! (actual ÷ requested) compares like with like.
-
 use anyhow::{Context, Result};
 use k8s_openapi::api::core::v1::{Container, PersistentVolumeClaim, Pod, ResourceRequirements};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
@@ -47,64 +15,35 @@ use crate::agones::{
 };
 use crate::domain::{GameId, GuildId, InstanceName};
 
-/// One instance's resource footprint at one moment, bound for the
-/// `resource_samples` table. Quantities only — millicores and bytes — priced
-/// nowhere in the bot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResourceSample {
     pub(crate) instance: InstanceName,
     pub(crate) game: Option<GameId>,
     pub(crate) guild: Option<GuildId>,
-    /// Actual whole-pod CPU usage in millicores, all containers summed
-    /// (game + Agones sidecar — the sidecar exists only because the game does).
     pub(crate) cpu_millicores: Option<i64>,
-    /// Actual whole-pod working-set memory in bytes.
     pub(crate) mem_bytes: Option<i64>,
-    /// Declared CPU requests in millicores, summed over the containers that
-    /// declare one (a requestless container reserves nothing).
     pub(crate) cpu_request_millicores: Option<i64>,
-    /// Declared memory requests in bytes, summed like the CPU requests.
     pub(crate) mem_request_bytes: Option<i64>,
-    /// Declared CPU limits in millicores, summed over the containers that
-    /// declare one. The Agones sidecar typically declares none, so this is in
-    /// practice the game container's burst envelope, not a pod-wide cap.
     pub(crate) cpu_limit_millicores: Option<i64>,
-    /// Declared memory limits in bytes, summed like the CPU limits.
     pub(crate) mem_limit_bytes: Option<i64>,
-    /// Provisioned volume capacity in bytes (`status.capacity`, falling back to
-    /// the spec request while a claim is still binding).
     pub(crate) pvc_bytes: Option<i64>,
 }
 
-/// The unlabelled managed PVCs already reported, so the anomaly is stated once
-/// per name instead of on every tick.
-///
-/// A managed PVC with no instance label never grows one on its own — it takes a
-/// human deleting the volume or relabelling it. Re-warning every tick would
-/// therefore add no information while burying everything else in the log, so the
-/// sampler states it on first sight and stays quiet after. Process-lifetime
-/// state: a restart re-reports, which is what makes the condition visible to
-/// whoever is looking at a fresh log.
 #[derive(Default)]
 pub(crate) struct ReportedUnlabelledPvcs(HashSet<String>);
 
 impl ReportedUnlabelledPvcs {
-    /// True the first time `name` is seen — the caller warns only then.
     fn first_sighting(&mut self, name: &str) -> bool {
         self.0.insert(name.to_owned())
     }
 }
 
-/// Parsed actual usage for one pod, as reported by metrics-server.
 struct PodUsage {
     name: String,
     cpu_millicores: Option<i64>,
     mem_bytes: Option<i64>,
 }
 
-/// The non-metadata payload of a `PodMetrics` item. Typed out rather than
-/// walked as `serde_json::Value` so a schema surprise fails loudly in one
-/// place instead of yielding silent nulls.
 #[derive(Deserialize)]
 struct PodMetricsData {
     containers: Vec<ContainerMetrics>,
@@ -121,11 +60,6 @@ struct ContainerUsage {
     memory: String,
 }
 
-/// Sample every managed instance's resource footprint once and append the
-/// tick, returning the rows so the watchdog detector can fold the tick in.
-/// Never fails: without the PVC list there is no universe so the tick is
-/// skipped; a failed pod or metrics listing degrades the affected columns to
-/// null; the insert swallows its own errors.
 pub(crate) async fn run_resource_cycle(
     ctx: &SamplerCtx<'_>,
     reported: &mut ReportedUnlabelledPvcs,
@@ -163,7 +97,6 @@ pub(crate) async fn run_resource_cycle(
     };
 
     let samples = build_resource_samples(&pvcs, &pods, &usage, reported);
-    // Per-tick, so debug like the occupancy cycle's tick line.
     debug!(
         sampled = samples.len(),
         pods = pods.len(),
@@ -173,23 +106,6 @@ pub(crate) async fn run_resource_cycle(
     samples
 }
 
-/// One instance's current footprint, for a caller answering "what is this
-/// server allocated, and what is it actually using?" — the same row the sampler
-/// appends, built on demand for one name instead of the whole fleet.
-///
-/// Reads the same three lists and reuses [`build_resource_samples`] rather than
-/// querying by name, so the on-demand answer and the recorded time series can't
-/// disagree about how a figure is derived. The lists are namespace-scoped and
-/// friends-sized, so filtering afterwards is cheaper than a third code path.
-///
-/// `Ok(None)` means no such managed instance. A degraded read (metrics-server
-/// down, pod list failed) degrades the affected columns to null, exactly as it
-/// does on the sampler tick.
-///
-/// # Errors
-///
-/// Returns an error only if the PVC list — the instance's universe — can't be
-/// read at all.
 pub(crate) async fn sample_instance(
     client: &Client,
     namespace: &str,
@@ -214,8 +130,6 @@ pub(crate) async fn sample_instance(
         .find(|sample| sample.instance.as_str() == instance))
 }
 
-/// The per-instance PVCs the bot provisioned — the sampling universe, since the
-/// volume exists exactly as long as the instance does.
 async fn list_managed_pvcs(client: &Client, namespace: &str) -> Result<Vec<PersistentVolumeClaim>> {
     let api: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
     let selector = format!("{MANAGED_BY_KEY}={MANAGED_BY_VALUE}");
@@ -226,8 +140,6 @@ async fn list_managed_pvcs(client: &Client, namespace: &str) -> Result<Vec<Persi
     Ok(list.items)
 }
 
-/// The live game pods, selected by the label Agones stamps on every pod it
-/// creates. The bot's own pod shares the namespace but never carries it.
 async fn list_game_pods(client: &Client, namespace: &str) -> Result<Vec<Pod>> {
     let api: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let list = api
@@ -253,8 +165,6 @@ async fn list_pod_usage(client: &Client, namespace: &str) -> Result<Vec<PodUsage
     Ok(list.items.into_iter().filter_map(pod_usage).collect())
 }
 
-/// Fold one `PodMetrics` item into a whole-pod usage reading, or into nothing
-/// (with a warning) when the payload doesn't parse.
 fn pod_usage(obj: DynamicObject) -> Option<PodUsage> {
     let name = obj.metadata.name.clone()?;
     let data: PodMetricsData = match serde_json::from_value(obj.data) {
@@ -281,8 +191,6 @@ fn pod_usage(obj: DynamicObject) -> Option<PodUsage> {
     })
 }
 
-/// Join the three listings into one row per managed PVC. Pure — everything
-/// fallible happened in the listings, so this is where the tests live.
 fn build_resource_samples(
     pvcs: &[PersistentVolumeClaim],
     pods: &[Pod],
@@ -303,9 +211,6 @@ fn build_resource_samples(
             }
             continue;
         };
-        // The pod is found through the label Agones stamps rather than by name,
-        // and the metrics reading is then found through that pod — so an actual
-        // can never attach to an instance whose pod wasn't seen this tick.
         let pod = pods.iter().find(|pod| {
             label_value(pod.metadata.labels.as_ref(), GAMESERVER_SELECTOR_KEY) == Some(instance)
         });
@@ -329,10 +234,6 @@ fn build_resource_samples(
     samples
 }
 
-/// Whole-pod declared requests and limits, summed over the containers that
-/// declare each figure. Also the arithmetic behind guild-cap enforcement
-/// (`crate::agones::guild_usage`), so the enforcement plane and the
-/// `resource_samples` measurement plane can never disagree on what a pod holds.
 #[derive(Default)]
 pub(crate) struct DeclaredResources {
     pub(crate) cpu_request_millicores: Option<i64>,
@@ -367,8 +268,6 @@ fn limits_of(resources: &ResourceRequirements) -> Option<&BTreeMap<String, Quant
     resources.limits.as_ref()
 }
 
-/// Sum one declared figure across a pod's containers; a container that doesn't
-/// declare it contributes nothing, and no container declaring it means null.
 fn summed_quantity(
     containers: &[Container],
     side: fn(&ResourceRequirements) -> Option<&BTreeMap<String, Quantity>>,
@@ -398,8 +297,6 @@ fn summed_quantity(
     total
 }
 
-/// Sum already-attributed usage strings for one pod, tolerating (and warning
-/// on) individually unparseable values.
 fn sum_parsed<'a>(
     values: impl Iterator<Item = &'a str>,
     parse: fn(&str) -> Option<i64>,
@@ -416,8 +313,6 @@ fn sum_parsed<'a>(
     total
 }
 
-/// A PVC's provisioned capacity in bytes: what the cluster actually bound
-/// (`status.capacity`), or the spec request while the claim is still binding.
 fn pvc_capacity_bytes(pvc: &PersistentVolumeClaim) -> Option<i64> {
     let bound = pvc
         .status
@@ -480,10 +375,6 @@ pub(crate) fn parse_bytes(value: &str) -> Option<i64> {
     scaled(digits, frac_len, mult, div)
 }
 
-/// Split a quantity into its digits (decimal point removed), the count of
-/// fractional digits, and the unit suffix. Integer-only on purpose: the values
-/// land in `BIGINT` columns, and rational math avoids both float rounding and
-/// the cast lints.
 fn split_quantity(value: &str) -> Option<(i128, u32, &str)> {
     let boundary = value
         .find(|c: char| !c.is_ascii_digit() && c != '.')
@@ -495,7 +386,6 @@ fn split_quantity(value: &str) -> Option<(i128, u32, &str)> {
     }
     let mut digits: i128 = 0;
     for c in int_part.chars().chain(frac_part.chars()) {
-        // A second '.' lands here and correctly rejects the value.
         let digit = c.to_digit(10)?;
         digits = digits.checked_mul(10)?.checked_add(i128::from(digit))?;
     }
@@ -503,7 +393,6 @@ fn split_quantity(value: &str) -> Option<(i128, u32, &str)> {
     Some((digits, frac_len, suffix))
 }
 
-/// `digits / 10^frac_len * mult / div`, rounded half-up, refused on overflow.
 fn scaled(digits: i128, frac_len: u32, mult: i128, div: i128) -> Option<i64> {
     let numerator = digits.checked_mul(mult)?;
     let denominator = 10_i128.checked_pow(frac_len)?.checked_mul(div)?;

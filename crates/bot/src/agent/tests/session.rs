@@ -11,7 +11,6 @@ use super::super::turn::{Environment, TurnActor, TurnIdentity, TurnOrigin};
 use super::*;
 use crate::discord::AccessLevel;
 
-/// An assistant turn that calls one tool, optionally with narration text.
 fn tool_turn(id: &str, name: &str, arguments: &str, content: Option<&str>) -> ChatMessage {
     ChatMessage {
         role: Role::Assistant,
@@ -28,7 +27,6 @@ fn tool_turn(id: &str, name: &str, arguments: &str, content: Option<&str>) -> Ch
     }
 }
 
-/// An assistant turn with plain text and no tool calls.
 fn text_turn(text: &str) -> ChatMessage {
     ChatMessage {
         role: Role::Assistant,
@@ -38,8 +36,6 @@ fn text_turn(text: &str) -> ChatMessage {
     }
 }
 
-/// Wrap a canned assistant message as a completion, with token counts and a
-/// latency standing in for what a provider would report.
 fn completion(message: ChatMessage) -> Completion {
     completion_costing(message, 10)
 }
@@ -59,18 +55,14 @@ fn completion_costing(message: ChatMessage, prompt_tokens: u32) -> Completion {
     }
 }
 
-/// The seeded transcript the shell hands to `run_session`.
 fn seed(user: &str) -> Vec<ChatMessage> {
     vec![ChatMessage::system("sys"), ChatMessage::user(user)]
 }
 
-/// Build a `complete` closure that hands back the given canned turns in order.
 fn canned(turns: Vec<ChatMessage>) -> Mutex<VecDeque<ChatMessage>> {
     Mutex::new(VecDeque::from(turns))
 }
 
-/// A recorder for the loop to observe through. Its behavior is trace logging, so
-/// the identity only has to be well-formed, not specific to a test.
 fn recorder() -> TurnRecorder {
     let (telemetry, _poster) = crate::telemetry::Telemetry::new(
         None,
@@ -93,22 +85,16 @@ fn recorder() -> TurnRecorder {
     )
 }
 
-// Lifetime-parameterised to match `ProgressFn`, so a sink built here doesn't pin
-// the whole callback bundle to `'static` and force the borrowing closures with it.
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// A progress sink that discards every event.
 fn ignore_progress<'f>() -> impl Fn(SessionEvent) -> ProgressFuture<'f> + Sync {
     |_| Box::pin(async {})
 }
 
-/// An escalation check for a surface whose tools never hand off, so the only
-/// exits under test are a text reply and the round budget.
 fn never_escalates() -> impl Fn() -> Option<EscalationRequest> + Sync {
     || None
 }
 
-/// A token nobody holds, for the cases where stopping isn't what's under test.
 fn never_cancelled() -> CancellationToken {
     CancellationToken::new()
 }
@@ -155,8 +141,6 @@ async fn returns_text_reply_without_calling_tools() {
         0,
         "a text-only reply must not invoke any tools"
     );
-    // The final answer must land in the transcript the caller persists, or the
-    // next turn would see the question with no answer after it and re-answer it.
     assert_eq!(
         messages.len(),
         3,
@@ -208,8 +192,6 @@ async fn runs_one_tool_round_then_replies() {
     assert_eq!(outcome.reply, "here they are");
     assert!(!outcome.escalated());
     assert_eq!(seen.lock().unwrap().as_slice(), ["list_servers"]);
-    // The transcript is left populated for the caller to persist: the seed plus
-    // the assistant tool turn, its tool result, and the final assistant text.
     assert!(
         messages.len() > 2,
         "the transcript should carry the turns the session ran"
@@ -218,8 +200,6 @@ async fn runs_one_tool_round_then_replies() {
 
 #[tokio::test]
 async fn every_model_call_is_reported_in_order() {
-    // Two rounds with different costs, so a caller can tell them apart and a
-    // dropped or reordered entry can't pass.
     let turns = canned(vec![
         tool_turn("c1", "list_servers", "{}", None),
         text_turn("here they are"),
@@ -315,8 +295,6 @@ async fn an_escalating_turn_still_reports_what_it_spent() {
     );
 }
 
-/// An escalation check that fires once a tool has run, standing in for the tool
-/// context slot the escalation tool writes to.
 fn escalates_after_first_round(
     handed_off: &AtomicUsize,
 ) -> impl Fn() -> Option<EscalationRequest> + Sync {
@@ -331,8 +309,6 @@ fn escalates_after_first_round(
 
 #[tokio::test]
 async fn a_tool_escalation_ends_the_turn_with_the_models_own_reply() {
-    // The model would happily keep calling tools forever; the escalation is the
-    // only thing that can stop it before the budget does.
     let complete: &CompleteFn =
         &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "escalate", "{}", None))) });
     let dispatched = AtomicUsize::new(0);
@@ -412,8 +388,6 @@ async fn an_escalating_round_still_records_the_tools_it_ran_alongside() {
     .await
     .unwrap();
 
-    // Checked after the round, not mid-round: the operator notice is built from
-    // the transcript, so a tool that ran beside the escalation has to be in it.
     let last = messages.last().unwrap();
     assert_eq!(last.role, Role::Tool);
     assert_eq!(
@@ -463,7 +437,6 @@ async fn emits_interim_text_only_when_the_model_narrates() {
     .await
     .unwrap();
 
-    // Only the turn with real narration fires; blank and absent content do not.
     assert_eq!(
         events.lock().unwrap().as_slice(),
         [SessionEvent::AssistantText(
@@ -474,8 +447,6 @@ async fn emits_interim_text_only_when_the_model_narrates() {
 
 #[tokio::test]
 async fn interim_text_is_delivered_before_the_tool_runs() {
-    // The bug this guards: narration that races its own tool's side effects (a
-    // confirm card) and loses. The loop must await the progress send first.
     let turns = canned(vec![
         tool_turn("c1", "destroy_server", "{}", Some("deleting minecraft now")),
         text_turn("done"),
@@ -524,7 +495,6 @@ async fn interim_text_is_delivered_before_the_tool_runs() {
 
 #[tokio::test]
 async fn escalates_when_round_budget_is_exhausted() {
-    // The model never stops calling tools — every turn is another call.
     let complete: &CompleteFn =
         &|_, _| Box::pin(async { Ok(completion(tool_turn("c", "list_servers", "{}", None))) });
     let dispatch: &DispatchFn = &|_| Box::pin(async { "ok".to_owned() });
@@ -623,12 +593,6 @@ async fn propagates_completion_errors() {
 
 #[tokio::test]
 async fn a_turn_stopped_before_it_starts_never_calls_the_model() {
-    // The token is already tripped, so the biased select must take the stop arm
-    // rather than paying for a call whose answer nobody is waiting for.
-    //
-    // Counted inside the future rather than at the call: `select!` builds every
-    // branch's future before polling any of them, so constructing the request is
-    // free and only polling it would reach the provider.
     let asked = AtomicUsize::new(0);
     let complete: &CompleteFn = &|_, _| {
         let asked = &asked;
@@ -671,8 +635,6 @@ async fn a_turn_stopped_before_it_starts_never_calls_the_model() {
 
 #[tokio::test]
 async fn a_stop_during_a_model_call_abandons_it() {
-    // Where a runaway turn actually spends its time. The call never resolves, so
-    // the only way out is the cancel arm.
     let complete: &CompleteFn = &|_, _| Box::pin(std::future::pending());
     let dispatch: &DispatchFn = &|_| Box::pin(async move { String::new() });
     let progress = ignore_progress();
@@ -706,9 +668,6 @@ async fn a_stop_during_a_model_call_abandons_it() {
 
 #[tokio::test]
 async fn a_tool_already_running_is_allowed_to_finish() {
-    // The asymmetry the whole design turns on: abandoning a model call costs
-    // only the tokens already spent, but abandoning a tool could leave a config
-    // half-written or a restart issued with nothing watching it come back.
     let turns = canned(vec![
         tool_turn("1", "restart_server", "{}", None),
         text_turn("never reached"),
@@ -725,7 +684,6 @@ async fn a_tool_already_running_is_allowed_to_finish() {
         let trip = trip.clone();
         let finished = &finished;
         Box::pin(async move {
-            // A stop lands mid-tool, exactly the case that must not tear it up.
             trip.cancel();
             tokio::task::yield_now().await;
             finished.fetch_add(1, Ordering::SeqCst);
@@ -768,8 +726,6 @@ async fn a_tool_already_running_is_allowed_to_finish() {
 
 #[tokio::test]
 async fn a_stopped_turn_records_the_stop_in_the_transcript() {
-    // Without this the next turn sees the question with nothing after it and
-    // answers it again — the worst possible response to one somebody stopped.
     let complete: &CompleteFn = &|_, _| Box::pin(std::future::pending());
     let dispatch: &DispatchFn = &|_| Box::pin(async move { String::new() });
     let progress = ignore_progress();
@@ -803,8 +759,6 @@ async fn a_stopped_turn_records_the_stop_in_the_transcript() {
 
 #[tokio::test]
 async fn a_stopped_turn_still_reports_what_it_spent() {
-    // A stopped turn is exactly the kind worth costing, so the generations it
-    // already paid for must survive into the outcome.
     let turns = canned(vec![
         tool_turn("1", "read_logs", "{}", None),
         text_turn("never reached"),
@@ -851,9 +805,6 @@ async fn a_stopped_turn_still_reports_what_it_spent() {
 
 #[tokio::test]
 async fn a_stop_on_the_last_round_reads_as_a_stop_not_a_spent_budget() {
-    // The bottom-of-round check exists for this case: with only the top-of-round
-    // select, a stop arriving during the final tool round would fall out of the
-    // loop and be reported as the round budget running out on its own.
     let cancel = CancellationToken::new();
     let complete: &CompleteFn =
         &|_, _| Box::pin(async move { Ok(completion(tool_turn("1", "read_logs", "{}", None))) });
@@ -890,8 +841,6 @@ async fn a_stop_on_the_last_round_reads_as_a_stop_not_a_spent_budget() {
 
 #[tokio::test]
 async fn an_escalation_in_the_same_round_as_a_stop_still_pages() {
-    // The escalation check runs first on purpose: the model asked for a human
-    // before anyone asked it to stop, and that request must not be swallowed.
     let cancel = CancellationToken::new();
     let complete: &CompleteFn =
         &|_, _| Box::pin(async move { Ok(completion(tool_turn("1", "escalate", "{}", None))) });

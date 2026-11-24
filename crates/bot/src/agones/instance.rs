@@ -17,45 +17,19 @@ use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::{parse_bytes, parse_cpu_millicores};
 use crate::sizing::Sizing;
 
-/// Everything the renderer needs to stamp a catalog template into a concrete
-/// per-world instance. `ports` carries the leased edge-band port(s): a single
-/// remapped port for most games, or the advertised game/messaging ports whose
-/// numbers are stamped onto the Service and injected into the game's env.
 #[derive(Clone, Debug)]
 pub(crate) struct InstanceIdentity {
     pub(crate) name: InstanceName,
     pub(crate) game: GameId,
     pub(crate) namespace: String,
     pub(crate) ports: PortAssignment,
-    /// Discord guild id that owns this instance (the [`GUILD_KEY`] label).
-    /// Empty leaves the label off — for pre-scoping instances whose surviving
-    /// Service carries no guild, so a cold `/start` doesn't stamp a bogus one.
     pub(crate) guild: GuildId,
-    /// Hold the game process down at boot (inject `SUPERVISOR_START_PAUSED`) so the
-    /// bot can seed `/data` from an archive before the first launch. Only set by
-    /// recover-from-archive; a normal create/start leaves it `false`.
     pub(crate) start_paused: bool,
-    /// CPU/memory to stamp over the catalog's, when this instance has been
-    /// resized. `None` leaves the catalog sizing exactly as authored. Read from
-    /// Postgres at every provision *and* cold start, because a cold start
-    /// re-renders from the template and would otherwise silently undo a resize.
     pub(crate) sizing: Option<Sizing>,
 }
 
-/// Env var the supervisor reads to boot paused; injected into the game container
-/// when [`InstanceIdentity::start_paused`] is set. Matches the supervisor's own
-/// `SUPERVISOR_START_PAUSED`.
 const START_PAUSED_ENV: &str = "SUPERVISOR_START_PAUSED";
 
-/// Render the `GameServer` for an instance: parse the catalog template, then
-/// override identity (name, namespace, labels), rebind its data volume to the
-/// per-instance PVC, and stamp on this instance's resource override if it has
-/// one. The rest of the pod spec is left exactly as authored.
-///
-/// # Errors
-///
-/// Returns an error if the template is not valid YAML, has no
-/// `persistentVolumeClaim` volume to rebind, or has no containers to size.
 pub(crate) fn render_gameserver(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
@@ -78,12 +52,6 @@ pub(crate) fn render_gameserver(
     Ok(obj)
 }
 
-/// For an advertising game, point every declared game/messaging port at its
-/// leased edge-band number: rewrite the matching container ports (Agones
-/// `spec.ports` and the pod template's container ports) and inject the leased
-/// number into the game's env so the process binds and advertises that exact
-/// external port (Satisfactory's game port cannot be redirected — external must
-/// equal the number the server binds).
 fn apply_advertised_ports(data: &mut Value, ports: &[AssignedPort]) -> Result<()> {
     for assigned in ports {
         rewrite_container_ports(data, &assigned.name, assigned.number);
@@ -94,10 +62,6 @@ fn apply_advertised_ports(data: &mut Value, ports: &[AssignedPort]) -> Result<()
     Ok(())
 }
 
-/// Set `containerPort` to `number` on every port named `name`, across both the
-/// Agones `spec.ports` and each pod container's `ports`. A port the template
-/// doesn't declare is simply not found — the port-name cross-check in
-/// `port_plan_from_service` already rejects an advertised port with no entry.
 fn rewrite_container_ports(data: &mut Value, name: &str, number: i32) {
     if let Some(ports) = data
         .get_mut("spec")
@@ -131,14 +95,6 @@ fn set_named_container_port(ports: &mut [Value], name: &str, number: i32) {
     }
 }
 
-/// Replace the declared CPU/memory on every container in the pod template.
-/// Like [`upsert_container_env`], this reaches exactly the game container: the
-/// catalog template declares only that one, and Agones injects its SDK sidecar
-/// at admission with its own (untouched) footprint.
-///
-/// Both sides are written whole rather than merged, so an override always states
-/// all four figures — a partial stamp would leave a request from the catalog
-/// paired with a limit from the override and could invert the two.
 fn set_container_resources(data: &mut Value, sizing: Sizing) -> Result<()> {
     let quantities = sizing.as_quantities();
     let containers = data
@@ -169,25 +125,9 @@ fn set_container_resources(data: &mut Value, sizing: Sizing) -> Result<()> {
     Ok(())
 }
 
-/// The CPU and memory a game's catalog template declares — what every instance
-/// of that game runs with until someone resizes one.
-///
-/// The read mirror of [`set_container_resources`]: an instance carrying an
-/// override otherwise gives a reader no way to tell whether it still differs
-/// from the game's own sizing, and no way to state what putting it back would
-/// mean. There is no reset tool — going back is `set_resources` with these four
-/// figures — so they have to be readable.
-///
-/// `None` when the template names no game container, declares no resources on
-/// it, or states them partially (a catalog may deliberately omit a limit — see
-/// `games/_template/gameserver.yaml`). Three of four figures would describe a
-/// sizing no instance actually gets, so the caller reports it unknown instead.
 pub(crate) fn catalog_sizing(entry: &GameCatalogEntry) -> Option<Sizing> {
     let template: Value = serde_saphyr::from_str(&entry.gameserver_yaml).ok()?;
     let spec = template.get("spec")?;
-    // Same container the resize path picks: without `spec.container` the game is
-    // indistinguishable from the injected Agones sidecar, whose footprint is not
-    // the answer to "what does this game normally get".
     let game_container = spec.get("container").and_then(Value::as_str)?;
     let resources = spec
         .get("template")?
@@ -211,9 +151,6 @@ pub(crate) fn catalog_sizing(entry: &GameCatalogEntry) -> Option<Sizing> {
     })
 }
 
-/// A declared quantity as text. Numbers as well as strings, because YAML reads a
-/// whole-core `cpu: 2` as a number while `cpu: "2"` and `cpu: 500m` are strings,
-/// and which one a catalog author wrote shouldn't decide whether it can be read.
 fn quantity_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
@@ -222,9 +159,6 @@ fn quantity_text(value: &Value) -> Option<String> {
     }
 }
 
-/// Set (or add) an env var on every container in the pod template. The catalog
-/// template defines only the game container — Agones injects its SDK sidecar at
-/// admission, not here — so this reaches exactly the supervisor's container.
 fn upsert_container_env(data: &mut Value, key: &str, value: &str) -> Result<()> {
     let containers = data
         .get_mut("spec")
@@ -252,7 +186,6 @@ fn upsert_container_env(data: &mut Value, key: &str, value: &str) -> Result<()> 
                     .as_object_mut()
                     .context("gameserver container env entry is not a map")?;
                 entry.insert("value".to_owned(), Value::String(value.to_owned()));
-                // Drop any valueFrom so the literal value we set is authoritative.
                 entry.remove("valueFrom");
             }
             None => entries.push(serde_json::json!({ "name": key, "value": value })),
@@ -261,14 +194,6 @@ fn upsert_container_env(data: &mut Value, key: &str, value: &str) -> Result<()> 
     Ok(())
 }
 
-/// Render the per-instance `NodePort` Service: override identity, point the
-/// `agones.dev/gameserver` selector at this instance's `GameServer` name, and set
-/// the leased `NodePort`.
-///
-/// # Errors
-///
-/// Returns an error if the template is not valid YAML, has no spec, or has no
-/// ports to assign the `NodePort` to.
 pub(crate) fn render_service(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
@@ -306,8 +231,6 @@ pub(crate) fn render_service(
                     .with_context(|| {
                         format!("service template has no port named `{}`", assigned.name)
                     })?;
-                // No remap: nodePort == port == targetPort == the advertised port
-                // the game binds, so the number a client dials reaches the pod.
                 target.node_port = Some(assigned.number);
                 target.port = assigned.number;
                 target.target_port = Some(IntOrString::Int(assigned.number));
@@ -318,12 +241,6 @@ pub(crate) fn render_service(
     Ok(svc)
 }
 
-/// Render the per-instance PVC: override identity. The storage class and size
-/// from the template are left untouched.
-///
-/// # Errors
-///
-/// Returns an error if the template is not valid YAML.
 pub(crate) fn render_pvc(
     entry: &GameCatalogEntry,
     identity: &InstanceIdentity,
@@ -347,12 +264,6 @@ fn apply_labels(labels: &mut Option<BTreeMap<String, String>>, identity: &Instan
     }
 }
 
-/// Repoint every `persistentVolumeClaim` volume in the pod template at `pvc`.
-/// Errors if the template exposes no such volume — a game with persistent state
-/// must declare one, and silently creating a server with no world storage would
-/// be a data-loss surprise. Catalog templates declare exactly one claim today;
-/// if a future template carried two, both would collapse onto this single PVC,
-/// so a multi-claim template must revisit this.
 fn rebind_claim(data: &mut Value, pvc: &str) -> Result<()> {
     let volumes = data
         .get_mut("spec")

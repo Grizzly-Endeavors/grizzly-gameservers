@@ -1,5 +1,3 @@
-//! Builds the OTLP/HTTP span pipeline pointed at Langfuse's ingestion endpoint.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -19,8 +17,6 @@ use crate::config::LangfuseConfig;
 /// wrong path and 404s.
 const OTLP_TRACES_PATH: &str = "/api/public/otel/v1/traces";
 
-/// Asks Langfuse v4 to make a trace visible as it arrives rather than on the
-/// legacy batch path.
 const INGESTION_VERSION_HEADER: &str = "x-langfuse-ingestion-version";
 const INGESTION_VERSION: &str = "4";
 
@@ -29,23 +25,13 @@ const INGESTION_VERSION: &str = "4";
 /// multi-megabyte POST.
 const MAX_EXPORT_BATCH: usize = 16;
 
-/// Ceiling on spans buffered while the exporter is behind or unreachable. Past
-/// it, spans are dropped rather than allowed to grow the bot's memory — losing
-/// visibility is the design's accepted failure mode, stalling a turn is not.
 const MAX_QUEUE: usize = 2048;
 
 const SCHEDULED_DELAY: Duration = Duration::from_secs(5);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Identifies this bot as the producer on every exported span.
 const SERVICE_NAME: &str = "grizzly-gameservers";
 
-/// Assemble the batching span processor. The returned processor owns a dedicated
-/// background thread, so nothing here needs a Tokio runtime.
-///
-/// # Errors
-///
-/// Returns an error if the exporter's HTTP client can't be constructed.
 pub(crate) fn build(cfg: &LangfuseConfig) -> Result<BatchSpanProcessor> {
     let endpoint = endpoint_url(&cfg.host);
     let mut headers = HashMap::new();
@@ -78,13 +64,10 @@ pub(crate) fn build(cfg: &LangfuseConfig) -> Result<BatchSpanProcessor> {
     let mut processor = BatchSpanProcessor::builder(exporter)
         .with_batch_config(batch)
         .build();
-    // Normally a tracer provider does this. There isn't one in this pipeline, so
-    // without it every span would export with an empty resource.
     processor.set_resource(&Resource::builder().with_service_name(SERVICE_NAME).build());
     Ok(processor)
 }
 
-/// The instrumentation scope stamped on every observation this bot produces.
 pub(crate) fn scope() -> InstrumentationScope {
     InstrumentationScope::builder(concat!(env!("CARGO_PKG_NAME"), ".turn"))
         .with_version(env!("CARGO_PKG_VERSION"))

@@ -2,32 +2,19 @@ use std::time::{Duration, Instant};
 
 use grizzly_control_api::{ProcessPhase, StatusResponse};
 
-/// What the operator (via the control API) wants the child to be doing. The
-/// runner drives the child toward this; the difference between desired and the
-/// observed [`ProcessPhase`] is what an exit means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesiredState {
     Running,
     Stopped,
 }
 
-/// What the runner should do after observing an *unexpected* child exit (one it
-/// did not itself initiate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExitDisposition {
-    /// The exit was expected (desired == Stopped); settle into Stopped.
     Clean,
-    /// A crash within the budget; relaunch the child.
     Relaunch,
-    /// Too many crashes in the window; stop the heartbeat and let Agones
-    /// recreate the pod.
     Escalate,
 }
 
-/// The supervisor's view of the child process. Pure: every transition is a
-/// method with no IO, so the runner stays a thin driver and the logic is tested
-/// in isolation. Time is injected (`now: Instant`) rather than read, so crash-
-/// window bookkeeping is deterministic under test.
 #[derive(Debug, Clone)]
 pub struct SupervisorState {
     desired: DesiredState,
@@ -36,7 +23,6 @@ pub struct SupervisorState {
     readied: bool,
     restarts: u32,
     started_at: Option<Instant>,
-    /// Timestamps of recent unexpected exits, pruned to `crash_window`.
     crash_times: Vec<Instant>,
 }
 
@@ -60,27 +46,17 @@ impl SupervisorState {
         }
     }
 
-    /// Whether the Agones SDK `/ready` has been signalled at least once, so the
-    /// runner calls it only on first boot and not on warm relaunches.
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.readied
     }
 
-    /// Record that a child process has been launched.
     pub fn on_started(&mut self, pid: u32, now: Instant) {
         self.pid = Some(pid);
         self.started_at = Some(now);
-        // Every (re)launch is `Starting` until this boot's readiness probe
-        // confirms the new child is accepting connections again. `readied` stays
-        // sticky only to gate the one-shot Agones `/ready` (see `settle_ready`),
-        // not to fake the phase — so `Running` always means "up right now",
-        // which is what a caller waiting for a restart to land needs to see.
         self.phase = ProcessPhase::Starting;
     }
 
-    /// Record that the child is accepting connections and the Agones SDK
-    /// `/ready` has been signalled.
     pub fn on_ready(&mut self) {
         self.readied = true;
         if self.desired == DesiredState::Running {
@@ -88,41 +64,27 @@ impl SupervisorState {
         }
     }
 
-    /// Operator asked to stop the game process (the pod stays up).
     pub fn on_stop_requested(&mut self) {
         self.desired = DesiredState::Stopped;
         self.phase = ProcessPhase::Stopping;
     }
 
-    /// Operator asked to start the game process again.
     pub fn on_start_requested(&mut self) {
         self.desired = DesiredState::Running;
         self.phase = ProcessPhase::Starting;
     }
 
-    /// Operator asked to bounce the process in place. Desired stays `Running`;
-    /// the runner stops the child and relaunches it without routing the exit
-    /// through the crash path.
     pub fn on_restart_requested(&mut self) {
         self.desired = DesiredState::Running;
         self.phase = ProcessPhase::Stopping;
     }
 
-    /// Settle into the stopped state once the child has actually exited from an
-    /// intentional stop.
     pub fn on_stopped(&mut self) {
         self.phase = ProcessPhase::Stopped;
         self.pid = None;
         self.started_at = None;
     }
 
-    /// Classify an observed child exit and update phase/restart bookkeeping.
-    ///
-    /// When `desired == Stopped` the exit was expected ([`ExitDisposition::Clean`]).
-    /// Otherwise it is a crash: it is counted within `crash_window`, and once
-    /// `crash_threshold` crashes accumulate in that window the disposition
-    /// becomes [`ExitDisposition::Escalate`]; below the threshold it is
-    /// [`ExitDisposition::Relaunch`].
     pub fn on_child_exit(
         &mut self,
         now: Instant,
@@ -152,34 +114,16 @@ impl SupervisorState {
         }
     }
 
-    /// A launch was refused before the child process ever started — the
-    /// per-launch preparation (today, the mod reconcile) rejected what the
-    /// instance's own files ask for.
-    ///
-    /// Reported as `Crashed` rather than as a new phase, because that is the
-    /// word the whole recovery chain already understands: the bot's verify loop
-    /// watches for exactly this after a config change and restores the file's
-    /// snapshot, and the watchdog reads it as a crash signal. The restart
-    /// counter deliberately does *not* move — nothing restarted, and counting a
-    /// refused launch as a crash would spend the budget that exists to catch a
-    /// genuinely unstable game.
     pub fn on_launch_failed(&mut self) {
         self.phase = ProcessPhase::Crashed;
         self.pid = None;
         self.started_at = None;
     }
 
-    /// Forget the crashes counted so far, giving the process a full crash budget
-    /// again.
-    ///
-    /// Called only when a child recovers from an escalation, never on ordinary
-    /// readiness: a game that crashes some way *into* every boot would otherwise
-    /// reset the counter each cycle and loop forever instead of escalating.
     pub fn clear_crash_history(&mut self) {
         self.crash_times.clear();
     }
 
-    /// Snapshot for the `GET /status` control route.
     #[must_use]
     pub fn status(&self, now: Instant) -> StatusResponse {
         let uptime_seconds = self

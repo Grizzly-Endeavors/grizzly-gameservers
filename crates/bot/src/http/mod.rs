@@ -1,22 +1,3 @@
-//! The bot's inbound HTTP surface: one axum server, several routers.
-//!
-//! This module is the transport — it binds the socket, serves the always-on
-//! `GET /health` the kubelet probes, owns the shared bearer-token gate, and
-//! merges the feature routers onto one listener. A router lives with the feature
-//! it serves where it has a home: the in-game trigger path stays in
-//! [`crate::ingame`], which also owns its serenity-free answer orchestrator,
-//! while the operator harness has no other home and lives here in [`operator`].
-//!
-//! How a router degrades without its token is decided at the mount site rather
-//! than inside the gate, so each feature states its own posture. The in-game
-//! route runs **open** (NetworkPolicy-only) when its secret isn't provisioned, so
-//! an unprovisioned key doesn't quietly break the reverse loop. The operator
-//! routes instead go **unmounted**: they reach Gary's full admin surface, so
-//! running them open is never the safer failure. The signup intake follows the
-//! operator posture for the same reason inverted: it writes on behalf of an
-//! unauthenticated public form, so an ungated version of it is a stranger with a
-//! pen on the database.
-
 pub(crate) mod operator;
 pub(crate) mod signup;
 
@@ -36,42 +17,26 @@ use tracing::{error, info, warn};
 
 use crate::ingame::IngameDeps;
 
-/// Path of the always-on liveness/readiness route. Only the kubelet probe
-/// consumes it, so — unlike the feature routes' paths — it isn't part of the
-/// control-api wire contract and stays local to this module.
 const HEALTH_PATH: &str = "/health";
 
-/// The endpoint's three bearer credentials, grouped so they travel as one named
-/// thing rather than as a row of interchangeable `Option<String>` positions —
-/// which is exactly the shape a caller silently transposes.
 pub(crate) struct EndpointTokens {
     pub(crate) ingame: Option<String>,
     pub(crate) operator: Option<String>,
     pub(crate) signup: Option<String>,
 }
 
-/// Everything the HTTP server needs to mount its routers.
 pub(crate) struct HttpDeps {
     pub(crate) ingame: IngameDeps,
     pub(crate) operator: operator::OperatorDeps,
     pub(crate) signup: signup::SignupDeps,
     pub(crate) port: u16,
-    /// Shared bearer token for the in-game trigger route. `None` runs that route
-    /// open, protected by `NetworkPolicy` alone.
     pub(crate) ingame_token: Option<String>,
-    /// Bearer token for the operator routes. `None` leaves them unmounted.
     pub(crate) operator_token: Option<String>,
-    /// Bearer token for the signup intake route. `None` leaves it unmounted.
     pub(crate) signup_token: Option<String>,
-    /// Panic counts for the supervised background cycles, so a subsystem that
-    /// keeps dying can reach the k8s probes.
     pub(crate) cycle_health: Arc<crate::cycles::CycleHealth>,
 }
 
 impl HttpDeps {
-    /// Carve the endpoint's dependencies out of the command `Data`, taking the
-    /// bearer tokens by value — this is their only consumer, and a credential
-    /// copied is a credential that can be logged somewhere else.
     pub(crate) fn from_data(
         data: &crate::discord::Data,
         port: u16,
@@ -96,7 +61,6 @@ impl HttpDeps {
     }
 }
 
-/// The expected bearer token for one router. `None` means that router runs open.
 #[derive(Clone)]
 pub(crate) struct BearerGate {
     expected: Option<Arc<str>>,
@@ -114,13 +78,6 @@ pub(crate) fn spawn(deps: HttpDeps, tasks: &TaskTracker, shutdown: CancellationT
     });
 }
 
-/// Bind the endpoint and serve until `shutdown` is cancelled, draining in-flight
-/// requests (axum's graceful shutdown) and, via the shared tracker, the detached
-/// tasks the feature routes spawn.
-///
-/// # Errors
-///
-/// Returns an error if the listener can't bind the port or the server loop fails.
 async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) -> Result<()> {
     let HttpDeps {
         ingame,
@@ -133,10 +90,6 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
         cycle_health,
     } = deps;
 
-    // `GET /health` is always served: unauthenticated, stateless, and independent
-    // of Gary, so the k8s probes have a target whether or not the token-guarded
-    // feature routes are mounted. Each gate is scoped to its own sub-router — a
-    // probe carries no bearer token and must not be turned away.
     let mut app: Router = Router::new().route(
         HEALTH_PATH,
         get({
@@ -168,9 +121,6 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
         info!("operator routes disabled (GAMESERVERS_OPERATOR_TOKEN unset)");
     }
 
-    // Mounted only with both a token and somewhere to write. A token set with no
-    // database is a misconfiguration rather than a posture, so it warns: the
-    // landing page would be live and every person signing up would vanish.
     let signup_route = match signup_token {
         Some(token) if signup.is_enabled() => {
             app = app.merge(signup::router(signup, token));
@@ -205,7 +155,6 @@ async fn serve(deps: HttpDeps, shutdown: CancellationToken, tasks: TaskTracker) 
 }
 
 impl BearerGate {
-    /// A gate expecting `token`. `None` runs the guarded router open.
     pub(crate) fn new(token: Option<String>) -> Self {
         Self {
             expected: token.map(Arc::from),
@@ -213,9 +162,6 @@ impl BearerGate {
     }
 }
 
-/// Auth middleware: reject anything without the expected bearer token *before*
-/// the body is parsed, so an unauthenticated caller can't reach the handler.
-/// Runs open when the gate carries no token.
 pub(crate) async fn require_token(
     State(gate): State<BearerGate>,
     request: axum::extract::Request,
@@ -224,10 +170,6 @@ pub(crate) async fn require_token(
     if authorized(gate.expected.as_deref(), request.headers()) {
         next.run(request).await
     } else {
-        // Logged at warn, mirroring the supervisor's gate: these routes carry the
-        // operator harness (any tool, admin tier) and the in-game trigger, and a
-        // rejection here is either a half-rolled deploy or something in the
-        // cluster probing. A silent 401 would leave a brute-force no trace at all.
         warn!(
             path = %request.uri().path(),
             "rejected an unauthenticated request to the agent endpoint"
@@ -236,15 +178,11 @@ pub(crate) async fn require_token(
     }
 }
 
-/// Layer [`require_token`] onto `router`, gated on `token`.
 pub(crate) fn gated(router: Router, token: Option<String>) -> Router {
     let gate = BearerGate::new(token);
     router.layer(from_fn_with_state(gate, require_token))
 }
 
-/// Whether `headers` carry the expected bearer token. `None` expected means the
-/// route runs open (network-isolated only). The comparison is constant-time so
-/// a valid-length guess can't be narrowed by timing.
 fn authorized(expected: Option<&str>, headers: &HeaderMap) -> bool {
     let Some(expected) = expected else {
         return true;
@@ -259,9 +197,6 @@ fn authorized(expected: Option<&str>, headers: &HeaderMap) -> bool {
     constant_time_eq(provided.as_bytes(), expected.as_bytes())
 }
 
-/// Length-checked constant-time byte comparison. The length short-circuit leaks
-/// only the token's length, which is not secret; the byte loop does not leak
-/// where a same-length token first differs.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -273,21 +208,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Liveness/readiness target for the k8s probes: `200` whenever the process is
-/// serving and its background cycles are not in a panic loop.
-///
-/// It does almost no work on purpose — an unconfigured Gary or an idle Discord
-/// gateway must not read as dead, and a genuinely wedged process (what the
-/// liveness probe exists to catch) stops answering regardless.
-///
-/// The one thing it does check is the supervised cycles, because a panicking
-/// backup or sampler loop is invisible from outside the process: it doesn't stop
-/// the gateway, doesn't stop serving, and produces no traffic whose absence
-/// anything notices. A cycle that has panicked repeatedly is not recovering on
-/// its own, and a pod restart is the only remaining lever — so this reports
-/// unhealthy and lets the kubelet pull it. A *single* panic deliberately does
-/// not: the supervisor already restarted the cycle, and rolling the pod for one
-/// bad tick would cost more than the tick did.
 fn health(cycles: &crate::cycles::CycleHealth) -> StatusCode {
     let failing = cycles.failing();
     if failing.is_empty() {

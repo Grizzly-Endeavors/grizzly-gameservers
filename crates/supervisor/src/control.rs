@@ -33,31 +33,22 @@ use crate::occupancy::OccupancySource;
 use crate::rcon::RconRuntime;
 use crate::shell;
 
-/// A control request handed from the HTTP layer to the runner, with a one-shot
-/// channel for the runner to answer on.
 pub struct ControlRequest {
     pub command: ControlCommand,
     pub reply: oneshot::Sender<ControlReply>,
 }
 
-/// The runner's answer to a [`ControlRequest`].
 pub enum ControlReply {
-    /// A state-changing (or no-op) action completed.
     Acted(ResultKind),
-    /// A status snapshot for `GET /status`.
     Status(StatusResponse),
-    /// The action failed; the string is developer-facing.
     Failed(String),
 }
 
 #[derive(Clone)]
 struct ControlState {
     tx: mpsc::Sender<ControlRequest>,
-    /// Root the filesystem routes are confined to (the instance PVC mount).
     data_root: Arc<Path>,
-    /// Tail of the game process's recent output, served by `GET /logs`.
     logs: Arc<LogBuffer>,
-    /// RCON client for `POST /command`, or `None` when the game doesn't enable it.
     rcon: Option<Arc<RconRuntime>>,
     /// Where `GET /occupancy` reads the player count. Separate from `rcon`
     /// because they don't coincide: Satisfactory answers occupancy over its own
@@ -65,20 +56,6 @@ struct ControlState {
     occupancy: Option<Arc<OccupancySource>>,
 }
 
-/// Serve the control API on `0.0.0.0:port` until the listener errors. The port is
-/// pod-internal — never added to the `NodePort` Service — so only the bot
-/// (allowed by a scoped Cilium egress rule) can reach it.
-///
-/// The lifecycle routes (stop/start/restart/status) are matched by the
-/// [`ControlCommand`] fallback; the filesystem, logs, and command routes carry
-/// bodies and queries, so they're registered explicitly and handled in this layer
-/// rather than handed to the runner. `POST /command` runs entirely here — it
-/// speaks RCON to the game over loopback, independent of the child-process
-/// lifecycle the runner owns.
-///
-/// # Errors
-///
-/// Returns an error if the port cannot be bound or the server loop fails.
 pub async fn serve(
     port: u16,
     tx: mpsc::Sender<ControlRequest>,
@@ -91,10 +68,6 @@ pub async fn serve(
     if auth.is_enforced() {
         info!("control api requires a bearer token");
     } else {
-        // Said once at startup rather than left implicit: the difference between
-        // "network leash only" and "leash plus credential" is invisible from the
-        // outside, and a secret that failed to sync would otherwise look identical
-        // to one that worked.
         warn!("SUPERVISOR_CONTROL_TOKEN not set; control api is guarded by network policy alone");
     }
     let app = Router::new()
@@ -117,8 +90,6 @@ pub async fn serve(
             rcon,
             occupancy: occupancy_source,
         })
-        // Outermost, so every route above — including the ControlCommand fallback
-        // and anything added later — is behind it by default.
         .layer(axum::middleware::from_fn_with_state(
             auth,
             auth::require_token,
@@ -191,10 +162,6 @@ async fn fs_list(State(state): State<ControlState>, Query(query): Query<PathQuer
 }
 
 async fn fs_read(State(state): State<ControlState>, Query(query): Query<ReadQuery>) -> Response {
-    // Naming neither half of a window asks for the whole file, which is the
-    // parser's read. Naming either one asks for a window, and the other half
-    // falls back to a default rather than turning a partial request into a
-    // whole-file one.
     let read = match (query.start_line, query.line_count) {
         (None, None) => fs::read_file(&state.data_root, &query.path),
         (start, count) => fs::read_file_lines(
@@ -260,11 +227,6 @@ async fn fs_restore(
     }
 }
 
-/// Stream a zstd-compressed tar of the whole data root to the caller. When
-/// `quiesce` is set, world saves are flushed and paused before the snapshot and
-/// re-enabled once `tar` finishes (in the reaper task), so a *live* backup is
-/// internally consistent. The child is reaped — and saves re-enabled — off the
-/// response future so an early client disconnect still resolves cleanly.
 async fn archive_out(
     State(state): State<ControlState>,
     Query(query): Query<ArchiveQuery>,
@@ -274,8 +236,6 @@ async fn archive_out(
         && let Some(runtime) = rcon.as_ref()
         && let Err(err) = runtime.quiesce_for_snapshot().await
     {
-        // Best-effort: an un-quiesced snapshot is still usable, and the reaper
-        // re-enables saving regardless of this outcome.
         warn!(error = ?err, "failed to quiesce before snapshot; proceeding");
     }
 
@@ -314,9 +274,6 @@ async fn archive_out(
         .into_response()
 }
 
-/// Extract an uploaded zstd tar stream into the data root, optionally purging it
-/// first (overwrite-restore). The body streams straight into `tar`'s stdin so a
-/// multi-gigabyte world never buffers in memory.
 async fn archive_in(
     State(state): State<ControlState>,
     Query(query): Query<ExtractQuery>,
@@ -358,7 +315,6 @@ async fn archive_in(
             }
         }
     }
-    // Close stdin so tar sees EOF and finishes (or aborts, if we broke early).
     drop(stdin);
     let stderr_tail = read_stderr_tail(stderr).await;
     let status = child.wait().await;
@@ -380,8 +336,6 @@ async fn archive_in(
     }
 }
 
-/// Re-enable world saves after a snapshot, undoing [`RconRuntime::quiesce_for_snapshot`].
-/// A no-op when the snapshot wasn't quiesced or the game has no RCON.
 async fn resume_after_snapshot(quiesced: bool, rcon: Option<&RconRuntime>) {
     if quiesced
         && let Some(runtime) = rcon
@@ -391,8 +345,6 @@ async fn resume_after_snapshot(quiesced: bool, rcon: Option<&RconRuntime>) {
     }
 }
 
-/// Drain a child's stderr to a string for diagnostics, so a failed `tar` reports
-/// why. Best-effort: a read failure logs at debug and yields what was read.
 async fn read_stderr_tail<R>(stderr: Option<R>) -> String
 where
     R: AsyncReadExt + Unpin,
@@ -413,10 +365,6 @@ async fn logs_tail(State(state): State<ControlState>, Query(query): Query<LogsQu
     (StatusCode::OK, Json(LogsResponse { lines })).into_response()
 }
 
-/// Report the current connected-player count. Always 200: `players` is `null`
-/// when the game has no occupancy source or the one it has couldn't be read, which
-/// the bot reads as "unknown" (never as an empty server). Powers Gary's
-/// check-before-restart and mirrors the signal the in-pod auto-updater acts on.
 async fn occupancy(State(state): State<ControlState>) -> Response {
     let players = match state.occupancy.as_ref() {
         Some(source) => source.player_count().await,
@@ -495,9 +443,6 @@ async fn announce(
     }
 }
 
-/// Map a filesystem error to an HTTP status + developer-facing body, logging IO
-/// faults loudly and bad requests quietly. The bot translates the outcome into
-/// friend-facing copy, so the message here stays diagnostic.
 fn fs_error(op: &str, path: &str, err: &FsError) -> Response {
     let status = match err {
         FsError::OutsideRoot => StatusCode::FORBIDDEN,

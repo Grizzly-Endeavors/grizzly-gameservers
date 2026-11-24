@@ -37,7 +37,6 @@ fn guild_scope_treats_another_guild_as_foreign() {
 
 #[test]
 fn guild_scope_hides_unlabeled_instances() {
-    // A pre-scoping server (no guild label) must not leak into a guild view.
     let scope = ServerScope::Guild("42".to_owned());
     assert_eq!(classify(None, &scope), ScopeVerdict::Foreign);
 }

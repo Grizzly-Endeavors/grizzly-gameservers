@@ -11,7 +11,6 @@ fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// A `NodePort` Service targeting `gameserver` on `node_port`.
 fn service(gameserver: &str, node_port: Option<i32>) -> Service {
     Service {
         spec: Some(ServiceSpec {
@@ -26,7 +25,6 @@ fn service(gameserver: &str, node_port: Option<i32>) -> Service {
     }
 }
 
-/// A named Service port with an optional node port.
 fn named_port(name: &str, node_port: Option<i32>) -> ServicePort {
     ServicePort {
         name: Some(name.to_owned()),
@@ -35,7 +33,6 @@ fn named_port(name: &str, node_port: Option<i32>) -> ServicePort {
     }
 }
 
-/// A multi-port Service exposing the given named node ports.
 fn multi_port_service(ports: &[(&str, Option<i32>)]) -> Service {
     Service {
         spec: Some(ServiceSpec {

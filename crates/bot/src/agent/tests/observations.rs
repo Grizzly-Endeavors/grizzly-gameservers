@@ -92,9 +92,6 @@ fn an_ingame_player_is_namespaced_apart_from_discord_ids() {
     );
 }
 
-/// Without this, cost and escalation rate can only be read for the whole fleet:
-/// a Minecraft turn carrying a large modpack config costs materially more than a
-/// Valheim one, and nothing in the trace says which is which.
 #[test]
 fn a_turn_that_knows_its_game_can_be_sliced_by_it() {
     let ingame = TurnIdentity {
@@ -108,17 +105,12 @@ fn a_turn_that_knows_its_game_can_be_sliced_by_it() {
     );
 }
 
-/// A Discord turn often names no server, and a placeholder would show up in
-/// Langfuse as a real game with real cost attributed to it. The key is absent so
-/// the breakdown is honest about what it does not cover.
 #[test]
 fn a_turn_with_no_game_omits_the_attribute_rather_than_inventing_one() {
     let attributes = identity(&discord_identity(), "dev");
     assert!(find(&attributes, "langfuse.trace.metadata.game").is_none());
 }
 
-/// The whole point of the operator environment: harness traffic must never be
-/// counted as product signal, even though the process itself is production.
 #[test]
 fn an_operator_turn_is_quarantined_from_production() {
     let operator = TurnIdentity {
@@ -194,8 +186,6 @@ fn cache_hits_are_priced_as_their_own_bucket_not_twice() {
     );
 }
 
-/// A provider that reports the detail block with no cache hits is saying zero,
-/// not saying nothing — the bucket ships so the turn reads as a genuine miss.
 #[test]
 fn a_reported_zero_cache_hit_still_ships_its_bucket() {
     let usage = TokenUsage {
@@ -240,8 +230,6 @@ fn a_generation_with_no_usage_at_all_carries_no_usage_attribute() {
     assert!(find(&no_usage_block, langfuse::USAGE_DETAILS).is_none());
 }
 
-/// Arguments and result are already the strings the model wrote and read.
-/// Re-encoding them would bury a config edit's diff under escaping.
 #[test]
 fn a_tool_observation_keeps_arguments_and_result_verbatim() {
     let arguments = r#"{"server":"minecraft","path":"server.properties"}"#;

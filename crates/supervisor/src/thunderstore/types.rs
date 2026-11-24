@@ -1,13 +1,3 @@
-//! The one type this subsystem models that never leaves the pod: the
-//! `manifest.json` inside a package zip.
-//!
-//! The identifiers themselves — [`PackageId`], [`PackageVersion`],
-//! [`PackageRelease`] and their [`ParseError`] — live in
-//! [`grizzly_control_api::package`] and are re-exported here, because the bot
-//! authors the same strings when it rewrites a pin in `.grizzly/mods`. This
-//! module keeps the re-export so every call site in the reconciler reads
-//! `super::types::PackageRelease` whichever crate the grammar lives in.
-
 use serde::Deserialize;
 
 pub use grizzly_control_api::package::{PackageId, PackageRelease, PackageVersion, ParseError};

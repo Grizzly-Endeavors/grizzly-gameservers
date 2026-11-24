@@ -1,6 +1,5 @@
 use super::*;
 
-/// A settings file exactly as the loader writes one.
 fn settings(guid: &str) -> String {
     format!(
         "## Settings file was created by plugin Thing v1.0.0\n\
@@ -11,8 +10,6 @@ fn settings(guid: &str) -> String {
     )
 }
 
-/// A staged tree holding one assembly per package, each carrying its plugin's
-/// GUID the way a real assembly embeds the attribute's argument.
 fn stage_packages(root: &Path, packages: &[(&str, &str)]) {
     for (package, guid) in packages {
         let dir = root.join("BepInEx/plugins").join(package);
@@ -35,8 +32,6 @@ fn a_header_names_the_owning_plugin() {
 
 #[test]
 fn a_file_with_no_header_belongs_to_nobody() {
-    // The loader's own configuration. Never a candidate, which is how it is
-    // protected without being named anywhere.
     assert_eq!(owning_guid("[Caching]\n\n## Enable the cache\n"), None);
     assert_eq!(owning_guid(""), None);
     assert_eq!(owning_guid("## Plugin GUID:   \n"), None);
@@ -48,8 +43,6 @@ fn a_settings_directory_is_named_after_its_guid() {
         directory_guid("shudnal.ConditionalConfigSync"),
         Some("shudnal.ConditionalConfigSync")
     );
-    // A directory that plainly isn't a GUID stays out of the sweep entirely,
-    // rather than depending on an incidental byte match to survive it.
     assert_eq!(directory_guid("plugins"), None);
     assert_eq!(directory_guid(".hidden"), None);
 }
@@ -158,8 +151,6 @@ fn the_loaders_own_configuration_is_not_a_candidate() {
 
 #[test]
 fn a_snapshot_left_by_the_file_tools_is_not_a_candidate() {
-    // The rollback path owns these; matching `.cfg` exactly is what keeps the
-    // sweep out of their lifetime.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     let staged = dir.path().join("staged");
@@ -179,8 +170,6 @@ fn a_snapshot_left_by_the_file_tools_is_not_a_candidate() {
 
 #[test]
 fn settings_the_image_owns_are_skipped() {
-    // The baked RCON plugin's assembly lives on the image, not in the staged
-    // tree, so nothing would claim its GUID.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     let staged = dir.path().join("staged");
@@ -197,8 +186,6 @@ fn settings_the_image_owns_are_skipped() {
 
 #[test]
 fn an_absent_staged_tree_sweeps_nothing() {
-    // "The reconciler has not run" and "nothing is installed" are different
-    // states, and only the second is authoritative about what is orphaned.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     std::fs::create_dir_all(&config).unwrap();
@@ -213,8 +200,6 @@ fn an_absent_staged_tree_sweeps_nothing() {
 
 #[test]
 fn an_empty_staged_tree_orphans_everything() {
-    // The mirror image: the reconciler ran and installed nothing, so every
-    // plugin's settings really are left over.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     let staged = dir.path().join("staged");
@@ -242,8 +227,6 @@ fn a_missing_config_directory_is_not_an_error() {
 
 #[test]
 fn a_guid_claimed_by_any_assembly_is_live() {
-    // ExtraSlots embeds ConditionalConfigSync's GUID as a soft dependency. The
-    // match is incidental, and keeping the file is the right way to be wrong.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     let staged = dir.path().join("staged");
@@ -266,8 +249,6 @@ fn a_guid_claimed_by_any_assembly_is_live() {
 
 #[test]
 fn a_header_beyond_the_read_window_leaves_the_file_alone() {
-    // A file whose header can't be found is not attributable, and an
-    // unattributable file is kept.
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("bepinex");
     let staged = dir.path().join("staged");

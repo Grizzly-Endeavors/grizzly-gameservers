@@ -12,8 +12,6 @@ fn entry(full_name: &str, version: &str) -> ProfileMod {
 
 #[test]
 fn an_import_result_accounts_for_every_entry_including_the_dropped_ones() {
-    // Each dropped category is a different thing to tell a friend, and a result
-    // that hid them would produce "where's my mod" as the next message.
     let plan = ImportPlan {
         install: vec!["ValheimModding-Jotunn-2.29.2".to_owned()],
         client_only: vec!["RandyKnapp-EquipmentAndQuickSlots-3.0.2".to_owned()],
@@ -79,8 +77,6 @@ fn an_import_result_says_what_the_write_changed() {
 
 #[test]
 fn an_unchanged_import_says_so_outright() {
-    // Four empty categories is a complete answer only if it is stated as one;
-    // left to inference it invites reporting a change that didn't happen.
     let plan = ImportPlan {
         install: vec!["ValheimModding-Jotunn-2.30.0".to_owned()],
         ..ImportPlan::default()
@@ -93,8 +89,6 @@ fn an_unchanged_import_says_so_outright() {
 
 #[test]
 fn an_export_result_carries_the_code_and_what_it_contains() {
-    // Saying what a code contains is the whole guard against it going stale:
-    // there is no way to revoke one once it is handed over.
     let mods = vec![entry("ValheimModding-Jotunn", "2.29.2")];
     let text = format_export(
         "valheim-abc123",

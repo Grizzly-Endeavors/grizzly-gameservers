@@ -1,40 +1,22 @@
-//! The pure core of the deferred-task queue: the [`Condition`] a task waits on,
-//! the Redis key layout, the idle empty-streak transition, and the composition of
-//! a fired batch into one prompt for Gary. No IO — all of this is unit-tested.
-
 use serde::{Deserialize, Serialize};
 
 use super::task::DeferredTask;
 use crate::prompts;
 use crate::prompts::RunWhenCondition;
 
-/// Every deferred-task key is namespaced with the app prefix (the shared kv-cache
-/// requires it — isolation is by prefix, not ACL) and a `wait:` segment, then the
-/// server name and condition: `gameservers:wait:{server}:{condition}`.
 pub(crate) const KEY_PREFIX: &str = "gameservers:wait:";
 
-/// A pattern matching every deferred-task key, for the startup `SCAN`.
 pub(crate) const KEY_SCAN_PATTERN: &str = "gameservers:wait:*";
 
-/// What a deferred task waits for. The model picks one; the watcher polls the
-/// existing supervisor endpoints until it holds, then runs the queued tasks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Condition {
-    /// The server has finished a (re)start — either it came up healthy and is
-    /// accepting players, or it failed (crashed, boot-looping, or still not up
-    /// after a long ceiling). Wakes Gary either way to report the outcome.
     Startup,
-    /// The server has zero players connected right now — for changes wanted ASAP,
-    /// as players are logging off.
     Empty,
-    /// The server has been empty for a while (a grace window) — for no-rush tweaks
-    /// that shouldn't fire the instant one person briefly disconnects.
     Idle,
 }
 
 impl Condition {
-    /// The lowercase key segment / wire string for this condition.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Startup => "startup",
@@ -53,11 +35,6 @@ impl Condition {
     }
 }
 
-/// Narrow the generated `run_when` condition enum to the domain [`Condition`] at
-/// the dispatch boundary. Total by construction — both enums carry exactly the
-/// same three variants — so the wire strings stay owned solely by this module
-/// (which also encodes them into the Redis key layout), and the tool schema is
-/// generated from the prompt file rather than from this type.
 impl From<RunWhenCondition> for Condition {
     fn from(value: RunWhenCondition) -> Self {
         match value {
@@ -68,16 +45,10 @@ impl From<RunWhenCondition> for Condition {
     }
 }
 
-/// The Redis list key for `(server, condition)`.
 pub(crate) fn wait_key(server: &str, condition: Condition) -> String {
     format!("{KEY_PREFIX}{server}:{}", condition.as_str())
 }
 
-/// Recover `(server, condition)` from a key produced by [`wait_key`]. Returns
-/// `None` for anything that isn't a well-formed deferred-task key — a stray key
-/// under the prefix is skipped at reconciliation rather than spawning a bogus
-/// watcher. Server names are k8s instance names (no colon), so the condition is
-/// the segment after the final `:`.
 pub(crate) fn parse_wait_key(key: &str) -> Option<(String, Condition)> {
     let rest = key.strip_prefix(KEY_PREFIX)?;
     let (server, condition) = rest.rsplit_once(':')?;
@@ -87,11 +58,6 @@ pub(crate) fn parse_wait_key(key: &str) -> Option<(String, Condition)> {
     Some((server.to_owned(), Condition::from_str(condition)?))
 }
 
-/// The empty-streak transition for the `idle` condition: given the streak's
-/// current start (or `None` if not currently streaking), the latest occupancy
-/// reading, and now, return the new streak start. `Some(0)` continues (or starts)
-/// the streak; anything else — players present, or an *unknown* count — resets it,
-/// so a momentary blip or an unreadable console never counts toward idle.
 pub(crate) fn next_empty_since<T: Copy>(
     current: Option<T>,
     reading: Option<u32>,
@@ -103,10 +69,6 @@ pub(crate) fn next_empty_since<T: Copy>(
     }
 }
 
-/// Frame a fired batch as one user turn for Gary. `trigger_note` describes what
-/// woke the batch (e.g. "is now empty", or that a startup failed); the queued
-/// tasks are listed for him to carry out. The system prompt is the normal
-/// manager-tier Gary prompt, so this only supplies the situation and the asks.
 pub(crate) fn compose_batch_prompt(
     server: &str,
     trigger_note: &str,

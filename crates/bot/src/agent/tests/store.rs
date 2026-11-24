@@ -67,7 +67,6 @@ fn an_idle_session_past_its_ttl_starts_fresh() {
         TranscriptLimits::default(),
     );
 
-    // Just within the window: still continued.
     let within = store.checkout(KEY, start + ttl, || "sys".to_owned());
     assert_eq!(
         within.messages.len(),
@@ -75,7 +74,6 @@ fn an_idle_session_past_its_ttl_starts_fresh() {
         "within the TTL the session resumes"
     );
 
-    // Past the window: a clean slate.
     let expired = store.checkout(KEY, start + ttl + Duration::from_secs(1), || {
         "sys".to_owned()
     });
@@ -113,9 +111,6 @@ fn clear_forgets_the_session() {
     );
 }
 
-/// Limits small enough to trip in a test without building a 600k-token
-/// transcript. The ratio between them is what matters to the logic, not the
-/// absolute values.
 fn tight() -> TranscriptLimits {
     TranscriptLimits {
         trigger_tokens: 100,
@@ -123,16 +118,12 @@ fn tight() -> TranscriptLimits {
     }
 }
 
-/// A plausible measurement for `messages`, at the ~4 bytes/token the calibration
-/// is meant to infer for itself.
 fn measured(messages: &[ChatMessage]) -> usize {
     messages.iter().map(message_bytes).sum::<usize>() / 4
 }
 
 #[test]
 fn a_transcript_under_the_trigger_is_never_cut() {
-    // The whole point of the change: a long conversation is not a problem to be
-    // solved. It is trimmed when it stops fitting and at no other time.
     let store = SessionStore::new();
     let now = Instant::now();
 
@@ -193,9 +184,6 @@ fn passing_the_trigger_cuts_back_to_the_target_keeping_the_newest() {
 
 #[test]
 fn a_cut_lands_near_the_target_not_just_under_the_trigger() {
-    // Cutting only to the trigger would re-trim on the very next turn, and every
-    // trim throws away the cached prompt prefix. The gap between the two bounds
-    // is what makes a trim rare.
     let store = SessionStore::new();
     let now = Instant::now();
 
@@ -209,7 +197,6 @@ fn a_cut_lands_near_the_target_not_just_under_the_trigger() {
 
     let trimmed = store.checkout(KEY, now, || "ignored".to_owned());
     let retained_bytes: usize = trimmed.messages.iter().map(message_bytes).sum();
-    // The same ~4 bytes/token the measurement above implies.
     let retained_tokens = retained_bytes / 4;
     assert!(
         retained_tokens <= limits.trigger_tokens,
@@ -226,8 +213,6 @@ fn trimming_never_begins_with_a_dangling_tool_result() {
     let store = SessionStore::new();
     let now = Instant::now();
 
-    // A transcript long enough to trim whose natural cut point lands on tool
-    // results — those must not lead the retained window.
     let mut messages = vec![ChatMessage::system("sys")];
     for i in 0..40 {
         messages.push(ChatMessage::tool_result(
@@ -236,8 +221,6 @@ fn trimming_never_begins_with_a_dangling_tool_result() {
         ));
     }
     messages.push(ChatMessage::user("latest"));
-    // Measured far above the trigger, so the cut is deep enough to land inside
-    // the run of tool results — which is the case being guarded.
     store.commit(KEY, SessionId::mint(), messages, now, 1_000, tight());
 
     let trimmed = store.checkout(KEY, now, || "ignored".to_owned());
@@ -339,9 +322,6 @@ fn separate_conversations_get_separate_ids() {
 
 #[test]
 fn a_channel_and_an_ingame_player_never_collide() {
-    // The old tuple key relied on channel ids and player-name hashes happening
-    // not to overlap. The variant makes that structural: even with identical
-    // numbers, a channel is not a player.
     let store = SessionStore::new();
     let now = Instant::now();
 
@@ -374,9 +354,6 @@ fn a_channel_and_an_ingame_player_never_collide() {
 
 #[tokio::test]
 async fn turns_on_one_key_are_serialized() {
-    // Two people mentioning Gary in the same channel at once is ordinary now, and
-    // `commit` is last-write-wins — so the lock is what stops one of the two
-    // exchanges vanishing along with the answer that was already posted.
     let store = std::sync::Arc::new(SessionStore::new());
     let held = store.turn_lock(KEY).await;
 
@@ -401,8 +378,6 @@ async fn turns_on_different_keys_do_not_wait_for_each_other() {
     let store = SessionStore::new();
     let _held = store.turn_lock(KEY).await;
 
-    // Another channel's conversation is unrelated; making it queue would serialize
-    // the whole bot behind one slow turn.
     let other = store.turn_lock(SessionKey::Channel(8)).await;
     drop(other);
 }
@@ -413,7 +388,6 @@ async fn the_lock_map_does_not_grow_with_finished_turns() {
     for channel in 0..50 {
         drop(store.turn_lock(SessionKey::Channel(channel)).await);
     }
-    // Every guard is gone, so the next acquisition should sweep them all.
     let _held = store.turn_lock(SessionKey::Channel(99)).await;
     assert_eq!(
         store.turn_locks.lock().unwrap().len(),
@@ -422,13 +396,8 @@ async fn the_lock_map_does_not_grow_with_finished_turns() {
     );
 }
 
-// ---- reaping and the byte budget (issue #83) ----
-
 #[test]
 fn committing_reaps_sessions_that_went_idle_past_the_ttl() {
-    // Nothing else evicts: checkout only reads the TTL to decide freshness, so
-    // without this an entry survives for the life of the process for every
-    // channel Gary was ever mentioned in.
     let store = SessionStore::new();
     let start = Instant::now();
     let stale = SessionKey::Channel(1);
@@ -496,9 +465,6 @@ fn a_live_session_is_not_reaped_by_another_keys_commit() {
 
 #[test]
 fn a_huge_tool_result_no_longer_takes_the_conversation_with_it() {
-    // The reported bug: one oversized read used to stop the backward walk, which
-    // discarded that message *and every message older than it* — including the
-    // user turns naming which server was being discussed.
     let store = SessionStore::new();
     let now = Instant::now();
 
@@ -533,8 +499,6 @@ fn a_huge_tool_result_no_longer_takes_the_conversation_with_it() {
 
 #[test]
 fn one_oversized_result_is_still_delivered() {
-    // A single result larger than the whole target must survive: dropping it
-    // would leave the model answering about a tool call it can no longer see.
     let store = SessionStore::new();
     let now = Instant::now();
     let huge = "x".repeat(64 * 1024);

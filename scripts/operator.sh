@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Drive the *deployed* bot's operator harness from this box, so a change can be
-# exercised end-to-end without anyone typing into Discord.
-#
-# The routes only exist on the ClusterIP Service, so everything here runs through
-# a `kubectl port-forward`. Discord ids are read from the gitignored repo-root
-# .env — this repo is public, and while a channel id isn't a credential it ties a
-# personal Discord identity to the project, so it never enters git.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,12 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMESPACE="${GAMESERVERS_NAMESPACE:-game-servers}"
 SERVICE="svc/grizzly-gameservers-agent"
 REMOTE_PORT=9360
-# Not 9360: `just bot-start` runs a local bot bound to that port, and a silent
-# collision would quietly send these requests to the wrong Gary — exactly the
-# class of confusion this harness exists to eliminate.
 LOCAL_PORT="${GAMESERVERS_OPERATOR_LOCAL_PORT:-19360}"
-# A 16-round turn against a 2-minute per-completion ceiling can legitimately run
-# for minutes; a short timeout would read as a hang.
 REQUEST_TIMEOUT=900
 
 usage() {
@@ -83,7 +71,6 @@ command="${positional[0]}"
 
 require_tools kubectl curl jq
 
-# Same file the binary reads via dotenvy for an off-cluster run.
 if [[ -f "$repo_root/.env" ]]; then
     set -a
     # shellcheck disable=SC1091
@@ -91,8 +78,6 @@ if [[ -f "$repo_root/.env" ]]; then
     set +a
 fi
 
-# Resolve the token: an explicit .env value wins (so this can be pointed at a
-# local bot), otherwise read the Secret ESO syncs from OpenBao.
 token="${GAMESERVERS_OPERATOR_TOKEN:-}"
 if [[ -z "$token" ]]; then
     token="$(kubectl -n "$NAMESPACE" get secret grizzly-gameservers-operator \
@@ -109,8 +94,6 @@ EOF
     exit 1
 fi
 
-# `tools` is a plain lookup and needs no Discord context; everything else acts as
-# somebody, somewhere, so it needs a channel to report into.
 if [[ "$command" != "tools" ]]; then
     channel="${channel:-${GAMESERVERS_OPERATOR_CHANNEL:-}}"
     if [[ -z "$channel" ]]; then
@@ -125,8 +108,6 @@ EOF
     fi
 fi
 
-# Build the request body with jq so every value is properly escaped — a prompt
-# with a quote in it must not be able to corrupt the JSON.
 build_body() {
     local body
     body="$(jq -n --arg channel "$channel" '{channel: $channel}')"
@@ -141,8 +122,6 @@ build_body() {
             local name="${positional[1]:-}"
             local args="${positional[2]:-{\}}"
             [[ -n "$name" ]] || { echo "tool needs a name — try: scripts/operator.sh tools" >&2; return 1; }
-            # Validate before --argjson so a malformed argument reports itself
-            # rather than surfacing as jq's parser error on an unnamed input.
             if ! jq -e . >/dev/null 2>&1 <<<"$args"; then
                 echo "tool arguments must be a JSON object, got: ${args}" >&2
                 echo "quote them as one shell word, e.g. '{\"name\":\"mc\",\"lines\":50}'" >&2
@@ -166,8 +145,6 @@ base="localhost:${LOCAL_PORT}"
 forward_and_wait "$NAMESPACE" "$SERVICE" "${LOCAL_PORT}:${REMOTE_PORT}" \
     "${base}/health" "the deployed bot"
 
-# Retry a 503 a few times: it means the Discord gateway hasn't finished
-# connecting, which resolves on its own within seconds of a rollout.
 request() {
     local method="$1" url="$2" body="${3:-}"
     local attempt response status
@@ -195,8 +172,6 @@ case "$command" in
         response="$(request GET "$url")"
         ;;
     tool)
-        # Built on its own line, not nested inside the request substitution: a
-        # failure in there would be swallowed and we'd POST an empty body.
         body="$(build_body)" || exit 1
         response="$(request POST "${base}/operator/tool" "$body")"
         ;;
@@ -212,9 +187,6 @@ status="$(tail -n1 <<<"$response")"
 payload="$(sed '$d' <<<"$response")"
 
 if [[ "$status" != "200" ]]; then
-    # Extract first, print second. Redirecting jq's stdout to stderr in the same
-    # command as `2>/dev/null` would point it at /dev/null instead, and the whole
-    # reason for failing here is to say why.
     message="$(jq -r '.error // empty' <<<"$payload" 2>/dev/null || true)"
     echo "request failed (HTTP ${status}): ${message:-$payload}" >&2
     exit 1

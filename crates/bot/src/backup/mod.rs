@@ -1,21 +1,3 @@
-//! S3-backed backups, archive, and restore for per-instance world data.
-//!
-//! Three capabilities, all bot-orchestrated (the bot streams a tar of `/data`
-//! from the supervisor's control API straight to S3, and back for restore — S3
-//! credentials never leave the bot):
-//!
-//! - **Automatic/manual backups** — periodic consistent snapshots of a *live*
-//!   server to `backups/<instance>/`, for point-in-time restore. The instance is
-//!   their index (a prefix listing), so they need no database.
-//! - **Archive** — stop a server, back it up to `archives/<guild>/<name>/`, then
-//!   release the whole trio (PVC included). Indexed in Postgres because the
-//!   instance is gone; the S3 manifest sidecar remains the durable source of truth.
-//! - **Restore** — roll a live server back to one of its backups, or recover an
-//!   archived one (recreate the trio, reseed `/data` before first launch).
-//!
-//! Layout, key scheme, and retention live in [`manifest`]; the S3 wire shell in
-//! [`s3`]; the archive index in [`store`]; and the flows in [`orchestrate`].
-
 mod manifest;
 mod orchestrate;
 mod s3;
@@ -31,73 +13,38 @@ use crate::agones::GameCatalog;
 use s3::S3Store;
 use store::ArchiveStore;
 
-/// The backups subsystem: the S3 wire shell, the archive index, and the
-/// long-timeout client used to stream a whole world to/from the supervisor and
-/// S3. Present in [`crate::discord::Data`] only when S3 is configured.
 pub(crate) struct BackupService {
     s3: S3Store,
     archives: ArchiveStore,
-    /// Long-timeout, credentialed client for the supervisor's streaming archive
-    /// routes — distinct from the bot's short-timeout control client, which is
-    /// tuned for the quick lifecycle calls. The S3 half of the same transport is
-    /// held inside [`super::s3::S3Store`] uncredentialed: S3 is a third party and
-    /// must never see the control token.
     archive_http: crate::agones::ControlClient,
-    /// Backups kept per server before the scheduled cycle prunes older ones.
     retention: usize,
-    /// Days an archive is kept before the retention cycle prunes it, never
-    /// touching the newest archive of a name.
     archive_retention_days: i32,
-    /// How often the scheduled cycle runs (used by the timer in `crate::run`).
     interval: Duration,
-    /// The product event log. Backups are the one subsystem whose orchestration
-    /// layer is already shared by every surface — slash commands, Gary's tools,
-    /// and the scheduled cycle all come through these methods — so this is where
-    /// their events are emitted rather than at each caller.
     events: std::sync::Arc<crate::events::EventLog>,
 }
 
-/// The cluster/catalog handles a backup flow needs, bundled so the flow signatures
-/// stay within the argument budget. Built from [`crate::discord::Data`] (or the
-/// equivalent in `crate::run` for the scheduled cycle) at each call site.
 pub(crate) struct BackupCtx<'a> {
     pub(crate) client: &'a Client,
-    /// Short-timeout control client for the quick lifecycle calls (stop/start/wait).
     pub(crate) http: &'a crate::agones::ControlClient,
     pub(crate) namespace: &'a str,
     pub(crate) domain: &'a str,
     pub(crate) control_port: u16,
     pub(crate) catalog: &'a GameCatalog,
     pub(crate) provision_lock: &'a Mutex<()>,
-    /// Per-instance resource overrides, so recreating a pod to back it up
-    /// preserves whatever size the instance was resized to rather than handing
-    /// it back the catalog's.
     pub(crate) sizing: &'a crate::sizing::InstanceSizing,
-    /// Per-guild resource caps, so a recover checks the archive's owning guild
-    /// against its allowance before recreating the server (ADR-022).
     pub(crate) guild_limits: &'a crate::limits::GuildLimits,
 }
 
-/// Outcome of a manual or scheduled backup of a live server.
 #[derive(Debug)]
 pub(crate) enum BackupOutcome {
-    BackedUp {
-        size_bytes: u64,
-    },
-    /// No server by that name.
+    BackedUp { size_bytes: u64 },
     NotFound,
-    /// The server exists but isn't shim-managed.
     NotManaged,
-    /// The server has no live pod to snapshot (shut down) — start it first.
     NotRunning,
-    /// The supervisor couldn't be reached or the snapshot failed; carries a
-    /// developer-facing reason.
     Unreachable(String),
 }
 
 impl BackupOutcome {
-    /// The developer-facing failure reason to log, if this outcome carries one.
-    /// The user-facing embed stays plain-language; this is for the operator's log.
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Unreachable(reason) => Some(reason),
@@ -106,16 +53,11 @@ impl BackupOutcome {
     }
 }
 
-/// Outcome of archiving a server (back up, then release the PVC).
 pub(crate) enum ArchiveOutcome {
     Archived {
         name: String,
         size_bytes: u64,
     },
-    /// The archive is durably committed (tarball + manifest + Postgres record),
-    /// but the final teardown that frees the old server's storage failed. The
-    /// archive is `/recover`-able and it's safe to retry the archive to free the
-    /// storage; the teardown error is logged at the failure site, not carried here.
     ArchivedNotReleased {
         name: String,
         size_bytes: u64,
@@ -124,29 +66,22 @@ pub(crate) enum ArchiveOutcome {
     NotManaged,
     /// The archive catalog (Postgres) isn't configured, so archive is disabled.
     Unavailable,
-    /// A step couldn't be completed; carries a developer-facing reason.
     Failed(String),
 }
 
-/// What became of a request to delete a server's archives.
 pub(crate) enum ArchiveDeleteOutcome {
     Deleted {
         name: String,
-        /// How many archive generations went, which is usually more than the one
-        /// the listing showed — `/archives` collapses to the newest per name.
         generations: usize,
         freed_bytes: u64,
     },
-    /// No archive of that name exists in this scope.
     NotFound,
     /// The archive catalog (Postgres) isn't configured, so nothing can be deleted.
     Unavailable,
-    /// A step couldn't be completed; carries a developer-facing reason.
     Failed(String),
 }
 
 impl ArchiveDeleteOutcome {
-    /// The developer-facing failure reason to log, if any.
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Failed(reason) => Some(reason),
@@ -156,7 +91,6 @@ impl ArchiveDeleteOutcome {
 }
 
 impl ArchiveOutcome {
-    /// The developer-facing failure reason to log, if any.
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Failed(reason) => Some(reason),
@@ -169,41 +103,23 @@ impl ArchiveOutcome {
     }
 }
 
-/// How a server came up after a restore/recover launch, preserved from
-/// [`crate::agones::ReadyWait`] instead of collapsed to a bool — a crash or a
-/// paused server needs a different message than "still booting", not the same
-/// falsy answer.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BootState {
-    /// Accepting connections.
     Ready,
-    /// Crashed while coming up — the restored/recovered data is the usual
-    /// suspect.
     Crashed,
-    /// Paused, so it won't come up on its own.
     Stopped,
-    /// Still coming up when the wait budget elapsed.
     TimedOut,
 }
 
-/// Whether the restore path managed to take the promised pre-restore safety
-/// backup. When it couldn't — no live target to snapshot, or the snapshot itself
-/// failed — the restore still proceeds, but the result must report that the
-/// overwrite has no undo point rather than imply one exists.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SafetyBackup {
-    /// A safety backup of the pre-restore world was taken; the overwrite is undoable.
     Taken,
-    /// No safety backup exists; the world that was overwritten can't be brought back.
     Absent,
 }
 
-/// Outcome of restoring a live server from one of its backups.
 pub(crate) enum RestoreOutcome {
     Restored {
         boot: BootState,
-        /// Whether the promised pre-restore safety backup was actually taken;
-        /// `Absent` means the overwrite has no undo point and the result says so.
         safety_backup: SafetyBackup,
     },
     NotFound,
@@ -212,7 +128,6 @@ pub(crate) enum RestoreOutcome {
 }
 
 impl RestoreOutcome {
-    /// The developer-facing failure reason to log, if any.
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Failed(reason) => Some(reason),
@@ -221,33 +136,19 @@ impl RestoreOutcome {
     }
 }
 
-/// Outcome of recovering an archived server (recreate the trio, reseed `/data`).
 pub(crate) enum RecoverOutcome {
-    Recovered {
-        address: String,
-        boot: BootState,
-    },
-    /// No archive by that name in this guild.
+    Recovered { address: String, boot: BootState },
     NoSuchArchive,
-    /// A live server already holds that name.
     NameInUse,
-    /// The archive catalog isn't configured.
     Unavailable,
-    /// The archived game is no longer in the catalog.
     UnknownGame(String),
-    /// No free port to recreate the server.
     PortsExhausted,
-    /// The archive's owning guild is at one of its resource caps (ADR-022) —
-    /// recreating the server would put it over.
     GuildLimitReached(crate::limits::LimitRefusal),
-    /// The namespace has no room to recreate the server, whatever the archive's
-    /// guild is using.
     ClusterFull(crate::capacity::CapacityRefusal),
     Failed(String),
 }
 
 impl RecoverOutcome {
-    /// The developer-facing failure reason to log, if any.
     pub(crate) fn reason(&self) -> Option<&str> {
         match self {
             Self::Failed(reason) => Some(reason),
@@ -263,20 +164,12 @@ impl RecoverOutcome {
     }
 }
 
-/// One backup or archive shown to a friend in a listing.
 pub(crate) struct ArtifactSummary {
-    /// Server (instance) name.
     pub(crate) name: String,
-    /// Owning Discord guild id, from the artifact's manifest. The recover flow
-    /// uses it to recreate an archived server in its original guild.
     pub(crate) guild: String,
-    /// The S3 tarball key — the stable handle the restore/recover picks by.
     pub(crate) key: String,
-    /// Compressed size in bytes.
     pub(crate) size_bytes: u64,
-    /// RFC-3339-ish creation timestamp for display.
     pub(crate) created_at: String,
 }
 
-/// Shared handle to the backups subsystem, or `None` when S3 isn't configured.
 pub(crate) type MaybeBackups = Option<Arc<BackupService>>;

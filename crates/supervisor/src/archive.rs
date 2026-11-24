@@ -16,16 +16,8 @@ use std::process::Stdio;
 use anyhow::{Context, Result};
 use tokio::process::{Child, Command};
 
-/// Entries an ext-family filesystem keeps at its mount root; a purge leaves them
-/// alone so a restore never fights the filesystem over `lost+found`.
 const PRESERVED_ON_PURGE: &[&str] = &["lost+found"];
 
-/// Spawn `tar` to stream a zstd-compressed archive of everything under `root` to
-/// its stdout. The caller reads stdout as the response body and reaps the child.
-///
-/// # Errors
-///
-/// Returns an error if `tar` cannot be spawned.
 pub fn spawn_create(root: &Path) -> Result<Child> {
     let mut cmd = Command::new("tar");
     cmd.arg("--zstd")
@@ -42,12 +34,6 @@ pub fn spawn_create(root: &Path) -> Result<Child> {
         .context("failed to spawn tar to create the data archive")
 }
 
-/// Spawn `tar` to extract a zstd-compressed archive fed on its stdin into `root`.
-/// The caller streams the upload into stdin and reaps the child.
-///
-/// # Errors
-///
-/// Returns an error if `tar` cannot be spawned.
 pub fn spawn_extract(root: &Path) -> Result<Child> {
     let mut cmd = Command::new("tar");
     cmd.arg("--zstd").arg("-xf").arg("-").arg("-C").arg(root);
@@ -59,15 +45,6 @@ pub fn spawn_extract(root: &Path) -> Result<Child> {
         .context("failed to spawn tar to extract the data archive")
 }
 
-/// Remove the direct children of `root` (except filesystem-reserved entries) so a
-/// restore lands on a clean slate rather than merging over stale files. Confined
-/// by construction: it iterates and deletes only `root`'s own entries and never
-/// follows a caller-supplied path. `DirEntry::file_type` does not follow
-/// symlinks, so a symlink is unlinked with `remove_file`, never traversed.
-///
-/// # Errors
-///
-/// Returns an error if `root` can't be read or an entry can't be removed.
 pub fn purge(root: &Path) -> Result<()> {
     for entry in std::fs::read_dir(root)
         .with_context(|| format!("failed to read data root {} for purge", root.display()))?

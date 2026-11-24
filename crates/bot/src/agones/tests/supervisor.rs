@@ -40,10 +40,6 @@ fn running_pod_without_ip_is_skipped() {
     );
 }
 
-// The pod that kept the outage going: evicted, so the API has it Terminating,
-// but its node is gone so nothing ever completes the delete. It reports Running
-// with a stale IP for as long as the node stays down, and dialling that IP is
-// how every lifecycle command spent two and a half days timing out.
 #[test]
 fn terminating_pod_is_skipped_even_while_it_reports_running() {
     let mut pod = pod_with(Some("Running"), Some("10.244.5.106"));

@@ -10,8 +10,6 @@ fn submission() -> Submission {
     }
 }
 
-/// The whole degradation contract in one place: with no database the queue is
-/// inert but never panics and never claims to have stored anything.
 #[tokio::test]
 async fn a_disabled_queue_records_nothing_and_shows_nothing() {
     let signups = Signups::connect(None).await;
@@ -35,8 +33,6 @@ fn an_address_is_stored_trimmed_and_lowercased() {
     );
 }
 
-/// Normalizing twice must equal normalizing once, or the primary key drifts from
-/// what a later lookup computes.
 #[test]
 fn normalizing_is_idempotent() {
     let once = normalize_email(" Person@Mail.Example ").expect("a valid address");
@@ -86,8 +82,6 @@ fn a_note_one_over_the_limit_is_cut_and_marked() {
     assert_eq!(truncate_chars("hello!", 5), "hello…");
 }
 
-/// Counting characters rather than bytes is the whole point — slicing this at
-/// byte 5 would split a multi-byte character and panic.
 #[test]
 fn a_multi_byte_character_at_the_boundary_does_not_split() {
     assert_eq!(truncate_chars("aaaa🐻bbbb", 5), "aaaa🐻…");

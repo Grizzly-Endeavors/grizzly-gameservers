@@ -17,8 +17,6 @@ fn supplied_name_is_sanitized_and_used_without_game_prefix() {
 
 #[test]
 fn validate_world_name_normalizes_the_same_way_the_up_front_check_relies_on() {
-    // The `/create` command calls this before the game picker; it must yield the
-    // identical normalization build_instance_name would for the same input.
     assert_eq!(validate_world_name("Bob's World!").unwrap(), "bob-s-world");
     assert_eq!(
         build_instance_name("minecraft", Some("Bob's World!"), 0).unwrap(),
@@ -102,7 +100,6 @@ fn select_two_free_ports_returns_the_lowest_available_pair() {
 
 #[test]
 fn select_free_ports_returns_none_when_band_cannot_satisfy_count() {
-    // Only one slot left (7010) but a two-port game needs two.
     let used: BTreeSet<i32> = (7000..=7009).collect();
     let picked = select_free_ports(2, &used, &BTreeSet::new(), 7000..=7010);
     assert_eq!(picked, None);

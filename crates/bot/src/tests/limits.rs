@@ -67,8 +67,6 @@ fn create_refused_at_count_cap() {
 
 #[test]
 fn create_count_checked_before_aggregate() {
-    // Both caps violated: the count refusal wins, since it's the one the friend
-    // can act on without resource arithmetic.
     let caps = effective_caps(None, DEFAULTS);
     let result = check_create(&usage(5, 24_000, 0), Some(sizing(2_000, 1 << 30)), &caps);
     assert!(matches!(result, Err(LimitRefusal::ServerCount { .. })));
@@ -115,8 +113,6 @@ fn create_memory_over_cap_refused_with_figures() {
 
 #[test]
 fn create_with_unreadable_catalog_sizing_contributes_zero() {
-    // A template whose figures couldn't be parsed must not turn into a
-    // guild-wide create outage; the count cap still applies.
     let caps = effective_caps(None, DEFAULTS);
     assert_eq!(
         check_create(&usage(2, 24_000, 48 << 30), None, &caps),
@@ -140,9 +136,6 @@ fn added_load_refused_when_it_overflows() {
 
 #[test]
 fn resize_semantics_exclude_target_contribution() {
-    // A server at 8c being resized to 16c in a guild whose *other* servers hold
-    // 8c: the caller measures usage with the target excluded, so the proposal
-    // replaces the old figure instead of stacking onto it.
     let caps = effective_caps(None, DEFAULTS);
     let others = usage(2, 8_000, 16 << 30);
     assert_eq!(
@@ -165,9 +158,6 @@ fn oversized_server_count_still_refuses() {
     assert!(matches!(result, Err(LimitRefusal::ServerCount { .. })));
 }
 
-/// The global defaults are an operator setting, so they have to be read live.
-/// A cached copy here is how "raise everyone's cap" would silently need a
-/// restart to take effect.
 #[tokio::test]
 async fn the_global_defaults_come_from_the_live_settings() {
     let mut snapshot = crate::settings::SettingsSnapshot::for_test();

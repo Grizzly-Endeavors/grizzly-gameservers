@@ -21,7 +21,6 @@ fn quantities(cpu: &str, memory: &str) -> BTreeMap<String, Quantity> {
     ])
 }
 
-/// A pod whose game container reports the given running resources.
 fn pod_running(requests: (&str, &str), limits: (&str, &str)) -> Pod {
     Pod {
         status: Some(PodStatus {
@@ -40,8 +39,6 @@ fn pod_running(requests: (&str, &str), limits: (&str, &str)) -> Pod {
     }
 }
 
-/// Metadata built through serde rather than by hand, the way it reaches the bot
-/// from the API server — timestamp parsing included.
 fn meta_from_json(value: serde_json::Value) -> kube::core::ObjectMeta {
     serde_json::from_value(value).expect("metadata fixture should deserialize")
 }
@@ -86,16 +83,12 @@ fn a_container_still_on_its_old_sizing_is_not_applied() {
 
 #[test]
 fn a_half_applied_resize_is_not_applied() {
-    // Requests updated, limits not: reporting this as done would tell a friend
-    // their server has headroom it doesn't have.
     let pod = pod_running(("500m", "2147483648"), ("1000m", "2147483648"));
     assert!(!applied(&pod, "minecraft", sizing()));
 }
 
 #[test]
 fn the_sidecars_resources_are_not_mistaken_for_the_games() {
-    // The pod carries the Agones sidecar too; matching by name is what keeps a
-    // resize check from reading the wrong container.
     let pod = pod_running(("500m", "2147483648"), ("2000m", "4294967296"));
     assert!(!applied(&pod, "agones-gameserver-sidecar", sizing()));
 }
@@ -130,8 +123,6 @@ fn an_infeasible_resize_surfaces_the_kubelets_own_message() {
 
 #[test]
 fn a_deferred_resize_is_not_treated_as_infeasible() {
-    // Deferred means "the node is full right now" — the resize stays queued, so
-    // calling it infeasible would give up on something still likely to happen.
     let pod = with_condition(
         pod_running(("250m", "1073741824"), ("1000m", "2147483648")),
         RESIZE_PENDING_CONDITION,
@@ -150,8 +141,6 @@ fn a_pod_with_no_resize_conditions_is_neither_pending_nor_in_progress() {
 
 #[test]
 fn a_terminating_pod_is_never_the_resize_target() {
-    // A pod on a dead node reports Running indefinitely; resizing it would
-    // silently do nothing.
     let mut pod = pod_running(("500m", "2147483648"), ("2000m", "4294967296"));
     pod.metadata = meta_from_json(serde_json::json!({ "name": "mc-abc12" }));
     pod.status.as_mut().expect("status was just built").phase = Some("Running".to_owned());
@@ -207,9 +196,5 @@ fn a_resolved_condition_left_behind_as_false_does_not_block_a_resize() {
 
 #[test]
 fn the_refusal_status_is_the_one_kubernetes_uses_for_a_rejected_resize() {
-    // Pinned because the whole 422 branch hangs on it: a wrong value here would
-    // send a plain refusal down the transport-error path, where it surfaces to a
-    // friend as "I couldn't reach the cluster" — a lie about a cluster that
-    // answered clearly.
     assert_eq!(REFUSED_STATUS, 422);
 }

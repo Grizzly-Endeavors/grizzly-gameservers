@@ -16,9 +16,6 @@ fn every_action_round_trips_through_its_path_segment() {
     assert_eq!(InstanceAction::parse(""), None);
 }
 
-/// Destroy is the only action that loses a world; everything else is undone by
-/// doing the opposite. Widening this set silently would put a typed
-/// confirmation in front of routine work until people learned to ignore it.
 #[test]
 fn only_destroy_demands_a_typed_confirmation() {
     let destructive: Vec<&str> = [
@@ -76,8 +73,6 @@ fn an_unusable_cap_is_refused_with_a_message_naming_the_value() {
     assert!(count.contains("lots"), "{count}");
     let cpu = parse_limit_change("cpu", "-4", false).expect_err("refused");
     assert!(cpu.contains("-4"), "{cpu}");
-    // Zero would cap a guild at nothing, which reads as "broken" rather than
-    // "restricted".
     assert!(parse_limit_change("servers", "0", false).is_err());
     assert!(parse_limit_change("memory", "0", false).is_err());
 }
@@ -105,8 +100,6 @@ fn an_unknown_signup_verb_is_refused() {
     assert_eq!(SignupAction::parse(""), None);
 }
 
-/// Only deny is irreversible. Widening this set would train the operator to
-/// click through confirmations, which is how the one that matters stops working.
 #[test]
 fn only_deny_demands_a_typed_confirmation() {
     assert!(SignupAction::Deny.is_destructive());

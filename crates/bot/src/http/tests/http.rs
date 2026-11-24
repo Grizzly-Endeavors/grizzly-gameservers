@@ -52,8 +52,6 @@ async fn health_reports_ok_regardless_of_state() {
 
 #[tokio::test]
 async fn health_stays_ok_while_a_cycle_is_recovering() {
-    // The supervisor restarts a panicking cycle on its own. Failing the probe on
-    // the first panic would roll the pod for a bad tick that already healed.
     let cycles = crate::cycles::CycleHealth::new();
     cycles.record_panic_for_test("backup-cycle");
     assert_eq!(health(&cycles), StatusCode::OK);
@@ -61,9 +59,6 @@ async fn health_stays_ok_while_a_cycle_is_recovering() {
 
 #[tokio::test]
 async fn health_fails_once_a_cycle_stops_recovering() {
-    // A cycle that keeps panicking is invisible from outside the process: the
-    // gateway still runs and the endpoint still serves. The probe is the only
-    // lever left.
     let cycles = crate::cycles::CycleHealth::new();
     for _ in 0..crate::cycles::unhealthy_panic_threshold() {
         cycles.record_panic_for_test("backup-cycle");

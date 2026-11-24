@@ -24,9 +24,6 @@ async fn start() -> Result<()> {
     run(config).await
 }
 
-/// Load a local `.env` for development. A missing file is expected in-cluster
-/// (env comes from the pod spec); any other parse error is surfaced as a
-/// warning rather than swallowed.
 fn load_dotenv() {
     if let Err(err) = dotenvy::dotenv()
         && !err.not_found()

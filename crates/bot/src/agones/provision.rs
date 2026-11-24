@@ -27,14 +27,8 @@ use crate::domain::{GameId, GuildId, InstanceName};
 use crate::limits::{GuildCaps, LimitRefusal, check_create};
 use crate::sizing::Sizing;
 
-/// Public `NodePort` band the edge VPS forwards 1:1 over the tunnel. Per-instance
-/// Services lease their port(s) from here; the range bounds the **total** ports
-/// in use, so a multi-port (advertising) game consumes more than one of the slots.
 const PORT_RANGE: RangeInclusive<i32> = 7000..=7099;
 
-/// How long `/create` and `/start` wait for a server to report Ready before
-/// telling the friend it is "still starting". Generous because first-boot world
-/// generation plus the readiness sidecar's SDK call can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_mins(5);
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -46,88 +40,48 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// kubelet isn't answering and the object is pinned until its node returns.
 const DELETE_TIMEOUT: Duration = Duration::from_secs(150);
 
-/// Outcome of a `/create`. Expected friend-visible results (name clash, no free
-/// ports) are values, not errors; `Err` is reserved for cluster/internal faults.
 pub(crate) enum CreateOutcome {
-    Created {
-        address: String,
-        ready: bool,
-    },
-    /// The caller's own guild already has a server by this name.
+    Created { address: String, ready: bool },
     AlreadyExists,
-    /// Another guild holds the name. Instance names are cluster-unique, so this
-    /// still refuses — but it is reported without confirming that a server exists,
-    /// which is the same masking `ScopeVerdict::Foreign` gets everywhere else.
     NameUnavailable,
     PortsExhausted,
-    /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
-    /// The namespace itself has no room left, whatever this guild is using.
     ClusterFull(CapacityRefusal),
 }
 
 pub(crate) enum ShutdownOutcome {
-    /// The `GameServer` is confirmed gone; `/start` will cold-start it.
     Down,
-    /// The delete was accepted but the `GameServer` outlived [`DELETE_TIMEOUT`],
-    /// so Agones still can't reap its pod. The world is safe on its PVC and the
-    /// reconciler recycles the instance once the pod's node stops answering.
     Stranded,
     NotFound,
     NotManaged,
 }
 
 pub(crate) enum StartOutcome {
-    Started {
-        address: String,
-        ready: bool,
-    },
+    Started { address: String, ready: bool },
     AlreadyRunning,
-    /// A teardown is still in flight, so there is nothing to resume in place and
-    /// nothing to recreate yet — the old `GameServer` still holds the name.
     StillStopping,
     NotFound,
     NotManaged,
     UnknownGame(String),
-    /// The namespace has no room for the pod this start would bring back.
     ClusterFull(CapacityRefusal),
 }
 
 pub(crate) enum DestroyOutcome {
     Destroyed,
-    /// The `GameServer` wouldn't confirm gone, so nothing else was deleted —
-    /// the Service and PVC (and therefore the world) are untouched. Deleting a
-    /// PVC out from under a pod that may still be writing to it is how a world
-    /// gets lost, so an unconfirmed teardown stops here rather than proceeding.
     Blocked,
     NotFound,
     NotManaged,
 }
 
-/// Result of the provisioning phase of `/create`: everything up to — but not
-/// including — waiting for the server to report Ready. Split from readiness so
-/// the caller can surface the connection address the moment it is leased and
-/// then poll with [`wait_for_instance_ready`], giving the friend live progress
-/// instead of one silent multi-minute wait.
 pub(crate) enum ProvisionOutcome {
-    Provisioned {
-        address: String,
-    },
-    /// The caller's own guild already has a server by this name.
+    Provisioned { address: String },
     AlreadyExists,
-    /// Another guild holds the name — see [`CreateOutcome::NameUnavailable`].
     NameUnavailable,
     PortsExhausted,
-    /// The owning guild is at one of its resource caps (ADR-022).
     GuildLimitReached(LimitRefusal),
-    /// The namespace itself has no room left, whatever this guild is using.
     ClusterFull(CapacityRefusal),
 }
 
-/// What to provision: the catalog game, the instance name, the owning guild,
-/// and — when the owning guild's caps apply — the caps to enforce before
-/// anything is leased. `caps: None` means the caller decided the caps don't
-/// apply (an operator's unscoped instance).
 pub(crate) struct ProvisionSpec<'a> {
     pub(crate) entry: &'a GameCatalogEntry,
     pub(crate) instance: &'a str,
@@ -135,18 +89,6 @@ pub(crate) struct ProvisionSpec<'a> {
     pub(crate) caps: Option<&'a GuildCaps>,
 }
 
-/// Provision a new per-world instance: lease a port, create its Service, PVC and
-/// `GameServer`, and return its address. Does **not** wait for readiness — call
-/// [`wait_for_instance_ready`] for that. The `lock` serializes the
-/// port-lease→Service-create critical section so concurrent creates can't claim
-/// the same `NodePort` — and the guild-cap check, so concurrent creates can't
-/// both squeeze under the cap. `spec.guild` is the owning Discord guild id,
-/// stamped onto the trio so scoped listing and mutation can confine to it later.
-///
-/// # Errors
-///
-/// Returns an error if the cluster cannot be reached or an object create fails
-/// for a reason other than a recoverable port clash.
 pub(crate) async fn provision_instance(
     client: &Client,
     namespace: &str,
@@ -159,14 +101,6 @@ pub(crate) async fn provision_instance(
     Ok(provisioned.into_outcome())
 }
 
-/// Provision an instance held down at boot (`SUPERVISOR_START_PAUSED`) so the
-/// caller can seed `/data` from an archive before the game first launches. Same
-/// contract as [`provision_instance`] otherwise; used only by recover-from-archive.
-///
-/// # Errors
-///
-/// Returns an error if the cluster cannot be reached or an object create fails
-/// for a reason other than a recoverable port clash.
 pub(crate) async fn provision_paused_instance(
     client: &Client,
     namespace: &str,
@@ -220,10 +154,6 @@ async fn provision_under_lock(
         NameHolder::Other => return Ok(Provisioned::NameUnavailable),
     }
 
-    // Guild caps are checked under the provision lock so two concurrent creates
-    // can't both squeeze past the count. The newcomer's contribution is its
-    // catalog sizing — a brand-new instance renders with exactly that, and a
-    // recover re-renders the same way.
     if let Some(caps) = caps {
         let usage = guild_usage(client, namespace, guild, None).await?;
         if let Err(refusal) = check_create(&usage, catalog_sizing(entry), caps) {
@@ -246,8 +176,6 @@ async fn provision_under_lock(
     let mut excluded = BTreeSet::new();
     let services: Api<Service> = Api::namespaced(client.clone(), namespace);
 
-    // The game's Service template decides its port model: how many edge-band
-    // ports to lease and how each maps into the game's env. Parsed once up front.
     let template: Service = serde_saphyr::from_str(&entry.service_yaml)
         .with_context(|| format!("failed to parse service template for game {}", entry.id))?;
     let plan = port_plan_from_service(&template)
@@ -265,20 +193,12 @@ async fn provision_under_lock(
             ports: assign(plan.clone(), &leased)?,
             guild: GuildId::new(guild),
             start_paused,
-            // A brand-new instance has no override yet; one arrives only when
-            // somebody resizes it.
             sizing: None,
         };
         let service = render_service(entry, &identity)?;
         match services.create(&PostParams::default(), &service).await {
             Ok(_) => {}
             Err(err) if is_port_conflict(&err) => {
-                // Concurrent /create calls racing for the same free port is the
-                // expected case this lease-and-retry loop exists to absorb, so it
-                // stays at debug — a normal race shouldn't read as an incident.
-                // The 422 doesn't say which of the leased ports collided, so
-                // exclude them all and retry higher; at friends-scale the 11-port
-                // band easily absorbs the occasional over-exclusion.
                 debug!(
                     ?leased,
                     instance, "nodeport already taken, retrying with next free ports"
@@ -286,9 +206,6 @@ async fn provision_under_lock(
                 excluded.extend(leased.iter().copied());
                 continue;
             }
-            // A cross-replica race can slip past the upfront instance_exists check
-            // and collide here; the module doc promises AlreadyExists, so honour
-            // it rather than surfacing a raw 409 to the friend (mirrors begin_start).
             Err(err) if is_already_exists(&err) => return Ok(Provisioned::AlreadyExists),
             Err(err) => {
                 return Err(err)
@@ -299,11 +216,6 @@ async fn provision_under_lock(
         let address = server_address(instance, domain, identity.ports.friend_facing_port());
         match create_storage_and_server(client, namespace, entry, &identity).await {
             Ok(()) => {}
-            // The pre-flight check above races the quota controller's own
-            // accounting, and it only models the dimensions a game pod is known
-            // to consume. A rejection here is therefore the authoritative answer,
-            // and it means the same thing: the namespace is full, not that
-            // something went wrong.
             Err(err) if is_quota_exceeded(&err) => {
                 warn!(
                     instance,
@@ -380,31 +292,15 @@ pub(crate) async fn shutdown_instance(
     }
 }
 
-/// Result of the start-up phase of `/start`: the `GameServer` has been recreated
-/// (or the instance can't be started), but readiness is not yet awaited. As with
-/// [`ProvisionOutcome`], the caller surfaces the address right away and then
-/// polls [`wait_for_instance_ready`].
 pub(crate) enum StartBegin {
-    Starting {
-        address: String,
-    },
+    Starting { address: String },
     AlreadyRunning,
     NotFound,
     NotManaged,
     UnknownGame(String),
-    /// The namespace has no room for the pod this start would bring back.
     ClusterFull(CapacityRefusal),
 }
 
-/// Recreate a previously stopped instance's `GameServer`, bound to the existing
-/// PVC and reusing the retained Service and its port. Does **not** wait for
-/// readiness — call [`wait_for_instance_ready`] for that.
-///
-/// # Errors
-///
-/// Returns an error if the cluster cannot be reached, the retained Service is
-/// malformed, or the `GameServer` create fails for a reason other than the server
-/// already running.
 pub(crate) async fn begin_start(
     client: &Client,
     namespace: &str,
@@ -431,21 +327,12 @@ pub(crate) async fn begin_start(
     let Some(entry) = catalog.get(&game) else {
         return Ok(StartBegin::UnknownGame(game));
     };
-    // Re-derive the port model straight off the surviving Service: its
-    // annotations carry the plan and its ports carry the leased numbers, so a
-    // stopped instance keeps its exact ports and env injection across a start.
     let ports = assignment_from_service(&service)
         .with_context(|| format!("managed service {instance} has an unusable port assignment"))?;
-    // Carry the owning guild from the surviving Service so the recreated
-    // GameServer keeps its scope; empty for a pre-scoping instance (label
-    // absent), which leaves the guild label off rather than stamping "".
     let guild = label_value(service.metadata.labels.as_ref(), GUILD_KEY)
         .unwrap_or_default()
         .to_owned();
 
-    // A cold start brings a pod back, so it faces the namespace ceiling just as a
-    // create does — the instance's port and PVC already exist, but its CPU and
-    // memory have to be found again.
     if let Err(refusal) =
         check_namespace_capacity(client, namespace, start_admission(entry, sizing)).await?
     {
@@ -458,11 +345,7 @@ pub(crate) async fn begin_start(
         namespace: namespace.to_owned(),
         ports,
         guild: GuildId::new(guild),
-        // A cold `/start` resumes a normal server; only recover-from-archive pauses.
         start_paused: false,
-        // Re-applied here, not just at create: this path re-renders from the
-        // catalog template, so without it every stop/start would quietly undo a
-        // resize and hand the world back its original size.
         sizing,
     };
     let gameserver = render_gameserver(entry, &identity)?;
@@ -481,20 +364,6 @@ pub(crate) async fn begin_start(
     })
 }
 
-/// Tear an instance down completely: delete its `GameServer`, Service and PVC.
-/// This destroys the world.
-///
-/// The `GameServer` must be confirmed gone before the Service and PVC are
-/// touched. An accepted-but-unfinished `GameServer` delete means its pod is
-/// still around, and deleting the PVC underneath a live pod hands the world to
-/// the storage class' `Delete` reclaim policy the moment the pod finally exits —
-/// a teardown the friend never sees fail. When the confirmation doesn't land,
-/// nothing after it runs and the caller gets [`DestroyOutcome::Blocked`].
-///
-/// # Errors
-///
-/// Returns an error if the cluster cannot be reached or a delete fails for a
-/// reason other than the object already being gone.
 pub(crate) async fn destroy_instance(
     client: &Client,
     namespace: &str,
@@ -527,13 +396,6 @@ pub(crate) async fn destroy_instance(
     Ok(DestroyOutcome::Destroyed)
 }
 
-/// Names of the shim-managed instances (running or stopped) visible under
-/// `scope`, for autocomplete — so a friend only completes their own guild's
-/// servers.
-///
-/// # Errors
-///
-/// Returns an error if services cannot be listed.
 pub(crate) async fn list_instance_names(
     client: &Client,
     namespace: &str,
@@ -564,25 +426,12 @@ pub(super) fn gameserver_api(client: &Client, namespace: &str) -> Api<DynamicObj
     Api::namespaced_with(client.clone(), namespace, &resource)
 }
 
-/// Who, if anyone, holds an instance name. Instance names are Kubernetes object
-/// names and so are unique across the whole namespace, which means one guild's
-/// choice can block another's — but which of the two it is must not be reported
-/// the same way.
 enum NameHolder {
     Free,
-    /// Held by the guild that is asking.
     Caller,
-    /// Held by a different guild, or by an object carrying no guild label.
     Other,
 }
 
-/// Whether `instance` is free, and if not, whether `guild` is the holder.
-///
-/// The Service is checked first because it carries the guild label and outlives
-/// both `/stop` and `/shutdown`. A `GameServer` with no Service is a partially
-/// torn-down instance whose owner can't be read; it still holds the name, and an
-/// unreadable owner is treated as somebody else's rather than assumed to be the
-/// caller's.
 async fn name_holder(
     client: &Client,
     namespace: &str,
@@ -610,13 +459,6 @@ async fn name_holder(
     })
 }
 
-/// Whether the guild holding a name (`holder`, absent on a pre-scoping object) is
-/// the one asking for it. Pure so the tenancy policy is unit-tested without a live
-/// cluster, matching `scope::classify`.
-///
-/// An unlabelled holder is [`Other`](NameHolder::Other), never the caller: a
-/// caller with no guild of its own (the unscoped operator path, where `guild` is
-/// empty) must not come out matching every unlabelled object by default.
 fn classify_holder(holder: Option<&str>, guild: &str) -> NameHolder {
     match holder {
         Some(holder) if !guild.is_empty() && holder == guild => NameHolder::Caller,
@@ -631,9 +473,6 @@ async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
         .await
         .with_context(|| format!("failed to list services in namespace {namespace}"))?;
 
-    // Count every leased band port on every managed Service, not just the first —
-    // a multi-port advertised instance leases one per port, and missing its second
-    // would hand it out again to the next create.
     let mut ports = BTreeSet::new();
     for service in &list.items {
         for port in all_node_ports(service) {
@@ -645,13 +484,6 @@ async fn used_ports(client: &Client, namespace: &str) -> Result<BTreeSet<i32>> {
     Ok(ports)
 }
 
-/// Poll a `GameServer` until it reports Ready/Allocated, returning `false` if it
-/// hasn't come up within [`READY_TIMEOUT`] (e.g. first-boot world generation is
-/// still running). Called after [`provision_instance`] / [`begin_start`].
-///
-/// # Errors
-///
-/// Returns an error if the gameserver cannot be polled from the Kubernetes API.
 pub(crate) async fn wait_for_instance_ready(
     client: &Client,
     namespace: &str,
@@ -716,13 +548,10 @@ async fn best_effort_remove(client: &Client, namespace: &str, instance: &str) {
 /// involved — this is the distinction the callers need to keep straight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeletionState {
-    /// No delete has been issued against this object.
     Live,
-    /// A delete was accepted; a finalizer still holds the object in the API.
     Terminating,
 }
 
-/// Classify an object's delete lifecycle from its metadata.
 pub(crate) fn deletion_state(meta: &ObjectMeta) -> DeletionState {
     if meta.deletion_timestamp.is_some() {
         DeletionState::Terminating
@@ -731,30 +560,11 @@ pub(crate) fn deletion_state(meta: &ObjectMeta) -> DeletionState {
     }
 }
 
-/// Outcome of a delete that waits for the object to actually leave the API.
 pub(crate) enum DeleteWait {
-    /// The object is gone.
     Deleted,
-    /// The object outlived the wait. Either a finalizer still holds it past
-    /// [`DELETE_TIMEOUT`] — for a `GameServer` that means Agones can't reap its
-    /// pod, which in practice means the pod's node stopped answering — or the
-    /// name was recreated underneath us. Callers must treat the object as
-    /// possibly still live.
     Unconfirmed,
 }
 
-/// Delete an object and wait for it to actually leave the API.
-///
-/// `Api::delete` resolves as soon as the API server *accepts* the delete, which
-/// for a finalizer-bearing object just stamps `metadata.deletionTimestamp`.
-/// Treating that as "gone" is what lets a caller report a teardown that hasn't
-/// happened, so every delete whose completion the caller depends on goes
-/// through here rather than [`delete_if_present`].
-///
-/// # Errors
-///
-/// Returns an error if the delete fails for a reason other than the object
-/// already being absent, or if the object cannot be polled afterwards.
 pub(super) async fn delete_and_confirm<K>(api: &Api<K>, name: &str) -> Result<DeleteWait>
 where
     K: Clone + serde::de::DeserializeOwned + std::fmt::Debug + kube::Resource,
@@ -772,10 +582,6 @@ where
         else {
             return Ok(DeleteWait::Deleted);
         };
-        // Still present but carrying no deletion timestamp means this is a
-        // different object wearing the same name — the one we deleted is gone
-        // and something recreated it. Waiting out the deadline would be waiting
-        // on an object nobody asked to remove.
         if deletion_state(object.meta()) == DeletionState::Live {
             warn!(name, "object reappeared during delete; stopping the wait");
             return Ok(DeleteWait::Unconfirmed);
@@ -786,9 +592,6 @@ where
     }
 }
 
-/// Delete an object, tolerating one that is already gone. Returns once the
-/// delete is *accepted* — see [`delete_and_confirm`] when the caller needs the
-/// object to actually be gone before it does anything else.
 async fn delete_if_present<K>(api: &Api<K>, name: &str) -> Result<()>
 where
     K: Clone + serde::de::DeserializeOwned + std::fmt::Debug,
@@ -842,10 +645,6 @@ fn quota_message(err: &KubeError) -> bool {
     }
 }
 
-/// Which dimension the namespace ran out of, re-read after admission refused a
-/// create. Usually names the exact one; [`CapacityRefusal::Unspecified`] when
-/// the quota's own accounting has already moved on, which is the race that let
-/// the create through the pre-flight in the first place.
 async fn quota_refusal(
     client: &Client,
     namespace: &str,

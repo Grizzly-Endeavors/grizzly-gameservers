@@ -33,7 +33,6 @@ fn storm_guard_counts_only_the_window() {
         "a third turn inside the window trips the guard"
     );
 
-    // The first two starts age out of the window; the storm has passed.
     assert!(!storm_suppressed(&mut starts, t0 + Duration::from_mins(36)));
     assert_eq!(starts.len(), 1, "aged-out starts must be pruned");
 }

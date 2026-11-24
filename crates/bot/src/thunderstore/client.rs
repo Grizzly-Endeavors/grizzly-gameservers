@@ -1,8 +1,3 @@
-//! The IO shell: build a request, check the status, hand the body to
-//! [`types`](super::types) and the narrowing to [`query`](super::query). Holds
-//! no client of its own — it borrows the bot's shared one and overrides the
-//! timeout per request, the same way the Modrinth client does.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -15,8 +10,6 @@ use super::profile::MAX_PAYLOAD_BYTES;
 use super::query::{ORDERING, PAGE_SIZE, SearchQuery, narrow};
 use super::types::{Listing, ListingResponse, Package};
 
-/// Production Thunderstore. Two API surfaces live under it and both are used
-/// here; see the module docs for why.
 const API_BASE: &str = "https://thunderstore.io/api";
 
 /// Per-request ceiling. Sized for public-internet latency rather than the shared
@@ -29,12 +22,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// identifier into a public repo.
 const AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// Search one community, most-downloaded first, narrowed by [`narrow`].
-///
-/// # Errors
-///
-/// Returns an error if the API is unreachable, answers with a non-success
-/// status, or returns a body this crate can't parse.
 pub(crate) async fn search_packages(http: &Client, query: &SearchQuery) -> Result<Vec<Listing>> {
     let url = format!("{API_BASE}/cyberstorm/listing/{}/", query.community);
     let page_size = PAGE_SIZE.to_string();
@@ -159,16 +146,6 @@ pub(crate) async fn fetch_profile(http: &Client, code: &str) -> Result<Option<Ve
     Ok(Some(payload))
 }
 
-/// Mint a profile code for `payload`, returning the code.
-///
-/// There is no delete endpoint: every code this creates is permanent and
-/// fetchable by anyone holding it, which is why the caller caches rather than
-/// minting per request.
-///
-/// # Errors
-///
-/// Returns an error if the API is unreachable, refuses the payload, or answers
-/// with a body carrying no key.
 pub(crate) async fn create_profile(http: &Client, payload: Vec<u8>) -> Result<String> {
     let url = format!("{API_BASE}/experimental/legacyprofile/create/");
 
@@ -195,7 +172,6 @@ pub(crate) async fn create_profile(http: &Client, payload: Vec<u8>) -> Result<St
     Ok(minted.key)
 }
 
-/// The create endpoint's whole reply.
 #[derive(serde::Deserialize)]
 struct MintedProfile {
     key: String,

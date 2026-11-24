@@ -20,18 +20,12 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 require_tools psql
 
 NAMESPACE="${GAMESERVERS_NAMESPACE:-game-servers}"
-# Defaults mirror the bot's own config loader (crates/bot/src/config.rs); a drift
-# here would point the queries at a different database than the one being written.
 DB_HOST="${DB_HOST:-10.0.0.200}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-grizzly_gameservers}"
 DB_USER="${DB_USER:-grizzly_gameservers}"
 
-# An explicit .env value wins, so this can be pointed at a scratch database
-# without touching the cluster; otherwise read the credential ESO already synced.
 if [[ -z "${DB_PASSWORD:-}" && -f "$repo_root/.env" ]]; then
-    # Only lift DB_PASSWORD rather than sourcing .env wholesale — the file also
-    # carries Discord ids and tokens that have no business in this shell.
     DB_PASSWORD="$(sed -n 's/^[[:space:]]*DB_PASSWORD[[:space:]]*=[[:space:]]*//p' "$repo_root/.env" \
         | tail -n1 | sed 's/^"\(.*\)"$/\1/; s/^'\''\(.*\)'\''$/\1/')"
 fi

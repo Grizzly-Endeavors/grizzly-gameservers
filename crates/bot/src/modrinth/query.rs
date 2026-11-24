@@ -10,24 +10,13 @@ use crate::registry::Side;
 /// surface is bounded the same way game logs are.
 pub(crate) const SEARCH_LIMIT: usize = 5;
 
-/// What kind of project the caller is after.
-///
-/// `project_type` means two different things in v2 and they must not be
-/// conflated: as a *facet* its vocabulary includes `datapack`, but as a
-/// *response field* it never returns one — a datapack always reads back as
-/// `mod`. The index holds a separate document per project type, so a project
-/// shipping both a datapack and a jar (Terralith does) is found under either,
-/// which is the correct answer for both questions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
-    /// A server-installed jar, needing a loader such as Fabric.
     Mod,
-    /// A datapack: vanilla-compatible, no loader needed on the server.
     Datapack,
 }
 
 impl Kind {
-    /// The `project_type` facet value that selects this kind.
     fn facet_value(self) -> &'static str {
         match self {
             Self::Mod => "mod",
@@ -45,8 +34,6 @@ impl From<crate::prompts::SearchModsKind> for Kind {
     }
 }
 
-/// A mod loader, used both as a search filter and as the `TYPE` an instance
-/// would need. Only the loaders Modrinth indexes as categories are listed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Loader {
     Fabric,
@@ -78,7 +65,6 @@ impl fmt::Display for Loader {
     }
 }
 
-/// One search request: free text plus the optional narrowing filters.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SearchQuery {
     pub(crate) text: String,
@@ -88,14 +74,8 @@ pub(crate) struct SearchQuery {
     pub(crate) side: Option<Side>,
 }
 
-/// The facet values that mean "this project does something on that side".
-///
-/// Both `required` and `optional` count: `optional` means the project works
-/// there, which is what a caller narrowing to a side is asking about. Only
-/// `unsupported` — the excluded third value — means it does not.
 const APPLIES: [&str; 2] = ["required", "optional"];
 
-/// The facet group selecting projects that apply on one side.
 fn side_group(field: &str) -> String {
     let terms: Vec<String> = APPLIES
         .iter()
@@ -105,10 +85,6 @@ fn side_group(field: &str) -> String {
 }
 
 impl SearchQuery {
-    /// Compile the filters into Modrinth's facet syntax: a JSON array of arrays,
-    /// where entries within an inner array are OR'd and the outer arrays are
-    /// AND'd. Returns `None` when no filter is set, so the caller omits the
-    /// parameter entirely rather than sending an empty one.
     pub(crate) fn facets(&self) -> Option<String> {
         let mut groups: Vec<String> = Vec::new();
         if let Some(kind) = self.kind {
@@ -126,8 +102,6 @@ impl SearchQuery {
         match self.side {
             Some(Side::Server) => groups.push(side_group("server_side")),
             Some(Side::Client) => groups.push(side_group("client_side")),
-            // Both sides are separate AND'd groups rather than one OR'd group:
-            // a project needing installing in both places must satisfy each.
             Some(Side::Both) => {
                 groups.push(side_group("server_side"));
                 groups.push(side_group("client_side"));
@@ -141,7 +115,6 @@ impl SearchQuery {
     }
 }
 
-/// Render one OR-group of facet terms as a JSON array of strings.
 fn facet_group(terms: &[&str]) -> String {
     let quoted: Vec<String> = terms
         .iter()

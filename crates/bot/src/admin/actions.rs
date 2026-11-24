@@ -1,19 +1,3 @@
-//! Everything the panel can change.
-//!
-//! Each handler is the *executing layer* for its action, which is where ADR-014
-//! puts event emission — so a panel-driven stop records exactly one
-//! `server_stopped` with `Actor::Admin` and `Surface::Admin`, the same way a
-//! slash command records one with the friend who ran it.
-//!
-//! Actions call the same shared functions the Discord commands and Gary's tools
-//! call, never Gary's tool dispatcher: a tool result is model-facing prose and
-//! wants a channel and a tier this surface hasn't got. Going through the shared
-//! functions is also what makes the per-guild caps apply here for free.
-//!
-//! Every mutation answers with a redirect rather than a rendered page, so a
-//! reload can't repeat it and the browser's back button lands on a view instead
-//! of a resubmission prompt.
-
 use axum::Form;
 use axum::extract::{Extension, Path, State};
 use axum::response::Response;
@@ -34,14 +18,10 @@ use super::AdminDeps;
 use super::auth::AdminIdentity;
 use super::render::{Flash, redirect};
 
-/// How the panel attributes what it does.
 fn attribution(identity: &AdminIdentity) -> Attribution {
     Attribution::new(Actor::Admin(identity.username.clone()), Surface::Admin)
 }
 
-/// Record one panel-driven action against an instance. `record_lifecycle` fills
-/// in the owning guild and game from the instance's labels, which the panel
-/// doesn't otherwise know.
 async fn record(
     deps: &AdminDeps,
     identity: &AdminIdentity,
@@ -57,12 +37,6 @@ async fn record(
         .await;
 }
 
-// ---------------------------------------------------------------- settings
-
-/// One settings form. `value` is absent when the submit button was "reset",
-/// which is how a clear is distinguished from setting an empty string — the
-/// guild allowlist accepts an empty value meaningfully, so the two can't be
-/// collapsed.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SettingForm {
     value: Option<String>,
@@ -91,8 +65,6 @@ pub(crate) async fn set_setting(
 
     match deps.data.settings.apply(key, raw, &identity.username).await {
         Ok(snapshot) => {
-            // Push before recording, so the event's timestamp is never earlier
-            // than the moment the change actually bound.
             settings_changed(&deps.data, key, &snapshot).await;
             let now = key.render(&snapshot);
             deps.data
@@ -118,18 +90,10 @@ pub(crate) async fn set_setting(
             };
             redirect("/settings", &Flash::ok(&message))
         }
-        Err(err) => {
-            // The message is written for the operator, so it is shown as-is
-            // rather than replaced with something generic.
-            redirect("/settings", &Flash::error(&format!("{err}")))
-        }
+        Err(err) => redirect("/settings", &Flash::error(&format!("{err}"))),
     }
 }
 
-// ------------------------------------------------------------------ guilds
-
-/// A per-guild cap edit. An empty value clears the override back to the global
-/// default, matching what `/config limits … default` does in Discord.
 #[derive(Debug, Deserialize)]
 pub(crate) struct LimitForm {
     field: String,
@@ -187,7 +151,6 @@ pub(crate) async fn set_guild_limit(
     }
 }
 
-/// Turn a form field and value into a typed cap change, or say why it can't be.
 fn parse_limit_change(field: &str, raw: &str, cleared: bool) -> Result<LimitChange, String> {
     match field {
         "servers" => {
@@ -226,9 +189,6 @@ fn parse_limit_change(field: &str, raw: &str, cleared: bool) -> Result<LimitChan
     }
 }
 
-/// Admit or revoke one guild, by editing the allowlist through the settings
-/// façade — so admission has exactly one representation rather than a second
-/// table that could disagree with it.
 #[derive(Debug, Deserialize)]
 pub(crate) struct AdmissionForm {
     admit: Option<String>,
@@ -249,16 +209,11 @@ pub(crate) async fn set_admission(
     let mut list: Vec<u64> = current.guild_allowlist.to_vec();
 
     if admitting {
-        if list.is_empty() {
-            // Adding the first entry flips the whole service from "serves
-            // everyone" to "serves this one guild". Every other guild silently
-            // loses its commands, so it takes a second click.
-            if form.confirm.is_none() {
-                return redirect(
-                    &format!("/guilds?confirm=admit&guild={guild}"),
-                    &Flash::none(),
-                );
-            }
+        if list.is_empty() && form.confirm.is_none() {
+            return redirect(
+                &format!("/guilds?confirm=admit&guild={guild}"),
+                &Flash::none(),
+            );
         }
         if !list.contains(&id) {
             list.push(id);
@@ -266,8 +221,6 @@ pub(crate) async fn set_admission(
     } else {
         list.retain(|entry| *entry != id);
         if list.is_empty() && form.confirm.is_none() {
-            // Removing the last entry re-opens the service to every guild — the
-            // opposite of what "revoke" sounds like it does.
             return redirect(
                 &format!("/guilds?confirm=open&guild={guild}"),
                 &Flash::none(),
@@ -318,9 +271,6 @@ pub(crate) async fn set_admission(
     }
 }
 
-// --------------------------------------------------------------- instances
-
-/// Which lifecycle action a button asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InstanceAction {
     Stop,
@@ -344,7 +294,6 @@ impl InstanceAction {
         }
     }
 
-    /// The path segment this action is posted to.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Stop => "stop",
@@ -356,8 +305,6 @@ impl InstanceAction {
         }
     }
 
-    /// Whether the action needs a typed confirmation. Destroy is the only one
-    /// that loses a world: everything else is recoverable by doing the opposite.
     pub(crate) fn is_destructive(self) -> bool {
         self == Self::Destroy
     }
@@ -374,7 +321,6 @@ impl InstanceAction {
     }
 }
 
-/// The confirmation a destructive action carries back on its second submit.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ActionForm {
     confirm: Option<String>,
@@ -389,8 +335,6 @@ pub(crate) async fn run_instance_action(
     let Some(action) = InstanceAction::parse(&action) else {
         return redirect("/instances", &Flash::error("That isn't an action."));
     };
-    // Typing the server's own name is the confirmation. A checkbox is one
-    // mis-click; retyping `minecraft-survival` is a decision.
     if action.is_destructive() && form.confirm.as_deref() != Some(name.as_str()) {
         return redirect(
             &format!("/instances/{name}?confirm=destroy"),
@@ -412,9 +356,6 @@ pub(crate) async fn run_instance_action(
     } else {
         format!("/instances/{name}")
     };
-    // The outcome vocabulary distinguishes "did nothing, and here's why"
-    // (already_stopped, not_running) from an outright failure. Only the latter
-    // reads as an error; the rest are answers.
     let flash = if outcome == mapping::FAILED {
         Flash::error(&message)
     } else {
@@ -423,7 +364,6 @@ pub(crate) async fn run_instance_action(
     redirect(&target, &flash)
 }
 
-/// Run the action, returning its recorded outcome and what to tell the operator.
 async fn perform(
     deps: &AdminDeps,
     identity: &AdminIdentity,
@@ -484,12 +424,6 @@ async fn perform(
     }
 }
 
-/// Start a server: warm if its pod is still there, cold otherwise.
-///
-/// The cold path goes under the provision lock and through the same cap gate a
-/// friend's `/start` does, so the panel inherits ADR-022's enforcement rather
-/// than working around it — an operator raising a cap should be a deliberate act,
-/// not a side effect of starting a server from here.
 async fn start(deps: &AdminDeps, name: &str) -> anyhow::Result<(&'static str, String)> {
     let data = &deps.data;
     let warm = supervisor_start(
@@ -500,8 +434,6 @@ async fn start(deps: &AdminDeps, name: &str) -> anyhow::Result<(&'static str, St
         data.control_port,
     )
     .await?;
-    // A pod that isn't there can't be resumed in place; every other outcome is
-    // an answer about the warm path and stands on its own.
     if !matches!(
         warm,
         SupervisorOutcome::PodNotReady | SupervisorOutcome::NotFound
@@ -540,15 +472,10 @@ async fn start(deps: &AdminDeps, name: &str) -> anyhow::Result<(&'static str, St
 #[path = "tests/actions.rs"]
 mod tests;
 
-// ----------------------------------------------------------------- signups
-
-/// What an operator can do to a beta request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SignupAction {
     Approve,
     Deny,
-    /// Retry the approval email for someone already approved. Sends only — it
-    /// never re-decides, so it is safe to click twice.
     Resend,
 }
 
@@ -570,12 +497,6 @@ impl SignupAction {
         }
     }
 
-    /// Whether the action needs a typed confirmation.
-    ///
-    /// Deny only. It is the irreversible one — a denied applicant is off the
-    /// queue, and in six months nobody will remember why. Approve is recoverable
-    /// (you can admit or refuse their guild afterwards) and Resend does nothing
-    /// a second click would worsen.
     pub(crate) fn is_destructive(self) -> bool {
         self == Self::Deny
     }
@@ -593,7 +514,6 @@ pub(crate) struct SignupForm {
     confirm: Option<String>,
 }
 
-/// Approve, deny, or re-send — the panel's whole write surface for the queue.
 pub(crate) async fn run_signup_action(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
@@ -607,9 +527,6 @@ pub(crate) async fn run_signup_action(
         return redirect("/signups", &Flash::error("That isn't an email address."));
     };
 
-    // Typing the address back is the confirmation, matching how destroying a
-    // server works. Compared normalized-to-normalized because the page shows the
-    // lowercased form but an operator may type what they remember.
     if action.is_destructive() {
         let typed = form
             .confirm
@@ -678,8 +595,6 @@ async fn approve(
     email: &str,
     confirm: Option<&str>,
 ) -> Response {
-    // Refuse before writing anything: an email pointing nowhere can't be
-    // unsent, so a missing invite link is worth a refusal rather than a guess.
     if deps
         .data
         .settings
@@ -696,10 +611,6 @@ async fn approve(
             ),
         );
     }
-    // With the allowlist empty every guild is already served, so approving hands
-    // out working access immediately and the Guilds page gates nothing. The
-    // checkbox lives in the form rather than a `?confirm=` bounce because the
-    // state that would have to survive the bounce is *which person*.
     if deps.data.settings.snapshot().guild_allowlist.is_empty() && confirm.is_none() {
         return redirect(
             "/signups",
@@ -710,8 +621,6 @@ async fn approve(
         );
     }
 
-    // Decision first, delivery second: an approval that isn't recorded returns
-    // to the queue and gets approved twice, which means two emails to a stranger.
     match deps
         .data
         .signups
@@ -755,13 +664,6 @@ async fn approve(
     redirect("/signups", &flash)
 }
 
-/// Send (or re-send) the approval email and record what happened, both in the
-/// row's own columns and in the product log.
-///
-/// `resend` rides into the event rather than being inferred, because the two
-/// callers are the only thing that knows which this is — and without it a first
-/// send and a retry are indistinguishable in the log, which is exactly the
-/// distinction "approved but never told" is measured on.
 async fn send_approval(
     deps: &AdminDeps,
     identity: &AdminIdentity,
@@ -797,13 +699,6 @@ async fn send_approval(
     outcome
 }
 
-/// Record one signup event.
-///
-/// Carries the address's **domain**, never the address: `events` is browsed in
-/// this panel, exported to Metabase, and read through a SELECT-only analytics
-/// role, and solicited contact details are hard to un-spill once they are in the
-/// aggregate plane. The audit trail for who was approved and when lives in the
-/// `signups` row itself, behind Authentik.
 async fn record_signup(
     deps: &AdminDeps,
     identity: &AdminIdentity,

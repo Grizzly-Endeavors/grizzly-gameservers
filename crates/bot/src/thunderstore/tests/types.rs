@@ -105,8 +105,6 @@ fn a_full_name_splits_into_its_two_components() {
 
 #[test]
 fn a_modrinth_style_slug_is_rejected_rather_than_looked_up() {
-    // A bare slug would become a 404 that reads as "no such mod" instead of
-    // "that isn't how this registry names things".
     assert_eq!(split_full_name("terralith"), None);
     assert_eq!(split_full_name("-Jotunn"), None);
     assert_eq!(split_full_name("ValheimModding-"), None);

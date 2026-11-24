@@ -1,8 +1,6 @@
 use super::*;
 use crate::agent::llm::{PromptTokenDetails, TokenUsage};
 
-/// The text of a rejection, so a test can assert the harness is *told* what to
-/// fix rather than just handed a status code.
 fn reason(err: OperatorError) -> String {
     match err {
         OperatorError::BadRequest(text) | OperatorError::Unavailable(text) => text,
@@ -56,8 +54,6 @@ fn access_tiers_parse_from_their_wire_names() {
 
 #[test]
 fn an_unrecognized_access_tier_is_an_error_not_a_downgrade() {
-    // Falling back to ReadOnly would make a failed admin test look like a
-    // passing read-only one — the harness would report success on a lie.
     let err = reason(parse_access(Some("readonly")).unwrap_err());
     assert!(
         err.contains("read-only"),
@@ -127,8 +123,6 @@ fn preapproval_is_admin_only() {
         ConfirmMode::Preapproved
     );
 
-    // Silently ignoring the flag would let a test "pass" having never exercised
-    // the path it asked for.
     let err = reason(parse_confirm(true, AccessLevel::Manager).unwrap_err());
     assert!(
         err.contains("admin"),
@@ -183,7 +177,6 @@ fn several_calls_in_one_round_each_pair_with_their_own_result() {
             ("a", "about_server", r#"{"name":"mc"}"#),
             ("b", "about_server", r#"{"name":"valheim"}"#),
         ]),
-        // Deliberately out of call order: pairing is by id, not position.
         ChatMessage::tool_result("b", "valheim — Ready"),
         ChatMessage::tool_result("a", "mc — Paused"),
     ];
@@ -218,8 +211,6 @@ fn rounds_are_traced_in_order() {
 
 #[test]
 fn a_call_with_no_result_is_kept_with_an_empty_one() {
-    // Dropping it would erase the evidence that a tool ran and never answered —
-    // exactly the invisible failure the trace exists to surface.
     let slice = [assistant_calling(&[(
         "c1",
         "backup_server",
@@ -233,8 +224,6 @@ fn a_call_with_no_result_is_kept_with_an_empty_one() {
 
 #[test]
 fn an_escalated_turn_reports_every_round_it_burned() {
-    // The round budget runs out with no final text assistant message, so the
-    // count has to come from the tool rounds themselves.
     let mut slice = Vec::new();
     for round in 0..crate::agent::DEFAULT_MAX_ROUNDS {
         let id = format!("c{round}");
@@ -348,8 +337,6 @@ fn partial_reporting_sums_only_what_was_reported() {
 
 #[test]
 fn every_advertised_tool_is_reachable_by_name() {
-    // The harness names tools by hand, so `known_tool` is what turns a typo into
-    // an error instead of a confusing refusal from the dispatcher.
     for tool in available_tools(AccessLevel::Admin) {
         assert!(
             known_tool(&tool.function.name),

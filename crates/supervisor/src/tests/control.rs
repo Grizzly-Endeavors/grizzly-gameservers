@@ -28,9 +28,6 @@ async fn fs_error_maps_each_variant_to_the_right_status() {
     }
 }
 
-/// A [`ControlState`] for a game whose per-game template doesn't enable RCON.
-/// `/command` and `/announce` must reject before ever touching `tx` or
-/// `data_root`, so placeholder values are fine here.
 fn state_without_rcon() -> ControlState {
     let (tx, _rx) = mpsc::channel::<ControlRequest>(1);
     ControlState {
@@ -42,8 +39,6 @@ fn state_without_rcon() -> ControlState {
     }
 }
 
-/// Decode a control route's JSON error body, so a test can assert on the
-/// message the route actually sends rather than trusting the doc comment.
 async fn body_error(response: Response) -> ControlError {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

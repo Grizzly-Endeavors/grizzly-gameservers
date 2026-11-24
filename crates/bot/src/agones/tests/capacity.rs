@@ -50,9 +50,6 @@ fn a_create_is_priced_from_the_catalog_plus_its_pvc() {
     let admission = create_admission(&entry(MINECRAFT_GAMESERVER, MINECRAFT_PVC), None);
     assert_eq!(admission.pvcs, 1);
     assert_eq!(admission.storage_bytes, 5 * 1024 * 1024 * 1024);
-    // The game's own figures plus the injected sidecar's, and nothing from the
-    // second container in the template — `spec.container` names which one is the
-    // game, and the other is Agones' own.
     assert_eq!(
         admission.cpu_request_millicores,
         500 + SDK_SIDECAR.cpu_request_millicores
@@ -74,8 +71,6 @@ fn a_start_brings_no_pvc_or_storage() {
     );
 }
 
-/// A resized instance renders with its override, so pricing it from the catalog
-/// would under-count exactly the servers most likely to be near the ceiling.
 #[test]
 fn an_override_replaces_the_catalog_figures() {
     let sizing = Sizing {
@@ -91,8 +86,6 @@ fn an_override_replaces_the_catalog_figures() {
     );
 }
 
-/// A malformed template must not become a namespace-wide refusal: it prices as
-/// the sidecar alone, matching how `check_create` treats an unreadable sizing.
 #[test]
 fn an_unreadable_template_prices_as_the_sidecar_alone() {
     let admission = create_admission(&entry("nonsense: [", "also nonsense: ["), None);
@@ -101,7 +94,6 @@ fn an_unreadable_template_prices_as_the_sidecar_alone() {
         SDK_SIDECAR.cpu_limit_millicores
     );
     assert_eq!(admission.storage_bytes, 0);
-    // Still one PVC — the claim's *size* is unknown, but a create always makes one.
     assert_eq!(admission.pvcs, 1);
 }
 

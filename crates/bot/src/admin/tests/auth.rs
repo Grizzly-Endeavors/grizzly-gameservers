@@ -30,9 +30,6 @@ fn a_member_of_the_required_group_is_admitted() {
     assert_eq!(identity.email.as_deref(), Some("bear@example.com"));
 }
 
-/// Authentik joins groups with `|`, but accepting a comma too means a change in
-/// that formatting degrades to "some groups parse oddly" rather than locking
-/// everyone out of the panel.
 #[test]
 fn either_separator_splits_the_group_header() {
     for raw in [
@@ -76,8 +73,6 @@ fn a_signed_in_non_member_is_told_which_group_they_lack() {
     }
 }
 
-/// A near-miss must not pass: the check is exact-match per group, not a
-/// substring test over the joined header.
 #[test]
 fn a_similarly_named_group_does_not_count() {
     for raw in [
@@ -93,9 +88,6 @@ fn a_similarly_named_group_does_not_count() {
     }
 }
 
-/// No identity headers at all means the request reached the panel without going
-/// through the outpost — the case the network policy exists to prevent. It must
-/// be a refusal, never a default identity.
 #[test]
 fn a_request_without_identity_headers_is_refused() {
     assert_eq!(identify(&headers(&[]), GROUP), Err(Denial::Unidentified));
@@ -106,8 +98,6 @@ fn a_request_without_identity_headers_is_refused() {
     );
 }
 
-/// A header present but blank is the same as absent — an outpost that forwards
-/// an empty username has not identified anybody.
 #[test]
 fn a_blank_username_is_not_an_identity() {
     assert_eq!(

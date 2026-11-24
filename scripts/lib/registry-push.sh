@@ -11,8 +11,6 @@
 # shellcheck source=scripts/lib/kube-forward.sh
 . "$(dirname "${BASH_SOURCE[0]}")/kube-forward.sh"
 
-# Port-forward the in-cluster registry to localhost:5000 and push $1 (a
-# localhost:5000/... image) through it.
 push_through_registry_forward() {
     local image="$1"
 

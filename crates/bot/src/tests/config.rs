@@ -145,7 +145,6 @@ fn ollama_overrides_apply_and_blank_key_reads_as_absent() {
 
 #[test]
 fn db_is_none_without_a_password() {
-    // The password is the OpenBao-sourced part; its absence is the degrade signal.
     let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
     let config = BotConfig::from_env_with(&env).unwrap();
     assert!(
@@ -193,8 +192,6 @@ fn db_overrides_apply() {
 
 #[test]
 fn valkey_is_none_without_a_password() {
-    // Like DB, the password is the OpenBao-sourced part; its absence disables the
-    // deferred-task queue rather than failing startup.
     let env = lookup_from(&[("DISCORD_BOT_TOKEN", "secret")]);
     assert!(
         BotConfig::from_env_with(&env).unwrap().valkey.is_none(),
@@ -347,7 +344,6 @@ fn zero_backup_interval_is_rejected() {
 
 #[test]
 fn zero_backup_retention_is_rejected() {
-    // 0 would prune every key each cycle — backups run but nothing is kept.
     let env = lookup_from(&[
         ("DISCORD_BOT_TOKEN", "secret"),
         ("GAMESERVERS_BACKUP_RETENTION", "0"),
@@ -422,10 +418,6 @@ fn zero_sample_interval_is_rejected() {
 
 use std::path::PathBuf;
 
-/// Minimal view of a `CiliumNetworkPolicy` egress carve-out — only the `port`
-/// and `cidr` literals these guardrails pin. Deliberately partial so an unrelated
-/// edit elsewhere in the manifest (selectors, metadata, comments) can't perturb
-/// the drift check.
 #[derive(serde::Deserialize)]
 struct EgressPolicy {
     spec: EgressSpec,
@@ -461,9 +453,6 @@ struct PortEntry {
 }
 
 impl EgressPolicy {
-    /// The single TCP port this carve-out opens, parsed to a `u16`. Panics unless
-    /// the policy declares exactly one — every guardrail here is single-port, and
-    /// a second port sneaking in should fail the check, not be silently ignored.
     fn only_port(&self) -> u16 {
         let ports: Vec<u16> = self
             .spec
@@ -484,8 +473,6 @@ impl EgressPolicy {
         *port
     }
 
-    /// The single `/32` host this carve-out pins, with the mask stripped. Panics
-    /// unless the policy declares exactly one host CIDR.
     fn only_cidr_host(&self) -> String {
         let cidrs: Vec<&str> = self
             .spec
@@ -587,37 +574,8 @@ fn s3_egress_matches_s3_endpoint_host_and_port() {
     );
 }
 
-// ---- game manifest drift guards ----
-//
-// Values in every `games/<game>/gameserver.yaml` that no YAML-level check can
-// cross-verify. These read the real manifests off disk and fail CI the moment one
-// drifts (mirroring the egress guards above and the control-port assertion in
-// `agones/tests/instance.rs`):
-//
-//   * `spec.template.spec.terminationGracePeriodSeconds` — the window the kubelet
-//     grants the pod after SIGTERM before it SIGKILLs. The in-pod supervisor is
-//     PID 1 and catches SIGTERM to save the world within its graceful window;
-//     a shorter grace period truncates the save mid-write. Guarded as `>=` that window.
-//   * the `control` containerPort — the port the bot dials the supervisor on. Both
-//     sides default it to `grizzly_control_api::CONTROL_PORT`; the manifests
-//     hardcode the same number and can't import the const.
-//   * the pod-hardening baseline — seccomp, privilege escalation, and the capability
-//     set. A pod missing these still runs perfectly, and the gap shows up only when
-//     something in a player-supplied mod goes looking for it, so nothing but a guard
-//     catches a new game onboarded without them. `_template` is checked alongside the
-//     real games precisely because that omission would propagate into every game
-//     copied from it afterwards.
-//
-// The grace-period bounds are checked against the window each game *actually* uses,
-// not the shared default: an image that raises `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` for
-// a slower world-save moves both bounds with it, and that is precisely the case a
-// guard written against the bare default cannot see.
-
 use std::time::Duration;
 
-/// The `SUPERVISOR_GRACEFUL_TIMEOUT_SECS` a Dockerfile declares, if it declares
-/// one. The last `ENV` wins, matching how Docker itself resolves a repeated key.
-/// Split from the file read so the parse is exercised without a Dockerfile on disk.
 fn graceful_timeout_override(dockerfile: &str) -> Option<u64> {
     dockerfile
         .lines()
@@ -629,12 +587,6 @@ fn graceful_timeout_override(dockerfile: &str) -> Option<u64> {
         .next_back()
 }
 
-/// The graceful-stop window a game's supervisor actually runs with, in seconds.
-///
-/// [`grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS`] unless the game's image
-/// overrides it, which is read straight out of the Dockerfile — the override lives
-/// in the image, so nothing else in the build knows a given game stops more slowly
-/// than the default.
 fn effective_graceful_timeout_secs(game: &str) -> u64 {
     let dockerfile = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"))
         .join(game)
@@ -675,10 +627,6 @@ fn the_last_override_wins_as_docker_resolves_it() {
 
 #[test]
 fn at_least_one_game_exercises_the_override_path() {
-    // Not a rule that a game must override — a guard that the parser is actually
-    // wired to the real Dockerfiles. If every game drops its override this fails,
-    // which is the moment to check the parser still matches Docker's syntax rather
-    // than silently degrading to "every game uses the default".
     let overridden: Vec<String> = load_game_manifests()
         .into_iter()
         .map(|(game, _)| game)
@@ -695,8 +643,6 @@ fn at_least_one_game_exercises_the_override_path() {
     );
 }
 
-/// Partial view of a game `GameServer` manifest — only the pod-spec fields these
-/// drift guards pin, so an unrelated manifest edit can't perturb the check.
 #[derive(serde::Deserialize)]
 struct GameServerManifest {
     spec: ManifestSpec,
@@ -714,8 +660,6 @@ struct ManifestTemplate {
 
 #[derive(serde::Deserialize)]
 struct ManifestPodSpec {
-    // Optional so a manifest missing the field fails with the named assertion
-    // below rather than serde's generic "missing field" error.
     #[serde(rename = "terminationGracePeriodSeconds")]
     termination_grace_period_seconds: Option<u64>,
     #[serde(rename = "securityContext")]
@@ -746,8 +690,6 @@ struct ManifestContainer {
     security_context: Option<ManifestContainerSecurityContext>,
 }
 
-/// One container env entry. `value` is optional because several of these are
-/// `valueFrom` secret references, which carry no literal.
 #[derive(serde::Deserialize)]
 struct ManifestEnv {
     name: String,
@@ -777,8 +719,6 @@ struct ManifestPort {
 }
 
 impl ManifestPodSpec {
-    /// The literal value of a container env var declared anywhere in this pod,
-    /// or `None` when no container sets it (or sets it from a secret).
     fn env(&self, key: &str) -> Option<&str> {
         self.containers
             .iter()
@@ -787,9 +727,6 @@ impl ManifestPodSpec {
             .and_then(|entry| entry.value.as_deref())
     }
 
-    /// The single `control` containerPort across the pod's containers. Panics
-    /// unless exactly one is declared — a missing or duplicated control port is a
-    /// drift the guard should catch, not skip over.
     fn control_port(&self) -> u16 {
         let ports: Vec<u16> = self
             .containers
@@ -805,10 +742,6 @@ impl ManifestPodSpec {
     }
 }
 
-/// Every `games/<game>/gameserver.yaml` paired with its directory name.
-/// Enumerated off disk rather than hardcoded so a newly-added game is guarded
-/// automatically; includes `_template`, whose drift would propagate into every
-/// game later copied from it.
 fn load_game_manifests() -> Vec<(String, GameServerManifest)> {
     let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
     let entries =
@@ -888,12 +821,6 @@ fn a_pod_reports_production_and_a_dev_box_does_not() {
     );
 }
 
-/// What a game base's root bootstrap actually uses: chown/chmod the mounted data
-/// dir (`CHOWN`, `DAC_OVERRIDE`, `FOWNER`), drop to the game user (`SETUID`,
-/// `SETGID`), and let the supervisor signal that now-unprivileged child as PID 1
-/// (`KILL`). A manifest may add back fewer than these if its base needs fewer; it
-/// may not add back anything outside the set, which is the direction that widens
-/// the blast radius of a compromised mod.
 const BOOTSTRAP_CAPABILITIES: [&str; 6] = [
     "CHOWN",
     "DAC_OVERRIDE",
@@ -931,9 +858,6 @@ fn game_pods_run_under_the_runtime_seccomp_profile() {
 
 #[test]
 fn game_containers_refuse_privilege_escalation() {
-    // The bases bootstrap as root and drop privileges with gosu/su-exec, which
-    // no_new_privs permits — it blocks only the *gaining* of privilege. So this
-    // costs the bootstrap nothing and there is no game that may opt out.
     for (game, manifest) in load_game_manifests() {
         for container in &manifest.spec.template.spec.containers {
             let allowed = container
@@ -1094,24 +1018,8 @@ fn guild_limit_env_rejects_garbage_loudly() {
     }
 }
 
-// ---- mod-registry drift guard ----
-//
-// The registry a game's mods come from is declared on its `GameServer`
-// annotations and read by the catalog loader through a *lenient* wrapper: a
-// malformed pair costs that one game its mod tools and warns, rather than
-// stopping the bot from starting. That leniency is deliberate and it is also
-// exactly what hides a typo — the symptom is Gary telling a friend their game
-// takes no mods, which is indistinguishable from the truth.
-//
-// This guard runs the strict parser over the real manifests, so a broken pair
-// fails CI instead of degrading in production, and pins the two games whose
-// registry is a decision rather than an accident.
-
 use crate::agones::parse_mod_registry_from_template;
 
-/// Every `games/<game>/gameserver.yaml` paired with its raw text, `_template`
-/// included — an annotation typo copied out of the template would propagate
-/// into every game onboarded afterwards.
 fn load_game_templates() -> Vec<(String, String)> {
     let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));
     let entries =
@@ -1170,9 +1078,6 @@ fn the_moddable_games_declare_the_registries_they_are_built_against() {
         "valheim's mod tools are built against the valheim Thunderstore community"
     );
 
-    // Every other game — the template included — must declare nothing rather
-    // than inherit a registry it has no install path for. A game that gains one
-    // is a deliberate edit here as well as in its manifest.
     let unexpected: Vec<&String> = declared
         .iter()
         .filter(|(game, registry)| {
@@ -1185,27 +1090,6 @@ fn the_moddable_games_declare_the_registries_they_are_built_against() {
         "these games declare a mod registry with no install path behind it: {unexpected:?}"
     );
 }
-
-// ---- mod-management wiring drift guard ----
-//
-// Mod support for one game is spread across three files that no single tool
-// checks against each other: the catalog manifest declares the per-instance file
-// (policy), the game's Dockerfile declares what the image can do with it (an
-// image fact), and the manifest's annotations tell the *bot* which registry to
-// search. Each half is individually valid with the others missing, and every
-// mismatch degrades quietly:
-//
-//   * a mod list with no community in the image → the supervisor warns once at
-//     startup and installs nothing, so Gary writes entries that never take
-//   * a community with no mod list → the same, from the other side
-//   * an image community that disagrees with the annotation → Gary searches one
-//     Thunderstore catalog and the supervisor installs from another, so every
-//     package he recommends resolves as missing
-//   * a `modrinth` game with no env overlay → the install path Minecraft's mod
-//     management actually uses isn't there at all
-//
-// None of these produce an error anywhere. They produce a friend being told
-// their mod is installed when it isn't.
 
 /// The literal value of an `ENV KEY=value` line in a game's Dockerfile. The last
 /// occurrence wins, matching how Docker itself resolves a repeated key, and
@@ -1257,10 +1141,6 @@ fn a_thunderstore_game_is_wired_end_to_end() {
         let registry = parse_mod_registry_from_template(&yaml)
             .unwrap_or_else(|err| panic!("games/{game}: {err:#}"));
 
-        // The image's provided list is the other half of the same drift: the bot
-        // reads it off the annotations when it writes a mod list from an
-        // imported profile, and a disagreement puts the loader pack into a file
-        // whose own guidance says it is never listed.
         let provided: Vec<String> = dockerfile_env(&game, "SUPERVISOR_THUNDERSTORE_PROVIDED")
             .unwrap_or_default()
             .split(',')
@@ -1284,10 +1164,6 @@ fn a_thunderstore_game_is_wired_end_to_end() {
 
 #[test]
 fn a_thunderstore_game_declares_the_mod_list_the_bot_writes() {
-    // import_profile rewrites this file wholesale, so the path the bot names has
-    // to be the one the supervisor in that pod actually reads. Both come from
-    // the same manifest, which is what makes them impossible to disagree — this
-    // guard pins that they are still read from the same place.
     use crate::agones::parse_mods_file_from_template;
 
     for (game, manifest) in load_game_manifests() {
@@ -1341,8 +1217,6 @@ fn a_modrinth_game_declares_the_overlay_its_installs_go_through() {
 
 #[test]
 fn a_game_with_no_mod_list_declares_no_thunderstore_settings() {
-    // The other direction: image settings with no mod list are inert, and inert
-    // settings read as working ones to anyone skimming the Dockerfile.
     for (game, manifest) in load_game_manifests() {
         if manifest
             .spec
@@ -1361,12 +1235,6 @@ fn a_game_with_no_mod_list_declares_no_thunderstore_settings() {
         );
     }
 }
-
-// The settings-overlay half of the same drift class. ADR-012 requires both
-// variables together — the supervisor reads nothing from a file with no
-// allowlist, and has nowhere to read from with an allowlist and no file — and a
-// half-finished catalog edit fails the way the others here do: silently, with
-// Gary told a setting exists that the launch then drops on the floor.
 
 #[test]
 fn a_settings_overlay_declares_both_halves_or_neither() {
@@ -1407,13 +1275,6 @@ fn a_settings_overlay_declares_both_halves_or_neither() {
 
 #[test]
 fn valheim_holds_the_dangerous_keys_off_its_allowlist() {
-    // Three of lloesche's variables are deliberately unreachable per instance,
-    // and none of them fails loudly if exposed. WORLD_NAME switches the server
-    // to a different world, which reads to whoever is playing as total data
-    // loss. SERVER_ARGS takes arbitrary launch arguments — the open surface that
-    // keeps MODS/PLUGINS off Minecraft's allowlist. VALHEIM_PLUS cannot be
-    // combined with the BEPINEX loader this image builds on, so setting it takes
-    // down the baked RCON plugin and with it Gary's console and player count.
     let yaml = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../games/valheim/gameserver.yaml"

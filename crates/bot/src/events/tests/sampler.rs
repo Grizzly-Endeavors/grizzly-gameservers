@@ -40,9 +40,6 @@ fn a_live_reading_records_the_count_and_the_restarts() {
 
 #[test]
 fn an_unknown_count_is_never_recorded_as_empty() {
-    // The load-bearing invariant: a game whose occupancy probe doesn't work
-    // reports None, and None must reach the column as NULL — reading it as zero
-    // would manufacture idle time that never happened.
     let sample = build_sample(
         &instance("satisfactory", "1234"),
         &status(0),
@@ -55,8 +52,6 @@ fn an_unknown_count_is_never_recorded_as_empty() {
 
 #[test]
 fn an_unreadable_occupancy_still_records_the_row() {
-    // The status answered, so the instance is demonstrably up: keep the row (the
-    // restart counter is still worth having) with the count unknown.
     for occupancy in [
         FsOutcome::NotFound,
         FsOutcome::NotManaged,
@@ -73,8 +68,6 @@ fn an_unreadable_occupancy_still_records_the_row() {
 
 #[test]
 fn an_unreadable_status_records_nothing() {
-    // Without the restart counter there is no sample, and every one of these
-    // describes an instance mid-transition rather than an idle one.
     for poll in [
         StatusPoll::NotFound,
         StatusPoll::NotManaged,
@@ -131,13 +124,10 @@ fn observations_carry_labels_with_the_same_null_semantics_as_rows() {
 
 #[test]
 fn an_absent_label_lands_as_null_not_a_blank_string() {
-    // The lister defaults a missing label to "", which in the column would read
-    // as a real game or guild whose name happens to be empty.
     let sample = build_sample(&instance("", ""), &status(0), &FsOutcome::Ok(Some(0)))
         .expect("a readable status yields a sample");
 
     assert_eq!(sample.game, None);
     assert_eq!(sample.guild, None);
-    // A *measured* zero is a real reading and stays zero — only unknowns are null.
     assert_eq!(sample.players, Some(0));
 }

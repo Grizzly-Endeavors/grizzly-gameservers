@@ -1,6 +1,5 @@
 use super::*;
 
-/// A registry answer for each named package at the given version.
 fn registry(entries: &[(&str, &str)]) -> BTreeMap<String, Latest> {
     entries
         .iter()
@@ -18,8 +17,6 @@ fn registry(entries: &[(&str, &str)]) -> BTreeMap<String, Latest> {
 
 #[test]
 fn only_pinned_entries_need_a_lookup() {
-    // An unpinned line and a comment are decided on facts already in hand, so
-    // spending a round trip on either would be spending it on nothing.
     let text = "# the group's pack\n\
                 ValheimModding-Jotunn-2.30.0\n\
                 Smoothbrain-Backpacks\n\
@@ -68,8 +65,6 @@ fn a_pin_already_newest_is_left_alone() {
 
 #[test]
 fn a_pin_above_the_registry_is_never_rolled_back() {
-    // "Latest" is the only claim the registry makes. Lowering a pin would take a
-    // server off a version it is running, under the name of an update.
     let plan = plan_update(
         "Smoothbrain-Backpacks-1.5.0\n",
         &registry(&[("Smoothbrain-Backpacks", "1.4.0")]),
@@ -81,8 +76,6 @@ fn a_pin_above_the_registry_is_never_rolled_back() {
 
 #[test]
 fn versions_are_compared_numerically() {
-    // A string comparison would read 1.10.0 as older than 1.9.0 and refuse the
-    // bump — or, worse, offer it in reverse.
     let plan = plan_update(
         "Smoothbrain-Backpacks-1.9.0\n",
         &registry(&[("Smoothbrain-Backpacks", "1.10.0")]),
@@ -93,8 +86,6 @@ fn versions_are_compared_numerically() {
 
 #[test]
 fn an_unpinned_entry_is_reported_rather_than_pinned() {
-    // It already installs the latest at every start. Pinning it would remove
-    // that behaviour while claiming to have updated it.
     let plan = plan_update(
         "Smoothbrain-Backpacks\n",
         &registry(&[("Smoothbrain-Backpacks", "1.4.0")]),
@@ -107,8 +98,6 @@ fn an_unpinned_entry_is_reported_rather_than_pinned() {
 
 #[test]
 fn a_players_machines_pin_is_bumped_on_its_own_line() {
-    // Reported separately because it is the only part of an update that creates
-    // work outside the server.
     let plan = plan_update(
         "client:Advize-PlantEasily-2.1.0\n",
         &registry(&[("Advize-PlantEasily", "2.2.0")]),
@@ -124,8 +113,6 @@ fn a_players_machines_pin_is_bumped_on_its_own_line() {
 
 #[test]
 fn comments_blank_lines_and_order_survive_the_rewrite() {
-    // The list is a file somebody authored. Re-rendering it from a parsed set
-    // would silently discard all of this.
     let text = "# the group's pack, agreed 2026-09\n\
                 \n\
                 mtnewton-ItemStacks-1.2.0\n\
@@ -171,8 +158,6 @@ fn a_line_nothing_understands_is_carried_through_untouched() {
 
 #[test]
 fn a_package_the_registry_does_not_have_keeps_its_line() {
-    // The list may be older than a rename. Rewriting a line whose package can't
-    // be confirmed is how an update breaks a launch.
     let mut latest = registry(&[("Smoothbrain-Backpacks", "1.4.0")]);
     latest.insert("Author-Renamed".to_owned(), Latest::Missing);
     let plan = plan_update(
@@ -195,8 +180,6 @@ fn a_package_with_no_lookup_at_all_is_treated_as_missing() {
 
 #[test]
 fn a_deprecated_package_is_reported_whether_or_not_its_pin_moves() {
-    // "Its author has stopped maintaining this" is the same news at either
-    // version, and this is the only turn that will mention it.
     let latest: BTreeMap<String, Latest> = [
         (
             "Author-Abandoned".to_owned(),
@@ -238,9 +221,6 @@ fn an_empty_list_plans_nothing() {
 
 #[test]
 fn a_list_with_no_trailing_newline_gains_one() {
-    // The rewrite is line-based, so it normalises the file's last line ending.
-    // Worth pinning: the supervisor tolerates either, and a diff that showed a
-    // phantom change on the last line would read as a bug.
     let plan = plan_update(
         "Smoothbrain-Backpacks-1.3.8",
         &registry(&[("Smoothbrain-Backpacks", "1.4.0")]),

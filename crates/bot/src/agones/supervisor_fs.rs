@@ -1,10 +1,3 @@
-//! The bot's client for the supervisor's filesystem, logs, and command routes —
-//! the transport behind Gary's attach/inspect/edit and run-command tools. Each
-//! call runs the same existence/managed/pod-IP gate as the lifecycle actions (via
-//! [`resolve_managed_pod`]) and then issues one HTTP request to the in-pod
-//! control API, mapping the reply to a [`FsOutcome`] the tool layer renders as
-//! plain text.
-
 use std::time::Duration;
 
 use anyhow::Result;
@@ -22,41 +15,19 @@ use tracing::{debug, warn};
 use super::control_client::ControlClient;
 use super::supervisor::{PodTarget, resolve_managed_pod};
 
-/// Per-request timeout for the filesystem/logs calls. These touch only the PVC
-/// or an in-memory buffer, so they're fast; this is a guard against a wedged pod,
-/// not a real work budget.
 const FS_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-request timeout for the shell route. Deliberately longer than the
-/// supervisor's own 30s ceiling on a command: the supervisor kills a slow command
-/// and answers with `timed_out`, and that answer is more useful to the agent than
-/// a transport error, so the client has to still be waiting when it arrives.
 const SHELL_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// The result of a filesystem/logs call against an instance's supervisor.
-/// Distinguishes the payload from the ways the request can't be served, so the
-/// tool layer can phrase an accurate, plain-language reply.
 pub(crate) enum FsOutcome<T> {
-    /// The operation succeeded; carries the typed response payload.
     Ok(T),
-    /// No live `GameServer` by that name.
     NotFound,
-    /// The instance exists but isn't shim-managed.
     NotManaged,
-    /// The pod exists but isn't far enough along to have a reachable control API.
     PodNotReady,
-    /// The control API couldn't be reached or returned an unparseable response.
     Unreachable,
-    /// The supervisor refused the request (bad path, not text, too large, no
-    /// snapshot, …); carries its developer-facing message for Gary to relay.
     Rejected(String),
 }
 
-/// List a directory under the instance's data root.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_list_files(
     client: &Client,
     http: &ControlClient,
@@ -82,26 +53,12 @@ pub(crate) async fn supervisor_list_files(
     Ok(map_payload(outcome, |list| list.entries))
 }
 
-/// Which part of a file to ask for.
-///
-/// The two exist because the two kinds of caller want different things. A
-/// program reading a file it will parse wants all of it and doesn't care where
-/// the lines fall; the model wants a bounded window it can address and continue
-/// from. Spelling it as a choice keeps a caller from inheriting the other's
-/// default by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReadWindow {
-    /// The whole file, up to the supervisor's read cap. What a parser wants.
     Whole,
-    /// `count` lines starting at 1-based `start`. What the model reads.
     Lines { start: usize, count: usize },
 }
 
-/// Read a UTF-8 file under the instance's data root.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_file(
     client: &Client,
     http: &ControlClient,
@@ -137,11 +94,6 @@ pub(crate) async fn supervisor_read_file(
     Ok(finish(response, &url).await)
 }
 
-/// Overwrite a file under the instance's data root, snapshotting it first.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_write_file(
     client: &Client,
     http: &ControlClient,
@@ -168,43 +120,19 @@ pub(crate) async fn supervisor_write_file(
     Ok(finish(response, &url).await)
 }
 
-/// The result of a targeted single-occurrence edit, before any restart. The
-/// soft-failure variants leave the file untouched; only [`Self::Edited`] wrote.
 pub(crate) enum EditOutcome {
-    /// The edit applied and was written; carries the write result so the caller
-    /// can mention the backup/restore path just like a plain write.
     Edited(WriteResponse),
-    /// `old` wasn't found in the file, so there was nothing to replace.
     NoMatch,
-    /// `old` appears more than once; carries the count so the caller can ask for
-    /// a more specific anchor rather than guessing which one to change.
     Ambiguous(usize),
-    /// `old` and `new` are identical — no change to make.
     Unchanged,
-    /// The read or the write couldn't be served; carries the shared FS failure
-    /// (payload dropped to unit — it's irrelevant to why the edit didn't land).
     Unserved(FsOutcome<()>),
 }
 
-/// The find-and-replace an edit applies, kept together so the two strings can't
-/// be passed in the wrong order at a call site (and to keep
-/// [`supervisor_edit_file`] within the argument budget).
 pub(crate) struct Replacement<'a> {
     pub(crate) old: &'a str,
     pub(crate) new: &'a str,
 }
 
-/// Edit a file in place by replacing the single occurrence of `old` with `new`,
-/// snapshotting the prior version for `restore_file`. Refuses ambiguous or
-/// missing anchors so a change can't silently hit the wrong text or clobber the
-/// file.
-///
-/// The replacement runs in the pod, so the file never crosses the wire and what
-/// can be edited doesn't depend on what fits in a read.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_edit_file(
     client: &Client,
     http: &ControlClient,
@@ -219,8 +147,6 @@ pub(crate) async fn supervisor_edit_file(
         return Ok(EditOutcome::Unchanged);
     }
     if old.is_empty() {
-        // An empty anchor has no location to replace at; treat it as "not found"
-        // rather than matching every character boundary.
         return Ok(EditOutcome::NoMatch);
     }
 
@@ -243,11 +169,6 @@ pub(crate) async fn supervisor_edit_file(
     read_edit_reply(response, &url).await
 }
 
-/// Turn the edit route's reply into an [`EditOutcome`].
-///
-/// Status is inspected directly rather than through [`finish`], which folds every
-/// non-success into `Rejected` — fine for the refusals, but the success body
-/// carries a match count that decides between three different outcomes.
 async fn read_edit_reply(
     response: reqwest::Result<reqwest::Response>,
     url: &str,
@@ -285,17 +206,10 @@ async fn read_edit_reply(
     })
 }
 
-/// Re-tag a read/write [`FsOutcome`] that didn't succeed as the edit's
-/// [`EditOutcome::Unserved`], dropping the (absent) payload.
 fn into_unserved<T>(outcome: FsOutcome<T>) -> EditOutcome {
     EditOutcome::Unserved(map_payload(outcome, |_| ()))
 }
 
-/// Restore a file under the instance's data root from its last snapshot.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_restore_file(
     client: &Client,
     http: &ControlClient,
@@ -320,11 +234,6 @@ pub(crate) async fn supervisor_restore_file(
     Ok(finish(response, &url).await)
 }
 
-/// Tail the most recent lines of the instance's captured output.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_read_logs(
     client: &Client,
     http: &ControlClient,
@@ -348,13 +257,6 @@ pub(crate) async fn supervisor_read_logs(
     Ok(map_payload(outcome, |logs| logs.lines))
 }
 
-/// Run one in-game console command against the instance's server over RCON. A
-/// [`FsOutcome::Rejected`] here carries the supervisor's reason (e.g. RCON not
-/// enabled for the game, or the console couldn't be reached).
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_send_command(
     client: &Client,
     http: &ControlClient,
@@ -379,23 +281,6 @@ pub(crate) async fn supervisor_send_command(
     Ok(finish(response, &url).await)
 }
 
-/// Run one read-only shell command inside the instance's game container.
-///
-/// `Ok(FsOutcome::Ok(None))` means this server's supervisor predates the shell
-/// route — a live server keeps the binary baked into its running image until it
-/// next starts, so that is an ordinary state rather than an error. It is
-/// distinguished here because the older supervisor answers an unknown path from
-/// its control-command fallback, whose 404 body is indistinguishable from a
-/// genuine rejection once it has been read.
-///
-/// The command is sandboxed in-pod (see the supervisor's `shell` module), so this
-/// carries no authority the caller has to police: a command that tries to write
-/// the game's files is refused by the kernel. A non-zero exit arrives as an
-/// ordinary [`ShellResponse`], not an error — a failed `grep` is a result.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_run_shell(
     client: &Client,
     http: &ControlClient,
@@ -429,15 +314,6 @@ pub(crate) async fn supervisor_run_shell(
     Ok(map_payload(finish(response, &url).await, Some))
 }
 
-/// Read the instance's live connected-player count over the control API.
-/// `Ok(FsOutcome::Ok(None))` means the count is *unknown* — the game has no RCON,
-/// or its console couldn't be reached — which the caller must treat as "can't
-/// tell", never as an empty server. Used to check occupancy before a disruptive
-/// action so a restart never silently kicks a live session.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_occupancy(
     client: &Client,
     http: &ControlClient,
@@ -455,11 +331,6 @@ pub(crate) async fn supervisor_occupancy(
     Ok(map_payload(outcome, |occupancy| occupancy.players))
 }
 
-/// Broadcast a message to everyone on the instance's server, best-effort. This is
-/// the in-game audit trail for Gary's mutating actions, so a failure to deliver it
-/// must never block or fail the action that triggered it — every unhappy path is
-/// logged and swallowed rather than propagated. A paused or RCON-less server
-/// simply gets no broadcast.
 pub(crate) async fn supervisor_announce(
     client: &Client,
     http: &ControlClient,
@@ -495,8 +366,6 @@ pub(crate) async fn supervisor_announce(
     }
 }
 
-/// The non-ready resolutions, separated from the pod IP so a caller can turn one
-/// into an [`FsOutcome`] of whatever payload type its operation returns.
 enum Unavailable {
     NotFound,
     NotManaged,
@@ -513,7 +382,6 @@ impl Unavailable {
     }
 }
 
-/// Resolve the instance's pod IP, or the reason it isn't reachable.
 async fn target_pod(
     client: &Client,
     namespace: &str,
@@ -528,9 +396,6 @@ async fn target_pod(
     })
 }
 
-/// Map an HTTP reply to an [`FsOutcome`]: a 2xx parses into `T`, a 4xx/5xx
-/// surfaces the supervisor's [`ControlError`] message as `Rejected`, and a
-/// transport failure or unparseable body is `Unreachable`.
 async fn finish<T: DeserializeOwned>(
     response: reqwest::Result<reqwest::Response>,
     url: &str,
@@ -563,8 +428,6 @@ async fn finish<T: DeserializeOwned>(
     }
 }
 
-/// Transform the success payload of an [`FsOutcome`] while preserving every
-/// non-success variant unchanged.
 fn map_payload<T, U>(outcome: FsOutcome<T>, transform: impl FnOnce(T) -> U) -> FsOutcome<U> {
     match outcome {
         FsOutcome::Ok(payload) => FsOutcome::Ok(transform(payload)),

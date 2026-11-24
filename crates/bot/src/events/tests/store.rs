@@ -7,8 +7,6 @@ async fn a_disabled_log_accepts_and_discards() {
     let log = EventLog::connect(None).await;
     assert!(!log.enabled());
 
-    // The contract that lets emission sites stay unconditional: recording into a
-    // disabled log is a no-op, not an error and not a panic.
     log.record(ProductEvent::new(
         EventKind::ServerDestroyed,
         &Attribution::new(Actor::Discord(1), Surface::Command),
@@ -21,8 +19,6 @@ async fn a_disabled_log_accepts_and_discards() {
 async fn a_disabled_log_accepts_and_discards_samples() {
     let log = EventLog::connect(None).await;
 
-    // Same contract on the sampler's path: a tick with nowhere to land is a
-    // no-op, so the sampler never has to check before writing.
     log.record_samples(&[OccupancySample {
         instance: crate::domain::InstanceName::new("worldly-otter"),
         game: None,
@@ -37,8 +33,6 @@ async fn a_disabled_log_accepts_and_discards_samples() {
 async fn a_disabled_log_accepts_and_discards_resource_samples() {
     let log = EventLog::connect(None).await;
 
-    // The resource cycle writes unconditionally, exactly like the occupancy
-    // cycle — a disabled log must absorb the tick as a no-op.
     log.record_resource_samples(&[ResourceSample {
         instance: crate::domain::InstanceName::new("worldly-otter"),
         game: None,

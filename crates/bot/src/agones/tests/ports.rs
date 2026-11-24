@@ -13,7 +13,6 @@ fn annotations(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The four annotations a two-port advertised game (Satisfactory-shaped) carries.
 fn advertised_annotations() -> BTreeMap<String, String> {
     annotations(&[
         (ADVERTISED_PORTS_ANNOTATION, "game,messaging"),
@@ -118,7 +117,6 @@ fn empty_advertised_list_is_rejected() {
 
 #[test]
 fn plan_from_service_rejects_a_port_with_no_matching_service_entry() {
-    // Annotation names `messaging` but the service only declares `game`.
     let svc = advertised_service(&[("game", Some(7003))]);
     let err = port_plan_from_service(&svc).unwrap_err();
     assert!(err.to_string().contains("no matching port"));
@@ -173,8 +171,6 @@ fn assignment_from_service_round_trips_leased_ports() {
 
 #[test]
 fn friend_facing_node_port_picks_the_game_port_not_the_first() {
-    // Ports declared messaging-first to prove selection is by friend-facing name,
-    // not port order.
     let svc = advertised_service(&[("messaging", Some(7004)), ("game", Some(7003))]);
     assert_eq!(friend_facing_node_port(&svc), Some(7003));
 }
@@ -201,9 +197,6 @@ fn node_ports_by_gameserver_uses_the_friend_facing_port() {
     assert_eq!(map.get("sf-abc"), Some(&7003));
 }
 
-/// Guards the contract between the real `games/satisfactory/service.yaml`
-/// annotations and this parser, so a manifest typo (or a renamed port) is caught
-/// here rather than only at `/create` time.
 #[test]
 fn real_satisfactory_manifest_is_on_the_advertise_path() {
     let path = concat!(
@@ -223,14 +216,8 @@ fn real_satisfactory_manifest_is_on_the_advertise_path() {
     assert!(game.env.contains(&"SUPERVISOR_GAME_PORT".to_owned()));
 }
 
-/// The supervisor's own default when `SUPERVISOR_GAME_PORT` is unset — mirrors
-/// `DEFAULT_GAME_PORT` in `crates/supervisor/src/config.rs`. Minecraft relies on
-/// this default equalling its own game port instead of setting the env explicitly.
 const SUPERVISOR_DEFAULT_GAME_PORT: u16 = 25565;
 
-/// Pulls the value out of an uncommented `ENV KEY=value` line. Deliberately a
-/// line scan, not a Dockerfile parser — good enough for the flat `ENV` lines
-/// every game template uses, and cheap to keep in sync with them.
 fn dockerfile_env<'a>(dockerfile: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("ENV {key}=");
     dockerfile
@@ -240,10 +227,6 @@ fn dockerfile_env<'a>(dockerfile: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|line| line.strip_prefix(prefix.as_str()))
 }
 
-/// Collects `(name, containerPort)` pairs out of a `GameServer` manifest's port
-/// list entries (top-level `spec.ports` and the container `ports`, which always
-/// mirror each other), skipping the pod-internal `control` port — it's never a
-/// candidate for the game's own readiness probe.
 fn manifest_container_ports(manifest: &str) -> Vec<(String, u16)> {
     let mut ports = Vec::new();
     let mut current_name: Option<String> = None;
@@ -262,19 +245,6 @@ fn manifest_container_ports(manifest: &str) -> Vec<(String, u16)> {
     ports
 }
 
-/// Guards the contract between each real game's `SUPERVISOR_GAME_PORT` (or its
-/// implicit default) and the port the manifest actually exposes it on, so a typo
-/// is caught here rather than only discovered when a fresh server's readiness
-/// probe never succeeds.
-///
-/// `SUPERVISOR_GAME_PORT` either names a declared game `containerPort`
-/// (Minecraft's implicit default, Terraria, Satisfactory's template default) or
-/// the game's own `SUPERVISOR_RCON_PORT` (Factorio, Palworld: their RCON port is
-/// what actually opens once the game is hosting, and it's intentionally
-/// pod-internal — never a `containerPort` — see their `Dockerfile`s). A game on
-/// the log-marker readiness path (`SUPERVISOR_READY_LOG_PATTERN`, e.g. Valheim)
-/// never consults `game_port` for readiness at all (see `runner.rs`'s
-/// `spawn_readiness_probe` gate), so it's exempt from the check entirely.
 #[test]
 fn real_game_ports_agree_with_their_readiness_probe() {
     let games_dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../games"));

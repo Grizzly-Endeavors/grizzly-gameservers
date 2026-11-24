@@ -25,21 +25,14 @@ use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 use tracing::debug;
 
-/// Ceiling on a single connect+authenticate+command round trip, so a wedged game
-/// can't hang the control API handler indefinitely.
 const RCON_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Poll interval between RCON connect attempts while the game's listener is still
-/// coming up. A freshly created or just-restarted server accepts players on the
-/// game port slightly before its RCON port binds, so a command issued in that
-/// window would otherwise hit a connection-refused; we retry across it instead.
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Cap on the reply text returned to the bot. Console replies are normally short;
 /// this guards the Discord relay path against a pathological dump (e.g. `help`).
 const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 
-/// Random bytes behind the minted password; hex-encoded to twice this many chars.
 const PASSWORD_BYTES: usize = 24;
 
 /// Packet type ids from the Source RCON protocol. `EXECCOMMAND` and
@@ -50,17 +43,12 @@ const TYPE_EXECCOMMAND: i32 = 2;
 const TYPE_AUTH_RESPONSE: i32 = 2;
 const TYPE_AUTH: i32 = 3;
 
-/// Request ids we stamp on our outgoing packets so replies can be correlated. The
-/// server echoes the id back; an auth reply carrying `-1` means the password was
-/// rejected.
 const ID_AUTH: i32 = 1;
 const ID_EXEC: i32 = 2;
 const ID_SENTINEL: i32 = 3;
 const ID_AUTH_FAILED: i32 = -1;
 
-/// A packet is at minimum an id (4) + type (4) + two null terminators.
 const MIN_PACKET_LEN: usize = 10;
-/// Guard against a hostile length prefix forcing a huge allocation on read.
 const MAX_PACKET_LEN: usize = 64 * 1024;
 /// Source caps a request packet near 4 KiB; keep command bodies well under it.
 const MAX_COMMAND_LEN: usize = 4000;
@@ -70,8 +58,6 @@ const MAX_COMMAND_LEN: usize = 4000;
 /// vocabulary the game understands. Selected per game via `SUPERVISOR_RCON_DIALECT`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RconDialect {
-    /// itzg Minecraft: a single response packet, `tellraw` broadcasts, and
-    /// `save-off`/`save-all`/`save-on` quiescing for consistent snapshots.
     Minecraft,
     /// A correct Source RCON implementation (Factorio): a large reply may fragment
     /// across packets, ended by mirroring an empty sentinel; `say` broadcasts; no
@@ -91,32 +77,21 @@ pub enum RconDialect {
 }
 
 impl RconDialect {
-    /// Whether a command reply arrives as one packet (read it and stop) rather than
-    /// a sentinel-terminated multi-packet Source stream.
     fn single_packet_reply(self) -> bool {
         matches!(self, Self::Minecraft | Self::Palworld | Self::Valheim)
     }
 
-    /// Whether this dialect understands Minecraft's `save-*` quiesce verbs.
     fn supports_save_quiesce(self) -> bool {
         matches!(self, Self::Minecraft)
     }
 
-    /// The console command that lists online players. Every RCON dialect the
-    /// supervisor speaks can report its player count; this drives the
-    /// update-on-empty occupancy poll and Gary's check-before-restart. (Games with
-    /// no RCON at all simply have no [`RconRuntime`], so the count is unavailable
-    /// upstream of here.)
     fn player_count_command(self) -> &'static str {
         match self {
-            // "There are N of a max of M players online: ..."
             Self::Minecraft => "list",
             // Factorio: `/players` lists everyone; the online ones carry an
             // " (online)" suffix (mirrors upstream's players-online.sh).
             Self::Source => "/players",
-            // CSV: a "name,playeruid,steamid" header then one row per player.
             Self::Palworld => "ShowPlayers",
-            // ValheimRcon: the reply's first line is "Online N".
             Self::Valheim => "players",
         }
     }
@@ -130,16 +105,12 @@ impl RconDialect {
             // "There are N of a max of M players online: ..." — N is the count.
             // Valheim's ValheimRcon opens its reply with "Online N" — same shape.
             Self::Minecraft | Self::Valheim => first_integer(reply),
-            // Count the online-suffixed rows of `/players`, matching upstream's
-            // `grep -c " (online)$"`. More robust than trusting a header tally.
             Self::Source => Some(count_online_suffixed(reply)),
             Self::Palworld => Some(parse_palworld_player_count(reply)),
         }
     }
 }
 
-/// The first run of ASCII digits in `text`, parsed as a count. Used for
-/// Minecraft's `list`, whose reply opens with "There are N of ...".
 fn first_integer(text: &str) -> Option<u32> {
     let digits: String = text
         .chars()
@@ -149,9 +120,6 @@ fn first_integer(text: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// Count the rows of Factorio's `/players` output that end in " (online)". Only
-/// connected players carry that suffix, so this is the live count regardless of
-/// how many players have ever joined.
 fn count_online_suffixed(reply: &str) -> u32 {
     let count = reply
         .lines()
@@ -160,9 +128,6 @@ fn count_online_suffixed(reply: &str) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// Count the data rows in Palworld's `ShowPlayers` CSV: the first line is the
-/// `name,playeruid,steamid` header, and each non-empty line after it is one
-/// connected player. An empty server replies with just the header (count 0).
 fn parse_palworld_player_count(reply: &str) -> u32 {
     let rows = reply
         .lines()
@@ -190,19 +155,12 @@ impl std::str::FromStr for RconDialect {
     }
 }
 
-/// How [`RconRuntime::run`] handles a not-yet-bound RCON port.
 #[derive(Clone, Copy)]
 enum ConnectMode {
-    /// Retry connection-refused across the just-(re)started window — an
-    /// operator-issued command should land once the console comes up.
     Retry,
-    /// Single attempt; a refused connection fails immediately. For polls and
-    /// status reads that must not block on a stopped or still-starting console.
     Once,
 }
 
-/// What the control layer needs to speak RCON to the local game: the loopback
-/// port, the minted password, and the game's console [`RconDialect`].
 pub struct RconRuntime {
     port: u16,
     password: String,
@@ -235,34 +193,19 @@ impl RconRuntime {
         })
     }
 
-    /// The minted password, for injecting into the game child's environment so the
-    /// game configures its RCON server with the same value.
     #[must_use]
     pub fn password(&self) -> &str {
         &self.password
     }
 
-    /// Run one console command over RCON and return the game's reply text
-    /// (truncated to a guard size).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the connection, authentication, or command fails or
-    /// exceeds [`RCON_TIMEOUT`], so the control layer can surface it as an HTTP
-    /// error rather than hang.
     pub async fn run_command(&self, command: &str) -> Result<String> {
         self.run(command, ConnectMode::Retry).await
     }
 
-    /// Run a command, choosing whether to wait out the just-(re)started window
-    /// where the RCON port hasn't bound yet ([`ConnectMode::Retry`]) or fail fast
-    /// on a refused connection ([`ConnectMode::Once`]).
     async fn run(&self, command: &str, connect: ConnectMode) -> Result<String> {
         self.run_within(command, connect, RCON_TIMEOUT).await
     }
 
-    /// [`Self::run`] against an explicit budget, so a test can exercise the
-    /// deadline without waiting out [`RCON_TIMEOUT`].
     async fn run_within(
         &self,
         command: &str,
@@ -270,10 +213,6 @@ impl RconRuntime {
         budget: Duration,
     ) -> Result<String> {
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, self.port));
-        // Set the moment the TCP connection is established, so a blown deadline
-        // can say which half failed. Both halves burn the same budget under
-        // ConnectMode::Retry, but they point at different faults and the operator
-        // (or Gary, reading this through the control API) needs to tell them apart.
         let connected = AtomicBool::new(false);
         match timeout(budget, self.exec(address, command, connect, &connected)).await {
             Ok(output) => Ok(truncate_output(output?)),
@@ -285,30 +224,13 @@ impl RconRuntime {
         }
     }
 
-    /// Broadcast `message` to everyone on the server, using the game's own
-    /// broadcast command so the caller never has to know per-game console syntax.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the console can't be reached or the command fails, same
-    /// as [`Self::run_command`].
     pub async fn broadcast(&self, message: &str) -> Result<String> {
         self.run_command(&broadcast_command(message, self.dialect)?)
             .await
     }
 
-    /// How many players are currently connected, or `None` when the count can't
-    /// be determined — the dialect has no player-list command, the console is
-    /// unreachable (a stopped or still-starting game), or the reply doesn't parse.
-    ///
-    /// `None` always means *unknown*, never *empty*: a caller gating a disruptive
-    /// action (an auto-update relaunch, a restart-on-config-change) on emptiness
-    /// must treat unknown as "don't act", so a transient console hiccup can never
-    /// masquerade as an empty server and kick a live session.
     pub async fn player_count(&self) -> Option<u32> {
         let command = self.dialect.player_count_command();
-        // Fast-fail: a poll or a status check must not hang on a stopped/starting
-        // console the way an operator-issued command deliberately waits it out.
         match self.run(command, ConnectMode::Once).await {
             Ok(reply) => {
                 let count = self.dialect.parse_player_count(&reply);
@@ -322,23 +244,12 @@ impl RconRuntime {
                 count
             }
             Err(err) => {
-                // A down/starting console is a routine, recoverable condition, not
-                // an error path — the caller just skips this poll.
                 debug!(error = ?err, "rcon player-count query did not complete");
                 None
             }
         }
     }
 
-    /// Flush pending world state and pause further saves so a live snapshot is
-    /// internally consistent, then the caller archives `/data`. A no-op for games
-    /// not in Minecraft mode — `save-off`/`save-all` are Minecraft console verbs,
-    /// so a generic RCON game gets an un-quiesced (still usable) snapshot rather
-    /// than a spurious command. Pair every call with [`Self::resume_saves`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a save command can't be delivered to the console.
     pub async fn quiesce_for_snapshot(&self) -> Result<()> {
         if !self.dialect.supports_save_quiesce() {
             return Ok(());
@@ -348,13 +259,6 @@ impl RconRuntime {
         Ok(())
     }
 
-    /// Re-enable world saves after a snapshot. A no-op outside Minecraft mode.
-    /// Always run this to undo [`Self::quiesce_for_snapshot`], even if the
-    /// snapshot failed, so saves are never left disabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `save-on` command can't be delivered.
     pub async fn resume_saves(&self) -> Result<()> {
         if !self.dialect.supports_save_quiesce() {
             return Ok(());
@@ -398,7 +302,6 @@ impl RconRuntime {
     }
 }
 
-/// Redacted so the minted password can never land in a `Debug` log line.
 impl fmt::Debug for RconRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RconRuntime")
@@ -409,8 +312,6 @@ impl fmt::Debug for RconRuntime {
     }
 }
 
-/// A decoded RCON packet: the echoed request id, the packet type, and the body
-/// text (with its trailing null terminators stripped).
 #[derive(Debug, PartialEq, Eq)]
 struct Packet {
     id: i32,
@@ -439,19 +340,10 @@ fn broadcast_command(message: &str, dialect: RconDialect) -> Result<String> {
         // Palworld's Broadcast is known to mangle spaces in some client builds; the
         // verb itself is still correct and the bot's messages are short.
         RconDialect::Palworld => Ok(format!("Broadcast {message}")),
-        // ValheimRcon and plain Source both broadcast to global chat with `say`.
         RconDialect::Source | RconDialect::Valheim => Ok(format!("say {message}")),
     }
 }
 
-/// The error for a blown RCON deadline, named by how far the exchange got.
-///
-/// A console that never accepted a connection and one that accepted and then went
-/// silent exhaust the same budget, but they are different faults with different
-/// fixes: an unbound listener means the game is still starting or its RCON plugin
-/// failed to load, while a silent one means the game is up but wedged. Reporting
-/// both as "timed out" sends the reader to the wrong half of the system — the
-/// failure mode that hid a mod incompatibility behind an apparent console hang.
 fn deadline_error(address: SocketAddr, connected: bool, budget: Duration) -> anyhow::Error {
     let secs = budget.as_secs();
     if connected {
@@ -468,13 +360,6 @@ fn deadline_error(address: SocketAddr, connected: bool, budget: Duration) -> any
     }
 }
 
-/// Connect to the game's RCON port, retrying while the connection is refused —
-/// the listener may not have bound yet on a server that just (re)started, even
-/// though the game port is already accepting players. The caller's budget bounds
-/// the loop rather than any deadline here; because no connection is ever
-/// established, blowing it reports a console that isn't listening instead of a
-/// bare timeout (see [`deadline_error`]). Any error other than connection-refused
-/// is a real fault and fails immediately.
 async fn connect_with_retry(address: SocketAddr) -> Result<TcpStream> {
     loop {
         match TcpStream::connect(address).await {
@@ -511,9 +396,6 @@ where
     }
 }
 
-/// Read a possibly multi-packet Source reply. A sentinel `RESPONSE_VALUE` is sent
-/// after the command; the server mirrors it back, so its echoed id marks the end
-/// of the command's response packets.
 async fn read_fragmented_response<S>(stream: &mut S) -> Result<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -533,8 +415,6 @@ where
     }
 }
 
-/// Frame an RCON packet: little-endian length, id, type, the body, and two null
-/// terminators. The length counts everything after itself.
 fn encode_packet(id: i32, kind: i32, body: &str) -> Result<Vec<u8>> {
     let body = body.as_bytes();
     let length = body
@@ -563,8 +443,6 @@ where
     writer.flush().await.context("failed to flush rcon packet")
 }
 
-/// Read one framed packet: the length prefix, then id, type, body, and the two
-/// trailing null bytes.
 async fn read_packet<R>(reader: &mut R) -> Result<Packet>
 where
     R: AsyncRead + Unpin,
@@ -576,8 +454,6 @@ where
     }
     let id = read_le_i32(reader).await?;
     let kind = read_le_i32(reader).await?;
-    // Length includes the id and type (8 bytes) already read; the remainder is the
-    // body followed by two null terminators.
     let remaining = length - 8;
     let mut rest = vec![0_u8; remaining];
     reader
@@ -601,25 +477,17 @@ where
     Ok(i32::from_le_bytes(buf))
 }
 
-/// Mint a random lowercase-hex password from the system CSPRNG.
-///
-/// # Errors
-///
-/// Returns an error if the system random source can't be read.
 pub fn generate_password() -> Result<String> {
     let mut bytes = [0_u8; PASSWORD_BYTES];
     getrandom::fill(&mut bytes)
         .context("failed to read system random source for the rcon password")?;
     let mut password = String::with_capacity(PASSWORD_BYTES * 2);
     for byte in bytes {
-        // Writing hex to a String is infallible; propagate rather than swallow to
-        // satisfy the no-silent-error lints without an unwrap.
         write!(password, "{byte:02x}").context("failed to format the rcon password")?;
     }
     Ok(password)
 }
 
-/// Trim `output` to [`MAX_OUTPUT_BYTES`] at a UTF-8 boundary, flagging the cut.
 fn truncate_output(mut output: String) -> String {
     if output.len() <= MAX_OUTPUT_BYTES {
         return output;

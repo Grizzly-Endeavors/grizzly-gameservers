@@ -8,58 +8,22 @@ use tracing::warn;
 use crate::agent::Environment;
 use crate::events::{parse_bytes, parse_cpu_millicores};
 
-/// Closure that resolves an environment variable to its raw value, mirroring
-/// `std::env::var_os`. Injected so config parsing is testable without the
-/// `unsafe` `set_var`/`remove_var` of Rust 2024.
 pub(crate) type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
 const DEFAULT_NAMESPACE: &str = "game-servers";
 const DEFAULT_DOMAIN: &str = "gameservers.grizzly-endeavors.com";
-/// Where the per-game catalog is baked into the container image (see Dockerfile).
 const DEFAULT_CATALOG_DIR: &str = "/usr/local/share/grizzly-gameservers/games";
-/// Port the in-pod supervisor serves its control API on. Sourced from the shared
-/// `grizzly_control_api::CONTROL_PORT` (the single Rust source of truth) so the bot
-/// and supervisor can't drift from each other. Still must match the catalog
-/// (`games/<game>/gameserver.yaml`) and the hardcoded port in
-/// `cluster/guardrails/bot-to-supervisor-egress.yaml` by hand — those YAML files
-/// can't import a Rust const, so that half stays tracked under issue #42; Cilium
-/// silently drops on a mismatch instead of erroring.
 const DEFAULT_CONTROL_PORT: u16 = grizzly_control_api::CONTROL_PORT;
-/// Port the in-game agent endpoint listens on for supervisor-posted `@Gary`
-/// triggers. Pod-internal, reached over the bot's `ClusterIP` Service. Must
-/// match the hardcoded port in
-/// `cluster/guardrails/game-to-bot-agent-egress.yaml` (see issue #42).
 const DEFAULT_AGENT_PORT: u16 = 9360;
-/// Ollama Cloud's `OpenAI`-compatible chat-completions base. The agent ("Gary")
-/// posts to `{base}/chat/completions`. Overridable for self-hosted Ollama.
 const DEFAULT_OLLAMA_BASE_URL: &str = "https://ollama.com/v1";
-/// Default model tag the agent drives — GLM 5.2 via Ollama Cloud unless overridden.
 const DEFAULT_OLLAMA_MODEL: &str = "glm-5.2";
-/// Foundation Postgres on the R730xd (ADR-003). LAN-only, plain TCP; overridable
-/// for local dev against a different host. Must match the hardcoded
-/// host/port in `cluster/guardrails/bot-to-postgres-egress.yaml` (see issue
-/// #42).
 const DEFAULT_DB_HOST: &str = "10.0.0.200";
 const DEFAULT_DB_PORT: u16 = 5432;
-/// The bot's dedicated role and (role-owned) database on foundation Postgres,
-/// provisioned by `setup-grizzly-gameservers-stores.yml`.
 const DEFAULT_DB_NAME: &str = "grizzly_gameservers";
 const DEFAULT_DB_USER: &str = "grizzly_gameservers";
-/// Foundation Valkey (kv-cache) on the R730xd — the shared Redis-wire store the
-/// platform designates for light queues/caches. LAN-only, plain TCP. Backs Gary's
-/// deferred-task queue. Must match the hardcoded host/port in
-/// `cluster/guardrails/bot-to-kv-cache-egress.yaml` (see issue #42).
 const DEFAULT_REDIS_HOST: &str = "10.0.0.200";
 const DEFAULT_REDIS_PORT: u16 = 6379;
-/// Logical DB index for the deferred-task queue. The shared instance has one
-/// password (no ACL users), so isolation is by key prefix; the DB index is a
-/// courtesy that keeps a `SCAN` cheap. `0` is the default shared DB and `1` is
-/// Authentik's — this app takes `2`.
 const DEFAULT_REDIS_DB: u8 = 2;
-/// Self-hosted versitygw `s3-bulk` on the R730xd — the endpoint the platform S3
-/// doc designates for backups/archives. Path-style, plain HTTP over the LAN.
-/// Must match the hardcoded host/port in
-/// `cluster/guardrails/bot-to-s3-egress.yaml` (see issue #42).
 const DEFAULT_S3_ENDPOINT: &str = "http://10.0.0.200:7072";
 const DEFAULT_S3_BUCKET: &str = "grizzly-gameservers";
 const DEFAULT_S3_REGION: &str = "us-east-1";
@@ -75,69 +39,25 @@ const DEFAULT_SMTP_PORT: u16 = 587;
 /// `grizzly-endeavors.com`: DMARC alignment is anchored there, and a `From:` on
 /// any other domain is filtered rather than delivered.
 const DEFAULT_SMTP_USER: &str = "gary@grizzly-endeavors.com";
-/// How often the scheduled cycle backs up every running server, in hours.
 const DEFAULT_BACKUP_INTERVAL_HOURS: u64 = 24;
-/// How many backups to retain per server; older ones are pruned each cycle.
 const DEFAULT_BACKUP_RETENTION: usize = 7;
-/// Archives outlive backups by a wide margin: an archived world is one nobody is
-/// playing but somebody chose to keep, so the window is generous and the newest
-/// archive of a name is never pruned at all (see `ArchiveStore::rows_to_prune`).
 const DEFAULT_ARCHIVE_RETENTION_DAYS: u64 = 90;
-/// How often the reconciler sweeps for servers stranded on an unresponsive node.
 const DEFAULT_RECONCILE_INTERVAL_MINUTES: u64 = 5;
-/// How often the sampler records each running server's player count. Minutes,
-/// not seconds: the samples are integrated into playtime and differenced into
-/// crash frequency, and neither gets meaningfully sharper by polling harder.
 const DEFAULT_SAMPLE_INTERVAL_MINUTES: u64 = 5;
-/// Set by the kubelet in every pod. Its presence is how the process tells a
-/// cluster deployment from a developer's box, which is what separates real
-/// traffic from a local run in anything the bot reports about itself.
 const IN_CLUSTER_MARKER: &str = "KUBERNETES_SERVICE_HOST";
-/// The platform's Langfuse (grizzly-platform ADR-064), reached in-cluster so
-/// traces never leave the lab. Plain HTTP: TLS terminates at the VPS edge, and
-/// the exporter's HTTP client is deliberately built without a TLS backend. Must
-/// match the hardcoded pod selector/port in
-/// `cluster/guardrails/bot-to-langfuse-egress.yaml` (see issue #42).
 const DEFAULT_LANGFUSE_HOST: &str = "http://langfuse-web.langfuse.svc.cluster.local:3000";
-/// Authentik group whose members may reach the super-admin panel. The platform's
-/// superuser group (grizzly-platform ADR-049 binds app visibility to it), so the
-/// panel admits exactly the people who already administer the homelab.
 const DEFAULT_ADMIN_GROUP: &str = "grizzly-admins";
-/// Where the panel is served. Only ever used to reject a cross-origin write, so
-/// a wrong value fails closed (writes refused) rather than open.
 const DEFAULT_ADMIN_ORIGIN: &str = "https://gameservers-admin.grizzly-endeavors.com";
-/// Stands in for the image digest on an off-cluster run, where there is no
-/// digest to report. Traces from such a run are quarantined by their
-/// `development` environment anyway.
 const DEFAULT_RELEASE: &str = "dev";
-/// How long a pod must sit terminating before the reconciler forces it out. Well
-/// clear of the game pods' 120s graceful-stop window, so a slow but healthy
-/// world-save is never cut short — this is only meant to catch a kubelet that
-/// has stopped answering entirely.
 const DEFAULT_STRANDED_DWELL_MINUTES: u64 = 15;
-/// Default per-guild caps (ADR-022). Generous by design — the beta exists to
-/// gather real usage, not to meter it — but bounded so no one guild can crowd
-/// the others off the hardware. Five servers is comfortable headroom under the
-/// shared edge port band; 24 cores / 48Gi of aggregate declared limits admits
-/// three of the heaviest catalog game (Satisfactory, 8c/16Gi) at once while
-/// staying under half the cluster's workers.
 const DEFAULT_GUILD_MAX_SERVERS: u32 = 5;
 const DEFAULT_GUILD_MAX_CPU_MILLICORES: i64 = 24_000;
 const DEFAULT_GUILD_MAX_MEM_BYTES: i64 = 48 * 1024 * 1024 * 1024;
 
-/// How the proactive watchdog behaves. Detection thresholds are code constants
-/// (`crate::watchdog::detect`); this knob only selects what a fired incident is
-/// allowed to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WatchdogMode {
-    /// Detect and respond: a fired incident runs a proactive Gary turn.
     On,
-    /// Detect only: incidents are logged and recorded to the event log, but no
-    /// turn runs and nobody is messaged. The false-positive tuning instrument —
-    /// review `events WHERE kind='incident'` before trusting `on`.
     Shadow,
-    /// No detection at all; the sampler behaves exactly as before the watchdog
-    /// existed.
     Off,
 }
 
@@ -151,12 +71,6 @@ impl WatchdogMode {
     }
 }
 
-/// Parse a watchdog mode from a bare string, case- and whitespace-insensitively.
-/// Shared with `crate::settings` so a mode chosen in the admin panel is held to
-/// the same vocabulary the environment variable accepts. `None` is an
-/// unrecognized value, which every caller turns into a refusal rather than a
-/// silent fallback — a typo'd `shaddow` must not quietly run turns the operator
-/// meant to suppress.
 pub(crate) fn parse_watchdog_mode(raw: &str) -> Option<WatchdogMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "on" => Some(WatchdogMode::On),
@@ -166,133 +80,44 @@ pub(crate) fn parse_watchdog_mode(raw: &str) -> Option<WatchdogMode> {
     }
 }
 
-/// Runtime configuration for the bot, sourced from the process environment.
 #[derive(Clone, Debug)]
 pub struct BotConfig {
     pub(crate) token: String,
     pub(crate) namespace: String,
     pub(crate) domain: String,
     pub(crate) catalog_dir: PathBuf,
-    /// Port the in-pod supervisor's control API listens on.
     pub(crate) control_port: u16,
-    /// Cross-guild operator seed: user ids that are admins in **every** guild and
-    /// carry the all-guilds visibility scope. Per-guild admins live in Postgres
-    /// (`GuildConfig`); this env allowlist is only the bootstrap operator(s).
-    /// Sourced from `GAMESERVERS_ADMIN_USER_IDS`.
     pub(crate) operator_ids: Vec<u64>,
-    /// Guild ids the operator has admitted, from `GAMESERVERS_GUILD_ALLOWLIST`.
-    /// **Empty means every guild is served** — the open posture the service ran
-    /// under before the list existed, kept as the default so a deploy that hasn't
-    /// been given a list yet doesn't lock out the guilds already using it.
-    /// Non-empty makes admission explicit: an unlisted guild gets no commands and
-    /// no agent, which is what "onboarding is gated behind the operator"
-    /// ([ADR-022](../../docs/decisions/022-per-guild-resource-caps.md)) has always
-    /// claimed and nothing enforced.
     pub(crate) guild_allowlist: Vec<u64>,
-    /// Deploy-time default for the bot install link mailed on beta approval.
-    /// Empty unless set; the panel is the usual place this is configured.
     pub(crate) beta_invite_url: String,
-    /// Deploy-time default for the community server link the approval email
-    /// offers. Empty omits that paragraph.
     pub(crate) community_url: String,
-    /// Admission control for paid model turns.
     pub(crate) throttle: crate::throttle::ThrottlePolicy,
-    /// Ollama Cloud API key for the agent ("Gary"). Absent disables the agent —
-    /// mentions are answered with a "not configured" reply, slash commands still
-    /// work. Sourced from the `ollama-api` Secret's `api_key` in-cluster.
     pub(crate) ollama_api_key: Option<String>,
-    /// Base URL for the agent's `OpenAI`-compatible chat-completions endpoint.
     pub(crate) ollama_base_url: String,
-    /// Model tag the agent drives.
     pub(crate) ollama_model: String,
-    /// Foundation-Postgres connection for the bot's durable state. `None` when no
-    /// `DB_PASSWORD` is set — the bot then runs without persistence (no-mention
-    /// home channels are disabled), the same graceful-degrade shape as `ollama`.
     pub(crate) db: Option<DbConfig>,
-    /// Foundation-Valkey connection for Gary's deferred-task queue. `None` when no
-    /// `REDIS_PASSWORD` is set — the `run_when` tool then reports it can't schedule,
-    /// the same graceful-degrade shape as `db`/`ollama`.
     pub(crate) valkey: Option<ValkeyConfig>,
-    /// Shared secret presented to game-pod supervisors on the control API, or
-    /// `None` when the control API is unauthenticated. Must match the token the
-    /// game pods are given; absent on both sides is the pre-auth behaviour.
     pub(crate) supervisor_token: Option<String>,
-    /// S3 (versitygw) connection for backups/archives. `None` when the access/
-    /// secret keys aren't set — backups/archive/restore then report "not
-    /// configured", the same graceful-degrade shape as `db`/`ollama`.
     pub(crate) s3: Option<S3Config>,
-    /// SMTP submission for transactional mail. `None` when
-    /// `GAMESERVERS_SMTP_PASSWORD` isn't set — approving a beta signup then
-    /// records the decision and reports that it couldn't mail them, the same
-    /// graceful-degrade shape as `db`/`s3`/`ollama`.
     pub(crate) mail: Option<MailConfig>,
-    /// How often the scheduled backup cycle runs.
     pub(crate) backup_interval: Duration,
-    /// How many backups to keep per server before the cycle prunes older ones.
     pub(crate) backup_retention: usize,
-    /// How long an archive is kept before the retention cycle prunes it. Far
-    /// longer than the backup retention count, and never applied to the newest
-    /// archive of a name: a backup is one of several rolling snapshots of a live
-    /// server, while an archive may be the only remaining copy of a world.
     pub(crate) archive_retention_days: i32,
-    /// How often the reconciler sweeps for stranded servers.
     pub(crate) reconcile_interval: Duration,
-    /// How long a pod must have been terminating before the reconciler treats it
-    /// as stranded and forces it out.
     pub(crate) stranded_dwell: Duration,
-    /// How often the occupancy sampler records each running server's player
-    /// count and restart counter.
     pub(crate) sample_interval: Duration,
-    /// Port the in-game agent endpoint binds for supervisor-posted chat triggers.
     pub(crate) agent_port: u16,
-    /// Shared bearer token the in-game agent endpoint requires. `None` runs it
-    /// open (NetworkPolicy-only); synced from `OpenBao` via ESO in-cluster.
     pub(crate) ingame_token: Option<String>,
-    /// Bearer token the operator harness routes require — the authenticated
-    /// surface a coding agent drives the deployed bot through from a dev box over
-    /// `kubectl port-forward`. Deliberately **not** the in-game token: that one is
-    /// mounted into every game pod in this namespace, while this one reaches
-    /// Gary's full admin tool surface and can pre-approve destructive actions.
-    /// `None` leaves the routes unmounted entirely — fail-closed, never open.
     pub(crate) operator_token: Option<String>,
-    /// Bearer token the public landing page's signup intake requires. Distinct
-    /// from both tokens above: it is held by an internet-facing service, and its
-    /// entire capability is appending a row to the signup table. `None` leaves
-    /// the route unmounted — a route that writes on behalf of an unauthenticated
-    /// form must never run open.
     pub(crate) signup_token: Option<String>,
-    /// Which population this process's ordinary traffic belongs to. Operator-
-    /// harness turns override it to [`Environment::Operator`] per turn; this is
-    /// the baseline everything else inherits.
     pub(crate) environment: Environment,
-    /// Langfuse credentials for turn telemetry. `None` when the key pair isn't
-    /// set — traces and scores are then dropped and nothing else changes, the
-    /// same graceful-degrade shape as `db`/`ollama`.
     pub(crate) langfuse: Option<LangfuseConfig>,
-    /// Which build this process is, stamped on every trace so a behaviour change
-    /// can be attributed to a deploy. The gate-signed image digest in-cluster —
-    /// which, because prompt-lib compiles every model-visible string into the
-    /// binary, also identifies the exact prompt set.
     pub(crate) release: String,
-    /// What the proactive watchdog may do with a fired incident. Sourced from
-    /// `GAMESERVERS_WATCHDOG`; defaults to [`WatchdogMode::On`].
     pub(crate) watchdog: WatchdogMode,
-    /// Global per-guild cap defaults (ADR-022). Per-guild overrides live in
-    /// Postgres (`crate::limits::GuildLimits`); these are the baseline every
-    /// guild starts from, and the enforcement floor when persistence is down.
     pub(crate) guild_limits: GuildLimitDefaults,
-    /// The super-admin panel's listener, or `None` when no port is set — in
-    /// which case it is never served.
     pub(crate) admin: Option<AdminConfig>,
 }
 
-/// Where the super-admin panel is served and who may reach it.
-///
-/// A separate listener from the agent endpoint, because the two get different
-/// network trust: the agent port must stay reachable by game pods (the in-game
-/// `@Gary` trigger), while the panel's forward-auth headers are only meaningful
-/// if nothing but the ingress controller can reach it. See
-/// [ADR-026](../../docs/decisions/026-super-admin-panel.md).
 #[derive(Clone, Debug)]
 pub(crate) struct AdminConfig {
     pub(crate) port: u16,
@@ -302,22 +127,9 @@ pub(crate) struct AdminConfig {
     /// signed-in admin's browser. Defaults to the panel host under the service
     /// domain, which is where the chart puts it.
     pub(crate) public_origin: String,
-    /// Authentik group a signed-in user must hold. Checked in-process as defense
-    /// in depth behind the outpost's own policy binding, and so a non-member
-    /// gets a page that says why rather than a bare 403.
     pub(crate) required_group: String,
 }
 
-/// Build the admin panel's settings, or `None` when `GAMESERVERS_ADMIN_PORT` is
-/// unset — in which case the listener never binds at all.
-///
-/// Fail-closed by absence, the same posture as the operator token: a panel that
-/// is reachable but misconfigured is worse than one that was never served, and
-/// "unset means off" cannot be got wrong by a half-rolled deploy.
-///
-/// # Errors
-///
-/// Returns an error if the port is set but isn't a usable port number.
 fn admin_config_from_env(lookup: EnvLookup) -> Result<Option<AdminConfig>> {
     let Some(port) = optional_port(lookup, "GAMESERVERS_ADMIN_PORT")? else {
         return Ok(None);
@@ -334,9 +146,6 @@ fn admin_config_from_env(lookup: EnvLookup) -> Result<Option<AdminConfig>> {
     }))
 }
 
-/// The global per-guild cap defaults: how many servers a guild may hold and what
-/// its live pods' declared CPU/memory limits may sum to. Sourced from
-/// `GAMESERVERS_GUILD_MAX_SERVERS` / `_MAX_CPU` / `_MAX_MEMORY`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GuildLimitDefaults {
     pub(crate) servers: u32,
@@ -364,8 +173,6 @@ pub(crate) struct MailConfig {
     pub(crate) from: String,
 }
 
-/// Connection settings for turn telemetry. Only the key pair is secret (synced
-/// from 1Password via ESO); the host carries an infra default.
 #[derive(Clone, Debug)]
 pub(crate) struct LangfuseConfig {
     pub(crate) host: String,
@@ -373,8 +180,6 @@ pub(crate) struct LangfuseConfig {
     pub(crate) secret_key: String,
 }
 
-/// Connection settings for the backups S3 bucket. Only the access/secret keys are
-/// secrets (synced from `OpenBao` via ESO); the rest carry infra defaults.
 #[derive(Clone, Debug)]
 pub(crate) struct S3Config {
     pub(crate) endpoint: String,
@@ -384,8 +189,6 @@ pub(crate) struct S3Config {
     pub(crate) secret_key: String,
 }
 
-/// Connection settings for the bot's foundation-Valkey (kv-cache) queue. Only the
-/// password is a secret (synced from `OpenBao`); the rest carry infra defaults.
 #[derive(Clone, Debug)]
 pub(crate) struct ValkeyConfig {
     pub(crate) host: String,
@@ -395,9 +198,6 @@ pub(crate) struct ValkeyConfig {
 }
 
 impl ValkeyConfig {
-    /// The `redis://` connection URL, with the password after the empty username
-    /// (`redis://:<password>@host:port/db`) — the RESP auth form the shared
-    /// `requirepass` instance expects.
     pub(crate) fn url(&self) -> String {
         format!(
             "redis://:{}@{}:{}/{}",
@@ -406,8 +206,6 @@ impl ValkeyConfig {
     }
 }
 
-/// Connection settings for the bot's foundation-Postgres database. Only the
-/// password is a secret (synced from `OpenBao`); the rest carry infra defaults.
 #[derive(Clone, Debug)]
 pub(crate) struct DbConfig {
     pub(crate) host: String,
@@ -418,11 +216,6 @@ pub(crate) struct DbConfig {
 }
 
 impl BotConfig {
-    /// Build configuration from the real process environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `DISCORD_BOT_TOKEN` is unset or non-UTF-8.
     pub fn from_env() -> Result<Self> {
         Self::from_env_with(&|key| std::env::var_os(key))
     }
@@ -522,10 +315,6 @@ impl BotConfig {
     }
 }
 
-/// Parse the per-guild cap defaults. CPU and memory accept Kubernetes quantity
-/// forms (`24`, `24000m`, `48Gi`) — the grammar every other resource surface
-/// speaks. An invalid value fails startup loudly, never silently defaults: a
-/// typo'd cap must not quietly admit unbounded load.
 fn guild_limit_defaults_from_env(lookup: EnvLookup) -> Result<GuildLimitDefaults> {
     let servers = optional_positive_u64(lookup, "GAMESERVERS_GUILD_MAX_SERVERS")?.map_or(
         Ok(DEFAULT_GUILD_MAX_SERVERS),
@@ -556,8 +345,6 @@ fn guild_limit_defaults_from_env(lookup: EnvLookup) -> Result<GuildLimitDefaults
     })
 }
 
-/// Parse an optional env var through a Kubernetes-quantity parser, rejecting
-/// unparseable and non-positive values.
 fn optional_quantity(
     lookup: EnvLookup,
     key: &str,
@@ -573,9 +360,6 @@ fn optional_quantity(
     Ok(Some(value))
 }
 
-/// Parse `GAMESERVERS_WATCHDOG` into a [`WatchdogMode`], defaulting to `on`.
-/// An unrecognized value is an error, not a silent fallback — a typo'd
-/// `shaddow` must not quietly run turns the operator meant to suppress.
 fn watchdog_mode_from_env(lookup: EnvLookup) -> Result<WatchdogMode> {
     let Some(raw) = optional(lookup, "GAMESERVERS_WATCHDOG") else {
         return Ok(WatchdogMode::On);
@@ -584,9 +368,6 @@ fn watchdog_mode_from_env(lookup: EnvLookup) -> Result<WatchdogMode> {
         .with_context(|| format!("GAMESERVERS_WATCHDOG must be one of on/shadow/off, got {raw:?}"))
 }
 
-/// Which population this process's traffic belongs to. Derived rather than
-/// configured: a running pod is production and a dev box is not, and there is no
-/// setting to get wrong.
 fn environment_from_env(lookup: EnvLookup) -> Environment {
     if lookup(IN_CLUSTER_MARKER).is_some() {
         Environment::Production
@@ -595,10 +376,6 @@ fn environment_from_env(lookup: EnvLookup) -> Environment {
     }
 }
 
-/// Build the Langfuse settings from the environment, or `None` when either key is
-/// unset/empty — the key pair is the part sourced from 1Password, so its absence
-/// is the signal that turn telemetry isn't wired and should degrade to off rather
-/// than fail. Only the host carries a default, and it points inside the cluster.
 fn langfuse_config_from_env(lookup: EnvLookup) -> Option<LangfuseConfig> {
     let public_key = optional(lookup, "LANGFUSE_PUBLIC_KEY").filter(|value| !value.is_empty());
     let secret_key = optional(lookup, "LANGFUSE_SECRET_KEY").filter(|value| !value.is_empty());
@@ -610,10 +387,6 @@ fn langfuse_config_from_env(lookup: EnvLookup) -> Option<LangfuseConfig> {
     })
 }
 
-/// Build the S3 connection settings from the environment, or `None` when either
-/// key is unset/empty — the keys are the parts sourced from `OpenBao`, so their
-/// absence is the signal that backups aren't wired and the feature should degrade
-/// rather than fail.
 fn s3_config_from_env(lookup: EnvLookup) -> Option<S3Config> {
     let access_key =
         optional(lookup, "GAMESERVERS_S3_ACCESS_KEY").filter(|value| !value.is_empty());
@@ -632,12 +405,6 @@ fn s3_config_from_env(lookup: EnvLookup) -> Option<S3Config> {
     })
 }
 
-/// The background cycles' periods and retention windows.
-///
-/// Grouped because they are read together, tuned together, and share one
-/// property that nothing else in the config has: each is baked into a ticker
-/// when its task spawns, so an override is recorded now and in force after the
-/// next restart (`settings::Reload::Restart`).
 struct CycleCadences {
     backup_interval: Duration,
     backup_retention: usize,
@@ -647,13 +414,6 @@ struct CycleCadences {
     sample_interval: Duration,
 }
 
-/// Read the background cycles' cadences, each falling back to its compiled
-/// default.
-///
-/// # Errors
-///
-/// Returns an error if any of the interval or retention variables is set but
-/// isn't a positive integer.
 fn cycle_cadences_from_env(lookup: EnvLookup) -> Result<CycleCadences> {
     let minutes = |key: &str, fallback: u64| -> Result<Duration> {
         Ok(Duration::from_secs(
@@ -689,20 +449,12 @@ fn cycle_cadences_from_env(lookup: EnvLookup) -> Result<CycleCadences> {
     })
 }
 
-/// The three bearer credentials the agent endpoint's routers expect, grouped so
-/// they are read in one place and can't be transposed at the call site.
 struct EndpointCredentials {
     ingame: Option<String>,
     operator: Option<String>,
     signup: Option<String>,
 }
 
-/// Read the endpoint bearer tokens, treating a blank value as absent.
-///
-/// Trimmed, like `supervisor_token`: a secret that syncs as a blank line would
-/// otherwise mount a route behind a credential nobody holds. It matters most for
-/// the in-game trigger, which runs *open* without a token — there, reading
-/// whitespace as "a token" is the difference between guarded and not.
 fn endpoint_credentials_from_env(lookup: EnvLookup) -> EndpointCredentials {
     let read = |key: &str| optional(lookup, key).filter(|value| !value.trim().is_empty());
     EndpointCredentials {
@@ -712,14 +464,6 @@ fn endpoint_credentials_from_env(lookup: EnvLookup) -> EndpointCredentials {
     }
 }
 
-/// Build the SMTP submission settings from the environment, or `None` when
-/// `GAMESERVERS_SMTP_PASSWORD` is unset/empty — the password is the one part
-/// sourced from 1Password, so its absence is the signal that mail isn't wired
-/// and the feature should degrade rather than fail.
-///
-/// # Errors
-///
-/// Returns an error if `GAMESERVERS_SMTP_PORT` is set but not a valid port.
 fn mail_config_from_env(lookup: EnvLookup) -> Result<Option<MailConfig>> {
     let Some(password) =
         optional(lookup, "GAMESERVERS_SMTP_PASSWORD").filter(|value| !value.is_empty())
@@ -732,23 +476,12 @@ fn mail_config_from_env(lookup: EnvLookup) -> Result<Option<MailConfig>> {
         host: optional(lookup, "GAMESERVERS_SMTP_HOST")
             .unwrap_or_else(|| DEFAULT_SMTP_HOST.to_owned()),
         port: optional_port(lookup, "GAMESERVERS_SMTP_PORT")?.unwrap_or(DEFAULT_SMTP_PORT),
-        // The sender defaults to the account, which is the aligned answer: a
-        // `From:` that isn't the authenticated mailbox is the usual way DMARC
-        // alignment gets broken by accident.
         from: optional(lookup, "GAMESERVERS_MAIL_FROM").unwrap_or_else(|| user.clone()),
         user,
         password,
     }))
 }
 
-/// Build the Postgres connection settings from the environment, or `None` when
-/// `DB_PASSWORD` is unset/empty — the password is the one part sourced from
-/// `OpenBao`, so its absence is the signal that persistence isn't wired and the
-/// bot should degrade rather than fail.
-///
-/// # Errors
-///
-/// Returns an error if `DB_PORT` is set but not a valid port number.
 fn db_config_from_env(lookup: EnvLookup) -> Result<Option<DbConfig>> {
     let Some(password) = optional(lookup, "DB_PASSWORD").filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -762,16 +495,6 @@ fn db_config_from_env(lookup: EnvLookup) -> Result<Option<DbConfig>> {
     }))
 }
 
-/// Build the Valkey connection settings from the environment, or `None` when
-/// `REDIS_PASSWORD` is unset/empty — the password is the one part sourced from
-/// `OpenBao`, so its absence is the signal that the queue backend isn't wired and
-/// the deferred-task feature should degrade (Gary reports he can't schedule)
-/// rather than fail.
-///
-/// # Errors
-///
-/// Returns an error if `REDIS_PORT` is set but not a valid port, or `REDIS_DB` is
-/// set but not a valid DB index (0-15).
 fn valkey_config_from_env(lookup: EnvLookup) -> Result<Option<ValkeyConfig>> {
     let Some(password) = optional(lookup, "REDIS_PASSWORD").filter(|value| !value.is_empty())
     else {
@@ -785,9 +508,6 @@ fn valkey_config_from_env(lookup: EnvLookup) -> Result<Option<ValkeyConfig>> {
     }))
 }
 
-/// Parse an optional env var as a Redis logical DB index (0-15). Rejects
-/// non-numeric values and out-of-range indices — the shared instance runs the
-/// default 16 databases (0-15).
 fn optional_redis_db(lookup: EnvLookup, key: &str) -> Result<Option<u8>> {
     let Some(raw) = optional(lookup, key) else {
         return Ok(None);
@@ -800,9 +520,6 @@ fn optional_redis_db(lookup: EnvLookup, key: &str) -> Result<Option<u8>> {
     Ok(Some(value))
 }
 
-/// Parse an optional env var as a positive `u64` (>= 1). Rejects both non-numeric
-/// values and a degenerate `0`: a zero backup interval flows into
-/// `tokio::time::interval`, which panics on a zero period.
 fn optional_positive_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
     let Some(raw) = optional(lookup, key) else {
         return Ok(None);
@@ -815,9 +532,6 @@ fn optional_positive_u64(lookup: EnvLookup, key: &str) -> Result<Option<u64>> {
     Ok(Some(value))
 }
 
-/// Parse an optional env var as a positive `usize` (>= 1). Rejects both
-/// non-numeric values and a degenerate `0`: a zero retention prunes every key
-/// each cycle, so backups appear to run but nothing is ever kept.
 fn optional_positive_usize(lookup: EnvLookup, key: &str) -> Result<Option<usize>> {
     let Some(raw) = optional(lookup, key) else {
         return Ok(None);
@@ -830,8 +544,6 @@ fn optional_positive_usize(lookup: EnvLookup, key: &str) -> Result<Option<usize>
     Ok(Some(value))
 }
 
-/// Parse an optional env var as a usable port (1-65535). Rejects `0`, which
-/// parses as a valid `u16` but is never a usable port to bind or connect to.
 fn optional_port(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
     let Some(raw) = optional(lookup, key) else {
         return Ok(None);
@@ -844,27 +556,14 @@ fn optional_port(lookup: EnvLookup, key: &str) -> Result<Option<u16>> {
     Ok(Some(port))
 }
 
-/// Parse a comma-separated list of Discord user ids. Blank entries are ignored
-/// so trailing commas and whitespace are tolerated.
 fn parse_user_ids(raw: Option<&str>) -> Result<Vec<u64>> {
     parse_snowflakes(raw, "GAMESERVERS_ADMIN_USER_IDS")
 }
 
-/// Parse a comma-separated list of Discord snowflakes (user or guild ids).
-/// Blank entries are ignored so trailing commas and whitespace are tolerated;
-/// `key` names the variable so a typo points at the right line of the deploy.
 fn parse_snowflakes(raw: Option<&str>, key: &str) -> Result<Vec<u64>> {
     raw.map_or_else(|| Ok(Vec::new()), |raw| parse_snowflake_list(raw, key))
 }
 
-/// Parse a comma-separated list of Discord snowflakes from a bare string.
-/// Shared with `crate::settings` so a list typed into the admin panel is held to
-/// exactly the grammar the environment variable accepts — `label` names whatever
-/// the caller is reading, so the error points at the right place either way.
-///
-/// # Errors
-///
-/// Returns an error naming the first entry that isn't an integer.
 pub(crate) fn parse_snowflake_list(raw: &str, label: &str) -> Result<Vec<u64>> {
     raw.split(',')
         .map(str::trim)
@@ -877,8 +576,6 @@ pub(crate) fn parse_snowflake_list(raw: &str, label: &str) -> Result<Vec<u64>> {
         .collect()
 }
 
-/// Read the turn-admission policy, falling back to the module's defaults per
-/// field so an operator can retune one axis without restating the others.
 fn throttle_policy_from_env(lookup: EnvLookup) -> Result<crate::throttle::ThrottlePolicy> {
     let burst = optional_number::<u32>(lookup, "GAMESERVERS_TURN_BURST")?
         .filter(|&burst| burst > 0)
@@ -896,9 +593,6 @@ fn throttle_policy_from_env(lookup: EnvLookup) -> Result<crate::throttle::Thrott
     })
 }
 
-/// Parse an optional numeric env var, erroring rather than silently falling back
-/// when it is set to something unparseable — a typo'd limit must not read as
-/// "use the default".
 fn optional_number<T>(lookup: EnvLookup, key: &str) -> Result<Option<T>>
 where
     T: std::str::FromStr,
@@ -922,9 +616,6 @@ fn required(lookup: EnvLookup, key: &str) -> Result<String> {
 fn optional(lookup: EnvLookup, key: &str) -> Option<String> {
     match lookup(key)?.into_string() {
         Ok(value) => Some(value),
-        // Mirror `required`'s fail-loud stance: a set-but-mangled value shouldn't
-        // vanish into the default with no trace, or a misconfiguration reads as
-        // "unset" and is impossible to spot.
         Err(bad) => {
             warn!(
                 key,

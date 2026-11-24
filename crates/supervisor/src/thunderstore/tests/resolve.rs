@@ -2,13 +2,9 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-/// A source backed by a map, so every resolution rule is exercised without a
-/// network or a cache.
 #[derive(Default)]
 struct FakeSource {
-    /// Every version this registry knows, keyed by release string.
     versions: BTreeMap<String, Vec<String>>,
-    /// Packages that are unreachable rather than absent.
     unreachable: Vec<String>,
 }
 
@@ -26,7 +22,6 @@ impl FakeSource {
         self
     }
 
-    /// The newest version this fixture registry knows of `id`.
     fn newest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
         if self.unreachable.contains(&id.to_string()) {
             return Err(SourceError::Unavailable("fake outage".to_owned()));
@@ -63,9 +58,6 @@ impl FakeSource {
     }
 }
 
-// The fixture answers from a map, so neither method awaits anything; they return
-// ready futures rather than being `async fn`, which is the same contract without
-// a future that never yields.
 impl PackageSource for FakeSource {
     fn latest(
         &self,
@@ -174,9 +166,6 @@ async fn the_highest_dependency_version_wins() {
 
 #[tokio::test]
 async fn a_pin_outranks_a_dependency_asking_for_more_and_says_so() {
-    // Thunderstore manifests declare what a package was built against, not what
-    // it requires, so a newer "requirement" is a preference. The friend's pin
-    // has to survive it.
     let source = FakeSource::default()
         .with("Author-Mod-1.0.0", &["Lib-Core-2.5.0"])
         .with("Lib-Core-2.0.0", &[])
@@ -191,8 +180,6 @@ async fn a_pin_outranks_a_dependency_asking_for_more_and_says_so() {
 
 #[tokio::test]
 async fn a_pin_reached_first_as_a_dependency_still_holds() {
-    // Order trap: resolving the dependency before the mod list's own entry
-    // would record the dependency's version and quietly discard the pin.
     let source = FakeSource::default()
         .with("Author-Mod-1.0.0", &["Lib-Core-2.5.0"])
         .with("Lib-Core-2.0.0", &[])
@@ -209,8 +196,6 @@ async fn a_pin_reached_first_as_a_dependency_still_holds() {
 
 #[tokio::test]
 async fn a_provided_package_is_skipped_whole() {
-    // The image ships the loader pack as a unit; installing pieces of a second
-    // copy over it is how a working loader stops loading.
     let source = FakeSource::default()
         .with(
             "Author-Mod-1.0.0",
@@ -280,8 +265,6 @@ async fn a_missing_dependency_names_the_package_that_needs_it() {
 
 #[tokio::test]
 async fn an_unreachable_registry_reads_differently_from_a_missing_package() {
-    // The same launch failure, but a completely different thing to tell a
-    // friend: one is their typo, the other is Thunderstore being down.
     let source = FakeSource::default().unreachable("Author-Mod");
     let wants = vec![wanted("Author-Mod", 1)];
     let err = resolve(&source, &wants, &[]).await.unwrap_err();

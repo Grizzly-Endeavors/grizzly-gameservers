@@ -122,7 +122,6 @@ fn member_with_db_configured_manager_role_is_manager() {
 
 #[test]
 fn admin_grant_outranks_manager_grant() {
-    // Someone granted both tiers resolves to the higher one.
     let admins = grants(&[], &[ADMIN_USER]);
     let managers = grants(&[], &[ADMIN_USER]);
     assert_eq!(
@@ -140,7 +139,6 @@ fn admin_grant_outranks_manager_grant() {
 
 #[test]
 fn access_levels_are_ordered() {
-    // The `>=` gates in the checks and tool dispatch rely on this ordering.
     assert!(AccessLevel::Admin > AccessLevel::Manager);
     assert!(AccessLevel::Manager > AccessLevel::ReadOnly);
 }
@@ -164,8 +162,6 @@ fn ungranted_member_is_read_only() {
 
 #[test]
 fn fails_closed_when_config_empty() {
-    // Config DB down => both grant sets empty. Only operators + owner get in
-    // (as admins); a would-be manager falls back to read-only.
     let empty = GrantSet::default();
     assert_eq!(
         access_level(&check(
@@ -205,7 +201,6 @@ fn operator_gets_the_all_guilds_view() {
 
 #[test]
 fn operator_gets_all_scope_even_in_a_dm() {
-    // The DM carve-out: an operator can manage every server from a DM.
     match visibility_scope(OPERATOR, None, &[OPERATOR]) {
         Some(ServerScope::All) => {}
         other => panic!("expected All, got {other:?}"),

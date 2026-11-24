@@ -17,8 +17,6 @@ fn fresh_pvc_gets_a_minimal_valid_ini() {
 
 #[test]
 fn preserves_join_password_while_enabling_rcon() {
-    // The exact bug Gary hit: ServerPassword edited on the PVC must survive, while
-    // the supervisor takes RCON from off/blank to on with the minted password.
     let existing = "[/Script/Pal.PalGameWorldSettings]\n\
          OptionSettings=(ServerPassword=\"fish\",AdminPassword=\"\",RCONEnabled=False,RCONPort=8888)\n";
     let out = ensure_rcon_settings(Some(existing), 25575, "secret");

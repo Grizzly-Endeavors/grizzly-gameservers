@@ -32,7 +32,6 @@ fn warm_relaunch_is_starting_until_the_new_child_accepts() {
     let mut state = SupervisorState::new();
     state.on_started(1, now);
     state.on_ready();
-    // Operator restarts: stop then start the child in place.
     state.on_restart_requested();
     state.on_started(2, now);
     assert_eq!(
@@ -44,7 +43,6 @@ fn warm_relaunch_is_starting_until_the_new_child_accepts() {
         state.is_ready(),
         "readiness stays sticky across the relaunch so Agones /ready is not re-signalled"
     );
-    // This boot's readiness probe confirms the port is accepting again.
     state.on_ready();
     assert_eq!(
         state.phase,
@@ -124,7 +122,6 @@ fn clearing_crash_history_restores_the_full_budget() {
     let escalated = state.on_child_exit(base + Duration::from_secs(20), WINDOW, THRESHOLD);
     assert_eq!(escalated, ExitDisposition::Escalate, "the budget is spent");
 
-    // A repaired child booted and reached readiness, so the pod recovered.
     state.on_started(2, base + Duration::from_secs(30));
     state.on_ready();
     state.clear_crash_history();
@@ -144,8 +141,6 @@ fn crash_history_survives_readiness_that_is_not_a_recovery() {
     state.on_started(1, base);
     state.on_ready();
 
-    // A game that dies partway into every boot still reaches readiness each
-    // cycle; those readies must not refund the crash budget.
     state.on_child_exit(base, WINDOW, THRESHOLD);
     state.on_started(2, base + Duration::from_secs(5));
     state.on_ready();
@@ -168,7 +163,6 @@ fn crashes_outside_window_do_not_accumulate() {
     state.on_started(1, base);
     state.on_ready();
 
-    // Two crashes far enough apart that each is alone in the window.
     let first = state.on_child_exit(base, WINDOW, THRESHOLD);
     let later = base + WINDOW + Duration::from_mins(1);
     let second = state.on_child_exit(later, WINDOW, THRESHOLD);
@@ -212,10 +206,6 @@ fn status_zeroes_uptime_while_stopped() {
 
 #[test]
 fn a_refused_launch_reports_as_crashed_without_spending_the_crash_budget() {
-    // `Crashed` because that is the word the whole recovery chain understands —
-    // the bot's verify loop restores the file's snapshot on the strength of it.
-    // The restart counter stays put because nothing restarted, and spending the
-    // budget here would blind the escalation that exists for an unstable game.
     let mut state = SupervisorState::new();
     state.on_started(42, Instant::now());
     let before = state.status(Instant::now()).restarts;
@@ -231,9 +221,6 @@ fn a_refused_launch_reports_as_crashed_without_spending_the_crash_budget() {
 
 #[test]
 fn a_refused_launch_leaves_the_ready_flag_alone() {
-    // The pod is still Ready to Agones and the control API is still up; only the
-    // game process is missing. Clearing readiness here would make the bot's own
-    // one-shot `/ready` fire again on the repair.
     let mut state = SupervisorState::new();
     state.on_ready();
     state.on_launch_failed();
