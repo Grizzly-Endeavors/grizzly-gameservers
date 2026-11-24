@@ -27,23 +27,12 @@ mod tests {
         SearchQuery, create_profile, fetch_package, fetch_profile, search_packages,
     };
 
-    /// The community every fact in this module was verified against.
     const COMMUNITY: &str = "valheim";
 
-    /// Valheim's modding framework: long-lived, never deprecated, and the one
-    /// package guaranteed to depend on the `BepInEx` loader pack — so it proves
-    /// both the package endpoint and its dependency strings at once. It is a
-    /// library and carries no side categories at all, which is why the side
-    /// assertion below uses a different package.
     const FRAMEWORK: (&str, &str) = ("ValheimModding", "Jotunn");
 
-    /// A package the community has categorised on both sides — the one shape
-    /// that proves a package detail's categories still classify, since the
-    /// package endpoint spells them as display names rather than slugs.
     const BOTH_SIDED: (&str, &str) = ("Mydayyy", "ServerSideMap");
 
-    /// A real profile code, minted while this format was being pinned down. It
-    /// holds four packages including the loader pack, and codes never expire.
     const SAMPLE_CODE: &str = "01a0838e-8316-f62c-48aa-7bdd59d3f8da";
 
     fn http() -> reqwest::Client {
@@ -175,9 +164,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live Thunderstore API and mints a permanent artifact"]
     async fn a_minted_code_fetches_back_as_what_was_put_in() {
-        // Deliberately separated from the other live tests by its own ignore
-        // reason: there is no delete endpoint, so every run of this leaves a
-        // profile on somebody else's service forever.
         let mods = vec![ProfileMod {
             full_name: "ValheimModding-Jotunn".to_owned(),
             version: "2.29.2".to_owned(),

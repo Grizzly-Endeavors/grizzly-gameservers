@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# Run a derivation-layer metric against Langfuse (see docs/operations/data-collection.md).
-#
-# The metrics API takes its query as a URL-encoded JSON blob, which is miserable
-# to assemble in a shell by hand — that assembly is the whole point of this
-# script, so the documented metrics stay copy-pasteable instead of aspirational.
-#
-# The bot reaches Langfuse in-cluster and the public hostname hairpins through
-# the edge, so this port-forwards the web Service rather than going over the
-# internet. It reads the same key pair the bot uses.
-#
-#   scripts/langfuse-metric.sh escalation-rate [environment] [days]
-#   scripts/langfuse-metric.sh cost-per-turn   [environment] [days]
-#   scripts/langfuse-metric.sh guardrail       [environment] [days]
-#   scripts/langfuse-metric.sh raw '<json query>'
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,9 +67,6 @@ window = {
     "toTimestamp": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 
-# Scores posted before the environment fix landed sit in a `default` bucket, and
-# operator traffic must never count as product signal — so an explicit
-# environment filter is the default rather than an opt-in.
 def env_filter():
     if environment == "all":
         return []
@@ -100,7 +83,6 @@ if metric == "escalation-rate":
         **window,
     }
 elif metric in ("guardrail", "escalation-kind"):
-    # Both are categorical scores keyed by name; only the name differs.
     name = "guardrail" if metric == "guardrail" else "escalation_kind"
     query = {
         "view": "scores-categorical",
@@ -111,8 +93,6 @@ elif metric in ("guardrail", "escalation-kind"):
         **window,
     }
 elif metric in ("cost-per-turn", "volume"):
-    # There is no `traces` view on this deployment, so a turn is counted as its
-    # root AGENT observation and cost is summed over GENERATION observations.
     query = {
         "view": "observations",
         "metrics": [{"measure": "count", "aggregation": "count"},
@@ -169,8 +149,6 @@ elif metric == "cost-per-turn":
             print("\ncost is zero with non-zero tokens — the model price is missing, or these")
             print("observations were ingested before it was defined (pricing is not retroactive).")
 elif metric in ("guardrail", "escalation-kind"):
-    # A distribution reads as shares, not counts: "most escalations are
-    # deliberate" is the finding, and raw counts bury it.
     counts = {row.get("stringValue") or "unknown": row.get("count_count", 0) for row in rows}
     total = sum(counts.values())
     for value, count in sorted(counts.items(), key=lambda pair: -pair[1]):

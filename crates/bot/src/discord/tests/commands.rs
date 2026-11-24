@@ -23,7 +23,6 @@ fn over_long_labels_are_truncated_within_the_cap() {
 
 #[test]
 fn truncation_respects_char_boundaries() {
-    // Multi-byte chars must not be split mid-codepoint.
     let label = "🐻".repeat(200);
     let truncated = truncate_option_label(&label);
     assert_eq!(truncated.chars().count(), MAX_SELECT_LABEL);

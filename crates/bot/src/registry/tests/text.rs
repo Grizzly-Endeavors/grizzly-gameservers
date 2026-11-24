@@ -15,8 +15,6 @@ fn a_long_title_is_cut_and_marked() {
 
 #[test]
 fn truncation_counts_characters_not_bytes() {
-    // A byte-wise cut would split these and panic; the limit is a character
-    // count so multi-byte author text survives it.
     assert_eq!(truncate("日本語テキスト", 3), "日本語…");
     assert_eq!(truncate("émoji 🎮 pack", 7), "émoji 🎮…");
 }

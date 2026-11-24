@@ -7,22 +7,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// Per-request ceiling for a completion call. Generous because a tool-calling
-/// model on a cold cloud route can take tens of seconds; the shared `reqwest`
-/// client's short default (tuned for in-cluster supervisor hops) is overridden
-/// here the same way the supervisor's mutating calls override it.
 const COMPLETION_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// Connection settings for the agent's chat-completions endpoint.
 #[derive(Clone, Debug)]
 pub(crate) struct OllamaConfig {
     pub(crate) api_key: String,
-    /// Base URL ending before `/chat/completions` (e.g. `https://ollama.com/v1`).
     pub(crate) base_url: String,
     pub(crate) model: String,
 }
 
-/// Who authored a message in the conversation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Role {
@@ -32,9 +25,6 @@ pub(crate) enum Role {
     Tool,
 }
 
-/// One conversation message. The optional fields cover every role with a single
-/// shape: `content` for text, `tool_calls` on an assistant turn that invokes
-/// tools, `tool_call_id` on a tool result tying it back to its call.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ChatMessage {
     pub(crate) role: Role,
@@ -55,13 +45,10 @@ impl ChatMessage {
         Self::text(Role::User, content)
     }
 
-    /// An assistant turn the loop wrote rather than the model — the record of a
-    /// turn that ended without the model producing a final message of its own.
     pub(crate) fn assistant(content: impl Into<String>) -> Self {
         Self::text(Role::Assistant, content)
     }
 
-    /// A tool result fed back to the model, tied to the call it answers.
     pub(crate) fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
@@ -80,13 +67,11 @@ impl ChatMessage {
         }
     }
 
-    /// The tool calls this (assistant) message requests, if any and non-empty.
     pub(crate) fn requested_tool_calls(&self) -> Option<&[ToolCall]> {
         self.tool_calls.as_deref().filter(|calls| !calls.is_empty())
     }
 }
 
-/// A single tool invocation requested by the model.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ToolCall {
     pub(crate) id: String,
@@ -103,7 +88,6 @@ pub(crate) struct FunctionCall {
     pub(crate) arguments: String,
 }
 
-/// A tool the model may call, advertised in the request.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ToolDef {
     #[serde(rename = "type")]
@@ -115,12 +99,10 @@ pub(crate) struct ToolDef {
 pub(crate) struct FunctionDef {
     pub(crate) name: String,
     pub(crate) description: String,
-    /// JSON Schema for the tool's parameters.
     pub(crate) parameters: serde_json::Value,
 }
 
 impl ToolDef {
-    /// Wrap a name/description/parameter-schema triple as an `OpenAI` function tool.
     pub(crate) fn function(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -137,11 +119,6 @@ impl ToolDef {
     }
 }
 
-/// The single place generated tool specs cross into the bot's wire type. Every
-/// `<Tool>::spec()` flows through here, so the LLM client's own types stay
-/// unaware of `grizzly-agent`. `ToolSpec`'s `name`/`description` are
-/// `Cow<'static, str>` — borrowed for every generated tool, owned for any tool
-/// built at runtime — and convert into `String` either way.
 impl From<grizzly_agent::ToolSpec> for ToolDef {
     fn from(spec: grizzly_agent::ToolSpec) -> Self {
         Self::function(spec.name, spec.description, spec.parameters)
@@ -191,8 +168,6 @@ pub(crate) struct TokenUsage {
     pub(crate) prompt_details: Option<PromptTokenDetails>,
 }
 
-/// The provider's breakdown of what the prompt tokens were made of. Only the
-/// cache-hit count is modelled — it is the one that bills at a different rate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub(crate) struct PromptTokenDetails {
     #[serde(default, rename = "cached_tokens")]
@@ -200,48 +175,27 @@ pub(crate) struct PromptTokenDetails {
 }
 
 impl TokenUsage {
-    /// Prompt tokens the provider served from its prefix cache, when it said so.
     pub(crate) fn cached_prompt(&self) -> Option<u32> {
         self.prompt_details
             .as_ref()
             .and_then(|details| details.cached)
     }
 
-    /// Prompt tokens that were *not* cache hits — the count the full input rate
-    /// applies to.
-    ///
-    /// `prompt_tokens` is inclusive of the cache hits, so anything that prices
-    /// the two counts side by side has to subtract here or bill the cached
-    /// tokens twice.
     pub(crate) fn uncached_prompt(&self) -> Option<u32> {
         self.prompt
             .map(|prompt| prompt.saturating_sub(self.cached_prompt().unwrap_or(0)))
     }
 }
 
-/// One model call's full result: the assistant's message plus everything
-/// measurable about the call that produced it.
 #[derive(Clone, Debug)]
 pub(crate) struct Completion {
     pub(crate) message: ChatMessage,
-    /// Whichever model answered — the provider's own echo when it sends one,
-    /// else the configured tag.
     pub(crate) model: String,
     pub(crate) usage: Option<TokenUsage>,
     pub(crate) finish_reason: Option<String>,
-    /// Wall-clock time for the whole round trip, request sent through body parsed.
     pub(crate) latency: Duration,
 }
 
-/// Send one chat-completion turn and return the assistant message with the call's
-/// usage, finish reason, and measured latency. Advertises `tools` (with
-/// `tool_choice: auto`) when any are supplied.
-///
-/// # Errors
-///
-/// Returns an error if the request fails to send, the endpoint returns a
-/// non-success status, the body can't be parsed, or the response carries no
-/// choices.
 pub(crate) async fn send_chat_completion(
     http: &reqwest::Client,
     cfg: &OllamaConfig,

@@ -1,8 +1,3 @@
-//! Gary's tool surface: the lifecycle operations exposed to the model, their
-//! parameter schemas, the admin tiering, and the dispatcher that runs a call and
-//! renders a compact text result for the model to relay. The results are plain
-//! text on purpose — Gary composes the friendly Discord reply himself.
-
 use grizzly_agent::ToolDefinition;
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
@@ -82,73 +77,29 @@ use crate::thunderstore::{
     split_full_name,
 };
 
-/// How a destructive tool obtains the human approval it requires.
-///
-/// [`Interactive`](ConfirmMode::Interactive) is the default so that any new
-/// surface must state its posture out loud; a defaulted field is exactly how a
-/// future caller would inherit pre-approval without anyone deciding it should.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ConfirmMode {
-    /// Post Danger/Cancel buttons in the channel and block on the caller's click.
     #[default]
     Interactive,
-    /// The caller approved this action out of band, before the request was made.
-    /// Only the operator harness selects this, per request — no Discord client can
-    /// click a button, so a headless caller would otherwise only ever time out. The
-    /// action still posts a visible audit line to the channel, and refuses to
-    /// proceed if that line can't be posted.
     Preapproved,
 }
 
-/// Everything a tool executor needs: the shared bot state plus the Discord
-/// handles the destructive-confirmation flow uses, and the caller's access tier
-/// (so mutating tools can refuse at execution time as defense in depth).
 pub(crate) struct ToolCtx<'a> {
     pub(crate) data: &'a Data,
     pub(crate) serenity: &'a serenity::Context,
-    /// Which entry point these tools are running under. Carried so the audit
-    /// trail names the real surface instead of deducing one from `confirmations`.
     pub(crate) origin: TurnOrigin,
     pub(crate) channel_id: serenity::ChannelId,
-    /// The guild this conversation is in, stamped on a server Gary creates so it's
-    /// owned by that guild. `None` in an operator's DM — a server created there is
-    /// left unlabeled (operator-only), matching the pre-scoping convention.
     pub(crate) guild: Option<u64>,
     pub(crate) author_id: serenity::UserId,
     pub(crate) access: AccessLevel,
-    /// The servers this caller may see and act on — every tool that targets an
-    /// existing server by name is gated on it in [`dispatch`], and the listing
-    /// tools query within it.
     pub(crate) scope: ServerScope,
-    /// How the destructive tools obtain their confirmation. Every Discord-driven
-    /// surface sets [`ConfirmMode::Interactive`]; only the operator harness may
-    /// pre-approve, and only per request.
     pub(crate) confirmations: ConfirmMode,
-    /// The last config edit that saved a snapshot and hasn't been verified by a
-    /// restart yet, tracked for the duration of one Gary turn. When a restart
-    /// applies this change, [`exec_restart`] watches it come back up and rolls it
-    /// back on a crash — deterministic recovery that doesn't depend on the model.
-    /// Guarded by a plain mutex because dispatch runs the tools one at a time and
-    /// never holds the lock across an await.
     pub(crate) pending_change: std::sync::Mutex<Option<PendingChange>>,
-    /// How this turn's config change came out, once a restart verified it. Read
-    /// by the shell after the loop returns, because the verdict is reached inside
-    /// a tool and the loop never sees it as anything but result prose. Last write
-    /// wins: a turn with several edit-and-restart cycles is scored on the final
-    /// verdict, and the per-cycle history is already in its tool observations.
     pub(crate) guardrail: std::sync::Mutex<Option<GuardrailVerdict>>,
-    /// Set when the model calls `escalate`. The loop polls it after each round
-    /// of tool calls and stops there, which is what makes the escalation exit an
-    /// exit rather than a notification the model can talk past. First write wins:
-    /// if a round somehow escalates twice, the reply the user sees is the one
-    /// that decided to hand off, not a second thought about it.
     pub(crate) escalation: std::sync::Mutex<Option<EscalationRequest>>,
 }
 
 impl ToolCtx<'_> {
-    /// Record that `path` on `server` was just edited with a snapshot saved, so a
-    /// following restart knows there's a change to verify and, if it crashes, undo.
-    /// The last edit wins, mirroring `restore_file`'s own last-write-per-file model.
     pub(crate) fn note_pending_change(&self, server: &str, path: &str) {
         *self.pending_lock() = Some(PendingChange {
             server: server.to_owned(),
@@ -156,9 +107,6 @@ impl ToolCtx<'_> {
         });
     }
 
-    /// Take the pending change if it targets `server`, leaving an edit awaiting a
-    /// different server's restart in place. `Some` means this restart is the one
-    /// that applies a tracked change and should be watched for a crash.
     fn take_pending_change(&self, server: &str) -> Option<PendingChange> {
         let mut guard = self.pending_lock();
         if guard.as_ref().is_some_and(|change| change.server == server) {
@@ -168,8 +116,6 @@ impl ToolCtx<'_> {
         }
     }
 
-    /// Drop any pending change for `path` on `server` — the model restored the file
-    /// itself, so there's no longer an unverified edit for a later restart to undo.
     fn drop_pending_change(&self, server: &str, path: &str) {
         let mut guard = self.pending_lock();
         if guard
@@ -180,17 +126,12 @@ impl ToolCtx<'_> {
         }
     }
 
-    /// Lock the pending-change slot, recovering from a poisoned mutex rather than
-    /// panicking — a poison here would only mean a prior panic while the lock was
-    /// held, and the tracked state is advisory, so the last value is safe to reuse.
     fn pending_lock(&self) -> std::sync::MutexGuard<'_, Option<PendingChange>> {
         self.pending_change
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Record how a verified config change came out, for the turn's guardrail
-    /// score.
     fn note_guardrail_verdict(&self, verdict: GuardrailVerdict) {
         *self
             .guardrail
@@ -198,7 +139,6 @@ impl ToolCtx<'_> {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(verdict);
     }
 
-    /// The verdict this turn's config change reached, if it reached one.
     pub(crate) fn guardrail_verdict(&self) -> Option<GuardrailVerdict> {
         *self
             .guardrail
@@ -206,9 +146,6 @@ impl ToolCtx<'_> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Record the model's decision to hand this turn to a human, keeping any
-    /// earlier request in place. Poison-tolerant for the same reason as the
-    /// pending-change lock.
     fn note_escalation(&self, request: EscalationRequest) {
         let mut guard = self
             .escalation
@@ -219,9 +156,6 @@ impl ToolCtx<'_> {
         }
     }
 
-    /// The handoff this turn asked for, if the model asked for one. Cloned rather
-    /// than taken, because both the loop (to stop) and the shell (to notify) read
-    /// it.
     pub(crate) fn escalation_request(&self) -> Option<EscalationRequest> {
         self.escalation
             .lock()
@@ -229,16 +163,6 @@ impl ToolCtx<'_> {
             .clone()
     }
 
-    /// Who this tool is acting for, for the product event log. The surface comes
-    /// from the turn's origin, so a `run_when` batch and an operator-harness turn
-    /// are separable from a friend's live conversation without any extra
-    /// threading — the executors already carry both.
-    /// The catalog id of the game `server` runs, `Ok(None)` when the instance
-    /// carries no game label, or the text to hand back instead of running.
-    ///
-    /// Read off the live listing rather than off the instance name: a name is
-    /// only conventionally prefixed with its game, and treating that convention
-    /// as a fact would quietly answer the wrong game's question.
     pub(crate) async fn game_of(&self, server: &str) -> Result<Option<String>, String> {
         let summaries = match list_active_servers(
             self.data.kube_client.clone(),
@@ -268,8 +192,6 @@ impl ToolCtx<'_> {
         )
     }
 
-    /// Record a lifecycle action the model just took, against the server it acted
-    /// on. Emitted after the action resolves, never before.
     async fn record_action(&self, kind: EventKind, server: &str, outcome: &'static str) {
         self.record_event(
             ProductEvent::new(kind, &self.attribution(), outcome)
@@ -278,7 +200,6 @@ impl ToolCtx<'_> {
         .await;
     }
 
-    /// Record an already-built event, filling in the guild the turn ran in.
     async fn record_event(&self, event: ProductEvent) {
         self.data
             .events
@@ -291,31 +212,11 @@ impl ToolCtx<'_> {
     }
 }
 
-/// Just the `name` field, pulled from any targeted tool's arguments (they all
-/// carry one) for the scope gate in [`dispatch`], ignoring the rest.
 #[derive(Deserialize)]
 struct TargetName {
     name: String,
 }
 
-/// Every Discord tool paired with the lowest tier that may call it — the single
-/// home the offer list, the dispatch gate, and the below-tier refusal all read,
-/// so a tool's tier is stated exactly once.
-///
-/// The tiers, in the order they appear: read-only lookups anyone may run —
-/// plus `escalate`, which every caller needs precisely because the ones with the
-/// fewest tools have the fewest other ways forward; manager lifecycle,
-/// file-tuning, mod-discovery, memory, and resizing tools — the day-to-day
-/// operations, none of which permanently destroy a world; and the admin-only
-/// destructive set (permanent deletion, world overwrites, archival, live console
-/// commands). The "do not confirm" steer on `destroy_server` and the
-/// confirmation phrasing on `archive_server`/`restore_server` live in those
-/// tools' prompt files.
-///
-/// `set_resources` is manager tier so the proactive watchdog — which runs its
-/// unattended turns at that tier — can act on the memory-pressure incident it
-/// exists to detect, rather than only reporting it. What stops that becoming
-/// runaway allocation is the clamp in `crate::sizing`, not the tier.
 fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     vec![
         (AccessLevel::ReadOnly, ListServers::spec().into()),
@@ -356,8 +257,6 @@ fn tool_table() -> Vec<(AccessLevel, ToolDef)> {
     ]
 }
 
-/// The tools advertised to the model for a given caller: everything at or below
-/// the caller's tier.
 pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
     tool_table()
         .into_iter()
@@ -366,7 +265,6 @@ pub(crate) fn available_tools(access: AccessLevel) -> Vec<ToolDef> {
         .collect()
 }
 
-/// The lowest tier that may call `name`, or `None` if it isn't a tool at all.
 fn tier_of(name: &str) -> Option<AccessLevel> {
     tool_table()
         .into_iter()
@@ -374,30 +272,10 @@ fn tier_of(name: &str) -> Option<AccessLevel> {
         .map(|(tier, _)| tier)
 }
 
-/// Whether `name` is a tool at all, at any tier. Distinguishes a typo (which a
-/// caller naming tools by hand should be told about) from a real tool the caller
-/// isn't allowed to use — the latter still dispatches, so it can produce the tier
-/// refusal rather than a "no such tool" that hides the actual reason.
 pub(crate) fn known_tool(name: &str) -> bool {
     tier_of(name).is_some()
 }
 
-/// Run one tool call and return the text result to feed back to the model. Bad
-/// arguments, unknown names, and below-tier attempts all return an explanatory
-/// string rather than failing the loop.
-///
-/// The tier gate runs first, once, against [`tool_table`] — defense in depth,
-/// since a below-tier tool was never offered to this caller in the first place.
-/// Because it is checked here, the arms below carry no tier guards of their own.
-///
-/// Before dispatching, any tool that targets an existing server by name is
-/// confined to the caller's [`ServerScope`](ToolCtx::scope): a server in another
-/// guild reads as "no such server", so Gary can neither see nor touch another
-/// group's servers. The tools not gated here each enforce tenancy on their own:
-/// `list_servers` and `list_archives` scope-filter their own listing,
-/// `create_server` stamps the new server with the current guild,
-/// `recover_server` resolves the archive within the caller's scope-filtered
-/// listing (see `exec_recover`), and `escalate` reaches no server at all.
 pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     let args = call.function.arguments.as_str();
     match tier_of(call.function.name.as_str()) {
@@ -430,9 +308,6 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Err(message) => message,
         },
         ListArchives::NAME => exec_list_archives(ctx).await,
-        // The three whole-mod-list tools sit at two different tiers but share a
-        // dispatcher, because they are one feature and their arms would
-        // otherwise be pages apart.
         ExportProfile::NAME | ImportProfile::NAME | UpdateMods::NAME => {
             dispatch_mod_list(ctx, name, args).await
         }
@@ -440,9 +315,6 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_server_resources(ctx, &params.name).await,
             Err(message) => message,
         },
-        // The mod tools target no server at all — a guide is text and a registry
-        // lookup reads a public catalog, not the cluster — so they take neither
-        // the scope gate nor a server argument.
         GameGuide::NAME => match parse::<GameGuideParams>(args) {
             Ok(params) => exec_game_guide(ctx, &params.game),
             Err(message) => message,
@@ -455,13 +327,7 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
             Ok(params) => exec_mod_info(ctx, &params.game, &params.slug).await,
             Err(message) => message,
         },
-        // Memory tools carry no server name (memory is shared across guilds), so
-        // they skip the scope gate above and dispatch on their own.
         Remember::NAME | Forget::NAME => dispatch_memory(ctx, name, args).await,
-        // Escalation names a server only as a hint for the operator notice, and
-        // is deliberately outside the scope gate: a handoff about a server this
-        // caller can't see still has to reach a human rather than being refused
-        // as "no such server".
         Escalate::NAME => match parse::<EscalateParams>(args) {
             Ok(params) => exec_escalate(ctx, &params),
             Err(message) => message,
@@ -470,21 +336,6 @@ pub(crate) async fn dispatch(ctx: &ToolCtx<'_>, call: &ToolCall) -> String {
     }
 }
 
-/// Dispatch the tools that read or rewrite a server's whole mod list. All three
-/// target a server by name, so all three have already passed the scope gate in
-/// [`dispatch`]; their tiers — read-only for the export, manager for the import
-/// and the update — are settled there too.
-///
-/// Export is read-only despite handing back a shareable identifier: it changes
-/// nothing a friend can see, and the cached code is what keeps a read-only
-/// caller from minting permanent artifacts on a third party's service one
-/// question at a time.
-///
-/// The update is manager tier in both its modes, including the one that writes
-/// nothing. A check is a burst of registry calls per invocation, which is the
-/// cost a read-only tier exists to keep off a public API — and the two modes are
-/// one tool precisely so the model can't reach the write half without having
-/// been allowed the read half.
 async fn dispatch_mod_list(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     match name {
         ExportProfile::NAME => match parse::<NameParams>(args) {
@@ -509,15 +360,6 @@ async fn dispatch_mod_list(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
     }
 }
 
-/// Dispatch the tools that read or change one server's files — the inspection
-/// set (browse/read/logs/shell) and the editing set (write/edit/restore). All
-/// seven name a server and so have already passed the scope gate in
-/// [`dispatch`]; their manager tier is settled there too.
-///
-/// Inspection and editing stay together because they are two halves of one
-/// motion: the shell is how a change is *diagnosed*, and the typed writes are
-/// the only path that snapshots the file first, which is what arms the
-/// auto-rollback in [`verify_change`].
 async fn dispatch_files(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     match name {
         BrowseFiles::NAME => match parse::<PathParams>(args) {
@@ -567,9 +409,6 @@ async fn dispatch_files(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     }
 }
 
-/// Dispatch the memory tools, kept out of [`dispatch_mutating`] because they
-/// target no server and take no scope gate. Their manager tier is enforced by
-/// the gate in [`dispatch`], like every other tool's.
 async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     match name {
         Remember::NAME => match parse::<RememberParams>(args) {
@@ -584,10 +423,6 @@ async fn dispatch_memory(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     }
 }
 
-/// Dispatch the mutating tools — the manager-tier lifecycle/file set and the
-/// admin-only destructive set. Split out of [`dispatch`] so each stays under the
-/// line cap. Tiering is already settled by the gate in [`dispatch`], so the arms
-/// here are plain name matches.
 async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String {
     match name {
         CreateServer::NAME => match parse::<CreateServerParams>(args) {
@@ -659,15 +494,10 @@ async fn dispatch_mutating(ctx: &ToolCtx<'_>, name: &str, args: &str) -> String 
     }
 }
 
-/// The refusal for a tool the caller's tier may not use, naming the tier that
-/// could. Reads the same [`tool_table`] the offer list does, so the ceiling it
-/// relays can't drift from the one actually enforced.
 fn tier_refusal(name: &str) -> String {
     match tier_of(name) {
         Some(AccessLevel::Admin) => prompts::NonAdminRefusal::render(),
         Some(AccessLevel::Manager) => prompts::NonManagerRefusal::render(),
-        // A read-only tool is below every caller's tier, so reaching here means
-        // the name isn't a tool at all.
         Some(AccessLevel::ReadOnly) | None => prompts::UnknownTool { name }.render(),
     }
 }
@@ -706,10 +536,6 @@ fn narrow_window(start: Option<i64>, count: Option<i64>) -> Result<ReadWindow, S
     Ok(ReadWindow::Lines { start, count })
 }
 
-/// Narrow the model-supplied line count to the unsigned window `read_logs` wants.
-/// The generated schema carries `lines` as a signed integer (the v1 tool vocab has
-/// no unsigned type), so a negative value is possible on the wire; refuse it with a
-/// message the model can act on rather than erroring the whole loop.
 fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
     match lines {
         None => Ok(None),
@@ -720,17 +546,6 @@ fn narrow_lines(lines: Option<i64>) -> Result<Option<usize>, String> {
     }
 }
 
-/// Whether a tool acts on an *existing* server named in its arguments — the set
-/// the scope gate applies to. Excluded because they enforce tenancy themselves:
-/// `list_servers` and `list_archives` (scope-filtered listings), `create_server`
-/// (no existing target — stamps the current guild), `delete_archive` (targets an
-/// archive, which has no live server, and resolves it within the caller's scope),
-/// and `recover_server` (resolves
-/// the archive within the caller's scope). Also excluded because they reach no
-/// server at all: `remember`/`forget` (memory is cross-guild) and
-/// `search_mods`/`mod_info` (they read a public registry, not the cluster, so
-/// there is no tenant to confine) and `game_guide` (it returns text). Keep this
-/// in sync with those tools.
 fn targets_existing_server(tool: &str) -> bool {
     matches!(
         tool,
@@ -761,9 +576,6 @@ fn targets_existing_server(tool: &str) -> bool {
     )
 }
 
-/// `None` if `server` is reachable in the caller's scope, else the text to hand
-/// back to the model instead of running the tool. A foreign server is reported
-/// as missing, identically to one that truly doesn't exist.
 async fn scope_refusal(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
     match verify_scope(
         &ctx.data.kube_client,
@@ -824,9 +636,6 @@ async fn exec_about_server(ctx: &ToolCtx<'_>, server: &str) -> String {
     out
 }
 
-/// Lifecycle kinds that count as "something was done to this server". Excludes
-/// `ServerCreated` — creation is not a *change*, and reporting it as the last one
-/// on a server nobody has touched since would read as recent activity.
 const LAST_ACTION_KINDS: &[EventKind] = &[
     EventKind::ServerStarted,
     EventKind::ServerStopped,
@@ -834,10 +643,6 @@ const LAST_ACTION_KINDS: &[EventKind] = &[
     EventKind::ServerShutdown,
     EventKind::ServerRestored,
     EventKind::ServerRecovered,
-    // A resize leaves no other trace anyone would notice — the pod isn't
-    // recreated and the process never blinks — so this is the only place someone
-    // asking "what happened to this server?" would find out that its headroom
-    // changed under it.
     EventKind::ResourcesChanged,
 ];
 
@@ -868,11 +673,6 @@ async fn process_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     format!("\n{rendered}")
 }
 
-/// When this server was last backed up and last acted on, from the product event
-/// log. Both degrade to an explicit "no record" line rather than being dropped —
-/// the log is optional, and a missing line would let the model infer the more
-/// alarming of the two readings ("never backed up") from what may just be an
-/// absent database.
 async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
     let mut kinds = vec![EventKind::BackupTaken];
     kinds.extend_from_slice(LAST_ACTION_KINDS);
@@ -888,8 +688,6 @@ async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
             .render()
         });
 
-    // `latest_per_kind` returns one row per kind, so the most recent *action* is
-    // the newest among them — the query can't order across kinds for us.
     let action = events
         .iter()
         .filter(|event| event.kind != EventKind::BackupTaken.as_str())
@@ -906,9 +704,6 @@ async fn history_lines(ctx: &ToolCtx<'_>, server: &str) -> String {
     format!("\n{backup}\n{action}")
 }
 
-/// An event kind as the model should read it back: `server_restarted` is a column
-/// value, "restarted" is what happened. Kinds outside the `server_` family are
-/// spelled out where the raw column value wouldn't read as English.
 fn past_tense(kind: &str) -> &str {
     if kind == EventKind::ResourcesChanged.as_str() {
         return "had its resources changed";
@@ -916,9 +711,6 @@ fn past_tense(kind: &str) -> &str {
     kind.strip_prefix("server_").unwrap_or(kind)
 }
 
-/// Seconds as a coarse human duration. Deliberately lossy — the reader wants
-/// "about a week" or "ten minutes", and a precise second count invites the model
-/// to quote it back as though it were meaningful.
 fn format_uptime(seconds: u64) -> String {
     let (days, hours, minutes) = (
         seconds / 86_400,
@@ -936,10 +728,6 @@ fn format_uptime(seconds: u64) -> String {
     }
 }
 
-/// A "Players online" line appended to `about_server` so Gary always sees
-/// occupancy before deciding whether a restart would kick anyone. The count is a
-/// live RCON read; games with no RCON (or a console that isn't up yet) report
-/// `unknown`, which means "can't confirm it's empty" — never treat it as empty.
 async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     let reason = match supervisor_occupancy(
         &ctx.data.kube_client,
@@ -952,8 +740,6 @@ async fn occupancy_line(ctx: &ToolCtx<'_>, server: &str) -> String {
     {
         Ok(FsOutcome::Ok(Some(count))) => {
             let count = count.to_string();
-            // The leading newline separates this from the summary line above; the
-            // separator is owned here, so the prompt body carries no leading space.
             return format!("\n{}", prompts::OccupancyKnown { count: &count }.render());
         }
         Ok(FsOutcome::Ok(None)) => prompts::OccupancyReasonNoCount::render(),
@@ -1010,9 +796,6 @@ async fn exec_create(ctx: &ToolCtx<'_>, game: &str, name: Option<&str>) -> Strin
     create_reply(ctx, game, &server, provisioned).await
 }
 
-/// Turn a provision result into Gary's reply, recording the terminal outcome of
-/// everything except a successful provision — that one resolves later in
-/// [`watch_boot`], once the boot it started has actually finished.
 async fn create_reply(
     ctx: &ToolCtx<'_>,
     game: &str,
@@ -1020,8 +803,6 @@ async fn create_reply(
     provisioned: anyhow::Result<ProvisionOutcome>,
 ) -> String {
     match provisioned {
-        // Don't block the loop on first-boot world generation (minutes). Report
-        // the address now; the user can ask for status to see when it's ready.
         Ok(ProvisionOutcome::Provisioned { address }) => {
             watch_boot(ctx, EventKind::ServerCreated, server, &address);
             prompts::CreateCreated {
@@ -1058,10 +839,6 @@ async fn create_reply(
     }
 }
 
-/// The reply explaining a refused create. `None` for a *successful* provision,
-/// which has an address to report and is rendered by the caller instead — so a
-/// caller that reaches here with one gets a generic fault rather than a confident
-/// wrong answer.
 fn refusal_reply(server: &str, outcome: &ProvisionOutcome) -> Option<String> {
     Some(match outcome {
         ProvisionOutcome::Provisioned { .. } => return None,
@@ -1088,15 +865,6 @@ fn refusal_reply(server: &str, outcome: &ProvisionOutcome) -> Option<String> {
     })
 }
 
-/// Resolve a create or cold start's readiness in the background and record its
-/// terminal outcome.
-///
-/// The tool itself must not wait — first-boot world generation runs for minutes
-/// and the model would stall mid-turn — but the event still has to be terminal,
-/// and time-to-ready can only be measured by whoever waits. So the wait moves off
-/// the turn instead of off the record. The task is tracked, so the shutdown drain
-/// knows about it, and races the shutdown token so a redeploy isn't held for the
-/// full readiness budget.
 fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
     let (client, namespace) = (ctx.data.kube_client.clone(), ctx.data.namespace.clone());
     let events = std::sync::Arc::clone(&ctx.data.events);
@@ -1131,7 +899,6 @@ fn watch_boot(ctx: &ToolCtx<'_>, kind: EventKind, server: &str, address: &str) {
     });
 }
 
-/// Report what one server is allowed to use and what it is actually using.
 async fn exec_server_resources(ctx: &ToolCtx<'_>, server: &str) -> String {
     let sample = match sample_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(Some(sample)) => sample,
@@ -1152,9 +919,6 @@ async fn exec_server_resources(ctx: &ToolCtx<'_>, server: &str) -> String {
     format_resources(server, &sample, &origin)
 }
 
-/// This game's catalog sizing, worded as `set_resources` words a change — the
-/// figures a resized server would go back to, since clearing an override means
-/// setting them again by hand.
 fn catalog_defaults(ctx: &ToolCtx<'_>, game: Option<&GameId>) -> String {
     catalog_defaults_summary(
         game.and_then(|game| ctx.data.catalog.get(game.as_str()))
@@ -1162,10 +926,6 @@ fn catalog_defaults(ctx: &ToolCtx<'_>, game: Option<&GameId>) -> String {
     )
 }
 
-/// "unknown" rather than a partial reading when the game has no catalog entry or
-/// its template doesn't state all four figures: the sentence exists to be copied
-/// into a resize, and three right figures beside one invented one is worse than
-/// none at all.
 fn catalog_defaults_summary(sizing: Option<Sizing>) -> String {
     sizing.map_or_else(|| "unknown".to_owned(), format_sizing_summary)
 }
@@ -1184,9 +944,6 @@ fn format_resources(server: &str, sample: &ResourceSample, origin: &str) -> Stri
     .render()
 }
 
-/// A null figure renders as "unknown", never as zero: metrics-server being down
-/// is not the same as a server using no CPU, and the difference decides whether
-/// a resize is warranted.
 fn format_cpu_line(sample: &ResourceSample) -> String {
     format!(
         "{} reserved, {} maximum, {} in use now",
@@ -1216,12 +973,6 @@ fn bytes_or_unknown(value: Option<i64>) -> String {
     )
 }
 
-/// Change what a server is allowed to use: record the override, then apply it to
-/// the running container in place.
-///
-/// Recorded before it is applied, and refused outright when it can't be
-/// recorded: a resize that lands on the pod but not in the database would be
-/// undone by the next start, which is a worse outcome than not resizing.
 async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> String {
     let sizing = match parse_sizing(params) {
         Ok(sizing) => sizing,
@@ -1234,11 +985,6 @@ async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> S
         }
         .render();
     }
-    // The aggregate cap binds the server's *owning* guild, read off its Service
-    // label rather than the channel the request came from — so an operator DM
-    // and the watchdog's unattended turns hit the same bound as a friend in the
-    // guild (ADR-022). Usage excludes the target so the proposal replaces its
-    // current figures instead of stacking onto them.
     match owner_of(&ctx.data.kube_client, &ctx.data.namespace, &params.name).await {
         Ok(Some(InstanceOwner {
             guild: Some(guild), ..
@@ -1271,9 +1017,6 @@ async fn exec_set_resources(ctx: &ToolCtx<'_>, params: &SetResourcesParams) -> S
                 .render();
             }
         }
-        // No Service or no guild label: an operator's unscoped instance, which
-        // the caps don't bind. A missing instance is caught by the scope gate
-        // before this tool runs.
         Ok(_) => {}
         Err(err) => {
             error!(error = ?err, server = %params.name, "agent: owner lookup failed for resize");
@@ -1326,9 +1069,6 @@ fn format_resize(server: &str, sizing: Sizing, outcome: &ResizeOutcome) -> Strin
             summary: &summary,
         }
         .render(),
-        // A destroyed or never-created instance reads the same as a stopped one
-        // here: the override is saved either way, and a name that doesn't exist
-        // is caught by the scope gate long before this.
         ResizeOutcome::NoPod | ResizeOutcome::NotFound | ResizeOutcome::NotManaged => {
             prompts::SetResourcesRecorded {
                 server,
@@ -1352,8 +1092,6 @@ fn format_sizing_summary(sizing: Sizing) -> String {
     )
 }
 
-/// Parse the model's four Kubernetes quantity strings, naming whichever one
-/// didn't parse rather than reporting a generic failure.
 fn parse_sizing(params: &SetResourcesParams) -> Result<Sizing, String> {
     let cpu = |field: &str, raw: &str| {
         parse_cpu_millicores(raw).ok_or_else(|| {
@@ -1373,10 +1111,6 @@ fn parse_sizing(params: &SetResourcesParams) -> Result<Sizing, String> {
     })
 }
 
-/// Turn a validation failure into a sentence naming the figure and its bound, so
-/// the model can propose a value that would work instead of retrying blindly.
-/// The bounds are passed in rather than read from the constants, so the number
-/// quoted is the one that actually refused the value.
 fn describe_rejection(rejection: SizingRejection, bounds: SizingBounds) -> String {
     match rejection {
         SizingRejection::CpuBelowFloor => format!(
@@ -1404,8 +1138,6 @@ fn describe_rejection(rejection: SizingRejection, bounds: SizingBounds) -> Strin
     }
 }
 
-/// Turn a guild-cap refusal into a sentence naming the figures, so the model
-/// can explain the bound and offer a way out instead of retrying blindly.
 fn describe_limit_refusal(refusal: LimitRefusal) -> String {
     match refusal {
         LimitRefusal::ServerCount { current, cap } => {
@@ -1436,10 +1168,6 @@ fn describe_limit_refusal(refusal: LimitRefusal) -> String {
     }
 }
 
-/// The namespace-ceiling refusal as one sentence for a tool result. Says "the
-/// service" rather than "the community", which is the whole distinction from
-/// [`describe_limit_refusal`]: this one isn't about the caller's allowance and
-/// the model must not offer to raise it.
 fn describe_capacity_refusal(refusal: CapacityRefusal) -> String {
     match refusal {
         CapacityRefusal::Servers { current, ceiling } => format!(
@@ -1476,18 +1204,9 @@ fn describe_capacity_refusal(refusal: CapacityRefusal) -> String {
     }
 }
 
-/// Record the model's decision to hand this turn to a human. Nothing is
-/// delivered here: the loop stops on its next check and the shell — which is the
-/// only layer that knows the surface's locators (a jump link, a player name, an
-/// incident signal) — builds and sends the operator notice. Doing it that way
-/// keeps one escalation path for both the model-invoked and budget-exhausted
-/// exits instead of two that can drift.
 fn exec_escalate(ctx: &ToolCtx<'_>, params: &EscalateParams) -> String {
     let message = params.message.trim();
     let reason = params.reason.trim();
-    // Both are load-bearing — one is the only reply the user gets, the other the
-    // only thing the operator is told — so an empty value is refused rather than
-    // silently ending the turn on a blank message.
     if message.is_empty() || reason.is_empty() {
         return prompts::EscalateNeedBoth::render();
     }
@@ -1615,10 +1334,6 @@ async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
         mapping::supervisor(&outcome),
     )
     .await;
-    // Only a server that genuinely bounced applies a pending config change, so only
-    // then is there something to verify. Any other outcome (already paused,
-    // unreachable, gone) reports as before and leaves the pending change in place
-    // for the restart that eventually applies it.
     let change = match &outcome {
         SupervisorOutcome::Restarted => ctx.take_pending_change(server),
         SupervisorOutcome::Paused
@@ -1631,21 +1346,12 @@ async fn exec_restart(ctx: &ToolCtx<'_>, server: &str) -> String {
         | SupervisorOutcome::NotFound
         | SupervisorOutcome::NotManaged => None,
     };
-    // With a tracked change, the loop — not the model — watches it come back up and
-    // rolls a crash back. A plain reboot reports immediately without blocking.
     match change {
         Some(change) => verify_change(ctx, change).await,
         None => format_supervisor(server, &outcome),
     }
 }
 
-/// Watch a restart that applied a config change and enforce the design's
-/// snapshot→apply→restart→verify→auto-rollback guardrail deterministically: poll
-/// until the server is up or crashed, and on a crash restore the pre-edit snapshot
-/// and restart once more. Bounded to a single automatic rollback — a server still
-/// crashing after that escalates rather than looping. Returns the system-generated
-/// account of what happened for the model to relay; the model never has to reason
-/// its way back to `restore_file` on its own.
 async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
     let server = change.server.as_str();
     let mut rollback_spent = false;
@@ -1662,8 +1368,6 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
             Ok(outcome) => outcome,
             Err(err) => {
                 error!(error = ?err, %server, "agent: post-restart readiness check failed");
-                // Can't confirm health either way — leave the change in place and
-                // tell the model plainly, rather than rolling back a maybe-fine server.
                 ctx.note_guardrail_verdict(GuardrailVerdict::Unverified);
                 return prompts::ChangeRestartedUnverified { server }.render();
             }
@@ -1720,19 +1424,10 @@ async fn verify_change(ctx: &ToolCtx<'_>, change: PendingChange) -> String {
     }
 }
 
-/// The note pointing the model at the crashed launch's preserved output.
-///
-/// Appended to every rollback outcome rather than only the unhappy ones: a
-/// rollback that *worked* still leaves the question of what the change broke,
-/// and that answer is now on the volume instead of gone.
 fn crash_evidence_note() -> String {
     format!("\n\n{}", prompts::CrashOutputPreserved::render())
 }
 
-/// Restore the pre-edit snapshot and restart, the mechanical half of an automatic
-/// rollback. `Ok` means the world is back on the old config and restarting, so the
-/// caller re-polls readiness; `Err` carries the escalation text for a rollback that
-/// couldn't even be issued (nothing left to do automatically).
 async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), String> {
     let server = change.server.as_str();
     let restore = supervisor_restore_file(
@@ -1796,9 +1491,6 @@ async fn roll_back(ctx: &ToolCtx<'_>, change: &PendingChange) -> Result<(), Stri
     }
 }
 
-/// Escalation text when an automatic rollback couldn't even be issued — nothing
-/// more the loop can do on its own. Also keeps the promise the text makes by
-/// actually notifying the operators, not just logging it.
 async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String {
     notify_crash_rollback(ctx, server, path).await;
     let escalation = prompts::OperatorFlagged::render();
@@ -1810,9 +1502,6 @@ async fn rollback_failed(ctx: &ToolCtx<'_>, server: &str, path: &str) -> String 
     .render()
 }
 
-/// DM the operators that an automatic crash rollback needs a human hand — the
-/// shared notify step behind every "I've flagged this for an operator" promise
-/// in [`verify_change`]/[`roll_back`].
 async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
     let escalation = Escalation::CrashRollback {
         server: server.to_owned(),
@@ -1827,10 +1516,6 @@ async fn notify_crash_rollback(ctx: &ToolCtx<'_>, server: &str, path: &str) {
     ctx.data.notifier.notify(&escalation).await;
 }
 
-/// Mirrors the `/start` slash command's warm/cold routing: a live pod resumes in
-/// place via the supervisor; a shut-down instance is rescheduled. Unlike the slash
-/// command, the agent doesn't block waiting for readiness — it reports the
-/// address and lets the user poll status.
 async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
     match instance_runtime_state(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(RuntimeState::PodUp) => match supervisor_start(
@@ -1869,9 +1554,6 @@ async fn exec_start(ctx: &ToolCtx<'_>, server: &str) -> String {
 }
 
 async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
-    // One hold of the provision lock covers the cap gate and the GameServer
-    // create, so a concurrent create can't add load in between (ADR-022). The
-    // returns inside the block release it before any long wait.
     let begin = {
         let _guard = ctx.data.provision_lock.lock().await;
         match crate::discord::cold_start_refusal(ctx.data, server).await {
@@ -1916,8 +1598,6 @@ async fn exec_cold_start(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
 
-    // A start that's underway isn't terminal yet — the background watcher records
-    // it once readiness resolves. Everything else is already its own ending.
     if let StartBegin::Starting { address } = &begin {
         watch_boot(ctx, EventKind::ServerStarted, server, address);
     } else {
@@ -1976,14 +1656,6 @@ async fn exec_shutdown(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Permanent deletion is gated behind an explicit confirmation: the model can
-/// request it, but a human must approve before any world is destroyed. The
-/// returned text tells the model what was decided.
-/// Delete a server's archives, behind the same confirmation gate as destroy.
-///
-/// Gated harder than it looks: `destroy_server` removes a running server while
-/// deliberately leaving its archives standing, so this is the only path that
-/// makes a world unrecoverable.
 async fn exec_delete_archive(ctx: &ToolCtx<'_>, name: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
@@ -1991,10 +1663,6 @@ async fn exec_delete_archive(ctx: &ToolCtx<'_>, name: &str) -> String {
     if !service.archives_enabled() {
         return DeleteArchiveUnavailable::render();
     }
-    // Priced before the confirmation so the card can say how many copies and how
-    // much storage actually go — "delete the smp archive" usually means more
-    // generations than the listing showed, and a confirmation that understates
-    // what it is approving isn't one.
     let (generations, freed) = match service.archive_footprint(&ctx.scope, name).await {
         Ok(Some(footprint)) => footprint,
         Ok(None) => return DeleteArchiveNotFound { name }.render(),
@@ -2082,18 +1750,6 @@ async fn exec_destroy(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Wait for a click from someone entitled to approve, ignoring anyone who isn't.
-///
-/// The conversation belongs to the channel, so the person who asked for a
-/// destructive action and the person allowed to approve it are routinely
-/// different people — an admin signing off on a friend's request is the case
-/// this exists for. Any click at `required` or above counts; anyone below is
-/// told why, ephemerally, and the prompt stays live for someone who can. The
-/// timeout is the total wait, not a per-click one, so a stream of unqualified
-/// clicks can't hold a destructive prompt open indefinitely.
-///
-/// Returns the approving interaction **unacknowledged** — the caller answers it,
-/// because only the caller knows whether it approved or cancelled.
 async fn await_approval(
     ctx: &ToolCtx<'_>,
     message_id: serenity::MessageId,
@@ -2121,9 +1777,6 @@ async fn await_approval(
     None
 }
 
-/// Tell an unqualified clicker why nothing happened, only to them. Silence would
-/// read as the button being broken — which is what it did before this gate
-/// existed, since a non-matching click was simply dropped.
 async fn refuse_approval(
     ctx: &ToolCtx<'_>,
     interaction: &serenity::ComponentInteraction,
@@ -2152,8 +1805,6 @@ async fn refuse_approval(
     }
 }
 
-/// Post the Danger/Cancel buttons and wait for a click from anyone who may
-/// approve a destroy.
 async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
     let buttons = CreateActionRow::Buttons(vec![
         CreateButton::new("gary_destroy_confirm")
@@ -2180,7 +1831,6 @@ async fn confirm_destroy_by_click(ctx: &ToolCtx<'_>, server: &str) -> String {
         }
     };
 
-    // destroy_server is admin-only, so an admin is who may sign it off.
     let decision = await_approval(ctx, prompt.id, AccessLevel::Admin).await;
 
     finish_destroy(ctx, server, prompt, decision).await
@@ -2234,16 +1884,9 @@ async fn finish_destroy(
     apply_destroy(ctx, server, &mut prompt).await
 }
 
-/// Delete the instance and swap the confirmation card for the result, once
-/// approval has been established. `prompt` is whichever message carries that
-/// card — the button prompt a human clicked, or the audit line a pre-approved
-/// request posted — so the channel tells the same before/after story either way.
 async fn apply_destroy(ctx: &ToolCtx<'_>, server: &str, prompt: &mut serenity::Message) -> String {
     match destroy_instance(&ctx.data.kube_client, &ctx.data.namespace, server).await {
         Ok(outcome) => {
-            // Names are reused, so a resize left behind here would silently size
-            // an unrelated future world. Logged rather than surfaced: the world
-            // is already gone and a stale row is not the friend's problem.
             if let Err(err) = ctx.data.sizing.forget(server).await {
                 error!(error = ?err, %server, "failed to clear the destroyed server's resource override");
             }
@@ -2328,10 +1971,6 @@ async fn exec_read_file(ctx: &ToolCtx<'_>, server: &str, path: &str, window: Rea
     }
 }
 
-/// Run one read-only shell command in the server's container and hand back what
-/// it printed. The sandbox lives in the supervisor, so there is nothing to police
-/// here: a command that tries to write is refused by the kernel, and the refusal
-/// arrives as ordinary stderr the model can read and respond to.
 async fn exec_run_shell(ctx: &ToolCtx<'_>, server: &str, command: &str) -> String {
     match supervisor_run_shell(
         &ctx.data.kube_client,
@@ -2355,8 +1994,6 @@ async fn exec_run_shell(ctx: &ToolCtx<'_>, server: &str, command: &str) -> Strin
     }
 }
 
-/// The platform's own account of how the command ended, kept outside the fenced
-/// output so nothing the command printed can impersonate it.
 fn format_shell_status(result: &ShellResponse) -> String {
     if result.timed_out {
         return prompts::ShellTimedOut::render();
@@ -2538,12 +2175,6 @@ async fn exec_send_command(ctx: &ToolCtx<'_>, server: &str, command: &str) -> St
     }
 }
 
-/// Queue a task to run once `server` reaches `condition`, returning a model-facing
-/// note for Gary to relay in his own words. Non-blocking: the wait happens in the
-/// background so this turn stays free. Refuses `empty`/`idle` for a game that
-/// can't report a live player count (there'd be no way to tell when it's empty),
-/// and reports plainly when the queue backend is unavailable — in both cases
-/// nudging Gary to offer doing it now instead of leaving the ask dropped.
 async fn exec_run_when(
     ctx: &ToolCtx<'_>,
     server: &str,
@@ -2579,10 +2210,6 @@ async fn exec_run_when(
     }
 }
 
-/// `None` if `server` can report a live player count (so `empty`/`idle` are
-/// watchable), else a model-facing refusal. A definite "no live count"
-/// (`Ok(None)`) is a hard refusal; a transient not-ready/unreachable is allowed
-/// through — the watcher polls until the count is readable.
 async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<String> {
     match supervisor_occupancy(
         &ctx.data.kube_client,
@@ -2594,7 +2221,6 @@ async fn empty_condition_feasibility(ctx: &ToolCtx<'_>, server: &str) -> Option<
     .await
     {
         Ok(FsOutcome::Ok(None)) => Some(prompts::RunWhenCantWatchEmpty { server }.render()),
-        // A real count, or a transient state — let it queue; the watcher handles it.
         Ok(
             FsOutcome::Ok(Some(_))
             | FsOutcome::NotFound
@@ -2639,10 +2265,6 @@ async fn exec_list_archives(ctx: &ToolCtx<'_>) -> String {
     }
 }
 
-/// Load one game's configuration workflow: where its settings live, and how
-/// its mods work if it takes any. Reaches nothing at all — the catalog is
-/// already in memory — so this dispatches ahead of the scope gate and costs
-/// nothing when the answer is "this game takes no mods".
 fn exec_game_guide(ctx: &ToolCtx<'_>, game: &str) -> String {
     let entry = ctx.data.catalog.get(game);
     let subject = match entry {
@@ -2662,10 +2284,6 @@ fn exec_game_guide(ctx: &ToolCtx<'_>, game: &str) -> String {
     )
 }
 
-/// The registry a catalog game declares, or the text to hand back instead of
-/// searching: an unknown game is a typo to correct, a registry-less game is a
-/// final answer. Both mod tools resolve their `game` argument through here, so
-/// the two refusals are worded once.
 fn registry_for_game(ctx: &ToolCtx<'_>, game: &str) -> Result<ModRegistry, String> {
     let Some(entry) = ctx.data.catalog.get(game) else {
         return Err(mod_game_unknown(ctx, game));
@@ -2676,15 +2294,11 @@ fn registry_for_game(ctx: &ToolCtx<'_>, game: &str) -> Result<ModRegistry, Strin
         .ok_or_else(|| mods_not_supported(game))
 }
 
-/// Search a game's mod registry. Reaches no server, so it needs nothing from
-/// the cluster — only the catalog and the shared HTTP client.
 async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String {
     let registry = match registry_for_game(ctx, &params.game) {
         Ok(registry) => registry,
         Err(refusal) => return refusal,
     };
-    // Computed before anything consumes `params`, so the "filters ignored"
-    // notice describes the call the model actually made.
     let ignored = minecraft_only_filters(&params);
     let side = params.side.map(Side::from);
     match registry {
@@ -2722,9 +2336,6 @@ async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String
                     thunderstore_unavailable()
                 }
             };
-            // The Minecraft-only filters are reported as dropped rather than
-            // silently ignored: a narrowing that never happened reads as a real
-            // one, and every result would then be miscategorised downstream.
             if ignored.is_empty() {
                 listing
             } else {
@@ -2741,8 +2352,6 @@ async fn exec_search_mods(ctx: &ToolCtx<'_>, params: SearchModsParams) -> String
     }
 }
 
-/// The Minecraft-only search parameters this call set, in schema order. Empty
-/// when the call is portable across registries.
 fn minecraft_only_filters(params: &SearchModsParams) -> Vec<&'static str> {
     let mut set = Vec::new();
     if params.kind.is_some() {
@@ -2757,9 +2366,6 @@ fn minecraft_only_filters(params: &SearchModsParams) -> Vec<&'static str> {
     set
 }
 
-/// Look one mod up by the identifier its registry uses. An identifier the
-/// registry doesn't know is an ordinary answer — the exact case this tool exists
-/// to catch — not an error.
 async fn exec_mod_info(ctx: &ToolCtx<'_>, game: &str, slug: &str) -> String {
     let registry = match registry_for_game(ctx, game) {
         Ok(registry) => registry,
@@ -2775,9 +2381,6 @@ async fn exec_mod_info(ctx: &ToolCtx<'_>, game: &str, slug: &str) -> String {
             }
         },
         ModRegistry::Thunderstore { community, .. } => {
-            // A bare slug is not a lookup that happens to miss — it is the wrong
-            // shape of identifier, so it is answered without a call rather than
-            // as a 404 that would read as "no such mod".
             let Some((namespace, name)) = split_full_name(slug) else {
                 return prompts::ThunderstoreNotFound { game, slug }.render();
             };
@@ -2819,8 +2422,6 @@ async fn exec_backup(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Archiving releases the server's storage, so — like destroy — the model can
-/// request it but a human must click through before anything is released.
 async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
@@ -2875,7 +2476,6 @@ async fn exec_archive(ctx: &ToolCtx<'_>, server: &str) -> String {
     }
 }
 
-/// Restoring overwrites the live world, so it too is gated behind a human click.
 async fn exec_restore(ctx: &ToolCtx<'_>, server: &str) -> String {
     let Some(service) = ctx.data.backup.clone() else {
         return backups_not_configured();
@@ -2946,10 +2546,6 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
     if !service.archives_enabled() {
         return archives_unavailable_text();
     }
-    // Resolve the archive's owning guild from the caller's scope so recover
-    // recreates it in its original tenant (and an operator can recover across
-    // guilds). The scope-filtered listing also enforces tenancy: an archive in
-    // another guild simply isn't found.
     let guild = match service.list_archives(&ctx.scope).await {
         Ok(archives) => match archives.iter().find(|archive| archive.name == name) {
             Some(archive) => archive.guild.clone(),
@@ -2979,25 +2575,14 @@ async fn exec_recover(ctx: &ToolCtx<'_>, name: &str) -> String {
     }
 }
 
-/// A human's decision on a Gary destructive backup-action prompt.
 enum Confirm {
-    /// Approved; carries the prompt message so the caller edits it with the result.
-    /// Boxed because a `Message` is far larger than the `Declined` string.
     Confirmed(Box<serenity::Message>),
-    /// Declined or timed out; carries the text to report to the model.
     Declined(String),
 }
 
-/// Posted in-channel whenever a destructive action runs without a button click.
-/// The visible trail is the entire reason pre-approval is acceptable, so an
-/// action that can't post this is refused rather than run unrecorded.
 const PREAPPROVED_AUDIT_LINE: &str = "⚠️ Pre-approved by the operator harness — this was approved \
                                       out of band, not by a button click here.";
 
-/// Announce a pre-approved destructive action in-channel: the same card the
-/// interactive prompt shows, with no buttons, above a line saying nobody clicked.
-/// Returns the posted message so the caller can swap in the result card, or
-/// `None` when it couldn't be delivered — in which case the action must not run.
 async fn post_preapproval_audit(
     ctx: &ToolCtx<'_>,
     server: &str,
@@ -3033,10 +2618,6 @@ async fn post_preapproval_audit(
     }
 }
 
-/// Obtain approval for a destructive action, mirroring the destroy gate for
-/// archive/restore. Interactively that means posting Danger/Cancel buttons and
-/// waiting for the invoking user's click; pre-approved, it means posting the
-/// audit line and proceeding.
 async fn confirm_destructive(
     ctx: &ToolCtx<'_>,
     server: &str,
@@ -3079,7 +2660,6 @@ async fn confirm_destructive(
             return Confirm::Declined(prompts::ConfirmNoChannel::render());
         }
     };
-    // Every tool routed through here is admin-tier (archive, restore, delete).
     let decision = await_approval(ctx, prompt_msg.id, AccessLevel::Admin).await;
     let Some(interaction) = decision else {
         edit_prompt(
@@ -3108,12 +2688,6 @@ async fn confirm_destructive(
     Confirm::Confirmed(Box::new(prompt_msg))
 }
 
-/// Broadcast to everyone in-game that Gary ran a console command, as
-/// `Gary: <phrase>`, best-effort. This is the attributed audit line that replaces
-/// Minecraft's `[Rcon]` op-broadcast (disabled at the image level) so players know
-/// when Gary is acting on the live server; delivery is fire-and-forget, so a
-/// paused or console-less server just gets no message and the command is
-/// unaffected.
 async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
     supervisor_announce(
         &ctx.data.kube_client,
@@ -3126,8 +2700,6 @@ async fn announce_action(ctx: &ToolCtx<'_>, server: &str, phrase: &str) {
     .await;
 }
 
-/// Collapse a filesystem outcome into either its payload or a plain-language
-/// explanation of why the operation couldn't be served, for the model to relay.
 pub(crate) fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, String> {
     match outcome {
         FsOutcome::Ok(value) => Ok(value),
@@ -3142,7 +2714,6 @@ pub(crate) fn fs_result<T>(server: &str, outcome: FsOutcome<T>) -> Result<T, Str
     }
 }
 
-/// One server rendered as a single labeled line for the model to read.
 fn format_summary(server: &ServerSummary) -> String {
     let game = server.game.as_deref().unwrap_or("unknown game");
     let address = server.address.as_deref().unwrap_or("no address yet");
@@ -3155,7 +2726,6 @@ fn format_summary(server: &ServerSummary) -> String {
     .render()
 }
 
-/// The active servers rendered as a newline-separated list.
 fn format_server_list(servers: &[ServerSummary]) -> String {
     if servers.is_empty() {
         return prompts::ServerListEmpty::render();
@@ -3167,8 +2737,6 @@ fn format_server_list(servers: &[ServerSummary]) -> String {
         .join("\n")
 }
 
-/// A tool result the model reads, so it carries the hint to re-list rather than
-/// just reporting the server missing.
 fn no_such(server: &str) -> String {
     prompts::ServerNotFound { server }.render()
 }
@@ -3205,21 +2773,10 @@ fn format_entries(path: &str, entries: &[DirEntry]) -> String {
     .render()
 }
 
-/// Render a file window for the model: every line numbered from its real
-/// position in the file, under a note saying which slice this is.
-///
-/// Numbering is what makes the window addressable. Without it the model can see
-/// the text but has no way to name a location in it — neither to ask for the
-/// next window nor to say where a value it found actually sits.
 fn format_file(file: &ReadResponse) -> String {
-    // Each parenthetical's leading space is a code-owned separator; the note
-    // prompts carry none, so the empty case renders cleanly.
     let mut notes = String::new();
     let shown = file.content.lines().count();
     let first = file.start_line.max(1);
-    // A window shorter than the whole file gets a range; a file that fits
-    // entirely in the window gets no note, because there is nothing the reader
-    // needs to act on.
     if file.truncated || shown < file.total_lines {
         let last = first.saturating_add(shown.saturating_sub(1));
         notes.push(' ');
@@ -3245,15 +2802,6 @@ fn format_file(file: &ReadResponse) -> String {
     .render()
 }
 
-/// Prefix each line with its 1-based position in the file, starting at `first`.
-///
-/// Runs *after* the untrusted scrub, so a line the scrub redacted still carries
-/// its number and the numbering stays continuous. Order is safe either way — the
-/// scrub matches its markers anywhere in a line, so a number in front wouldn't
-/// hide one — but a redaction that kept its position is easier to ask about.
-///
-/// Content can't forge a number regardless: every number here is generated from
-/// the window's own offset, never read out of the file.
 fn number_lines(content: &str, first: usize) -> String {
     content
         .lines()
@@ -3293,9 +2841,6 @@ fn format_write(result: &WriteResponse) -> String {
     .render()
 }
 
-/// Render an [`EditOutcome`]. The soft-failure variants explain what to do next
-/// (re-read and match exactly, disambiguate, or fall back to `write_file`) so Gary
-/// can recover instead of reporting a dead end.
 fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
     match outcome {
         EditOutcome::Edited(result) => {
@@ -3321,8 +2866,6 @@ fn format_edit(server: &str, path: &str, outcome: EditOutcome) -> String {
         }
         EditOutcome::Unchanged => prompts::EditUnchanged { path }.render(),
         EditOutcome::Unserved(problem) => match fs_result(server, problem) {
-            // Unserved only ever carries a failure; the Ok arm is unreachable in
-            // practice but is handled defensively rather than panicking.
             Ok(()) => cluster_error(),
             Err(message) => message,
         },
@@ -3408,13 +2951,6 @@ fn format_backup(server: &str, outcome: &BackupOutcome) -> String {
 
 fn format_archive(server: &str, outcome: &ArchiveOutcome) -> String {
     match outcome {
-        // Partial success (durable archive, old storage not freed). There is no
-        // honest tool-result prompt for it yet: ArchiveDone slightly overstates it
-        // (it claims the storage was released), but it preserves the load-bearing
-        // truth — archived and recoverable — where ArchiveFailed would falsely tell
-        // the model nothing was saved. A dedicated prompt is the real fix (see
-        // "Open questions" in docs/design/02-backups-archive-restore.md); left
-        // as-is here to avoid rewording prompt text.
         ArchiveOutcome::Archived { name, size_bytes }
         | ArchiveOutcome::ArchivedNotReleased { name, size_bytes } => {
             let size = human_size(*size_bytes);
@@ -3572,8 +3108,6 @@ fn thunderstore_unavailable() -> String {
     prompts::ThunderstoreUnavailable::render()
 }
 
-/// A `game` argument naming nothing in the catalog — a typo to correct, so the
-/// result names the catalog.
 fn mod_game_unknown(ctx: &ToolCtx<'_>, game: &str) -> String {
     let ids = game_ids(ctx);
     prompts::ModGameUnknown {
@@ -3583,14 +3117,10 @@ fn mod_game_unknown(ctx: &ToolCtx<'_>, game: &str) -> String {
     .render()
 }
 
-/// A real game that declares no mod registry. Final: no other game id answers
-/// this question, so the result says to stop rather than to retry.
 fn mods_not_supported(game: &str) -> String {
     prompts::ModsNotSupported { game }.render()
 }
 
-/// Render a `search_mods` listing: one bounded line per hit. `asked_for` is the
-/// game version the search filtered on, if any, so each line keeps it visible.
 fn format_mod_search(query: &str, asked_for: Option<&str>, hits: &[SearchHit]) -> String {
     if hits.is_empty() {
         return prompts::ModSearchEmpty { query }.render();
@@ -3607,8 +3137,6 @@ fn format_mod_search(query: &str, asked_for: Option<&str>, hits: &[SearchHit]) -
     .render()
 }
 
-/// One search hit as a single line. A hit reports no loaders of its own, so they
-/// are recovered from its categories.
 fn format_mod_line(hit: &SearchHit, asked_for: Option<&str>) -> String {
     let loaders = list_or_none(&hit.loaders());
     let versions = list_or_none(&versions_for_display(&hit.versions, asked_for));
@@ -3625,8 +3153,6 @@ fn format_mod_line(hit: &SearchHit, asked_for: Option<&str>) -> String {
     .render()
 }
 
-/// Render a resolved `mod_info` lookup. Unlike a search hit, a project reports
-/// its loaders and game versions as fields of its own.
 fn format_mod_info(project: &Project) -> String {
     let loaders = list_or_none(&project.loaders);
     let versions = list_or_none(&versions_for_display(&project.game_versions, None));
@@ -3643,9 +3169,6 @@ fn format_mod_info(project: &Project) -> String {
     .render()
 }
 
-/// Render a `search_mods` listing for a Thunderstore game: one bounded line per
-/// hit. A hit carries no version, so the header sends the model to `mod_info`
-/// for the string it would pin.
 fn format_thunderstore_search(game: &str, query: &str, hits: &[Listing]) -> String {
     if hits.is_empty() {
         return prompts::ThunderstoreSearchEmpty { game, query }.render();
@@ -3663,7 +3186,6 @@ fn format_thunderstore_search(game: &str, query: &str, hits: &[Listing]) -> Stri
     .render()
 }
 
-/// One search hit as a single line.
 fn format_thunderstore_line(hit: &Listing) -> String {
     prompts::ThunderstoreSummaryLine {
         package: &short_title(&hit.full_name()),
@@ -3675,10 +3197,6 @@ fn format_thunderstore_line(hit: &Listing) -> String {
     .render()
 }
 
-/// Render a resolved `mod_info` lookup for a Thunderstore package. The side
-/// classification is read from the game's own community: a package listed in
-/// several communities is categorised separately in each, and another game's
-/// categories describe another game.
 fn format_thunderstore_info(package: &Package, community: &str) -> String {
     let shown = package.shown_dependencies();
     let mut dependencies = list_or_none(&shown);
@@ -3701,8 +3219,6 @@ fn format_thunderstore_info(package: &Package, community: &str) -> String {
     .render()
 }
 
-/// Delegates to [`super::game_catalog_list`] for the `&ToolCtx`-shaped call
-/// sites so the comma-joined id list is computed in exactly one place.
 fn game_ids(ctx: &ToolCtx<'_>) -> String {
     super::game_catalog_list(ctx.data)
 }

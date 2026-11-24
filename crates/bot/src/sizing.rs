@@ -1,20 +1,3 @@
-//! Per-instance CPU and memory overrides: what a server is allowed to use, as
-//! distinct from what it is observed using (`events::resources`, the cost time
-//! series). The model-facing tools call this a server's *resources*, which is
-//! what a friend would say; internally it is sizing, so the two concerns don't
-//! share a name.
-//!
-//! Overrides live in Postgres rather than on the Kubernetes object because a
-//! cold start re-renders the `GameServer` from the catalog template
-//! (`agones::provision::begin_start`), so anything not persisted outside the
-//! cluster silently reverts the next time a server is stopped and started. The
-//! façade mirrors [`crate::store::GuildConfig`]: loaded once at startup, cached
-//! in memory, and **disabled** rather than failing when Postgres is unreachable.
-//!
-//! Unavailable is a refusal, not a fallback. A resize that can't be recorded
-//! would apply to the running pod and then vanish on the next start, which is a
-//! worse outcome than not resizing — so the tool refuses instead.
-
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
@@ -26,30 +9,14 @@ use crate::config::DbConfig;
 use crate::domain::InstanceName;
 use crate::store::connect_pool;
 
-/// Pool size for the sizing table. Written only when someone resizes a server
-/// and read from the in-memory cache, so one spare connection is ample.
 const SIZING_POOL_MAX_CONNECTIONS: u32 = 2;
 
-/// Floor on a per-instance request/limit. Below this a game process either
-/// won't start or thrashes, and "Gary shrank it until it broke" is a worse
-/// failure than a refusal.
 pub(crate) const MIN_CPU_MILLICORES: i64 = 250;
 pub(crate) const MIN_MEM_BYTES: i64 = 512 * 1024 * 1024;
 
-/// Ceiling on a per-instance request/limit. Sized to the largest node in the
-/// cluster (32 cores / ~62Gi allocatable): anything above it cannot be
-/// scheduled anywhere, so accepting it would only produce a pod that never
-/// starts. This is the blast-radius bound on an agent driven by friends' free
-/// text — the RBAC grant bounds the *shape* of what it can change, and this
-/// bounds the values.
 pub(crate) const MAX_CPU_MILLICORES: i64 = 16_000;
 pub(crate) const MAX_MEM_BYTES: i64 = 32 * 1024 * 1024 * 1024;
 
-/// The floors and ceilings a proposed sizing is checked against. Passed into
-/// [`Sizing::validate`] rather than read from the constants directly so the
-/// bounds themselves are operator-tunable (`crate::settings`) while the check
-/// stays a pure function — the constants above are the compiled baseline the
-/// operator's overrides start from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SizingBounds {
     pub(crate) min_cpu_millicores: i64,
@@ -70,9 +37,6 @@ impl Default for SizingBounds {
 }
 
 impl SizingBounds {
-    /// Whether the floors sit at or below the ceilings. A pair that crosses over
-    /// would refuse every sizing, so it is rejected where it is set rather than
-    /// discovered when the next resize fails.
     pub(crate) fn is_coherent(self) -> bool {
         self.min_cpu_millicores <= self.max_cpu_millicores
             && self.min_mem_bytes <= self.max_mem_bytes
@@ -89,9 +53,6 @@ const SIZING_SCHEMA: &str = "\
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), \
         updated_by TEXT)";
 
-/// One instance's declared CPU and memory, as requests and limits. Quantities in
-/// the same units the resource sampler records (millicores and bytes), so the
-/// declared and observed planes compare without conversion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Sizing {
     pub(crate) cpu_request_millicores: i64,
@@ -115,18 +76,6 @@ pub(crate) enum SizingRejection {
 }
 
 impl Sizing {
-    /// Check a proposed sizing against the floors, ceilings, and the
-    /// request-under-limit rule.
-    ///
-    /// Deliberately a refusal rather than a clamp: a friend told "done" who
-    /// silently got something else is worse served than one told the number was
-    /// out of range. The bounds are checked against the *limit* for the ceiling
-    /// and the *request* for the floor, since those are the figures that decide
-    /// schedulability and viability respectively.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first violated rule, in the order declared above.
     pub(crate) fn validate(self, bounds: SizingBounds) -> Result<(), SizingRejection> {
         if self.cpu_request_millicores < bounds.min_cpu_millicores {
             return Err(SizingRejection::CpuBelowFloor);
@@ -162,7 +111,6 @@ impl Sizing {
     }
 }
 
-/// A [`Sizing`] in Kubernetes quantity form.
 pub(crate) struct SizingQuantities {
     pub(crate) cpu_request: String,
     pub(crate) mem_request: String,
@@ -170,7 +118,6 @@ pub(crate) struct SizingQuantities {
     pub(crate) mem_limit: String,
 }
 
-/// A connection pool for the sizing table, schema applied.
 struct SizingStore {
     pool: PgPool,
 }
@@ -245,16 +192,12 @@ impl SizingStore {
     }
 }
 
-/// The per-instance sizing overrides, cached in memory.
 pub(crate) struct InstanceSizing {
     store: Option<SizingStore>,
     cache: RwLock<HashMap<String, Sizing>>,
 }
 
 impl InstanceSizing {
-    /// Connect to Postgres (if configured), load every override, and return the
-    /// façade. Never fails: any problem is logged and leaves the façade disabled,
-    /// so servers keep running on their catalog sizing.
     pub(crate) async fn connect(config: Option<&DbConfig>) -> Self {
         let Some(config) = config else {
             return Self::disabled();
@@ -291,24 +234,14 @@ impl InstanceSizing {
         }
     }
 
-    /// Whether overrides can be recorded at all. `false` means a resize must be
-    /// refused rather than applied — see the module docs.
     pub(crate) fn is_available(&self) -> bool {
         self.store.is_some()
     }
 
-    /// This instance's override, or `None` to use the catalog's sizing.
     pub(crate) async fn get(&self, instance: &str) -> Option<Sizing> {
         self.cache.read().await.get(instance).copied()
     }
 
-    /// Record an override, replacing any earlier one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if persistence is unavailable or the write fails. The
-    /// cache is only updated after the write lands, so it never claims a sizing
-    /// the database doesn't hold.
     pub(crate) async fn set(
         &self,
         instance: &InstanceName,
@@ -327,14 +260,6 @@ impl InstanceSizing {
         Ok(())
     }
 
-    /// Drop an instance's override so it returns to the catalog sizing. Called
-    /// when a server is destroyed, so a later server reusing the name doesn't
-    /// silently inherit the dead one's resources.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the delete fails. A no-op when persistence is
-    /// unavailable: there is nothing cached to be wrong about.
     pub(crate) async fn forget(&self, instance: &str) -> Result<()> {
         let Some(store) = self.store.as_ref() else {
             return Ok(());

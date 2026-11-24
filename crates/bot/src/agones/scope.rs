@@ -18,8 +18,6 @@ pub(crate) enum ServerScope {
 }
 
 impl ServerScope {
-    /// The Kubernetes label selector that restricts a `list` to this scope, or
-    /// `None` for [`All`](ServerScope::All) (no filter — list everything).
     pub(crate) fn label_selector(&self) -> Option<String> {
         match self {
             Self::All => None,
@@ -40,16 +38,6 @@ pub(crate) enum ScopeVerdict {
     Absent,
 }
 
-/// Decide whether `instance` is visible to `scope`, reading the guild label
-/// off the instance's Service — the one object of the trio that survives both
-/// `/stop` and `/shutdown`, so the verdict holds in every lifecycle state.
-///
-/// A managed-ness check is intentionally left to the downstream lifecycle call
-/// (which reports `NotManaged` itself); this only answers the tenancy question.
-///
-/// # Errors
-///
-/// Returns an error if the Service cannot be read from the Kubernetes API.
 pub(crate) async fn verify_scope(
     client: &Client,
     namespace: &str,
@@ -68,28 +56,12 @@ pub(crate) async fn verify_scope(
     Ok(classify(guild, scope))
 }
 
-/// Which guild owns an instance and which game it runs — the two labels that
-/// identify a server for attribution. Each is independently optional: a
-/// pre-scoping object carries no guild, and neither label is guaranteed on an
-/// object the shim didn't create.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InstanceOwner {
     pub(crate) guild: Option<GuildId>,
     pub(crate) game: Option<GameId>,
 }
 
-/// Read an instance's owning guild and game off its Service — the one object of
-/// the trio that survives both `/stop` and `/shutdown`, so the answer holds in
-/// every lifecycle state. `None` when there is no such Service.
-///
-/// This exists for the product event log, whose warm-action emission points know
-/// only an instance name. It is deliberately best-effort at the call site: an
-/// event with a missing game is worth more than a user action that failed
-/// because a label read did.
-///
-/// # Errors
-///
-/// Returns an error if the Service cannot be read from the Kubernetes API.
 pub(crate) async fn owner_of(
     client: &Client,
     namespace: &str,
@@ -110,9 +82,6 @@ pub(crate) async fn owner_of(
     }))
 }
 
-/// Decide the verdict for an instance whose owning guild label is `guild`
-/// (`None` when the label is absent — a pre-scoping or Flux-managed object).
-/// Pure so the tenancy policy is unit-tested without a live cluster.
 fn classify(guild: Option<&str>, scope: &ServerScope) -> ScopeVerdict {
     match scope {
         ServerScope::All => ScopeVerdict::InScope,

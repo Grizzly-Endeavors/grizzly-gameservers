@@ -39,8 +39,6 @@ fn completion() -> Completion {
     }
 }
 
-/// Run a turn through a recorder wired to an in-memory exporter and hand back
-/// every span it produced.
 fn exported(run: impl FnOnce(&TurnRecorder)) -> Vec<SpanData> {
     let exporter = InMemorySpanExporter::default();
     let telemetry = Arc::new(Telemetry::for_test(
@@ -142,8 +140,6 @@ fn a_tool_span_is_named_for_its_tool() {
     assert!(spans.iter().any(|span| span.name == "restart_server"));
 }
 
-/// A provider outage must stay visible as an errored trace rather than as
-/// silence, and the partial observations before it are kept.
 #[test]
 fn a_failed_turn_still_exports_its_partial_trace() {
     let spans = exported(|recorder| {
@@ -177,8 +173,6 @@ fn the_root_span_spans_the_whole_turn() {
     }
 }
 
-/// These five strings are the `guardrail` score's closed value set. Dashboards
-/// and the operations doc key on them, so renaming one silently splits a metric.
 #[test]
 fn the_guardrail_vocabulary_is_the_designs_closed_set() {
     let rendered = [

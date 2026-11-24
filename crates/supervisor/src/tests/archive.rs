@@ -27,7 +27,6 @@ async fn create_then_extract_round_trips_a_tree() {
     std::fs::create_dir(src.path().join("world")).unwrap();
     std::fs::write(src.path().join("world").join("level.dat"), "seed=42").unwrap();
 
-    // Stream the archive out fully into memory (the test tree is tiny).
     let mut creator = spawn_create(src.path()).expect("spawn create");
     let mut stdout = creator.stdout.take().expect("create stdout");
     let mut tarball = Vec::new();
@@ -41,7 +40,6 @@ async fn create_then_extract_round_trips_a_tree() {
     );
     assert!(!tarball.is_empty(), "archive should carry bytes");
 
-    // Feed it back into a fresh root.
     let dst = tempfile::tempdir().expect("dst tempdir");
     let mut extractor = spawn_extract(dst.path()).expect("spawn extract");
     let mut stdin = extractor.stdin.take().expect("extract stdin");

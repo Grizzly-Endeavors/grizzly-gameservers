@@ -30,8 +30,6 @@ fn a_state_response_yields_the_connected_count() {
     assert_eq!(parsed.data.server_game_state.num_connected_players, 3);
 }
 
-/// An empty server is a real, actionable reading — it's what update-on-empty
-/// waits for — so it must parse as `0` rather than tripping any absence path.
 #[test]
 fn an_empty_server_parses_as_zero_not_as_missing() {
     let body = serde_json::json!({
@@ -41,9 +39,6 @@ fn an_empty_server_parses_as_zero_not_as_missing() {
     assert_eq!(parsed.data.server_game_state.num_connected_players, 0);
 }
 
-/// A response missing the count must fail to parse, so the caller reports
-/// unknown. Defaulting it to zero here would tell the auto-updater the server is
-/// empty and let it restart one with players on it.
 #[test]
 fn a_response_without_a_count_does_not_parse_as_empty() {
     let body = serde_json::json!({
@@ -89,8 +84,6 @@ fn an_empty_tshock_server_parses_as_zero() {
     assert_eq!(parsed.playercount, 0);
 }
 
-/// Same rule as the Satisfactory side: a response without a count must not
-/// degrade to "empty", or the auto-updater restarts an occupied server.
 #[test]
 fn a_tshock_response_without_a_count_does_not_parse_as_empty() {
     let body = serde_json::json!({ "status": "403", "error": "not authorized" });
@@ -112,8 +105,6 @@ fn an_occupancy_api_is_selected_by_name() {
         OccupancyApi::parse(" Satisfactory "),
         Some(OccupancyApi::Satisfactory)
     );
-    // A typo must not silently pick a dialect — the config layer turns None into
-    // a startup error rather than guessing.
     assert_eq!(OccupancyApi::parse("tshcok"), None);
     assert_eq!(OccupancyApi::parse(""), None);
 }
@@ -147,8 +138,6 @@ fn an_enshrouded_challenge_yields_its_four_bytes() {
     );
 }
 
-/// An empty server is the reading update-on-empty waits for, so it must parse as
-/// `0` — and the empty map string before it must not throw the field walk off.
 #[test]
 fn an_empty_enshrouded_server_parses_as_zero_players() {
     assert_eq!(
@@ -175,8 +164,6 @@ fn an_info_reply_yields_its_player_count() {
     );
 }
 
-/// A truncated reply must fail rather than read some other byte as the count —
-/// a misread zero would let update-on-empty bounce a server with people on it.
 #[test]
 fn a_reply_that_ends_before_the_player_count_is_an_error() {
     let mut reply = info_reply(3);
@@ -227,8 +214,6 @@ async fn the_query_answers_the_challenge_and_reads_the_count() {
     assert_eq!(A2sQuery::new(port).player_count().await, Some(5));
 }
 
-/// A silent query port — the world is still loading — is unknown occupancy, never
-/// an empty server.
 #[tokio::test]
 async fn a_silent_query_port_is_unknown_not_empty() {
     let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();

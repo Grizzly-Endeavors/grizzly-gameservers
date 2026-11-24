@@ -93,8 +93,6 @@ fn a_client_line_must_carry_a_version() {
     };
     assert_eq!(release.to_string(), "Advize-PlantEasily-2.2.0");
 
-    // Unpinned is its own problem: the fix is to add a version, and telling
-    // someone the line is malformed would send them hunting a typo.
     assert_eq!(
         classify("client:Advize-PlantEasily"),
         ModsLine::Client(Err(ClientLineProblem::Unpinned(

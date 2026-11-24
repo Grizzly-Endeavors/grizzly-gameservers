@@ -1,7 +1,5 @@
 use super::*;
 
-/// A payload built the way a real export is, so the decode path is exercised
-/// against the shape r2modman actually writes rather than against our own.
 fn payload(manifest: &str) -> Vec<u8> {
     use std::io::Write as _;
 
@@ -17,7 +15,6 @@ fn payload(manifest: &str) -> Vec<u8> {
     payload
 }
 
-/// The verified sample's manifest, trimmed to the entries that matter.
 const SAMPLE: &str = "\
 profileName: Default
 mods:
@@ -67,8 +64,6 @@ fn a_pinned_name_is_the_string_a_mod_list_uses() {
 
 #[test]
 fn an_entry_with_no_enabled_flag_is_enabled() {
-    // A hand-built export (ours included, before this was pinned) may omit it,
-    // and defaulting to disabled would silently drop the whole modpack.
     let manifest = "\
 profileName: Default
 mods:
@@ -102,8 +97,6 @@ fn encode_round_trips_through_decode() {
 
 #[test]
 fn an_encoded_payload_carries_only_the_manifest() {
-    // The config tree a real export carries is the *loader's*, owned by the game
-    // image — writing one would put us in the business of overwriting it.
     let encoded = encode("valheim-abc123", &[]).unwrap();
     let body: String = std::str::from_utf8(&encoded)
         .unwrap()
@@ -177,9 +170,6 @@ fn a_zip_with_no_manifest_is_refused() {
 
 #[test]
 fn an_entry_whose_name_is_not_a_package_pair_is_refused_without_quoting_it() {
-    // The name grammar is what keeps arbitrary third-party prose out of Gary's
-    // context, so a payload that breaks it is refused by count rather than by
-    // echoing the offending text back into the transcript.
     let manifest = "\
 profileName: Default
 mods:

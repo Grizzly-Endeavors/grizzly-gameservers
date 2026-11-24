@@ -1,22 +1,10 @@
-//! Pure helpers for the S3 backup/archive layout: the `manifest.json` sidecar
-//! that makes every artifact self-describing, the object-key scheme, and the
-//! retention selection that decides which backups to prune. No IO — the S3 and
-//! Postgres shells call into these so the layout and pruning logic stay testable.
-
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{GameId, GuildId, InstanceName};
 
-/// Current manifest schema version, stamped into every manifest as a
-/// forward-compatibility marker. Nothing reads it back yet — the loader assumes
-/// schema 1 — so bumping it is only useful once a future reader branches on the
-/// value to migrate or reject an older shape; it does not migrate anything today.
 pub(crate) const MANIFEST_SCHEMA: u32 = 1;
 
-/// Whether an artifact is an automatic/manual backup of a *live* instance or a
-/// durable archive of a torn-down one. Drives the key prefix and how restore
-/// treats it.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ArtifactKind {
@@ -24,46 +12,28 @@ pub(crate) enum ArtifactKind {
     Archive,
 }
 
-/// The self-describing sidecar written next to every tarball. It carries
-/// everything a restore/recover needs to recreate the instance without the
-/// Postgres index, so the bucket alone is enough to rebuild the catalog.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BackupManifest {
     pub(crate) schema: u32,
     pub(crate) kind: ArtifactKind,
-    /// Original instance (server) name.
     pub(crate) instance: InstanceName,
     pub(crate) game: GameId,
-    /// Owning Discord guild id.
     pub(crate) guild: GuildId,
-    /// Discord user id that triggered it, or `auto` for the scheduled cycle.
     pub(crate) created_by: String,
-    /// RFC 3339 creation time.
     pub(crate) created_at: String,
-    /// S3 key of the compressed tarball this manifest describes.
     pub(crate) tarball_key: String,
-    /// Compressed size of the tarball in bytes.
     pub(crate) size_bytes: u64,
 }
 
-/// The `auto` sentinel recorded as `created_by` for scheduled backups.
 pub(crate) const CREATED_BY_AUTO: &str = "auto";
 
-/// A backup/archive tarball key and its manifest key, kept together so the two
-/// are always constructed as a pair.
 pub(crate) struct ArtifactKeys {
     pub(crate) tarball: String,
     pub(crate) manifest: String,
 }
 
-/// Stands in for the owning guild of a pre-scoping instance, which carries no
-/// guild label. A Discord snowflake is all digits, so this can never collide with
-/// a real guild — and a reserved segment is what keeps an absent owner from
-/// collapsing `backups/{guild}/` into the bucket root, where it would land back
-/// in the shared namespace this layout exists to avoid.
 pub(crate) const UNSCOPED_GUILD_SEGMENT: &str = "_unscoped";
 
-/// The path segment naming an artifact's owning guild.
 fn guild_segment(guild: &str) -> &str {
     if guild.is_empty() {
         UNSCOPED_GUILD_SEGMENT
@@ -72,27 +42,18 @@ fn guild_segment(guild: &str) -> &str {
     }
 }
 
-/// Prefix under which a guild's automatic/manual backups of `instance` live.
-///
-/// Namespaced by guild for the same reason archives are: instance names are
-/// friend-chosen, carry no entropy, and are freed for reuse by `/destroy` while
-/// the backups outlive the instance. A flat `backups/{instance}/` lets the next
-/// guild to claim a released name inherit the previous owner's worlds.
 pub(crate) fn backup_prefix(guild: &str, instance: &str) -> String {
     format!("backups/{}/{instance}/", guild_segment(guild))
 }
 
-/// Prefix under which a guild's archives of `name` live.
 pub(crate) fn archive_prefix(guild: &str, name: &str) -> String {
     format!("archives/{}/{name}/", guild_segment(guild))
 }
 
-/// Keys for a backup of `guild`'s `instance` stamped at `stamp` (see [`stamp_now`]).
 pub(crate) fn backup_keys(guild: &str, instance: &str, stamp: &str) -> ArtifactKeys {
     keys(&format!("{}{stamp}", backup_prefix(guild, instance)))
 }
 
-/// Keys for an archive of `name` in `guild` stamped at `stamp`.
 pub(crate) fn archive_keys(guild: &str, name: &str, stamp: &str) -> ArtifactKeys {
     keys(&format!("{}{stamp}", archive_prefix(guild, name)))
 }
@@ -104,9 +65,6 @@ fn keys(base: &str) -> ArtifactKeys {
     }
 }
 
-/// A sortable, filename-safe UTC timestamp segment (`20260707T143000Z`) for the
-/// current instant. Lexicographic order matches chronological order, so keys
-/// under a prefix list oldest-first without parsing.
 pub(crate) fn stamp_now() -> String {
     stamp(Timestamp::now())
 }
@@ -115,12 +73,6 @@ fn stamp(ts: Timestamp) -> String {
     ts.strftime("%Y%m%dT%H%M%SZ").to_string()
 }
 
-/// The tarball object keys under a backup prefix that should be pruned to keep
-/// only the `keep` newest. `tarball_keys` need not be pre-sorted; they are ranked
-/// lexicographically (== chronologically, given [`stamp_now`]'s format), and
-/// everything older than the newest `keep` is returned oldest-first. `keep == 0`
-/// therefore returns *every* key — callers must reject a zero retention upstream
-/// rather than relying on this to keep a floor.
 pub(crate) fn keys_to_prune(mut tarball_keys: Vec<String>, keep: usize) -> Vec<String> {
     tarball_keys.sort();
     let prune_count = tarball_keys.len().saturating_sub(keep);
@@ -128,8 +80,6 @@ pub(crate) fn keys_to_prune(mut tarball_keys: Vec<String>, keep: usize) -> Vec<S
     tarball_keys
 }
 
-/// The manifest key paired with a tarball key (`…​.tar.zst` → `…​.manifest.json`),
-/// so pruning can delete both halves of an artifact from just the tarball key.
 pub(crate) fn manifest_key_for(tarball_key: &str) -> Option<String> {
     tarball_key
         .strip_suffix(".tar.zst")

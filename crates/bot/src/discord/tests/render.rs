@@ -195,8 +195,6 @@ fn starting_mid_teardown_is_pending_and_says_to_wait() {
     );
 }
 
-// An unconfirmed teardown is amber, not red: the world is intact and recovery is
-// automatic, so it isn't a failure the friend has to act on.
 #[test]
 fn unconfirmed_teardowns_are_pending_not_errors() {
     assert_eq!(
@@ -211,8 +209,6 @@ fn unconfirmed_teardowns_are_pending_not_errors() {
     );
 }
 
-// The bug this whole change exists to prevent: telling a friend a server is shut
-// down, or a world deleted, when neither has actually happened.
 #[test]
 fn unconfirmed_teardowns_never_claim_they_finished() {
     let shutdown = shutdown_spec(&ShutdownOutcome::Stranded, "palworld");
@@ -329,7 +325,6 @@ fn join_within_embed_limit_clips_overflow_with_a_tail() {
         "a clipped list should tell the friend how many were omitted, got tail: {:?}",
         joined.rsplit('\n').next()
     );
-    // The omitted count must be accurate: shown lines + omitted = total.
     let tail = joined.rsplit('\n').next().unwrap();
     let omitted: usize = tail
         .trim_start_matches("…and ")
@@ -371,7 +366,6 @@ fn restore_with_a_safety_backup_keeps_the_clean_message() {
 
 #[test]
 fn restore_without_a_safety_backup_warns_theres_no_undo() {
-    // Every boot state must carry the caveat — the overwrite already happened.
     for boot in [
         BootState::Ready,
         BootState::TimedOut,
@@ -415,9 +409,6 @@ fn archived_but_storage_not_freed_is_amber_and_recoverable() {
     );
 }
 
-/// The confirmation must state that recovery ends here. Destroying a server
-/// leaves the archive as the way back, so an admin who reads this card as "same
-/// as destroy, but for storage" is about to lose a world they thought was safe.
 #[test]
 fn the_archive_delete_warning_says_recovery_ends() {
     let embed = delete_archive_spec(&ArchiveDeleteOutcome::Deleted {
@@ -438,9 +429,6 @@ fn the_archive_delete_warning_says_recovery_ends() {
     );
 }
 
-/// A failed delete leaves the archive whole on purpose — objects go before rows
-/// and the run stops at the first refusal. Telling the admin it half-worked would
-/// send them looking for a repair that isn't needed.
 #[test]
 fn a_failed_archive_delete_says_nothing_was_half_removed() {
     let embed = delete_archive_spec(&ArchiveDeleteOutcome::Failed("s3 said no".to_owned()));

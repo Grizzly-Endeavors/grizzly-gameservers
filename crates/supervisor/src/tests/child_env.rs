@@ -52,7 +52,6 @@ fn trims_surrounding_whitespace_from_key_and_value() {
 
 #[test]
 fn value_keeps_everything_after_the_first_equals() {
-    // A version-pinned Modrinth entry is the realistic case for an embedded `=`.
     assert_eq!(
         applied("MODRINTH_PROJECTS=fabric-api:0.1=2\n"),
         vec![(
@@ -64,9 +63,6 @@ fn value_keeps_everything_after_the_first_equals() {
 
 #[test]
 fn quotes_are_literal_not_stripped() {
-    // No dotenv quoting semantics: itzg would receive the quotes as part of the
-    // slug list and fail to resolve it, which is the behavior we want to be
-    // obvious rather than silently "helpful".
     assert_eq!(
         applied("TYPE=\"FABRIC\"\n"),
         vec![("TYPE".to_owned(), "\"FABRIC\"".to_owned())]
@@ -153,8 +149,6 @@ fn non_allowlisted_key_is_skipped() {
 
 #[test]
 fn supervisor_prefixed_keys_are_denied_even_when_allowlisted() {
-    // The catalog-error case: honoring this would let an instance rewrite the
-    // very allowlist that bounds it.
     let allowlist = vec!["SUPERVISOR_CHILD_ENV_ALLOWLIST".to_owned()];
     let resolution = resolve(
         "SUPERVISOR_CHILD_ENV_ALLOWLIST=MEMORY\n",
@@ -191,10 +185,6 @@ fn supervisor_prefixed_key_is_denied_without_being_allowlisted() {
 
 #[test]
 fn rcon_password_is_denied_under_its_resolved_name() {
-    // Palworld renames it, so a hardcoded "RCON_PASSWORD" check would let the
-    // overlay hijack the password the supervisor authenticates with. Deliberately
-    // allowlisted here so this fails if the deny is ever moved behind the
-    // allowlist check.
     let allowlist = vec!["ADMIN_PASSWORD".to_owned(), "TYPE".to_owned()];
     let resolution = resolve(
         "ADMIN_PASSWORD=hunter2\nTYPE=FABRIC\n",
@@ -216,9 +206,6 @@ fn rcon_password_is_denied_under_its_resolved_name() {
 
 #[test]
 fn a_renamed_rcon_env_leaves_the_default_name_merely_unallowlisted() {
-    // The mirror of the test above: with the password living under
-    // ADMIN_PASSWORD, plain RCON_PASSWORD is just another key the game doesn't
-    // expose — proving the deny tracks the resolved name, not both.
     let resolution = resolve("RCON_PASSWORD=hunter2\n", &[], "ADMIN_PASSWORD");
     assert!(resolution.applied.is_empty());
     assert_eq!(

@@ -13,8 +13,6 @@ async fn an_unconfigured_mailer_never_dials() {
     );
 }
 
-/// The whole point of the latch: after one refusal nothing may reach the wire
-/// again, because a retried bad credential gets the household's address banned.
 #[test]
 fn the_gate_closes_permanently_once_the_credential_is_refused() {
     let gate = SendGate::default();
@@ -38,9 +36,6 @@ fn the_approval_email_carries_the_invite_link() {
     assert!(!body.is_empty());
 }
 
-/// An absent community link must drop the whole sentence, not render an empty
-/// one — "say hello in the community server:" followed by nothing reads as a bug
-/// to the person who was just told they were let in.
 #[test]
 fn an_absent_community_link_omits_its_sentence_entirely() {
     let body = approval_body(INVITE, None);
@@ -54,8 +49,6 @@ fn a_present_community_link_is_included() {
     assert!(body.contains("community server"), "{body}");
 }
 
-/// A blank setting is the same as an unset one — the settings catalog stores
-/// strings, and "  " is what an operator clearing a field actually leaves.
 #[test]
 fn a_blank_community_link_is_treated_as_absent() {
     let body = approval_body(INVITE, Some("   "));
@@ -69,9 +62,6 @@ fn the_body_has_no_unsubstituted_placeholders() {
     assert!(!body.contains("{}"), "{body}");
 }
 
-/// The email says adding the bot isn't the last step. Without it, someone adds
-/// Gary, gets no reply because their guild isn't admitted yet, and concludes it
-/// is broken.
 #[test]
 fn the_body_warns_that_access_is_not_immediate() {
     let body = approval_body(INVITE, None);
@@ -102,8 +92,6 @@ fn only_a_sent_outcome_counts_as_sent() {
     assert!(!MailOutcome::AuthRefused.is_sent());
 }
 
-/// Every mail outcome must map to an event outcome, so a send never lands in the
-/// product log as an unexplained blank.
 #[test]
 fn every_mail_outcome_maps_to_an_event_outcome() {
     use crate::events::mapping;
@@ -135,8 +123,6 @@ fn every_mail_outcome_maps_to_an_event_outcome() {
 fn the_approval_body_is_utf8_and_says_so() {
     let body = approval_body(INVITE, Some(COMMUNITY));
     assert!(body.contains('—'), "the copy still uses em dashes");
-    // lettre's ContentType has no Display; the parse round-trip is what proves
-    // the constant is the utf-8 one rather than bare text/plain.
     assert_eq!(
         ContentType::TEXT_PLAIN,
         ContentType::parse("text/plain; charset=utf-8").expect("a valid content type")

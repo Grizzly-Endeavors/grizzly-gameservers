@@ -1,14 +1,3 @@
-//! The panel's read-only views.
-//!
-//! Each handler gathers what it needs and hands it to `maud`; there is no
-//! caching layer, because the whole point of the page is to show what is true
-//! *now* and the underlying reads are a snapshot load, an in-memory map, or one
-//! Kubernetes list.
-//!
-//! Where a read can fail, the page degrades to showing less rather than
-//! returning an error: an unreachable Kubernetes API should cost the servers
-//! table, not the settings page it sits beside.
-
 use std::collections::BTreeMap;
 
 use axum::Router;
@@ -31,24 +20,14 @@ use super::render::{
     Flash, Nav, Tone, availability, badge, html_response, notice, page, percent_encode, table, tile,
 };
 
-/// Rows shown on one page of the event log. Generous — this is a scan-and-close
-/// view, and paging is cheap — but bounded so one query can't hold the pool.
 const EVENT_PAGE_SIZE: i64 = 100;
 
-/// Beta requests shown at once. The queue is worked front to back, so a bound
-/// here costs nothing: what falls off the end is what you get to next.
 const SIGNUP_QUEUE_SIZE: i64 = 50;
 
-/// Decided requests kept in view, as recent context rather than an archive —
-/// `/events` is where the full history lives.
 const SIGNUP_HISTORY_SIZE: i64 = 20;
 
-/// Note length shown in the queue table. The field is free text from a public
-/// form, so one pasted essay must not blow out the row.
 const NOTE_PREVIEW_CHARS: usize = 300;
 
-/// Cap on the updates-list export. Generous, and the page says so when it bites —
-/// a mailing list that quietly stops halfway is worse than one that says it did.
 const UPDATES_EXPORT_LIMIT: i64 = 10_000;
 
 pub(crate) fn router(deps: AdminDeps) -> Router {
@@ -57,9 +36,6 @@ pub(crate) fn router(deps: AdminDeps) -> Router {
         .route("/settings", get(settings))
         .route("/settings/{key}", post(actions::set_setting))
         .route("/signups", get(signups))
-        // Top level, not under /signups/: axum matches the path first, so a
-        // GET at /signups/export.csv would collide with the action route
-        // below and 405.
         .route("/signups.csv", get(signups_csv))
         .route("/signups/{action}", post(actions::run_signup_action))
         .route("/guilds", get(guilds))
@@ -75,8 +51,6 @@ pub(crate) fn router(deps: AdminDeps) -> Router {
         .with_state(deps)
 }
 
-/// Human-readable byte size for display. Not round-trippable, and deliberately
-/// not used anywhere a value is edited — see `crate::settings` for that.
 fn human_bytes(bytes: i64) -> String {
     const UNITS: [(u64, &str); 3] = [(1 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")];
     let bytes = bytes.unsigned_abs();
@@ -93,8 +67,6 @@ fn human_bytes(bytes: i64) -> String {
     }
     format!("{bytes} B")
 }
-
-// ---------------------------------------------------------------- overview
 
 async fn dashboard(
     State(deps): State<AdminDeps>,
@@ -179,9 +151,6 @@ fn subsystem_row(name: &str, enabled: bool, cost: &str) -> Markup {
     }
 }
 
-/// Warn when a restart-class override is recorded but the running process is
-/// still on the value it booted with — otherwise the settings page would show a
-/// number the bot isn't actually using, with nothing to say so.
 fn pending_restart_notice(
     effective: &SettingsSnapshot,
     booted: &SettingsSnapshot,
@@ -206,8 +175,6 @@ fn pending_restart_notice(
         },
     )
 }
-
-// ---------------------------------------------------------------- settings
 
 async fn settings(
     State(deps): State<AdminDeps>,
@@ -266,9 +233,6 @@ fn setting_row(
             }
             td {
                 form .inline method="post" action=(action) {
-                    // The rendered value is what round-trips, so the field starts
-                    // as exactly what is in force — an operator who saves without
-                    // editing changes nothing.
                     input type="text" name="value" value=(value) disabled[!editable]
                         aria-label=(format!("{} value", key.as_str()));
                     button type="submit" disabled[!editable] { "Save" }
@@ -304,17 +268,6 @@ fn setting_row(
     }
 }
 
-// ----------------------------------------------------------------- signups
-
-/// Warn that admitting a guild isn't gating anything while the allowlist is
-/// empty.
-///
-/// This is the notice that matters most on this page. Approving a beta request
-/// mails out a bot-invite link, and `guild_is_admitted` treats an empty
-/// allowlist as admitting *every* guild — so with the list empty, clicking
-/// approve grants access the moment the person follows that link, and the
-/// deliberate second step on the Guilds page is decorative. Saying so here puts
-/// it in front of whoever is about to approve someone, rather than in a runbook.
 fn allowlist_open_notice(allowlist_empty: bool) -> Markup {
     if !allowlist_empty {
         return html! {};
@@ -330,7 +283,6 @@ fn allowlist_open_notice(allowlist_empty: bool) -> Markup {
     )
 }
 
-/// Note the person left, bounded for display.
 fn note_preview(note: Option<&String>) -> Markup {
     let Some(note) = note.filter(|note| !note.is_empty()) else {
         return html! { span .hint { "—" } };
@@ -338,7 +290,6 @@ fn note_preview(note: Option<&String>) -> Markup {
     html! { (crate::signups::truncate_chars(note, NOTE_PREVIEW_CHARS)) }
 }
 
-/// What a signup asked for. Both are independent opt-ins, so both can show.
 fn wants_badges(wants_beta: bool, wants_updates: bool) -> Markup {
     html! {
         @if wants_beta { (badge("beta", Tone::Accent)) }
@@ -376,12 +327,6 @@ fn pending_row(row: &crate::signups::SignupRow, allowlist_empty: bool, confirmin
     }
 }
 
-/// One CSV record, RFC 4180 quoted.
-///
-/// Every field is quoted rather than only those that need it: the rule is then
-/// one line rather than a predicate somebody later gets wrong. Control
-/// characters are dropped — a newline inside a quoted field is legal but breaks
-/// naive readers, and nothing in this export legitimately contains one.
 fn csv_row(fields: &[&str]) -> String {
     let mut out = String::new();
     for (index, field) in fields.iter().enumerate() {
@@ -401,9 +346,6 @@ fn csv_row(fields: &[&str]) -> String {
     out
 }
 
-/// The updates list as a CSV download.
-///
-/// Inside `pages::router`, so `require_admin` covers it with no per-route check.
 async fn signups_csv(State(deps): State<AdminDeps>) -> Response {
     let rows = deps.data.signups.updates_export(UPDATES_EXPORT_LIMIT).await;
     let mut body = csv_row(&["email", "first_asked_at", "wants_beta"]);
@@ -427,13 +369,10 @@ async fn signups_csv(State(deps): State<AdminDeps>) -> Response {
         .into_response()
 }
 
-/// Where a signup action posts. Built from the enum rather than a literal so the
-/// route, the handler's `parse`, and the form can't drift apart.
 fn signup_path(action: SignupAction) -> String {
     format!("/signups/{}", action.as_str())
 }
 
-/// One approval whose email never landed, with the reason and a way to retry.
 fn unmailed_row(row: &crate::signups::SignupRow) -> Markup {
     html! {
         tr {
@@ -467,8 +406,6 @@ fn decided_row(row: &crate::signups::SignupRow) -> Markup {
     }
 }
 
-/// Whether the page is mid-confirmation for a deny, which is what makes the
-/// "type the address" box appear.
 #[derive(Debug, Default, Deserialize)]
 struct SignupConfirm {
     confirm: Option<String>,
@@ -552,8 +489,6 @@ async fn signups(
     html_response(page("Signups", Nav::Signups, &identity, &body))
 }
 
-// ------------------------------------------------------------------ guilds
-
 async fn guilds(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
@@ -564,9 +499,6 @@ async fn guilds(
     let effective = data.settings.snapshot();
     let allowlist = &effective.guild_allowlist;
 
-    // The gateway cache is the live truth of which guilds the bot is actually
-    // in; the allowlist says which of them it serves. Showing both together is
-    // what makes an unadmitted guild visible at all.
     let Some(ctx) = data.gateway.current() else {
         let body = html! {
             (notice(Tone::Bad, &html! {
@@ -665,8 +597,6 @@ async fn guilds(
     html_response(page("Guilds", Nav::Guilds, &identity, &body))
 }
 
-/// A one-field form for a single cap. Blank means "back to the global default",
-/// matching what `/config limits … default` does in Discord.
 fn cap_form(guild: &str, field: &str, label: &str) -> Markup {
     html! {
         form .inline method="post" action=(format!("/guilds/{guild}/limits")) {
@@ -678,13 +608,6 @@ fn cap_form(guild: &str, field: &str, label: &str) -> Markup {
     }
 }
 
-/// The two allowlist edits that change what *every other* guild gets, spelled
-/// out before they happen.
-///
-/// Admitting the first guild flips the service from "serves everyone" to "serves
-/// this one"; removing the last one flips it back. Both read as a change to one
-/// guild and are a change to all of them, which is exactly the shape that
-/// deserves a second click.
 fn admission_confirm(confirm: &ConfirmQuery) -> Markup {
     let Some(guild) = confirm.guild.as_deref() else {
         return html! {};
@@ -721,8 +644,6 @@ fn admission_confirm(confirm: &ConfirmQuery) -> Markup {
         _ => html! {},
     }
 }
-
-// --------------------------------------------------------------- instances
 
 async fn instances(
     State(deps): State<AdminDeps>,
@@ -787,11 +708,6 @@ async fn instances(
     html_response(page("Servers", Nav::Instances, &identity, &body))
 }
 
-/// One server: what it is, what it's allowed, and the buttons that act on it.
-///
-/// Destroy sits behind a typed confirmation on this page rather than a checkbox
-/// in the list — losing a world should take a deliberate act, and typing the
-/// server's own name is one.
 async fn instance_detail(
     State(deps): State<AdminDeps>,
     Extension(identity): Extension<AdminIdentity>,
@@ -903,9 +819,6 @@ async fn instance_detail(
     html_response(page(&name, Nav::Instances, &identity, &body))
 }
 
-/// One action button. Destructive actions send the operator to a confirmation
-/// instead of acting, which the handler enforces independently — this only
-/// decides what the button looks like.
 fn action_button(name: &str, action: InstanceAction, label: &str, enabled: bool) -> Markup {
     let path = format!("/instances/{name}/{}", action.as_str());
     html! {
@@ -916,19 +829,12 @@ fn action_button(name: &str, action: InstanceAction, label: &str, enabled: bool)
     }
 }
 
-/// A `?confirm=…` marker, set by a handler that bounced an action back for
-/// confirmation.
 #[derive(Debug, Default, Deserialize)]
 struct ConfirmQuery {
     confirm: Option<String>,
     guild: Option<String>,
 }
 
-// ------------------------------------------------------------------ events
-
-/// The event browser's filters, straight off the query string. Every field is
-/// optional and an empty string means "don't filter", so the form can submit
-/// blanks without the handler special-casing them.
 #[derive(Debug, Default, Deserialize)]
 struct EventQuery {
     kind: Option<String>,
@@ -954,7 +860,6 @@ impl EventQuery {
         }
     }
 
-    /// The query string for the next page, preserving the active filters.
     fn next_page(&self, before: i64) -> String {
         let mut parts = vec![format!("before={before}")];
         for (name, value) in [
@@ -1042,8 +947,6 @@ fn event_row(row: &crate::events::EventRow) -> Markup {
                         None => "—",
                     }
                 }
-                // Guild and game are what turn a bare instance name into
-                // something you can act on — which community, which game.
                 @if row.guild.is_some() || row.game.is_some() {
                     div .hint .mono {
                         @if let Some(game) = row.game.as_deref() { (game) }
@@ -1059,8 +962,6 @@ fn event_row(row: &crate::events::EventRow) -> Markup {
                 @else { (badge(&row.outcome, Tone::Warn)) }
             }
             td {
-                // `{}` is every event that carried no extra facts, which is most
-                // of them — a disclosure triangle over an empty object is noise.
                 @if row.details != "{}" {
                     details .details {
                         summary { "details" }

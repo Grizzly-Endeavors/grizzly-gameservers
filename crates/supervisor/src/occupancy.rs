@@ -25,21 +25,15 @@ use tracing::{debug, warn};
 
 use crate::rcon::RconRuntime;
 
-/// Which occupancy protocol a game image names. Selected per image rather than
-/// sniffed: they are different protocols on different ports, and guessing wrong
-/// would report every server as unknown-occupancy with no obvious cause.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OccupancyApi {
-    /// Satisfactory's dedicated-server HTTPS API.
     Satisfactory,
-    /// `TShock`'s REST API, for Terraria.
     Tshock,
     /// The Steam server query protocol, for Enshrouded.
     A2s,
 }
 
 impl OccupancyApi {
-    /// Parse the `SUPERVISOR_OCCUPANCY_API` value a game image sets.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -51,14 +45,10 @@ impl OccupancyApi {
     }
 }
 
-/// A fully-addressed non-RCON occupancy source, as the config layer assembles it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OccupancyEndpoint {
-    /// Satisfactory's API at this base URL.
     Satisfactory(String),
-    /// `TShock`'s REST API at this base URL.
     Tshock(String),
-    /// The Steam query protocol on this loopback port.
     A2s(u16),
 }
 
@@ -68,7 +58,6 @@ pub enum OccupancyEndpoint {
 /// the shim provisions.
 const CLIENT_PRIVILEGE: &str = "Client";
 
-/// How the supervisor reads the current player count for this game.
 pub enum OccupancySource {
     /// The game's console reports it (most games).
     Rcon(Arc<RconRuntime>),
@@ -83,8 +72,6 @@ pub enum OccupancySource {
 }
 
 impl OccupancySource {
-    /// The number of players currently connected, or `None` when it couldn't be
-    /// determined. Never returns `Some(0)` on a failed probe.
     pub async fn player_count(&self) -> Option<u32> {
         match self {
             Self::Rcon(rcon) => rcon.player_count().await,
@@ -95,16 +82,10 @@ impl OccupancySource {
     }
 }
 
-/// The `A2S_INFO` request: the simple-packet header, the query type, and the fixed
-/// payload string the protocol requires.
 const A2S_INFO_REQUEST: &[u8] = b"\xFF\xFF\xFF\xFFTSource Engine Query\0";
 
-/// The header that opens every single-packet A2S reply.
 const A2S_SIMPLE_HEADER: [u8; 4] = [0xFF; 4];
 
-/// How long to wait for each reply. The server is on loopback, so a reply that
-/// hasn't arrived in this long isn't coming — typically the world is still loading
-/// and the query port isn't answering yet.
 const A2S_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Client for the Steam server query protocol, scoped to `A2S_INFO`'s player count.
@@ -117,18 +98,15 @@ pub struct A2sQuery {
     server: SocketAddr,
 }
 
-/// One reply to an `A2S_INFO` request.
 #[derive(Debug, PartialEq, Eq)]
 enum A2sInfoReply {
     /// The server wants the request repeated with this challenge appended — the
     /// protocol's guard against reflection floods, which Enshrouded enforces.
     Challenge([u8; 4]),
-    /// The server's info, reduced to the one field the supervisor reads.
     Players(u32),
 }
 
 impl A2sQuery {
-    /// Build a client for the query port `port` on loopback.
     #[must_use]
     pub fn new(port: u16) -> Self {
         Self {
@@ -136,13 +114,10 @@ impl A2sQuery {
         }
     }
 
-    /// Players currently connected, or `None` when the query port couldn't be read.
     pub async fn player_count(&self) -> Option<u32> {
         match self.query_info().await {
             Ok(count) => Some(count),
             Err(err) => {
-                // Warn, not error: the port stays silent while the world loads, and
-                // the caller degrades to "unknown".
                 warn!(error = ?err, port = self.server.port(), "could not read a2s player count");
                 None
             }
@@ -159,8 +134,6 @@ impl A2sQuery {
             .with_context(|| format!("failed to address the a2s query to {}", self.server))?;
 
         let mut request = A2S_INFO_REQUEST.to_vec();
-        // One challenge round at most: a server that challenges a request already
-        // carrying its challenge isn't going to answer a third time either.
         for _ in 0..2 {
             socket
                 .send(&request)
@@ -185,12 +158,6 @@ impl A2sQuery {
     }
 }
 
-/// Parse one `A2S_INFO` reply datagram.
-///
-/// # Errors
-///
-/// Returns an error when the datagram isn't a single-packet reply, is of a type
-/// other than a challenge or an info reply, or ends before the player count.
 fn parse_a2s_info_reply(reply: &[u8]) -> Result<A2sInfoReply> {
     let body = reply
         .strip_prefix(&A2S_SIMPLE_HEADER)
@@ -205,8 +172,6 @@ fn parse_a2s_info_reply(reply: &[u8]) -> Result<A2sInfoReply> {
             Ok(A2sInfoReply::Challenge(challenge))
         }
         b'I' => {
-            // A protocol-version byte, then four null-terminated strings (name,
-            // map, folder, game), then a two-byte app id, then the player count.
             let mut fields = rest
                 .get(1..)
                 .context("a2s info reply ends before its fields")?;
@@ -248,11 +213,6 @@ struct TshockStatus {
 }
 
 impl TshockApi {
-    /// Build a client for the REST API at `base_url` (e.g. `http://127.0.0.1:7878`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP client can't be constructed.
     pub fn new(base_url: &str) -> Result<Self> {
         let http = reqwest::Client::builder()
             .build()
@@ -263,13 +223,10 @@ impl TshockApi {
         })
     }
 
-    /// Players currently connected, or `None` when the API couldn't be read.
     pub async fn player_count(&self) -> Option<u32> {
         match self.query_status().await {
             Ok(count) => Some(count),
             Err(err) => {
-                // Warn, not error: an unreachable API is expected while the world
-                // is still generating, and the caller degrades to "unknown".
                 warn!(error = ?err, "could not read tshock player count");
                 None
             }
@@ -303,9 +260,6 @@ impl TshockApi {
 pub struct SatisfactoryApi {
     http: reqwest::Client,
     endpoint: String,
-    /// The bearer token from the last successful login. Cached because the poll
-    /// runs on a cadence and re-authenticating every tick would be pure waste;
-    /// cleared and re-fetched when the server stops accepting it.
     token: Mutex<Option<String>>,
 }
 
@@ -338,22 +292,7 @@ struct ServerGameState {
 }
 
 impl SatisfactoryApi {
-    /// Build a client for the API at `endpoint` (e.g.
-    /// `https://127.0.0.1:7777/api/v1`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTPS client can't be constructed.
     pub fn new(endpoint: String) -> Result<Self> {
-        // The endpoint is 127.0.0.1 inside this pod, and the certificate is one
-        // the game generated for itself — there is no CA to pin it against and
-        // no position from which to intercept a connection that never leaves
-        // the container's network namespace. Verification would therefore
-        // reject every valid certificate while excluding no attacker. Same
-        // reasoning as the Agones SDK client speaking plain HTTP to 127.0.0.1.
-        // The suppression must sit on the builder line: semgrep anchors the
-        // finding at the expression's first line, not at the accept call.
-        // nosemgrep: rust.lang.security.reqwest-accept-invalid
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -365,11 +304,6 @@ impl SatisfactoryApi {
         })
     }
 
-    /// Players currently connected, or `None` when the API couldn't be read.
-    ///
-    /// Retries once without the cached token: the server restarts its API with the
-    /// game, so a token minted before a relaunch is rejected afterwards, and a poll
-    /// that gave up there would report `unknown` forever after the first restart.
     pub async fn player_count(&self) -> Option<u32> {
         match self.query_state().await {
             Ok(count) => Some(count),
@@ -379,9 +313,6 @@ impl SatisfactoryApi {
                 match self.query_state().await {
                     Ok(count) => Some(count),
                     Err(err) => {
-                        // Warn, not error: an unreachable API is expected while the
-                        // game is still booting, and the caller degrades to
-                        // "unknown" rather than acting on it.
                         warn!(error = ?err, "could not read satisfactory player count");
                         None
                     }
@@ -409,7 +340,6 @@ impl SatisfactoryApi {
         Ok(envelope.data.server_game_state.num_connected_players)
     }
 
-    /// The cached bearer token, logging in if there isn't one.
     async fn authenticated_token(&self) -> Result<String> {
         let mut cached = self.token.lock().await;
         if let Some(token) = cached.as_ref() {

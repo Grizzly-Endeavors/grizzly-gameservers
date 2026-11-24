@@ -26,31 +26,14 @@ use crate::sdk::SdkClient;
 use crate::state::{ExitDisposition, SupervisorState};
 use crate::{chat_watcher, child_env, palworld, process, readiness, thunderstore};
 
-/// Brief pause before relaunching a crashed child, so a hard crash-loop backs
-/// off rather than spinning the CPU until escalation.
 const RELAUNCH_BACKOFF: Duration = Duration::from_secs(2);
 const CONTROL_CHANNEL_DEPTH: usize = 16;
-/// Timeout for SDK calls; loopback, so anything slower is a stuck sidecar.
 const SDK_TIMEOUT: Duration = Duration::from_secs(5);
-/// Buffered captured lines awaiting the chat watcher. Bounded so a stalled watcher
-/// drops chat rather than growing without limit; sized well above normal chat rate.
 const CHAT_CHANNEL_DEPTH: usize = 128;
-/// Timeout for the trigger POST to the bot's agent endpoint. The reply returns
-/// asynchronously over RCON, so this only bounds the handoff, not Gary's turn.
 const CHAT_POST_TIMEOUT: Duration = Duration::from_secs(10);
-/// Broadcast to players before a backstop auto-update relaunch (the rare case
-/// where a server has stayed busy long enough that its build is past the hard age
-/// cap). Friend-facing: plain language, no version numbers or internals.
 const AUTO_UPDATE_WARNING: &str =
     "Heads up — restarting in a moment to apply a game update. You'll be able to rejoin shortly.";
 
-/// Boot the control server and health heartbeat, then run the supervision loop
-/// until a shutdown signal.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP client or signal handlers can't be built or the
-/// initial child fails to spawn.
 pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     let http = reqwest::Client::builder()
         .timeout(SDK_TIMEOUT)
@@ -58,8 +41,6 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         .context("failed to build agones SDK http client")?;
     let sdk = SdkClient::new(http, cfg.sdk_base_url.clone());
 
-    // Mint the RCON password once per pod (not per child) so it stays stable
-    // across in-place restarts; `None` leaves the /command route disabled.
     let rcon = match cfg.rcon_port {
         Some(port) => Some(Arc::new(
             RconRuntime::new(port, cfg.rcon_dialect, cfg.rcon_password_max_len)
@@ -68,9 +49,6 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
         None => None,
     };
 
-    // Where the player count comes from. RCON for most games; the games without a
-    // console name an alternate source instead. Absent both, occupancy is
-    // permanently unknown and the game can't join update-on-empty.
     let occupancy = match (cfg.occupancy.as_ref(), rcon.as_ref()) {
         (Some(OccupancyEndpoint::Satisfactory(url)), _) => {
             Some(Arc::new(OccupancySource::SatisfactoryApi(Arc::new(
@@ -92,9 +70,6 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
 
     let chat_tx = spawn_chat_watcher(&cfg)?;
 
-    // Seed the env overlay up front as well as per-launch: a server that boots
-    // paused for an archive restore never reaches `spawn_child`, and the friend
-    // may well want to edit the overlay before issuing the /start.
     if let Some(overlay) = cfg.child_env.as_ref()
         && let Err(err) = child_env::seed(&cfg.data_dir, &overlay.file)
     {
@@ -103,9 +78,6 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
 
     let (control_tx, control_rx) = mpsc::channel::<ControlRequest>(CONTROL_CHANNEL_DEPTH);
     let logs = Arc::new(LogBuffer::new());
-    // Separate from the live ring on purpose: that one is a small shared tail,
-    // this one is scoped to a single launch so a crash can still be explained
-    // after the next launch has overwritten the ring. See crate::launch_log.
     let launch = Arc::new(LaunchLog::new());
     let control_port = cfg.control_port;
     let data_root: Arc<Path> = Arc::from(cfg.data_dir.clone());
@@ -152,18 +124,9 @@ pub async fn run(cfg: SupervisorConfig) -> Result<()> {
     .await
 }
 
-/// Ping the Agones SDK `/health` on a cadence — even while the game is paused —
-/// so the pod is only torn down when the supervisor *decides* it should be
-/// (crash escalation), not because a stopped game stopped answering.
-///
-/// Ticks for the life of the process, skipping the ping while the [`Heartbeat`]
-/// is suspended; the transitions are logged at the sites that decide them, so
-/// this loop stays silent about the gate.
 async fn health_loop(sdk: SdkClient, interval: Duration, heartbeat: Heartbeat) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Track health across ticks so a sustained outage warns once on the way down
-    // and once on recovery, rather than every `interval` for as long as it lasts.
     let mut healthy = true;
     loop {
         ticker.tick().await;
@@ -189,9 +152,6 @@ async fn health_loop(sdk: SdkClient, interval: Duration, heartbeat: Heartbeat) {
     }
 }
 
-/// The long-lived dependencies the supervision handlers share, bundled so each
-/// handler takes one context argument instead of threading four through every
-/// call (and tripping the argument-count lint).
 struct RunDeps<'a> {
     cfg: &'a SupervisorConfig,
     sdk: &'a SdkClient,
@@ -199,15 +159,9 @@ struct RunDeps<'a> {
     logs: &'a Arc<LogBuffer>,
     launch: &'a Arc<LaunchLog>,
     rcon: Option<&'a RconRuntime>,
-    /// Tee for captured lines to the chat watcher, or `None` when the game hasn't
-    /// enabled in-game chat. Threaded through relaunch so a bounced child's output
-    /// keeps flowing to the watcher.
     chat_tx: Option<&'a mpsc::Sender<String>>,
 }
 
-/// The optional per-game side channels, which a game either has or doesn't: a
-/// console to drive, a way to count players, a chat tee. Bundled because they are
-/// configured together per image and travel together from setup into the loop.
 struct GameChannels {
     rcon: Option<Arc<RconRuntime>>,
     occupancy: Option<Arc<OccupancySource>>,
@@ -232,10 +186,6 @@ async fn supervise(
     let mut state = SupervisorState::new();
     let (ready_tx, mut ready_rx) = mpsc::channel::<()>(1);
     let mut child = if cfg.start_paused {
-        // Restore path: hold the game down so the bot can seed /data over the
-        // control API before the first launch (otherwise the game would generate
-        // a throwaway fresh world we'd immediately overwrite). Present as Stopped
-        // so the bot's process-state label reads correctly until it issues /start.
         info!("starting paused; the game process will not launch until /start");
         state.on_stop_requested();
         state.on_stopped();
@@ -257,20 +207,12 @@ async fn supervise(
                 note_started(&mut state, running.as_ref())?;
                 running
             }
-            // A refused launch must not take the container down with it. A pod
-            // recreated onto a volume whose mod list is bad would otherwise
-            // crash-loop the container, and the control API — the only way to
-            // read or repair that file — would never come up. Instead the loop
-            // runs with no child, `/status` says `Crashed`, and the bot's
-            // rollback has something to talk to.
             Err(LaunchError::Prepare(err)) => {
                 note_launch_failure(&mut state, &logs, &launch, &err);
                 preserve_launch_output(&cfg.data_dir, &launch).await;
                 publish_label(&sdk, PROCESS_LABEL_STOPPED).await;
                 None
             }
-            // A container that can't run its own entrypoint is not repairable
-            // from inside the pod, so this stays fatal as it has always been.
             Err(LaunchError::Spawn(err)) => {
                 return Err(err).context("failed to spawn initial child");
             }
@@ -293,11 +235,6 @@ async fn supervise(
         chat_tx: chat_tx.as_ref(),
     };
 
-    // Update-on-empty: poll occupancy on a cadence and, when the game has been
-    // idle long enough on an old-enough build, bounce it to re-pull the latest.
-    // Only meaningful when the game speaks RCON (needed for the player count).
-    // Without an occupancy source there is no count to prove a server is empty,
-    // so update-on-empty has nothing to act on.
     let auto_update_active = cfg.auto_update_enabled && occupancy.is_some();
     let mut auto_updater = AutoUpdater::new(cfg.auto_update_policy);
     let (occupancy_tx, mut occupancy_rx) = mpsc::channel::<Option<u32>>(1);
@@ -340,14 +277,6 @@ async fn supervise(
     Ok(())
 }
 
-/// Start the in-game chat watcher when the game enables it, returning the sender
-/// half the line pump tees captured output into. Returns `None` (no tee) when
-/// chat watching is off, so the game's output path is untouched for games that
-/// don't opt in.
-///
-/// # Errors
-///
-/// Returns an error if the watcher's HTTP client can't be built.
 fn spawn_chat_watcher(cfg: &SupervisorConfig) -> Result<Option<mpsc::Sender<String>>> {
     let Some(watch) = cfg.chat_watch.clone() else {
         return Ok(None);
@@ -366,7 +295,6 @@ fn spawn_chat_watcher(cfg: &SupervisorConfig) -> Result<Option<mpsc::Sender<Stri
     Ok(Some(chat_tx))
 }
 
-/// Record a freshly spawned child's pid/launch time on the state machine.
 fn note_started(state: &mut SupervisorState, child: Option<&Child>) -> Result<()> {
     let pid = child
         .context("child slot empty after spawn")?
@@ -376,12 +304,6 @@ fn note_started(state: &mut SupervisorState, child: Option<&Child>) -> Result<()
     Ok(())
 }
 
-/// Wire readiness for a freshly launched child. A game that declares a log
-/// marker (`ready_log_pattern`) gets a [`LogReadyWatch`] the line pumps signal
-/// through — needed for UDP-only games (Valheim) the TCP connect probe can never
-/// reach. Every other game gets the background TCP connect probe on `game_port`.
-/// Returns the watch to hand to `capture_output`, or `None` when the TCP probe is
-/// in use.
 fn start_readiness(cfg: &SupervisorConfig, ready_tx: &mpsc::Sender<()>) -> Option<LogReadyWatch> {
     if let Some(pattern) = cfg.ready_log_pattern.as_deref() {
         Some(LogReadyWatch::new(Arc::from(pattern), ready_tx.clone()))
@@ -391,8 +313,6 @@ fn start_readiness(cfg: &SupervisorConfig, ready_tx: &mpsc::Sender<()>) -> Optio
     }
 }
 
-/// Probe for the game accepting connections in the background, signalling the
-/// runner once it does. Re-spawned on every (re)launch.
 fn spawn_readiness_probe(port: u16, give_up: Duration, ready_tx: mpsc::Sender<()>) {
     tokio::spawn(async move {
         if readiness::wait_accepting(port, give_up).await {
@@ -408,19 +328,6 @@ fn spawn_readiness_probe(port: u16, give_up: Duration, ready_tx: mpsc::Sender<()
     });
 }
 
-/// First time the game is accepting, signal Agones `Ready`; always (re)assert the
-/// running process label.
-///
-/// Also the recovery point for a pod that crash-escalated: a child that gets this
-/// far booted cleanly, so the heartbeat resumes and the crash budget starts over.
-/// Only a repair reaches here — a still-broken child never becomes ready, so it
-/// stays condemned.
-///
-/// And the point where the settings of uninstalled mods are swept, on *every*
-/// ready rather than the first: the launch that needs a sweep is the one that
-/// just applied a mod-list change, which is a restart. Reaching here is what
-/// proves that launch survived, so a mod list the bot is about to roll back never
-/// gets its settings deleted.
 async fn settle_ready(deps: &RunDeps<'_>, state: &mut SupervisorState, heartbeat: &Heartbeat) {
     let first_ready = !state.is_ready();
     state.on_ready();
@@ -436,11 +343,6 @@ async fn settle_ready(deps: &RunDeps<'_>, state: &mut SupervisorState, heartbeat
     spawn_orphaned_config_sweep(deps);
 }
 
-/// Sweep the settings of uninstalled mods on a blocking thread.
-///
-/// Off the supervision loop because the sweep reads every staged assembly, which
-/// has no business delaying a control request — and nothing waits on the result,
-/// since the game is already serving players by the time it runs.
 fn spawn_orphaned_config_sweep(deps: &RunDeps<'_>) {
     let planned = match thunderstore::OrphanedConfigSweep::plan(deps.cfg) {
         Ok(planned) => planned,
@@ -480,8 +382,6 @@ async fn handle_request(
     }
 }
 
-/// Stop the game process in place, reaping the child inline so the loop's
-/// child-exit arm doesn't treat the intentional exit as a crash.
 async fn do_stop(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,
@@ -510,11 +410,6 @@ async fn do_start(
         return ControlReply::Acted(ResultKind::AlreadyRunning);
     }
     state.on_start_requested();
-    // A refused launch reports as acted, not failed, and deliberately: the bot
-    // only runs its verify-and-roll-back loop when the supervisor says it acted.
-    // Answering "failed" would skip the loop that reads `/status`, sees
-    // `Crashed`, and puts the instance's file back — the whole recovery for a
-    // bad edit.
     match relaunch(deps, state, child, "start").await {
         Launched::Running | Launched::Refused => ControlReply::Acted(ResultKind::Starting),
         Launched::Failed => ControlReply::Failed("failed to start the server".to_owned()),
@@ -532,39 +427,17 @@ async fn do_restart(
     {
         error!(error = ?err, "failed to stop child during restart");
     }
-    // Refused reports as acted for the same reason as `do_start`.
     match relaunch(deps, state, child, "restart").await {
         Launched::Running | Launched::Refused => ControlReply::Acted(ResultKind::Restarting),
         Launched::Failed => ControlReply::Failed("failed to restart the server".to_owned()),
     }
 }
 
-/// Why a launch didn't happen. The two halves are handled differently all the
-/// way up: a preparation failure is something on the instance's own volume that
-/// a human (or Gary) can fix, so it is reported as a crash and the control API
-/// stays up to be fixed through; a spawn failure is the container being unable
-/// to run its own entrypoint, which nothing in the pod can repair.
 enum LaunchError {
     Prepare(anyhow::Error),
     Spawn(anyhow::Error),
 }
 
-/// Seed any config the supervisor owns into place, then launch the game child.
-/// Runs before each launch so a fresh PVC, a per-pod-rotated password, an edited
-/// overlay, and an edited mod list all converge before the child starts. Three
-/// preparation steps today, in this order:
-///
-/// - Palworld's RCON keys, written into the on-PVC ini before the game reads it,
-///   since the image disables the upstream's destructive env-driven regeneration
-///   (see [`palworld`]). Skipped for every other game.
-/// - The Thunderstore mod reconcile for the r2modman-shaped games (see
-///   [`thunderstore`]), which stages the packages the instance's mod list asks
-///   for. Ahead of the overlay because it is the step that can take a minute and
-///   the one most likely to refuse the launch — no reason to resolve the env
-///   first only to throw it away.
-/// - The per-instance env overlay for games whose catalog entry opts in (see
-///   [`child_env`]), which seeds the file and resolves it into the child's env.
-///   Never fails: an unusable overlay yields no overrides, not a dead server.
 async fn spawn_child(
     cfg: &SupervisorConfig,
     rcon: Option<&RconRuntime>,
@@ -584,15 +457,6 @@ async fn spawn_child(
     process::spawn(cfg, rcon, &overlay).map_err(LaunchError::Spawn)
 }
 
-/// Record a refused launch and put the reason where the agent will find it.
-///
-/// The log buffer, not just the supervisor's tracing output: `read_logs` serves
-/// the child-output buffer, so a reason that only reached `tracing` would be
-/// invisible to the one tool Gary reaches for after a restart didn't take.
-/// Also into the launch capture, so a refused launch is preserved on the volume
-/// like a crashed one. It is the same failure from the agent's side — the server
-/// did not come up and the reason is one line — and the rollback that follows
-/// floods the shared ring just as thoroughly either way.
 fn note_launch_failure(
     state: &mut SupervisorState,
     logs: &LogBuffer,
@@ -606,11 +470,6 @@ fn note_launch_failure(
     state.on_launch_failed();
 }
 
-/// Spawn a fresh child, record it, kick off a readiness probe, and assert the
-/// running label. `action` names the operation in logs. On failure `child` is
-/// left empty; the returned outcome tells the caller which kind of failure it
-/// was, since only a preparation failure is something the instance can be
-/// repaired out of.
 async fn relaunch(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,
@@ -652,33 +511,14 @@ async fn relaunch(
     }
 }
 
-/// What a [`relaunch`] attempt did.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Launched {
-    /// The child is up.
     Running,
-    /// Preparation refused the launch. The instance's own files are wrong, the
-    /// control API is still up, and `/status` now says `Crashed` — which is what
-    /// arms the bot's snapshot-restore-and-restart.
     Refused,
-    /// The child could not be spawned at all.
     Failed,
 }
 
-/// Write a dead launch's output to the instance's volume before anything can
-/// overwrite it — whether the child crashed or was never spawned at all.
-///
-/// This is the whole point of [`crate::launch_log`]: the bot's auto-rollback
-/// restarts a crashed server within seconds, and that restart floods the shared
-/// live ring — a single Valheim boot is roughly four times its capacity. Without
-/// this the agent is left reporting a rollback it cannot explain.
-///
-/// Best-effort by design. A crash is already a bad moment, and failing to
-/// preserve the evidence must not also take down the supervisor that is trying
-/// to recover from it — so every failure is logged and swallowed.
 async fn preserve_launch_output(data_dir: &std::path::Path, launch: &LaunchLog) {
-    // The child's exit and the arrival of its last lines are different events,
-    // and the last lines are the ones that say why it died.
     if !launch.settle().await {
         warn!(
             "game output was still draining when the launch was preserved; its final lines may be missing"
@@ -712,15 +552,10 @@ async fn handle_unexpected_exit(
         deps.cfg.crash_window,
         deps.cfg.crash_threshold,
     ) {
-        // Intentional stops reap inline, so a Clean verdict here is defensive only.
         ExitDisposition::Clean => publish_label(deps.sdk, PROCESS_LABEL_STOPPED).await,
         ExitDisposition::Relaunch => {
             warn!("relaunching crashed game process after backoff");
             sleep(RELAUNCH_BACKOFF).await;
-            // The outcome needs no branch here: every failure mode already
-            // leaves the phase where the next observer should find it — a
-            // refused launch as `Crashed`, a spawn failure as the crash the
-            // exit was.
             let _outcome = relaunch(deps, state, child, "crash-relaunch").await;
         }
         ExitDisposition::Escalate => {
@@ -734,11 +569,6 @@ async fn handle_unexpected_exit(
     }
 }
 
-/// Fire off a one-shot occupancy query for the auto-updater, off the supervision
-/// loop so a slow or wedged RCON console can't stall it. Only polls while the
-/// game is actually up and accepting connections — a stopped or still-starting
-/// console would just report `None` (unknown) anyway. The result flows back on
-/// `occupancy_tx` for the loop's `maybe_auto_update` arm.
 fn spawn_occupancy_poll(
     state: &SupervisorState,
     occupancy: Option<&Arc<OccupancySource>>,
@@ -759,10 +589,6 @@ fn spawn_occupancy_poll(
     });
 }
 
-/// Fold one occupancy reading into the auto-updater and, when it decides a build
-/// is due for a refresh, bounce the game in place — the relaunch re-runs the
-/// entrypoint, which re-pulls the latest server build. An idle bounce is silent
-/// (nobody's connected); the rare backstop bounce warns players over RCON first.
 async fn maybe_auto_update(
     deps: &RunDeps<'_>,
     state: &mut SupervisorState,

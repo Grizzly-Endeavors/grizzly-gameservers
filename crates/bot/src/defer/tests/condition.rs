@@ -18,7 +18,6 @@ fn wait_key_round_trips_for_every_condition() {
 
 #[test]
 fn wait_key_uses_app_prefix() {
-    // The shared kv-cache isolates by prefix; a bare `wait:` key would collide.
     assert!(wait_key("mc", Condition::Empty).starts_with("gameservers:wait:"));
 }
 
@@ -56,20 +55,14 @@ fn condition_serializes_lowercase() {
 
 #[test]
 fn empty_streak_starts_and_continues_while_empty() {
-    // No streak yet + an empty reading starts one anchored at `now`.
     assert_eq!(next_empty_since(None, Some(0), 100_u64), Some(100));
-    // An ongoing streak is preserved (anchored at its original start), not reset
-    // to `now`, so the grace window measures from when it first went empty.
     assert_eq!(next_empty_since(Some(100_u64), Some(0), 200), Some(100));
 }
 
 #[test]
 fn empty_streak_resets_on_players_or_unknown() {
-    // A live player breaks the streak.
     assert_eq!(next_empty_since(Some(100_u64), Some(3), 200), None);
-    // An unknown count also breaks it — we never treat "can't tell" as empty.
     assert_eq!(next_empty_since(Some(100_u64), None, 200), None);
-    // And a fresh unknown never starts one.
     assert_eq!(next_empty_since(None, None, 200_u64), None);
 }
 

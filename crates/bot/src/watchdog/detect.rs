@@ -1,19 +1,3 @@
-//! Pure incident detection over the sampler's per-tick observations.
-//!
-//! [`DetectorState::tick`] is a state-transition function: poll results in,
-//! fired [`Incident`]s out, no IO. The sampler owns one instance of it and
-//! feeds it after each pass, so detection costs nothing the sampler wasn't
-//! already paying for.
-//!
-//! Thresholds are consts, not env knobs, mirroring the defer watcher's timing
-//! constants: they encode a judgment ("two unexpected exits in fifteen minutes
-//! is a pattern, one is a recovered blip"), and shadow-mode data is the way to
-//! revise that judgment before a live deployment leans on it.
-//!
-//! State is in-memory only. A bot redeploy re-baselines every instance —
-//! worst case one repeat wake for a still-broken server, which is the correct
-//! side to err on.
-
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -24,55 +8,28 @@ use super::{Incident, IncidentFacts, IncidentKind};
 use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::ResourceSample;
 
-/// How many recent ticks of restart deltas the crash-loop rule sums over.
 const CRASH_WINDOW_TICKS: u32 = 3;
-/// Unexpected exits within the window that make a crash-loop. Two: a single
-/// crash-and-relaunch is a recovered blip (and already lands in the
-/// crash-frequency series); a second inside the window is a pattern.
 const CRASH_RESTARTS_THRESHOLD: u32 = 2;
-/// Consecutive unreachable ticks that make a wedged supervisor. Three ticks at
-/// the default 5-minute interval is ~15 minutes — past any transient network
-/// blip or pod reschedule.
 const UNREACHABLE_TICKS: u32 = 3;
-/// Whole-pod memory as a percentage of the declared limit that counts as
-/// pressure. Conservative in the right direction: actuals include the Agones
-/// sidecar while the limit is in practice the game container's alone.
 const MEM_PRESSURE_PERCENT: i64 = 90;
-/// Consecutive over-threshold ticks that make memory pressure an incident
-/// rather than a spike (a world save or a chunk-generation burst).
 const MEM_PRESSURE_TICKS: u32 = 3;
-/// Per-(instance, kind) refire suppression. An unresolved incident re-wakes
-/// Gary once an hour, not every tick.
 const INCIDENT_COOLDOWN: Duration = Duration::from_hours(1);
 
-/// What one `/status` poll of one running instance yielded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PollObservation {
-    /// The supervisor answered.
     Ok {
         phase: ProcessPhase,
         restarts: u32,
         uptime_seconds: u64,
     },
-    /// The pod is up but the control API didn't answer — the wedged signal.
     Unreachable,
-    /// Agones declared the `GameServer` unhealthy: crash escalation's terminal
-    /// wreckage, observed from the object state because the pod (and its
-    /// supervisor) are torn down and the process label reads `stopped` — the
-    /// same label as an intentional pause.
     GameServerUnhealthy,
-    /// The pod exists but isn't ready; mid-transition, not evidence of anything.
     PodNotReady,
-    /// The instance vanished between the listing and the poll.
     NotFound,
-    /// The pod isn't one the bot manages.
     NotManaged,
-    /// The cluster query itself failed; nothing was learned this tick.
     ReadFailed,
 }
 
-/// One running instance's status poll this tick, with the identity labels the
-/// eventual incident needs to carry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StatusObservation {
     pub(crate) instance: InstanceName,
@@ -81,28 +38,18 @@ pub(crate) struct StatusObservation {
     pub(crate) poll: PollObservation,
 }
 
-/// Per-instance detection state.
 #[derive(Default)]
 struct InstanceWatch {
     game: Option<GameId>,
     guild: Option<GuildId>,
-    /// The restart counter at the last successful poll, for differencing.
     last_restarts: Option<u32>,
-    /// Positive restart deltas from the most recent ticks, newest last, capped
-    /// at [`CRASH_WINDOW_TICKS`].
     deltas: VecDeque<u32>,
     unreachable_streak: u32,
     mem_pressure_streak: u32,
-    /// Whether the last tick already saw this instance unhealthy. The wreckage
-    /// is static, so it fires on the transition in — not every tick, and not
-    /// hourly on cooldown expiry like the live signals.
     unhealthy_latched: bool,
-    /// When each incident kind last fired for this instance, for the cooldown.
     last_fired: HashMap<IncidentKind, Instant>,
 }
 
-/// The detector: all watched instances' state plus the tick interval (used only
-/// to render streak lengths as minutes in incident facts).
 pub(crate) struct DetectorState {
     interval: Duration,
     instances: HashMap<InstanceName, InstanceWatch>,
@@ -116,8 +63,6 @@ impl DetectorState {
         }
     }
 
-    /// Fold one sampler tick's observations in and return the incidents that
-    /// fired. `now` is injected so cooldown behavior is testable.
     pub(crate) fn tick(
         &mut self,
         now: Instant,
@@ -152,9 +97,6 @@ impl DetectorState {
         fired
     }
 
-    /// Forget instances that appeared in neither listing this tick — they were
-    /// destroyed (or the world was shut down and its pod released), and keeping
-    /// their cooldowns would suppress a fresh incident on a future namesake.
     fn prune(&mut self, statuses: &[StatusObservation], resources: &[ResourceSample]) {
         self.instances.retain(|name, _| {
             statuses.iter().any(|obs| obs.instance == *name)
@@ -163,7 +105,6 @@ impl DetectorState {
     }
 }
 
-/// Advance one instance's status-side state and fire at most one incident.
 fn status_transition(
     watch: &mut InstanceWatch,
     observation: &StatusObservation,
@@ -195,9 +136,6 @@ fn status_transition(
             watch.unreachable_streak = 0;
             let window_delta = fold_restart_delta(watch, restarts);
             if phase == ProcessPhase::Crashed {
-                // The supervisor already applied its own threshold (five exits
-                // inside its crash window) before reporting this, so it fires
-                // without further judgment here.
                 return fire(
                     watch,
                     &observation.instance,
@@ -239,9 +177,6 @@ fn status_transition(
             }
             None
         }
-        // Mid-transition or unlearnable ticks hold every streak: they are not
-        // evidence the server is fine, so they must not reset, and not evidence
-        // it is stuck, so they must not advance.
         PollObservation::PodNotReady
         | PollObservation::NotFound
         | PollObservation::NotManaged
@@ -249,10 +184,6 @@ fn status_transition(
     }
 }
 
-/// Difference the restart counter into the delta ring and return the window
-/// sum. A first sighting only baselines; a counter that went *down* means the
-/// pod was replaced, which re-baselines silently (the fresh pod's exits start
-/// counting from zero).
 fn fold_restart_delta(watch: &mut InstanceWatch, restarts: u32) -> u32 {
     let window = usize::try_from(CRASH_WINDOW_TICKS).unwrap_or(usize::MAX);
     match watch.last_restarts {
@@ -272,9 +203,6 @@ fn fold_restart_delta(watch: &mut InstanceWatch, restarts: u32) -> u32 {
         .fold(0_u32, |sum, delta| sum.saturating_add(*delta))
 }
 
-/// Advance one instance's memory-side state and fire at most one incident.
-/// A missing reading or a missing limit holds the streak — unknown is not fine
-/// and not pressure — and a below-threshold reading resets it.
 fn memory_transition(
     watch: &mut InstanceWatch,
     sample: &ResourceSample,
@@ -305,9 +233,6 @@ fn memory_transition(
     fire(watch, &sample.instance, IncidentKind::Memory, facts, now)
 }
 
-/// Emit an incident unless this (instance, kind) fired inside the cooldown.
-/// The cooldown is stamped only on an actual emit, so a suppressed refire
-/// doesn't keep pushing the window forward.
 fn fire(
     watch: &mut InstanceWatch,
     instance: &InstanceName,
@@ -335,7 +260,6 @@ fn fire(
     })
 }
 
-/// A streak length in wall-clock minutes, for human-readable incident facts.
 fn ticks_as_minutes(ticks: u32, interval: Duration) -> u64 {
     u64::from(ticks).saturating_mul(interval.as_secs()) / 60
 }

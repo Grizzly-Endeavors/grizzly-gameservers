@@ -39,7 +39,6 @@ fn sandbox_marker_carries_its_command() {
 
 #[test]
 fn sandbox_marker_is_only_recognised_first() {
-    // A command that merely mentions the marker is a command, not a mode switch.
     assert_eq!(
         classify_args(["--version", SANDBOX_ARG]),
         Invocation::ReportVersion

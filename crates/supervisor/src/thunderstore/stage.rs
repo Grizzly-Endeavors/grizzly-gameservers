@@ -1,22 +1,3 @@
-//! The staged install tree: `<work dir>/staged/BepInEx/…`, rebuilt from scratch
-//! on every launch and swapped into place when it is complete.
-//!
-//! Rebuilt rather than reconciled, because the mod list is the whole truth:
-//! removing a line has to remove the files, and the only way to be sure of that
-//! without tracking what each package installed is to build the tree from
-//! nothing every time. Swapped rather than built in place, because a launch that
-//! dies half-way through extraction would otherwise leave a tree that is neither
-//! the old set nor the new one — and the image mirrors whatever it finds.
-//!
-//! The supervisor never writes into the live loader directory itself. It stages,
-//! and the image's own pre-launch hook mirrors the staged tree across. That split
-//! is what keeps this module free of any knowledge about where a given game
-//! keeps `BepInEx`.
-//!
-//! Because the image treats this tree as the *complete* desired state, it is
-//! always built with the layout's full directory skeleton — an empty mod list
-//! stages an empty tree, never an absent one.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -25,25 +6,15 @@ use super::archive::{PackageLayout, extract};
 use super::cache;
 use super::resolve::ResolvedPackage;
 
-/// Subdirectory holding the tree the image mirrors.
 pub const STAGED_DIR: &str = "staged";
 
-/// Subdirectory the next tree is built in before the swap.
 const NEXT_DIR: &str = "staged.next";
 
-/// The staged tree's path.
 #[must_use]
 pub fn staged_path(work_dir: &Path) -> PathBuf {
     work_dir.join(STAGED_DIR)
 }
 
-/// Build the staged tree for `packages` and swap it into place. Returns how many
-/// files were installed.
-///
-/// # Errors
-///
-/// Returns an error if a package's zip is missing from the cache, an archive
-/// fails validation, or the tree can't be built or swapped.
 pub fn rebuild(
     work_dir: &Path,
     packages: &[ResolvedPackage],
@@ -52,10 +23,6 @@ pub fn rebuild(
     let next = work_dir.join(NEXT_DIR);
     let staged = staged_path(work_dir);
     remove_tree(&next)?;
-    // The skeleton is created before anything is extracted, so an empty mod list
-    // produces an empty tree rather than an absent one — see
-    // [`PackageLayout::skeleton`] for why the difference decides whether
-    // removing the last mod actually removes it.
     for dir in layout.skeleton() {
         let path = next.join(dir);
         std::fs::create_dir_all(&path)
@@ -83,7 +50,6 @@ pub fn rebuild(
     Ok(installed)
 }
 
-/// Delete a directory tree, treating "already gone" as success.
 fn remove_tree(path: &Path) -> Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),

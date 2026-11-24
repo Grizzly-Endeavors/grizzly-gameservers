@@ -210,9 +210,6 @@ fn escalation_kind_is_the_outcome() {
     );
 }
 
-/// A Discord handoff carries no server in its context, so the one the model
-/// named in the tool call is the only locator the row can have — without this,
-/// the `instance` column is null for every agent-requested escalation.
 #[test]
 fn an_agent_requested_escalation_records_the_server_the_model_named() {
     let event = escalation_event(
@@ -241,10 +238,6 @@ fn an_agent_requested_escalation_records_the_server_the_model_named() {
     );
 }
 
-/// The loop names its exits and the event log names its outcomes; they have to
-/// be the same names or the Langfuse `escalation_kind` score can't be joined to
-/// an `events` row. `agent::session` can't reach these constants (it's the pure
-/// core), so the agreement is asserted here instead.
 #[test]
 fn the_loops_escalation_names_match_the_event_outcomes() {
     assert_eq!(

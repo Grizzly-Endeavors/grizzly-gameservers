@@ -15,20 +15,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-/// The ini section Palworld reads its world settings from.
 const SECTION_HEADER: &str = "[/Script/Pal.PalGameWorldSettings]";
-/// The single key that carries every world setting as a flat tuple.
 const OPTION_SETTINGS_PREFIX: &str = "OptionSettings=";
 
-/// Seed the RCON keys into the Palworld ini at `path`, preserving every other
-/// setting, creating the file (and its parent dirs) on a fresh PVC. Runs before
-/// each launch, so a password rotated on a new pod and a first-ever boot both
-/// converge on an ini the game will accept.
-///
-/// # Errors
-///
-/// Returns an error if the ini can't be read (for a reason other than "not yet
-/// created"), its parent directory can't be created, or the write fails.
 pub(crate) fn seed_rcon(path: &Path, port: u16, password: &str) -> Result<()> {
     let existing = match std::fs::read_to_string(path) {
         Ok(contents) => Some(contents),
@@ -48,11 +37,6 @@ pub(crate) fn seed_rcon(path: &Path, port: u16, password: &str) -> Result<()> {
         .with_context(|| format!("failed to write palworld ini at {}", path.display()))
 }
 
-/// Return the ini text with RCON enabled on `port` and `password` set as the
-/// `AdminPassword` (which Palworld reuses as the RCON password), preserving all
-/// other keys and lines. When `existing` has no `OptionSettings` line — a fresh
-/// PVC — a minimal valid ini is produced instead; Palworld fills every key it
-/// doesn't find with its own default.
 fn ensure_rcon_settings(existing: Option<&str>, port: u16, password: &str) -> String {
     let port = port.to_string();
     if let Some(text) = existing
@@ -74,13 +58,10 @@ fn ensure_rcon_settings(existing: Option<&str>, port: u16, password: &str) -> St
     )
 }
 
-/// Whether `line` is the `OptionSettings=(...)` line (ignoring leading indent).
 fn is_option_settings(line: &str) -> bool {
     line.trim_start().starts_with(OPTION_SETTINGS_PREFIX)
 }
 
-/// Rebuild one `OptionSettings` line with the RCON keys upserted, preserving the
-/// line's leading indent and every other key in its original order.
 fn rebuild_option_settings(line: &str, port: &str, password: &str) -> String {
     let trimmed = line.trim_start();
     let indent = line.strip_suffix(trimmed).unwrap_or("");
@@ -103,9 +84,6 @@ fn rebuild_option_settings(line: &str, port: &str, password: &str) -> String {
     format!("{indent}{OPTION_SETTINGS_PREFIX}({joined})")
 }
 
-/// Split the inside of an `OptionSettings` tuple into its top-level `Key=Value`
-/// pairs, honoring double-quoted values (which may contain commas) and any nested
-/// parens. Empty segments — e.g. from a trailing comma — are dropped.
 fn split_top_level(inside: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     let mut depth: i32 = 0;
@@ -136,8 +114,6 @@ fn split_top_level(inside: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// Parse one `Key=Value` segment and append it, dropping blanks. A token with no
-/// `=` is kept as a key with an empty value so it round-trips untouched.
 fn push_pair(pairs: &mut Vec<(String, String)>, segment: &str) {
     let segment = segment.trim();
     if segment.is_empty() {
@@ -149,8 +125,6 @@ fn push_pair(pairs: &mut Vec<(String, String)>, segment: &str) {
     }
 }
 
-/// Set `key` to `value`, replacing an existing entry in place (preserving its
-/// position in the tuple) or appending it when absent.
 fn upsert(pairs: &mut Vec<(String, String)>, key: &str, value: String) {
     if let Some(entry) = pairs.iter_mut().find(|(existing, _)| existing == key) {
         entry.1 = value;

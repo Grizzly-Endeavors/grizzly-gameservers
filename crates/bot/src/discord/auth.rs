@@ -6,18 +6,10 @@ use super::{Context, Data, Error};
 use crate::agones::{ScopeVerdict, ServerScope, verify_scope};
 use crate::store::GrantSet;
 
-/// A caller's access tier in one guild. Ordered low→high so `>=` expresses "at
-/// least this tier": `Admin` implies every `Manager` privilege, which implies
-/// every read-only one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum AccessLevel {
-    /// Look-up only — the default for anyone not granted a higher tier.
     ReadOnly,
-    /// Day-to-day server operation (lifecycle + backups + Gary file edits), but
-    /// not destructive or governance actions.
     Manager,
-    /// Full control, including destroy, restore, `/config`, and Gary console
-    /// commands.
     Admin,
 }
 
@@ -31,33 +23,15 @@ impl AccessLevel {
     }
 }
 
-/// Everything the access policy weighs for one caller in one guild. Bundled so
-/// the decision is a pure function of explicit inputs, unit-testable without a
-/// live interaction. `guild_owner`, `guild_admins`, and `guild_managers` are
-/// guild-specific; `operators` is the cross-guild seed.
 pub(crate) struct AccessCheck<'a> {
     pub(crate) user: u64,
     pub(crate) roles: &'a [u64],
-    /// The guild's owner id, when known. The owner is always an admin in their
-    /// own guild — this is the bootstrap path so a fresh guild is usable before
-    /// any `/config` is run.
     pub(crate) guild_owner: Option<u64>,
-    /// Cross-guild operator seed (env `GAMESERVERS_ADMIN_USER_IDS`): admin in
-    /// every guild.
     pub(crate) operators: &'a [u64],
-    /// The guild's DB-configured admin roles and users.
     pub(crate) guild_admins: &'a GrantSet,
-    /// The guild's DB-configured manager roles and users.
     pub(crate) guild_managers: &'a GrantSet,
 }
 
-/// The highest tier `check.user` holds in their guild. Admins are the union of:
-/// cross-guild operators, the guild owner, DB-configured admin users, and
-/// members holding a DB-configured admin role; managers are the DB-configured
-/// manager users and role-holders. Pure so the policy is unit-tested without a
-/// live interaction. Fail-closed: with the grant sets empty (e.g. the config DB
-/// is down), only operators and the owner are admitted — as `Admin` — and
-/// everyone else falls to `ReadOnly`.
 pub(crate) fn access_level(check: &AccessCheck<'_>) -> AccessLevel {
     if is_granted(check, check.guild_admins) {
         AccessLevel::Admin
@@ -68,8 +42,6 @@ pub(crate) fn access_level(check: &AccessCheck<'_>) -> AccessLevel {
     }
 }
 
-/// Whether `check.user` is an operator/owner (always admin) or is named — as a
-/// user or via a held role — in `grants`.
 fn is_granted(check: &AccessCheck<'_>, grants: &GrantSet) -> bool {
     check.operators.contains(&check.user)
         || check.guild_owner == Some(check.user)
@@ -77,11 +49,6 @@ fn is_granted(check: &AccessCheck<'_>, grants: &GrantSet) -> bool {
         || check.roles.iter().any(|role| grants.roles.contains(role))
 }
 
-/// Which servers `user` may see and act on. A cross-guild operator gets the
-/// all-guilds view (`All`) even in a DM; anyone else is confined to the guild
-/// they're speaking in. `None` — a non-operator with no guild (a DM) — has no
-/// tenant to scope to and must be refused. Pure so the policy is unit-tested
-/// without a live interaction.
 pub(crate) fn visibility_scope(
     user: u64,
     guild: Option<u64>,
@@ -94,13 +61,6 @@ pub(crate) fn visibility_scope(
     }
 }
 
-/// poise check for the admin-only commands (`/destroy`, `/config`, `/restore`, …).
-/// Denies with an ephemeral message (returning `false` alone would give the
-/// friend no feedback).
-///
-/// # Errors
-///
-/// Returns an error only if sending the denial reply to Discord fails.
 pub(crate) async fn require_admin(ctx: Context<'_>) -> Result<bool, Error> {
     require_at_least(
         ctx,
@@ -110,14 +70,6 @@ pub(crate) async fn require_admin(ctx: Context<'_>) -> Result<bool, Error> {
     .await
 }
 
-/// poise check for the operator-only commands (`/config limits` mutations).
-/// Deliberately above `require_admin`: guild admins are the party the caps
-/// bind, so the tier that grants everything *inside* a guild still doesn't
-/// reach the knobs that bound the guild itself.
-///
-/// # Errors
-///
-/// Returns an error only if sending the denial reply to Discord fails.
 pub(crate) async fn require_operator(ctx: Context<'_>) -> Result<bool, Error> {
     if ctx.data().operator_ids.contains(&ctx.author().id.get()) {
         return Ok(true);
@@ -126,13 +78,6 @@ pub(crate) async fn require_operator(ctx: Context<'_>) -> Result<bool, Error> {
     Ok(false)
 }
 
-/// poise check for the manager-tier commands — the day-to-day lifecycle
-/// (`/create`, `/start`, `/stop`, `/backup`, …). Admins pass too (they outrank
-/// managers).
-///
-/// # Errors
-///
-/// Returns an error only if sending the denial reply to Discord fails.
 pub(crate) async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
     require_at_least(
         ctx,
@@ -142,12 +87,6 @@ pub(crate) async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
     .await
 }
 
-/// Pass the check when the caller's tier is at least `needed`, else deny with
-/// `message`.
-///
-/// # Errors
-///
-/// Returns an error only if sending the denial reply to Discord fails.
 async fn require_at_least(
     ctx: Context<'_>,
     needed: AccessLevel,
@@ -160,22 +99,12 @@ async fn require_at_least(
     Ok(false)
 }
 
-/// Who is acting, gathered by whichever surface has the facts — a slash command,
-/// a chat message, or a button click. Three surfaces need the same tier answer,
-/// so they collect this and share one resolver rather than each re-deriving the
-/// policy.
 pub(crate) struct Speaker {
     pub(crate) user: u64,
-    /// `None` in a DM, where only an operator holds a tier.
     pub(crate) guild: Option<serenity::GuildId>,
-    /// The guild roles they hold, empty when unknown.
     pub(crate) roles: Vec<u64>,
 }
 
-/// `speaker`'s access tier in the guild they're speaking in. Operators are
-/// admins everywhere (including DMs); everyone else needs a guild and is scored
-/// against the owner check plus the DB-configured admin/manager grants. A guild
-/// read failure falls through as the weaker tier (fail-closed) after logging.
 pub(crate) async fn access_level_for(
     ctx: &serenity::Context,
     data: &Data,
@@ -185,7 +114,6 @@ pub(crate) async fn access_level_for(
         return AccessLevel::Admin;
     }
     let Some(guild_id) = speaker.guild else {
-        // Non-operator in a DM: no guild to hold a tier in.
         return AccessLevel::ReadOnly;
     };
     let guild_admins = data.guild_config.admins(guild_id.get()).await;
@@ -200,9 +128,6 @@ pub(crate) async fn access_level_for(
     })
 }
 
-/// The guild's owner id, cache-first (the guild is cached from its `GuildCreate`),
-/// falling back to an HTTP fetch. `None` on a read failure — auth then fails
-/// closed to operators only for that check.
 pub(crate) async fn guild_owner_id(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
@@ -219,7 +144,6 @@ pub(crate) async fn guild_owner_id(
     }
 }
 
-/// The invoking user's access tier in the guild the command ran in.
 pub(crate) async fn access_level_of(ctx: Context<'_>) -> AccessLevel {
     let roles: Vec<u64> = match ctx.author_member().await {
         Some(member) => member.roles.iter().map(|role| role.get()).collect(),
@@ -237,17 +161,6 @@ pub(crate) async fn access_level_of(ctx: Context<'_>) -> AccessLevel {
     .await
 }
 
-/// poise global `command_check` confining a server-targeting command to the
-/// caller's visibility scope. Commands with no `server` option — and non-slash
-/// contexts — pass straight through; a server in another guild is refused with
-/// the same ephemeral wording as a missing one, so scoping never reveals another
-/// guild's servers. A non-operator invoking a server command from a DM (no
-/// guild) is refused with guidance.
-///
-/// # Errors
-///
-/// Returns an error only if reading the cluster or sending the denial to Discord
-/// fails.
 pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
     let poise::Context::Application(app) = ctx else {
         return Ok(true);
@@ -290,7 +203,6 @@ pub(crate) async fn require_scope(ctx: Context<'_>) -> Result<bool, Error> {
     }
 }
 
-/// The `server` slash-command option's value, if this command has one.
 fn server_option<'a>(args: &'a [serenity::ResolvedOption<'a>]) -> Option<&'a str> {
     args.iter().find_map(|option| {
         if option.name != "server" {
@@ -304,8 +216,6 @@ fn server_option<'a>(args: &'a [serenity::ResolvedOption<'a>]) -> Option<&'a str
     })
 }
 
-/// Send an ephemeral denial for a failed check, so the friend gets feedback
-/// rather than a silently swallowed command.
 async fn deny(ctx: Context<'_>, message: &str) -> Result<(), Error> {
     ctx.send(
         poise::CreateReply::default()

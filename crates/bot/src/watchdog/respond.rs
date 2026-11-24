@@ -1,16 +1,3 @@
-//! The watchdog responder: the `Data`-holding consumer of fired incidents.
-//!
-//! One sequential loop per process — incidents are rare, and running them one
-//! at a time is itself a guardrail (never two proactive Gary turns in flight).
-//! Every incident is recorded to the product event log whatever its
-//! disposition; that record is what makes shadow mode auditable with one query.
-//!
-//! In `on` mode a fired incident becomes a manager-tier Gary turn, shaped
-//! exactly like a deferred batch (ADR-007): fresh two-message transcript, no
-//! session, interactive confirmations, delivered to the guild's home channel —
-//! or into an operator's DM when the guild has none. Escalations DM operators
-//! through the same notifier every other surface uses.
-
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -31,19 +18,10 @@ use crate::events::mapping;
 use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 
-/// How long to wait for the gateway's first `Ready` before giving up on a turn
-/// and falling back to an operator DM with the raw facts. Generous: Discord
-/// outages are rare and an incident is worth waiting out a slow reconnect for.
 const GATEWAY_WAIT: Duration = Duration::from_mins(5);
-/// Storm guard: with this many proactive turns already started inside
-/// [`STORM_WINDOW`], further incidents are suppressed to a one-line operator
-/// DM. A node failure fires many instances at once; three investigations is
-/// signal, ten is noise (and ten model turns).
 const STORM_MAX_TURNS: usize = 3;
 const STORM_WINDOW: Duration = Duration::from_mins(30);
 
-/// Consume incidents until shutdown, on the tracked task set so an in-flight
-/// response is drained rather than cut off.
 pub(crate) fn spawn_responder(
     data: Data,
     incidents: mpsc::Receiver<Incident>,
@@ -52,16 +30,11 @@ pub(crate) fn spawn_responder(
     let tasks = data.tasks.clone();
     let mode = data.settings.snapshot().watchdog;
     let shutdown = data.shutdown.clone();
-    // Shared so a restart after a panic can resume consuming the same queue: the
-    // receiver is the one piece of this loop that cannot be rebuilt, and dropping
-    // it would leave the sampler firing incidents into a closed channel.
     let incidents = std::sync::Arc::new(tokio::sync::Mutex::new(incidents));
     crate::cycles::spawn_supervised("watchdog-responder", health, &tasks, shutdown, move || {
         let data = data.clone();
         let incidents = std::sync::Arc::clone(&incidents);
         async move {
-            // Reset by a restart, which widens the storm guard for one window —
-            // preferable to holding a lock across the panic that lost it.
             let mut turn_starts: VecDeque<Instant> = VecDeque::new();
             let mut incidents = incidents.lock().await;
             loop {
@@ -79,12 +52,6 @@ pub(crate) fn spawn_responder(
     info!(mode = mode.as_str(), "proactive watchdog responder started");
 }
 
-/// Dispose of one incident according to the watchdog mode, recording exactly
-/// one incident event for it whatever happens.
-///
-/// The mode is read here, per incident, rather than captured when the responder
-/// spawned: an operator who turns the watchdog down mid-storm expects the next
-/// incident to be recorded rather than acted on, not the one after the restart.
 async fn handle_incident(data: &Data, incident: &Incident, turn_starts: &mut VecDeque<Instant>) {
     warn!(
         instance = %incident.instance,
@@ -94,9 +61,6 @@ async fn handle_incident(data: &Data, incident: &Incident, turn_starts: &mut Vec
     );
     match data.settings.snapshot().watchdog {
         WatchdogMode::On => respond(data, incident, turn_starts).await,
-        // `Off` reaches here only for an incident the detector had already fired
-        // when the mode changed under it. Recording it like shadow keeps the
-        // event log's one-row-per-incident promise through the transition.
         WatchdogMode::Shadow | WatchdogMode::Off => {
             data.events
                 .record(mapping::incident_event(incident, mapping::SHADOW, None))
@@ -105,8 +69,6 @@ async fn handle_incident(data: &Data, incident: &Incident, turn_starts: &mut Vec
     }
 }
 
-/// The `on`-mode disposition chain: dedup against the defer watchdog, apply
-/// the storm guard, find a channel, run the turn, escalate if it gave up.
 async fn respond(data: &Data, incident: &Incident, turn_starts: &mut VecDeque<Instant>) {
     if incident.kind == IncidentKind::Crash
         && data
@@ -196,8 +158,6 @@ async fn respond(data: &Data, incident: &Incident, turn_starts: &mut VecDeque<In
     run_incident_turn(data, &ctx, incident, channel_id, delivery).await;
 }
 
-/// Retain only turn-starts inside the storm window and say whether another
-/// turn would exceed the cap. Pure so the window arithmetic is testable.
 fn storm_suppressed(turn_starts: &mut VecDeque<Instant>, now: Instant) -> bool {
     while turn_starts
         .front()
@@ -208,7 +168,6 @@ fn storm_suppressed(turn_starts: &mut VecDeque<Instant>, now: Instant) -> bool {
     turn_starts.len() >= STORM_MAX_TURNS
 }
 
-/// Wait for a live gateway Context, bounded by [`GATEWAY_WAIT`] and shutdown.
 async fn wait_for_gateway(data: &Data) -> Option<serenity::Context> {
     let mut gateway = data.gateway.subscribe();
     tokio::select! {
@@ -218,14 +177,11 @@ async fn wait_for_gateway(data: &Data) -> Option<serenity::Context> {
             gateway.wait_for(Option::is_some),
         ) => match waited {
             Ok(Ok(current)) => current.clone(),
-            // The sender half only drops when the process is tearing down.
             Ok(Err(_)) | Err(_) => None,
         },
     }
 }
 
-/// Where the proactive turn runs: the guild's home channel, else the first
-/// operator DM that opens. `None` means there is genuinely nowhere to go.
 async fn resolve_channel(
     data: &Data,
     ctx: &serenity::Context,
@@ -254,11 +210,6 @@ async fn resolve_channel(
     None
 }
 
-/// Run the incident as a one-shot manager-tier Gary turn — the deferred-batch
-/// shape — and record how it went.
-/// The tenant an incident's turn is confined to. An instance carrying no owning
-/// guild label gets no turn at all: scoping it `All` would hand an unattended
-/// manager-tier turn the cross-guild operator view over one missing label.
 fn incident_scope(incident: &Incident) -> Option<ServerScope> {
     let Some(guild) = incident.guild.as_ref() else {
         warn!(
@@ -292,8 +243,6 @@ async fn run_incident_turn(
     let Some(scope) = incident_scope(incident) else {
         return;
     };
-    // The turn has no requester; the bot's own snowflake is the honest author
-    // ("Gary did it, unprompted"), and the watchdog surface disambiguates it.
     let author_id = ctx.cache.current_user().id;
 
     let turn = GaryTurn {
@@ -347,9 +296,6 @@ async fn run_incident_turn(
                 .await;
             data.notifier.notify(&escalation).await;
         }
-        // A watchdog turn nobody can see has no stop command pointed at it, so
-        // Cancelled is unreachable here; it is grouped with the answered case
-        // because "the incident was responded to" is what both mean.
         Ok(SessionOutcome {
             ending: TurnEnding::Answered | TurnEnding::Cancelled,
             ..
@@ -379,8 +325,6 @@ async fn run_incident_turn(
     }
 }
 
-/// The incident's user turn: the frame prompt around a kind-specific trigger
-/// note carrying the fired signal's numbers.
 fn compose_incident_prompt(incident: &Incident) -> String {
     let trigger_note = trigger_note(&incident.facts);
     prompts::WatchdogIncident {
@@ -390,7 +334,6 @@ fn compose_incident_prompt(incident: &Incident) -> String {
     .render()
 }
 
-/// The kind-specific predicate phrase completing `The server "<name>" …`.
 fn trigger_note(facts: &IncidentFacts) -> String {
     match facts {
         IncidentFacts::CrashLoop {
@@ -424,8 +367,6 @@ fn trigger_note(facts: &IncidentFacts) -> String {
     }
 }
 
-/// One human-readable line of an incident's numbers, for operator DMs (which
-/// are human-facing text, not model-visible prompt content).
 fn facts_line(facts: &IncidentFacts) -> String {
     match facts {
         IncidentFacts::CrashLoop {

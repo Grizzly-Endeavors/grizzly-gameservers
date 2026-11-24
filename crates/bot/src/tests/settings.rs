@@ -1,7 +1,5 @@
 use super::*;
 
-/// A baseline that doesn't depend on `BotConfig`, so the catalog can be tested
-/// without building a whole environment.
 fn baseline() -> SettingsSnapshot {
     SettingsSnapshot::for_test()
 }
@@ -57,7 +55,6 @@ fn every_key_resolves_back_from_its_database_key() {
 fn an_override_beats_the_baseline() {
     let composed = compose(&baseline(), &overrides(&[(SettingKey::GaryModel, "qwen3")]));
     assert_eq!(composed.gary_model, "qwen3");
-    // Untouched keys keep the deployed value.
     assert_eq!(composed.gary_base_url, "https://ollama.com/v1");
 }
 
@@ -173,9 +170,6 @@ fn the_watchdog_mode_vocabulary_is_closed() {
     );
 }
 
-/// An unparseable stored row is a bug somewhere upstream, but it must degrade to
-/// the deployed value rather than taking the process down or silently dropping
-/// every *other* override with it.
 #[test]
 fn an_unusable_stored_row_falls_back_without_disturbing_its_neighbours() {
     let baseline = baseline();
@@ -205,7 +199,6 @@ fn crossed_sizing_bounds_are_refused() {
     SettingKey::SizingMaxCpu
         .assign(&mut snapshot, "100m")
         .expect("the value itself parses");
-    // Parsing succeeds in isolation; the cross-field rule is what catches it.
     assert!(snapshot.coherence().is_err());
 }
 
@@ -237,7 +230,6 @@ async fn a_facade_without_persistence_refuses_writes_rather_than_pretending() {
         .await
         .expect_err("writes are refused without a database");
     assert!(err.to_string().contains("no database"), "{err}");
-    // The refusal changed nothing, so the running configuration is still honest.
     assert_eq!(settings.snapshot().gary_model, "glm-5.2");
 }
 
@@ -248,9 +240,6 @@ fn the_booted_snapshot_is_what_the_process_started_with() {
     assert_eq!(settings.baseline().backup_retention, 7);
 }
 
-/// Restart-class keys are the ones a consumer captures at startup. Getting this
-/// list wrong is invisible until an operator changes one and it silently does
-/// nothing, so it is pinned rather than left to the reader of `reload()`.
 #[test]
 fn only_the_cycle_cadences_wait_for_a_restart() {
     let restart: Vec<&str> = SettingKey::ALL
@@ -279,9 +268,6 @@ fn every_key_carries_operator_facing_copy() {
     }
 }
 
-/// The panel puts a rendered value straight into an editable field, so anything
-/// that doesn't survive the round trip would silently rewrite a setting the
-/// operator only opened to look at.
 #[test]
 fn rendering_a_value_round_trips_through_assign() {
     let baseline = baseline();
@@ -307,8 +293,6 @@ fn bytes_render_in_the_largest_exact_binary_unit() {
     assert_eq!(exact_bytes(3 * 1024), "3Ki");
 }
 
-/// A bare number means *cores* to the CPU parser, so millicores must always be
-/// rendered with their suffix or a save would multiply the value by a thousand.
 #[test]
 fn cpu_renders_with_an_explicit_millicore_suffix() {
     assert_eq!(exact_cpu(24_000), "24000m");
@@ -316,9 +300,6 @@ fn cpu_renders_with_an_explicit_millicore_suffix() {
     assert_eq!(parse_cpu_millicores(&exact_cpu(250)), Some(250));
 }
 
-/// A URL with no trailing slash must come back exactly as typed. Normalizing
-/// through `Url::to_string()` would append one, silently rewriting a setting the
-/// operator only opened to look at.
 #[test]
 fn a_url_setting_round_trips_without_gaining_a_trailing_slash() {
     let mut snapshot = baseline();

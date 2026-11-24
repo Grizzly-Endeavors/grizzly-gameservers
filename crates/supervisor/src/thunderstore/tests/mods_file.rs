@@ -49,8 +49,6 @@ fn surrounding_whitespace_is_forgiven() {
 
 #[test]
 fn a_malformed_line_names_its_line_and_the_shape_expected() {
-    // Loud rather than skipped: silently dropping this line would answer "that
-    // mod isn't installed" to somebody who asked for it, durably and wrongly.
     let err = parse("ValheimModding-Jotunn\njust some words\n").unwrap_err();
     let message = err.to_string();
     assert!(message.contains("line 2"), "got: {message}");
@@ -65,8 +63,6 @@ fn a_modrinth_style_slug_is_refused() {
 
 #[test]
 fn a_package_listed_twice_names_both_lines() {
-    // Two entries for one package have no defined answer — the second would
-    // silently win or silently lose depending on resolution order.
     let err = parse("ValheimModding-Jotunn\nValheimModding-Jotunn-2.28.0\n").unwrap_err();
     let message = err.to_string();
     assert!(message.contains("line 2"), "got: {message}");
@@ -75,12 +71,8 @@ fn a_package_listed_twice_names_both_lines() {
 
 #[test]
 fn a_version_that_is_not_three_numbers_is_malformed_not_a_bare_package() {
-    // `Author-Mod-1.2` must not quietly read as a package literally named
-    // "Mod-1.2" — the component grammar excludes the dash, so it can't.
     assert!(parse("Author-Mod-1.2\n").is_err());
 }
-
-// ---- client entries ----
 
 #[test]
 fn a_client_line_is_recorded_and_never_installed() {
@@ -109,9 +101,6 @@ fn a_client_line_tolerates_a_space_after_the_prefix() {
 
 #[test]
 fn an_unpinned_client_line_is_skipped_rather_than_stopping_the_launch() {
-    // Decision 3: a mod this server does not install has no business taking the
-    // world down. Nothing downstream resolves a client entry, so an unpinned one
-    // could never acquire a version — but that is a warning, not a crash.
     let list = parse("client:Smoothbrain-Sailing\n").unwrap();
     assert!(list.client_only.is_empty());
     let reported = warnings(&list);
@@ -139,9 +128,6 @@ fn a_malformed_client_line_is_skipped_rather_than_stopping_the_launch() {
 
 #[test]
 fn a_package_may_appear_once_as_one_form_or_the_other() {
-    // The install line is the offender here, and it is the one that would
-    // actually install something, so it fails the launch like any other
-    // ambiguous install line.
     let err = parse(
         "client:ValheimModding-Jotunn-2.29.2\n\
          ValheimModding-Jotunn-2.29.2\n",

@@ -40,8 +40,6 @@ fn minted_ids_survive_into_the_span_context() {
     assert_eq!(data.span_context.span_id(), SpanId::from_bytes([3; 8]));
 }
 
-/// An unsampled span is discarded by collectors, so the flag has to be set
-/// explicitly — there is no tracer in this path to set it.
 #[test]
 fn spans_are_marked_sampled() {
     let data = observation(None).into_span_data(scope());

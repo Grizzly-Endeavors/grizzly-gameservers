@@ -22,8 +22,6 @@ fn dependency_strings_become_releases() {
 
 #[test]
 fn an_unparseable_dependency_is_dropped_rather_than_failing_the_launch() {
-    // Upstream owns this string. Refusing the whole launch over one malformed
-    // manifest would let any Thunderstore author take a running server down.
     let parsed = parse_dependencies(&[
         "totally not a dependency".to_owned(),
         "Author-Mod-1.0.0".to_owned(),
@@ -34,15 +32,6 @@ fn an_unparseable_dependency_is_dropped_rather_than_failing_the_launch() {
     assert_eq!(only.to_string(), "Author-Mod-1.0.0");
 }
 
-// ---- the cache layering ----
-//
-// The asymmetry these cover is the offline story: an *exact* version is answered
-// from the cache before the registry is asked at all, so a fully pinned mod list
-// resolves with no network; a *latest* can only come from the registry, and falls
-// back to the highest cached version with a note when that registry is down.
-
-/// A registry that answers from a map and records what it was asked, so a test
-/// can assert the cache was consulted *first* rather than merely consulted.
 #[derive(Default)]
 struct FakeRegistry {
     versions: BTreeMap<String, PackageVersion>,
@@ -107,7 +96,6 @@ impl PackageSource for FakeRegistry {
     }
 }
 
-/// Put a real (manifest-only) package zip in the cache for `release`.
 fn seed_cache(work_dir: &std::path::Path, release: &PackageRelease, dependencies: &str) {
     let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let options =
@@ -128,8 +116,6 @@ fn seed_cache(work_dir: &std::path::Path, release: &PackageRelease, dependencies
 
 #[tokio::test]
 async fn a_pinned_package_resolves_from_cache_without_asking_the_registry() {
-    // This is what makes a pod recreated during a Thunderstore outage come back
-    // with the mods it had.
     let dir = tempfile::tempdir().unwrap();
     let release: PackageRelease = "Author-Mod-1.0.0".parse().unwrap();
     seed_cache(dir.path(), &release, r#""Lib-Core-2.0.0""#);
@@ -174,8 +160,6 @@ async fn a_pinned_package_that_is_not_cached_falls_through_to_the_registry() {
 
 #[tokio::test]
 async fn an_unpinned_package_prefers_the_registry_even_when_something_is_cached() {
-    // "Latest" is a question only the registry can answer, so a cached copy must
-    // not stand in while it is reachable — that would pin an unpinned entry.
     let dir = tempfile::tempdir().unwrap();
     seed_cache(dir.path(), &"Author-Mod-1.0.0".parse().unwrap(), "");
     let registry = FakeRegistry::up("Author-Mod-2.0.0");
@@ -224,8 +208,6 @@ async fn an_unreachable_registry_with_an_empty_cache_is_a_failure_not_a_guess() 
 
 #[tokio::test]
 async fn a_package_the_registry_denies_is_never_served_from_cache() {
-    // NotFound is a mistake in the mod list, not an outage. Falling back here
-    // would install something nobody can look up.
     let dir = tempfile::tempdir().unwrap();
     seed_cache(dir.path(), &"Author-Mod-1.0.0".parse().unwrap(), "");
     let registry = FakeRegistry::up("Someone-Else-1.0.0");

@@ -34,8 +34,5 @@ fn serde_is_transparent_so_the_manifest_wire_format_is_unchanged() {
 
 #[test]
 fn distinct_ids_are_separate_types() {
-    // A GuildId and a GameId holding the same text are still different types —
-    // this is what makes a transposition a compile error rather than a data bug.
-    // (The compile-time guarantee is the point; this asserts the value semantics.)
     assert_eq!(GuildId::new("x").as_str(), GameId::new("x").as_str());
 }

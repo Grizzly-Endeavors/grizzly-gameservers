@@ -72,11 +72,8 @@ fn minecraft_parses_online_count_from_list_reply() {
 #[test]
 fn source_counts_factorio_online_rows() {
     let dialect = RconDialect::Source;
-    // `/players` lists everyone; only connected players carry the " (online)"
-    // suffix, and offline rows must not be counted.
     let reply = "Online players (2):\n  Alice (online)\n  Bob (online)\n  Carol (offline)\n";
     assert_eq!(dialect.parse_player_count(reply), Some(2));
-    // Empty server: header only, no online rows.
     assert_eq!(dialect.parse_player_count("Online players (0):\n"), Some(0));
     assert_eq!(dialect.parse_player_count(""), Some(0));
 }
@@ -84,7 +81,6 @@ fn source_counts_factorio_online_rows() {
 #[test]
 fn palworld_counts_showplayers_rows() {
     let dialect = RconDialect::Palworld;
-    // Header only -> empty server.
     assert_eq!(
         dialect.parse_player_count("name,playeruid,steamid"),
         Some(0)
@@ -93,7 +89,6 @@ fn palworld_counts_showplayers_rows() {
         dialect.parse_player_count("name,playeruid,steamid\nAlice,1,7656\nBob,2,7657"),
         Some(2)
     );
-    // Trailing blank lines are not players.
     assert_eq!(
         dialect.parse_player_count("name,playeruid,steamid\nAlice,1,7656\n\n"),
         Some(1)
@@ -137,7 +132,6 @@ fn player_count_command_matches_dialect() {
 #[test]
 fn encode_packet_frames_length_id_type_and_terminators() {
     let bytes = encode_packet(ID_EXEC, TYPE_EXECCOMMAND, "list").unwrap();
-    // length field counts everything after itself: id + type + body + 2 nulls = 14.
     let mut expected = Vec::new();
     expected.extend_from_slice(&14_i32.to_le_bytes());
     expected.extend_from_slice(&ID_EXEC.to_le_bytes());
@@ -176,7 +170,6 @@ async fn read_packet_handles_an_empty_body() {
 
 #[tokio::test]
 async fn read_packet_rejects_a_too_short_length_prefix() {
-    // Length prefix of 4 is below the 10-byte minimum (id + type + 2 nulls).
     let mut bytes = 4_i32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&[0_u8; 4]);
     let mut reader = bytes.as_slice();
@@ -188,8 +181,6 @@ async fn read_packet_rejects_a_too_short_length_prefix() {
 
 #[tokio::test]
 async fn read_packet_rejects_an_oversized_length_prefix() {
-    // Above MAX_PACKET_LEN; rejected before any body bytes are read, so no body
-    // needs to be supplied.
     let bytes = i32::try_from(MAX_PACKET_LEN + 1)
         .unwrap()
         .to_le_bytes()
@@ -235,8 +226,6 @@ fn deadline_error_names_a_silent_console() {
 
 #[tokio::test]
 async fn run_reports_an_unbound_listener_rather_than_a_bare_timeout() {
-    // Reserve a port and drop it, so every connect attempt is refused for the
-    // whole budget — the shape of a game whose rcon plugin never bound.
     let probe = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -257,15 +246,12 @@ async fn run_reports_an_unbound_listener_rather_than_a_bare_timeout() {
 
 #[tokio::test]
 async fn run_reports_a_connected_but_silent_console() {
-    // Accept the connection and then say nothing, which is the wedged-game case
-    // the unbound-listener message must not be confused with.
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepter = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        // Hold the connection open past the caller's budget without replying.
         sleep(Duration::from_secs(5)).await;
         drop(stream);
     });
@@ -285,16 +271,12 @@ async fn run_reports_a_connected_but_silent_console() {
 
 #[tokio::test]
 async fn connect_with_retry_waits_out_a_late_binding_listener() {
-    // Reserve a port, then drop the listener so the address is refused, mirroring
-    // the boot window where RCON hasn't bound yet.
     let probe = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let address = probe.local_addr().unwrap();
     drop(probe);
 
-    // Bring the listener up after a couple of retry intervals; connect_with_retry
-    // should keep polling until it binds rather than failing on the refusal.
     let binder = tokio::spawn(async move {
         sleep(CONNECT_RETRY_INTERVAL * 3).await;
         let listener = tokio::net::TcpListener::bind(address).await.unwrap();
@@ -316,8 +298,6 @@ fn broadcast_command_builds_a_minecraft_tellraw() {
         command.starts_with("tellraw @a "),
         "minecraft broadcast should use tellraw, got {command:?}"
     );
-    // The message must be carried as a JSON text component (serde-escaped), not
-    // hand-quoted, so it survives special characters.
     let json = command.strip_prefix("tellraw @a ").unwrap();
     let value: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(value.get("text").unwrap(), "Gary: ran `op Bear`");
@@ -325,7 +305,6 @@ fn broadcast_command_builds_a_minecraft_tellraw() {
 
 #[test]
 fn broadcast_command_escapes_message_json() {
-    // A quote in the message must not break out of the JSON string.
     let command = broadcast_command(r#"Gary: said "hi""#, RconDialect::Minecraft).unwrap();
     let json = command.strip_prefix("tellraw @a ").unwrap();
     let value: serde_json::Value = serde_json::from_str(json).unwrap();

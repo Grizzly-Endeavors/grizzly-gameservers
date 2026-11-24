@@ -10,8 +10,6 @@ fn capture_of(lines: usize) -> Capture {
 
 #[test]
 fn an_ordinary_boot_is_kept_whole() {
-    // The case that actually matters: a full Valheim boot is ~3700 lines, and a
-    // crash on startup has to arrive complete rather than sampled.
     let capture = capture_of(3_700);
     let rendered = capture.render();
     assert_eq!(capture.elided, 0);
@@ -22,8 +20,6 @@ fn an_ordinary_boot_is_kept_whole() {
 
 #[test]
 fn both_ends_survive_a_launch_too_long_to_keep() {
-    // The two crash shapes sit at opposite ends: a mod that fails to load throws
-    // during startup, a server that dies after a week says why in its last lines.
     let capture = capture_of(HEAD_LINES + TAIL_LINES + 5_000);
     let rendered = capture.render();
     assert!(rendered.contains("line 0"), "the start must survive");
@@ -49,8 +45,6 @@ fn memory_is_bounded_however_long_the_launch_runs() {
 
 #[test]
 fn beginning_a_launch_discards_the_previous_one() {
-    // Without this the capture would stack failed boots the way the shared live
-    // ring does, which is the defect this module exists to avoid.
     let log = LaunchLog::new();
     log.push("from the old launch".to_owned());
     log.begin();
@@ -99,9 +93,6 @@ fn preserve_writes_under_the_reserved_directory() {
 
 #[test]
 fn a_pruned_name_is_never_handed_out_again() {
-    // Pruning frees the names it deletes. Reusing one would mean the newest
-    // artifact carried the name of an already-deleted older one, and a crash
-    // loop inside one second would write nothing but that same name.
     let dir = tempfile::tempdir().unwrap();
     let mut seen = std::collections::HashSet::new();
     for index in 0..(KEEP_ARTIFACTS * 3) {
@@ -112,8 +103,6 @@ fn a_pruned_name_is_never_handed_out_again() {
 
 #[test]
 fn two_crashes_in_one_second_do_not_overwrite_each_other() {
-    // A crash loop produces exactly this, and losing the first attempt's output
-    // to the second attempt's filename would defeat the point.
     let dir = tempfile::tempdir().unwrap();
     let first = preserve(dir.path(), "first\n").unwrap();
     let second = preserve(dir.path(), "second\n").unwrap();

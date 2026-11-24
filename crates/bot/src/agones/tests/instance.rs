@@ -18,8 +18,6 @@ spec:
             claimName: minecraft-data
 ";
 
-/// The same template with the catalog's own sizing, to prove an override
-/// replaces it rather than merging into it.
 const SIZED_GAMESERVER_TEMPLATE: &str = "
 apiVersion: agones.dev/v1
 kind: GameServer
@@ -236,8 +234,6 @@ fn gameserver_leaves_unrelated_spec_fields_untouched() {
 
 #[test]
 fn empty_guild_leaves_the_guild_label_off() {
-    // A pre-scoping instance cold-started from a Service with no guild label
-    // must not be stamped with an empty "" guild — the label is simply absent.
     let mut unscoped = identity();
     unscoped.guild = GuildId::new("");
     let gs = render_gameserver(&entry(), &unscoped).unwrap();
@@ -327,7 +323,6 @@ fn advertised_service_sets_nodeport_equal_to_targetport_per_named_port() {
 fn advertised_gameserver_rewrites_container_ports_and_injects_env() {
     let gs = render_gameserver(&advertised_entry(), &advertised_identity()).unwrap();
 
-    // Agones spec.ports rewritten by name.
     let agones_ports = gs
         .data
         .pointer("/spec/ports")
@@ -342,7 +337,6 @@ fn advertised_gameserver_rewrites_container_ports_and_injects_env() {
         Some(7003)
     );
 
-    // Pod container ports rewritten by name; the control port is left alone.
     let container_ports = gs
         .data
         .pointer("/spec/template/spec/containers/0/ports")
@@ -362,7 +356,6 @@ fn advertised_gameserver_rewrites_container_ports_and_injects_env() {
         "control port must track the shared grizzly_control_api::CONTROL_PORT"
     );
 
-    // Env injected with the leased numbers as strings.
     let env = gs
         .data
         .pointer("/spec/template/spec/containers/0/env")
@@ -428,7 +421,6 @@ spec:
     );
 }
 
-/// The container's `resources` block after rendering, or `None` if it has none.
 fn rendered_resources(obj: &kube::core::DynamicObject) -> Option<serde_json::Value> {
     obj.data
         .get("spec")?
@@ -459,8 +451,6 @@ fn an_instance_without_an_override_keeps_the_catalogs_sizing() {
 
 #[test]
 fn an_override_replaces_the_catalogs_sizing_wholesale() {
-    // Replaced, not merged: a partial stamp could pair a new request with an old
-    // limit and invert the two, which Kubernetes rejects as unschedulable.
     let entry = GameCatalogEntry {
         gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.to_owned(),
         ..entry()
@@ -486,8 +476,6 @@ fn an_override_replaces_the_catalogs_sizing_wholesale() {
 
 #[test]
 fn an_override_sizes_a_template_that_declared_nothing() {
-    // The skeleton template omits `resources` entirely; a resize has to add the
-    // block rather than assume one is there to overwrite.
     let identity = InstanceIdentity {
         sizing: Some(Sizing {
             cpu_request_millicores: 250,
@@ -509,8 +497,6 @@ fn an_override_sizes_a_template_that_declared_nothing() {
 
 #[test]
 fn a_games_declared_sizing_reads_back_out_of_its_catalog_template() {
-    // The figures a resized server would go back to. Read as parsed quantities,
-    // not text, so "2" and "2000m" are the same answer.
     let entry = GameCatalogEntry {
         gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.to_owned(),
         ..entry()
@@ -528,8 +514,6 @@ fn a_games_declared_sizing_reads_back_out_of_its_catalog_template() {
 
 #[test]
 fn a_whole_core_written_as_a_bare_number_still_reads() {
-    // YAML makes `cpu: 2` a number and `cpu: "2"` a string. Which one a catalog
-    // author quoted must not decide whether the defaults can be reported.
     let entry = GameCatalogEntry {
         gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("cpu: \"2\"", "cpu: 2"),
         ..entry()
@@ -542,14 +526,11 @@ fn a_whole_core_written_as_a_bare_number_still_reads() {
 
 #[test]
 fn a_game_that_declares_no_sizing_reports_none() {
-    // The skeleton template omits `resources`, and `games/_template` says a
-    // catalog may omit a limit on purpose. Either way there is nothing to name.
     assert_eq!(catalog_sizing(&entry()), None);
 }
 
 #[test]
 fn a_partly_declared_sizing_reports_none_rather_than_half_of_it() {
-    // Three real figures beside one invented one would be copied into a resize.
     let entry = GameCatalogEntry {
         gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("              memory: 4Gi\n", ""),
         ..entry()
@@ -559,8 +540,6 @@ fn a_partly_declared_sizing_reports_none_rather_than_half_of_it() {
 
 #[test]
 fn the_sidecars_footprint_is_never_read_as_the_games() {
-    // Without `spec.container` the game is indistinguishable from whatever else
-    // shares the pod, so the answer is unknown rather than the first container's.
     let entry = GameCatalogEntry {
         gameserver_yaml: SIZED_GAMESERVER_TEMPLATE.replace("  container: minecraft\n", ""),
         ..entry()

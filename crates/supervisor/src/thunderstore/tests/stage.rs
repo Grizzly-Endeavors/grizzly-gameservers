@@ -65,8 +65,6 @@ fn the_staged_tree_holds_exactly_what_was_resolved() {
 
 #[test]
 fn a_removed_package_is_gone_after_the_next_rebuild() {
-    // The whole reason the tree is rebuilt rather than reconciled: deleting a
-    // line has to delete the files, without tracking what each package wrote.
     let dir = tempfile::tempdir().unwrap();
     let one = release("Author-One-1.0.0");
     let two = release("Author-Two-1.0.0");
@@ -88,10 +86,6 @@ fn a_removed_package_is_gone_after_the_next_rebuild() {
 
 #[test]
 fn an_empty_mod_list_stages_an_empty_tree_not_an_absent_one() {
-    // The image mirrors this tree as the complete desired state and deletes what
-    // isn't in it. An absent tree reads as "no mod list at all", so the mirror
-    // skips and the previous set stays installed — removing the last mod would
-    // silently remove nothing.
     let dir = tempfile::tempdir().unwrap();
     let one = release("Author-One-1.0.0");
     cache::store(dir.path(), &one, &package(&one, &[("One.dll", b"MZ")])).unwrap();
@@ -123,8 +117,6 @@ fn every_skeleton_directory_is_present_even_with_no_mods() {
 
 #[test]
 fn the_skeleton_never_includes_the_loader_core() {
-    // `core` is the loader itself, which the image owns. Staging an empty one
-    // would invite a mirror step to delete the live loader.
     assert!(
         !PackageLayout::BepInEx
             .skeleton()
@@ -147,8 +139,6 @@ fn a_package_missing_from_the_cache_fails_the_rebuild_by_name() {
 
 #[test]
 fn a_bad_archive_leaves_the_previous_tree_untouched() {
-    // The swap is what buys this: a half-built tree is never what the image
-    // mirrors, because it is never the tree the image looks at.
     let dir = tempfile::tempdir().unwrap();
     let good = release("Author-Good-1.0.0");
     cache::store(dir.path(), &good, &package(&good, &[("Good.dll", b"MZ")])).unwrap();

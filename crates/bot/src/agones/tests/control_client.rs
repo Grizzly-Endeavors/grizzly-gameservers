@@ -6,9 +6,6 @@ fn no_token_means_no_credential() {
     assert!(!client.is_authenticated());
 }
 
-/// Mirrors the supervisor's own parsing. If the two disagreed about what counts
-/// as "no token", a blank secret would leave one side enforcing and the other
-/// silent — every supervisor call failing with a 401 the bot couldn't explain.
 #[test]
 fn a_blank_token_reads_as_absent_on_this_side_too() {
     for blank in ["", "   ", "\n"] {

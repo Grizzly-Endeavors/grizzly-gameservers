@@ -15,26 +15,6 @@ use crate::logs::LogBuffer;
 use crate::rcon::RconRuntime;
 use crate::readiness::LogReadyWatch;
 
-/// Launch the supervised game-server process. `kill_on_drop` so a supervisor
-/// crash can't orphan the game; stdout/stderr are piped (not inherited) so
-/// [`capture_output`] can both tee them to the supervisor's own output and retain
-/// a tail for the control API.
-///
-/// The child's environment is layered in three tiers, each overriding the last:
-///
-/// 1. The supervisor's own inherited environment — the per-game catalog tier,
-///    which is how the itzg image reads its `EULA`/`MEMORY`/etc. knobs.
-/// 2. `overlay` — the per-instance tier, read off the data volume by
-///    [`child_env::prepare`](crate::child_env::prepare).
-/// 3. Platform-owned injection: when `rcon` is set, the minted password under
-///    [`SupervisorConfig::rcon_password_env`], so the game configures its RCON
-///    server with the same value the supervisor authenticates with — keeping the
-///    password out of git and any Kubernetes object. Applied last so it wins
-///    even if the overlay's own denies were somehow bypassed.
-///
-/// # Errors
-///
-/// Returns an error if the child command cannot be spawned.
 pub fn spawn(
     cfg: &SupervisorConfig,
     rcon: Option<&RconRuntime>,
@@ -42,7 +22,6 @@ pub fn spawn(
 ) -> Result<Child> {
     let mut cmd = Command::new(&cfg.child_command);
     cmd.kill_on_drop(true);
-    // No interactive console; stop/restart go through SIGTERM, not stdin.
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -56,20 +35,6 @@ pub fn spawn(
         .with_context(|| format!("failed to spawn child command {:?}", cfg.child_command))
 }
 
-/// Drain the child's piped stdout and stderr into `logs` and `launch`,
-/// re-emitting each line
-/// to the supervisor's own stdout/stderr so `kubectl logs` still shows the game's
-/// output. The reader tasks end on their own when the pipes close at child exit.
-///
-/// When `chat_tx` is set, each line is also teed to the chat watcher. The tee is
-/// non-blocking (a lagging or absent watcher never stalls log capture), so a
-/// backed-up watcher drops chat lines rather than applying backpressure to the
-/// game's output.
-///
-/// When `ready` is set (a game using log-pattern readiness instead of the TCP
-/// connect probe), the pump signals Agones `Ready` the first time a line matches
-/// the marker. Both pumps share the watch; the first to match wins and the signal
-/// is idempotent, so the marker landing on stderr rather than stdout is fine.
 pub(crate) fn capture_output(
     child: &mut Child,
     logs: &Arc<LogBuffer>,
@@ -101,8 +66,6 @@ pub(crate) fn capture_output(
     }
 }
 
-/// Which standard stream a captured line came from, so it can be re-emitted on
-/// the matching supervisor stream.
 #[derive(Clone, Copy)]
 enum Stream {
     Stdout,
@@ -120,8 +83,6 @@ fn spawn_line_pump<R>(
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        // Latch so the readiness marker is acted on once per pump, not re-checked
-        // for every line after the game is already up.
         let mut ready_signalled = false;
         let mut lines = BufReader::new(reader).lines();
         loop {
@@ -136,17 +97,11 @@ fn spawn_line_pump<R>(
                         && watch.matches(&line)
                     {
                         ready_signalled = true;
-                        if watch.try_signal().is_err() {
-                            // Already latched or the runner is gone; readiness is
-                            // idempotent, so a dropped signal is benign.
-                        }
+                        if watch.try_signal().is_err() {}
                     }
                     if let Some(tx) = chat_tx.as_ref()
                         && tx.try_send(line.clone()).is_err()
-                    {
-                        // Watcher lagging or gone; a dropped chat line is acceptable
-                        // — triggers are best-effort and must not stall log capture.
-                    }
+                    {}
                     launch.push(line.clone());
                     logs.push(line);
                 }
@@ -157,18 +112,10 @@ fn spawn_line_pump<R>(
                 }
             }
         }
-        // However this pump ended, the launch capture must stop waiting on it.
         launch.pump_finished();
     });
 }
 
-/// Gracefully stop the child: SIGTERM (which itzg's `mc-server-runner` traps into
-/// a world-save), wait up to `grace`, then SIGKILL as a last resort. Reaps the
-/// child either way.
-///
-/// # Errors
-///
-/// Returns an error if waiting on or killing the child fails at the OS level.
 pub async fn graceful_stop(child: &mut Child, grace: Duration) -> Result<()> {
     if let Some(pid) = child.id() {
         request_terminate(pid)?;
@@ -191,12 +138,6 @@ pub async fn graceful_stop(child: &mut Child, grace: Duration) -> Result<()> {
     }
 }
 
-/// Send SIGTERM to `pid`, logging (not failing) if the signal can't be delivered
-/// — a delivery failure usually means the child already exited.
-///
-/// # Errors
-///
-/// Returns an error only if the pid does not fit the platform `pid_t`.
 fn request_terminate(pid: u32) -> Result<()> {
     let pid = i32::try_from(pid).context("child pid does not fit in pid_t")?;
     let rc = raw_kill(pid, libc::SIGTERM);
@@ -212,19 +153,9 @@ fn request_terminate(pid: u32) -> Result<()> {
     reason = "FFI boundary: libc::kill signals a known pid, touches no memory"
 )]
 fn raw_kill(pid: i32, signal: i32) -> i32 {
-    // Audited FFI: delivers a signal to a known child pid, touches no memory; the
-    // scoped #[expect(unsafe_code)] above is the reviewed boundary.
-    // nosemgrep: rust.lang.security.unsafe-usage
     unsafe { libc::kill(pid, signal) }
 }
 
-/// Await a child's exit when one is running, or never resolve when the slot is
-/// empty (stopped). Lets the runner's `select!` keep a single child-exit arm
-/// without spinning once the process is intentionally down.
-///
-/// # Errors
-///
-/// Returns the error from the underlying `wait` if the OS can't reap the child.
 pub async fn wait_optional(child: &mut Option<Child>) -> std::io::Result<ExitStatus> {
     match child {
         Some(running) => running.wait().await,

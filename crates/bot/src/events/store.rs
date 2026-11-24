@@ -1,17 +1,3 @@
-//! The append-only product event log on foundation Postgres.
-//!
-//! [`EventLog`] is a **sink, not a service**: [`record`](EventLog::record) takes
-//! an event and returns nothing, swallowing and logging every failure, so the
-//! user-visible paths that emit can never branch on — or be delayed by — the fact
-//! that we happen to be keeping records. That is the same contract
-//! [`crate::telemetry::Telemetry`] holds for the Langfuse plane, and it is what
-//! makes the degradation matrix true: no database, no events, bot unaffected.
-//!
-//! Storage follows the conventions already set by [`crate::store`] and
-//! [`crate::backup::store`]: snowflakes as `TEXT` (they overflow `BIGINT`'s sign
-//! bit), `TIMESTAMPTZ DEFAULT now()`, and an idempotent schema applied at
-//! startup rather than a migration tool.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
@@ -25,35 +11,8 @@ use super::sampler::OccupancySample;
 use crate::config::DbConfig;
 use crate::domain::{GameId, GuildId, InstanceName};
 
-/// Postgres pool size for the event log. Two is ample: writes are one small
-/// insert per product action at friends scale, never a hot path.
 const EVENT_LOG_MAX_CONNECTIONS: u32 = 2;
 
-/// Idempotent schema for the tables of the product plane.
-///
-/// One wide `events` table rather than a table per action: the catalog is closed
-/// and every row answers the same question ("who did what, where, and how did it
-/// end"), so the derivation layer's queries are `WHERE kind = ...` rather than a
-/// union across a dozen shapes. `guild_id`, `game`, and `instance` are nullable
-/// because not every kind has all three.
-///
-/// `known_guilds` exists so `guild_joined` survives a gateway reconnect, which
-/// replays `GuildCreate` for every guild the bot is already in.
-///
-/// `occupancy_samples` is the occupancy time series: one row per running
-/// instance per sampler tick, which the derivation layer integrates into playtime
-/// and differences into crash frequency. `players` is nullable and null means
-/// *unknown* — the game has no working occupancy probe, or its console wasn't
-/// reachable this tick — never a definite zero. Both counters are `BIGINT` so the
-/// supervisor's `u32`s bind without a fallible narrowing conversion.
-///
-/// `resource_samples` is the cost time series: one row per *existing* instance
-/// per tick — running, paused, or shut down — holding raw quantities only
-/// (millicores, bytes), never money. Rates live in the query layer
-/// (`scripts/queries/`), so a rate revision reprices history instead of being
-/// baked into rows. Every quantity column is nullable and null means that
-/// reading wasn't available this tick (no pod, or metrics-server had nothing) —
-/// never zero; see [`ResourceSample`] for the exact per-state row shapes.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     id BIGSERIAL PRIMARY KEY, \
     kind TEXT NOT NULL, \
@@ -96,15 +55,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS events (\
     CREATE INDEX IF NOT EXISTS resource_samples_sampled_at_idx ON resource_samples (sampled_at); \
     CREATE INDEX IF NOT EXISTS resource_samples_instance_idx ON resource_samples (instance, sampled_at)";
 
-/// `details` is bound as text and cast, because sqlx is pinned without its `json`
-/// feature — the cast costs nothing and keeps the dependency surface as it is.
 const INSERT_EVENT: &str = "INSERT INTO events \
     (kind, guild_id, game, instance, actor, surface, outcome, details) \
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)";
 
-/// Newest-first page of the log, with every filter optional. A `NULL` bind makes
-/// its clause vacuous, so one prepared statement serves every combination the
-/// panel offers rather than assembling SQL per request.
 const RECENT_EVENTS: &str = "SELECT id, kind, guild_id, game, instance, actor, surface, outcome, \
     details::text, created_at::text FROM events \
     WHERE ($1::text IS NULL OR kind = $1) \
@@ -114,21 +68,15 @@ const RECENT_EVENTS: &str = "SELECT id, kind, guild_id, game, instance, actor, s
     AND ($5::bigint IS NULL OR id < $5) \
     ORDER BY id DESC LIMIT $6";
 
-/// Which slice of the event log to show. Every field unset is "everything,
-/// newest first".
 #[derive(Clone, Debug, Default)]
 pub(crate) struct EventFilter {
     pub(crate) kind: Option<String>,
     pub(crate) guild: Option<String>,
     pub(crate) instance: Option<String>,
     pub(crate) surface: Option<String>,
-    /// Page backwards from this id, exclusive. Keyset rather than offset, so a
-    /// page stays put as new events land at the head.
     pub(crate) before_id: Option<i64>,
 }
 
-/// One event as the panel renders it. Timestamps and `details` arrive as text
-/// because `sqlx` here carries neither a date nor a json feature.
 type EventRowColumns = (
     i64,
     String,
@@ -142,7 +90,6 @@ type EventRowColumns = (
     String,
 );
 
-/// One row of the event log, named.
 #[derive(Clone, Debug)]
 pub(crate) struct EventRow {
     pub(crate) id: i64,
@@ -176,67 +123,41 @@ impl From<EventRowColumns> for EventRow {
     }
 }
 
-/// Claim a guild as known. `RETURNING` fires only on a real insert, so the row
-/// count *is* the answer to "is this a genuine join?" — no read-then-write race.
 const CLAIM_GUILD: &str =
     "INSERT INTO known_guilds (guild_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING guild_id";
 
 const SEED_GUILDS: &str =
     "INSERT INTO known_guilds (guild_id) SELECT unnest($1::text[]) ON CONFLICT DO NOTHING";
 
-/// A whole sampler tick in one statement, via parallel arrays. Batching isn't
-/// about throughput at this scale — it's that a database outage then costs one
-/// error log per tick instead of one per server per tick, which is the
-/// difference between a signal and a flood.
 const INSERT_SAMPLES: &str = "INSERT INTO occupancy_samples \
     (instance, game, guild_id, players, restarts) \
     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[])";
 
-/// One statement per resource tick, for the same reason as [`INSERT_SAMPLES`] —
-/// and the shared `sampled_at` default it produces is what lets queries group a
-/// tick's rows into one fleet-wide reading.
 const INSERT_RESOURCE_SAMPLES: &str = "INSERT INTO resource_samples \
     (instance, game, guild_id, cpu_millicores, mem_bytes, cpu_request_millicores, \
     mem_request_bytes, cpu_limit_millicores, mem_limit_bytes, pvc_bytes) \
     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::bigint[], \
     $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::bigint[])";
 
-/// The most recent event of each kind for one instance. `DISTINCT ON (kind)`
-/// collapses the history to one row per kind, which is what a "when did this last
-/// happen" question wants — the alternative is pulling the whole instance's
-/// history back and folding it in Rust.
 const LATEST_PER_KIND: &str = "SELECT DISTINCT ON (kind) kind, actor, created_at::text \
     FROM events WHERE instance = $1 AND kind = ANY($2) \
     ORDER BY kind, created_at DESC";
 
-/// When something last happened to an instance, and who did it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LatestEvent {
     pub(crate) kind: String,
     pub(crate) actor: String,
-    /// RFC-3339-ish timestamp text, for display only — same treatment as
-    /// [`crate::backup::ArchiveRecord::created_at`], which avoids a chrono/time
-    /// sqlx feature for a value nothing computes on.
     pub(crate) created_at: String,
 }
 
-/// The product event log, or a disabled no-op when persistence isn't configured.
 pub(crate) struct EventLog {
     pool: Option<PgPool>,
-    /// Whether the known-guilds set has been reconciled against the guilds this
-    /// process is actually in. Until it has, a `GuildCreate` can't tell a genuine
-    /// join from the gateway replaying the guilds we were already in, so joins
-    /// are claimed silently — see [`EventLog::claim_guild`].
     seeded: AtomicBool,
 }
 
 impl EventLog {
-    /// Connect (if configured) and apply the schema. Never fails: any problem is
-    /// logged and leaves the log disabled so the rest of the bot keeps working.
     pub(crate) async fn connect(config: Option<&DbConfig>) -> Self {
         let Some(config) = config else {
-            // `HomeChannels::connect` already reported the absent password; this
-            // one names what else goes dark because of it.
             warn!("DB_PASSWORD not set; product event log disabled (nothing else changes)");
             return Self::disabled();
         };
@@ -274,13 +195,10 @@ impl EventLog {
         Ok(pool)
     }
 
-    /// Whether events are being persisted.
     pub(crate) fn enabled(&self) -> bool {
         self.pool.is_some()
     }
 
-    /// Append one event. Failure is logged, never returned: an emission site is
-    /// on a user-visible path and has nothing useful to do with the error.
     pub(crate) async fn record(&self, event: ProductEvent) {
         let Some(pool) = self.pool.as_ref() else {
             return;
@@ -313,19 +231,10 @@ impl EventLog {
         }
     }
 
-    /// The most recent events, newest first, narrowed by whichever filters are
-    /// set. Backs the admin panel's browser.
-    ///
-    /// Returns empty when the log is disabled or the query fails — the panel
-    /// shows an empty table rather than an error page, and the failure is logged.
-    /// `before_id` pages backwards by id rather than by offset, so a page can't
-    /// shift under the reader as new events land.
     pub(crate) async fn recent(&self, filter: &EventFilter, limit: i64) -> Vec<EventRow> {
         let Some(pool) = self.pool.as_ref() else {
             return Vec::new();
         };
-        // Every filter is bound rather than interpolated, and a `NULL` bind
-        // disables its clause — one prepared statement covers every combination.
         match sqlx::query_as::<_, EventRowColumns>(RECENT_EVENTS)
             .bind(filter.kind.as_deref())
             .bind(filter.guild.as_deref())
@@ -344,9 +253,6 @@ impl EventLog {
         }
     }
 
-    /// The distinct event kinds present in the log, for the browser's filter
-    /// menu — the catalog lists every kind the code can emit, but only the ones
-    /// that actually happened are worth offering.
     pub(crate) async fn observed_kinds(&self) -> Vec<String> {
         let Some(pool) = self.pool.as_ref() else {
             return Vec::new();
@@ -363,11 +269,6 @@ impl EventLog {
         }
     }
 
-    /// When each of `kinds` last happened to `instance`, keyed by kind.
-    ///
-    /// Returns empty when the log is disabled or the query fails: this backs a
-    /// detail line in a tool result, so a database problem should cost that one
-    /// line rather than fail the whole lookup. The failure is logged.
     pub(crate) async fn latest_per_kind(
         &self,
         instance: &str,
@@ -398,12 +299,6 @@ impl EventLog {
         }
     }
 
-    /// Append a lifecycle event, filling in the owning guild and game from the
-    /// instance's labels when the caller doesn't already know them — warm
-    /// actions (stop, restart, shutdown, destroy) are handed only a name.
-    ///
-    /// The label read is skipped entirely when the log is disabled, so a bot
-    /// without a database makes no extra API calls on lifecycle paths.
     pub(crate) async fn record_lifecycle(
         &self,
         client: &Client,
@@ -421,8 +316,6 @@ impl EventLog {
                     event.guild = event.guild.or(owner.guild);
                     event.game = event.game.or(owner.game);
                 }
-                // A destroy has already removed the Service by the time it
-                // reports, so an absent owner is expected, not a fault.
                 Ok(None) => {}
                 Err(err) => warn!(
                     error = ?err,
@@ -434,9 +327,6 @@ impl EventLog {
         self.record(event).await;
     }
 
-    /// Append one sampler tick's occupancy readings. Like [`record`](Self::record),
-    /// failure is logged and swallowed — a sample nobody is waiting on must never
-    /// surface anywhere.
     pub(crate) async fn record_samples(&self, samples: &[OccupancySample]) {
         let Some(pool) = self.pool.as_ref() else {
             return;
@@ -482,8 +372,6 @@ impl EventLog {
         }
     }
 
-    /// Append one sampler tick's resource readings. Same contract as
-    /// [`record_samples`](Self::record_samples): failure is logged and swallowed.
     pub(crate) async fn record_resource_samples(&self, samples: &[ResourceSample]) {
         let Some(pool) = self.pool.as_ref() else {
             return;
@@ -545,10 +433,6 @@ impl EventLog {
         }
     }
 
-    /// Reconcile the known-guilds set against the guilds this process is in,
-    /// emitting nothing. Run once the gateway reports `Ready`, so the acquisition
-    /// timeline starts honestly at deployment instead of backdating every guild
-    /// the bot was already in as a join.
     pub(crate) async fn seed_known_guilds(&self, guilds: &[u64]) {
         let Some(pool) = self.pool.as_ref() else {
             return;
@@ -559,19 +443,10 @@ impl EventLog {
                 self.seeded.store(true, Ordering::SeqCst);
                 info!(guilds = ids.len(), "known guilds reconciled");
             }
-            // Leaving `seeded` false is the safe failure: joins keep being claimed
-            // silently rather than backdating a whole guild list as new.
             Err(err) => error!(error = ?err, "failed to reconcile known guilds"),
         }
     }
 
-    /// Claim a guild as known, reporting whether this was its first-ever sighting.
-    ///
-    /// Always `false` before [`seed_known_guilds`](EventLog::seed_known_guilds)
-    /// has run: the gateway replays `GuildCreate` for every guild on connect, and
-    /// until the set is reconciled those replays are indistinguishable from
-    /// joins. A genuine join in that sub-second window is recorded as known
-    /// without an event — the honest trade against backdating every guild.
     pub(crate) async fn claim_guild(&self, guild: u64) -> bool {
         let Some(pool) = self.pool.as_ref() else {
             return false;

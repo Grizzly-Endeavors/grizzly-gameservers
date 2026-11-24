@@ -14,77 +14,33 @@ use super::labels::{GAMESERVER_SELECTOR_KEY, is_managed};
 use super::provision::{DeletionState, deletion_state};
 use super::types::GameServer;
 
-/// Per-request timeout for the mutating supervisor calls. `/stop` and `/restart`
-/// reply only after the in-pod graceful stop finishes (Minecraft's SIGTERM
-/// world-save), so this must exceed the graceful window of the *slowest* game in
-/// the catalog plus respawn margin — otherwise the bot times out and reports a
-/// failure while the restart actually succeeds. Games default to
-/// [`grizzly_control_api::DEFAULT_GRACEFUL_TIMEOUT_SECS`] and raise it per image
-/// via `SUPERVISOR_GRACEFUL_TIMEOUT_SECS`; the `the_bot_waits_out_every_games_graceful_stop`
-/// guard in `tests/config.rs` reads each game's effective window and fails if this
-/// no longer clears it. The client's short default still applies to cheap calls;
-/// this overrides it only where the work is genuinely slow.
 pub(crate) const CONTROL_MUTATION_TIMEOUT: Duration = Duration::from_mins(3);
 
-/// Per-request timeout for the cheap `GET /status` poll. Touches only in-memory
-/// state, so a slower reply means a wedged pod, not real work.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long [`wait_for_ready`] polls for a (re)starting server to come back up
-/// before giving up. Matches the create/start readiness budget so a slow first
-/// boot (world generation) has the same room here as it does there.
 const READY_WAIT_TIMEOUT: Duration = Duration::from_mins(5);
 const READY_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-/// Where an instance is in the warm/cold spectrum, used to route `/start`:
-/// a live pod takes the fast supervisor path; a shut-down one needs a reschedule.
 pub(crate) enum RuntimeState {
-    /// The `GameServer` (and its pod) exist — the supervisor can act in place.
     PodUp,
-    /// The `GameServer` is being deleted but a finalizer still holds it, so its
-    /// pod is on the way out and its control API must not be dialled. Resolves
-    /// on its own once the pod is reaped; the reconciler forces that along when
-    /// the pod's node has stopped answering.
     Terminating,
-    /// No `GameServer`, but the Service survives — `/shutdown`ed, needs a cold start.
     Down,
-    /// Nothing by that name.
     Absent,
 }
 
-/// Result of asking the in-pod supervisor to change the game process state.
-/// Distinguishes the happy paths (so the friend-facing reply is accurate) from
-/// the ways the request can't be served.
 pub(crate) enum SupervisorOutcome {
-    /// `/stop` succeeded: process down, pod kept warm.
     Paused,
-    /// `/start` succeeded: process relaunching in place.
     Resumed,
-    /// `/restart` succeeded: process bounced in place.
     Restarted,
-    /// `/stop` on an already-paused server.
     AlreadyStopped,
-    /// `/start` on an already-running server.
     AlreadyRunning,
-    /// The pod exists but isn't far enough along to have a reachable control API.
     PodNotReady,
-    /// The control API couldn't be reached, or replied with a body we couldn't
-    /// parse as a [`ControlError`].
     Unreachable,
-    /// The supervisor was reached but refused or failed the request; carries
-    /// its developer-facing message for the caller to relay.
     Failed(String),
-    /// No live `GameServer` by that name.
     NotFound,
-    /// The instance exists but isn't shim-managed.
     NotManaged,
 }
 
-/// Pause the game process in place (keep the pod).
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_stop(
     client: &Client,
     http: &ControlClient,
@@ -103,11 +59,6 @@ pub(crate) async fn supervisor_stop(
     .await
 }
 
-/// Start the game process in place on a still-running pod (the warm `/start`).
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_start(
     client: &Client,
     http: &ControlClient,
@@ -126,11 +77,6 @@ pub(crate) async fn supervisor_start(
     .await
 }
 
-/// Bounce the game process in place.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried for the target pod.
 pub(crate) async fn supervisor_restart(
     client: &Client,
     http: &ControlClient,
@@ -149,18 +95,6 @@ pub(crate) async fn supervisor_restart(
     .await
 }
 
-/// Classify an instance as warm (pod up), on its way down, cold (shut down), or
-/// absent so `/start` can pick the fast or the reschedule path.
-///
-/// The `GameServer` object existing is not enough to call an instance warm: a
-/// deleted one lingers, addressable, until Agones' finalizer clears, which it
-/// can't do while the pod's node is unreachable. Reading only existence is what
-/// let `/start` keep choosing the warm path against a server that was already
-/// gone, with no command able to move it off that node.
-///
-/// # Errors
-///
-/// Returns an error if the gameservers or services can't be listed.
 pub(crate) async fn instance_runtime_state(
     client: &Client,
     namespace: &str,
@@ -189,25 +123,13 @@ pub(crate) async fn instance_runtime_state(
     Ok(RuntimeState::Absent)
 }
 
-/// Where a managed instance's in-pod control API is, or why it can't be reached.
-/// Shared by the lifecycle actions here and the filesystem client so both run the
-/// same existence/managed/pod-IP gate before issuing an HTTP request.
 pub(crate) enum PodTarget {
-    /// The pod is up with an IP; its control API is at this address.
     Ready(String),
-    /// No `GameServer` by that name.
     NotFound,
-    /// The instance exists but isn't shim-managed.
     NotManaged,
-    /// The pod isn't far enough along to have a reachable control API.
     PodNotReady,
 }
 
-/// Validate that `instance` is a shim-managed `GameServer` and resolve its pod IP.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried for the gameserver or pod.
 pub(crate) async fn resolve_managed_pod(
     client: &Client,
     namespace: &str,
@@ -279,12 +201,6 @@ async fn supervisor_action(
     }
 }
 
-/// Resolve the pod IP for an instance via the `agones.dev/gameserver` label
-/// Agones stamps on each game-server pod, picking a Running pod.
-///
-/// # Errors
-///
-/// Returns an error if pods can't be listed from the Kubernetes API.
 async fn gameserver_pod_ip(
     client: &Client,
     namespace: &str,
@@ -299,13 +215,6 @@ async fn gameserver_pod_ip(
     Ok(list.items.iter().find_map(running_pod_ip))
 }
 
-/// The pod IP of a live Running pod, or `None` if it isn't running, is on its
-/// way out, or has no IP yet.
-///
-/// A pod whose node stops answering keeps reporting `Running` with its old IP
-/// indefinitely — the delete that evicted it can't complete without a kubelet to
-/// confirm it. Skipping terminating pods is what stops the control client from
-/// dialling an address that no longer has anything behind it.
 fn running_pod_ip(pod: &Pod) -> Option<String> {
     if deletion_state(&pod.metadata) == DeletionState::Terminating {
         return None;
@@ -327,26 +236,15 @@ fn map_result_kind(kind: ResultKind) -> SupervisorOutcome {
     }
 }
 
-/// How a wait for a (re)starting server to come back up resolved. Every variant
-/// is terminal for the wait: the caller reports it and does not keep polling.
 pub(crate) enum ReadyWait {
-    /// The game process is accepting connections again.
     Ready,
-    /// The process crashed while coming up (a bad change is the usual cause).
     Crashed,
-    /// The server is paused, so it will never come up on its own.
     Stopped,
-    /// The wait budget elapsed while the server was still coming up.
     TimedOut,
-    /// No live `GameServer` by that name.
     NotFound,
-    /// The instance exists but isn't shim-managed.
     NotManaged,
 }
 
-/// One `GET /status` poll: the parsed body, or why it couldn't be read this tick.
-/// The transient reasons ([`Self::PodNotReady`], [`Self::Unreachable`]) are
-/// expected during a cold start and mean "keep polling", not "give up".
 pub(crate) enum StatusPoll {
     Ok(StatusResponse),
     NotFound,
@@ -355,15 +253,6 @@ pub(crate) enum StatusPoll {
     Unreachable,
 }
 
-/// Block until a starting or restarting server is actually accepting players
-/// again, so the caller can wait once instead of churning on repeated status
-/// checks. Polls the supervisor's honest per-boot [`ProcessPhase`]: `Running`
-/// means up *now* (a warm relaunch reads `Starting` until the new child re-binds),
-/// so this doesn't return early on a restart. Gives up after [`READY_WAIT_TIMEOUT`].
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready(
     client: &Client,
     http: &ControlClient,
@@ -382,14 +271,6 @@ pub(crate) async fn wait_for_ready(
     .await
 }
 
-/// [`wait_for_ready`] with a caller-chosen ceiling. The interactive tools use the
-/// default [`READY_WAIT_TIMEOUT`]; the deferred `startup` watchdog uses a much
-/// longer one — no real server should take that long to come up, so exceeding it
-/// is itself the signal that a boot is stuck (returned as [`ReadyWait::TimedOut`]).
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_ready_within(
     client: &Client,
     http: &ControlClient,
@@ -408,12 +289,10 @@ pub(crate) async fn wait_for_ready_within(
                 ProcessPhase::Running => return Ok(ReadyWait::Ready),
                 ProcessPhase::Crashed => return Ok(ReadyWait::Crashed),
                 ProcessPhase::Stopped => return Ok(ReadyWait::Stopped),
-                // Still coming up (or briefly bouncing) — keep waiting.
                 ProcessPhase::Starting | ProcessPhase::Stopping => {}
             },
             StatusPoll::NotFound => return Ok(ReadyWait::NotFound),
             StatusPoll::NotManaged => return Ok(ReadyWait::NotManaged),
-            // Transient while a cold-started pod is still scheduling — keep waiting.
             StatusPoll::PodNotReady | StatusPoll::Unreachable => {}
         }
         if tokio::time::Instant::now() >= deadline {
@@ -422,29 +301,13 @@ pub(crate) async fn wait_for_ready_within(
     }
 }
 
-/// How a wait for a paused server's control API to become reachable resolved.
-/// Used by recover-from-archive, where the process is held down (never `Running`)
-/// until `/data` is seeded — so [`wait_for_ready`] would never return `Ready`.
 pub(crate) enum ControlReady {
-    /// The supervisor's control API answered; it's safe to seed `/data`.
     Reachable,
-    /// No live `GameServer` by that name.
     NotFound,
-    /// The instance exists but isn't shim-managed.
     NotManaged,
-    /// The control API never answered within the budget.
     TimedOut,
 }
 
-/// Block until a freshly (re)scheduled pod's supervisor control API answers a
-/// status poll, regardless of the game process phase. This is the paused-server
-/// analogue of [`wait_for_ready`]: the recover flow provisions a server held down
-/// via `SUPERVISOR_START_PAUSED`, waits here for the control API, seeds `/data`,
-/// then starts the game.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn wait_for_control_reachable(
     client: &Client,
     http: &ControlClient,
@@ -461,7 +324,6 @@ pub(crate) async fn wait_for_control_reachable(
             StatusPoll::Ok(_) => return Ok(ControlReady::Reachable),
             StatusPoll::NotFound => return Ok(ControlReady::NotFound),
             StatusPoll::NotManaged => return Ok(ControlReady::NotManaged),
-            // Transient while the pod is still scheduling — keep waiting.
             StatusPoll::PodNotReady | StatusPoll::Unreachable => {}
         }
         if tokio::time::Instant::now() >= deadline {
@@ -470,17 +332,6 @@ pub(crate) async fn wait_for_control_reachable(
     }
 }
 
-/// Fetch and parse one `GET /status` from the instance's supervisor — the
-/// process phase, whether Agones readiness has been signalled, uptime, and the
-/// count of unexpected exits the supervisor has relaunched from.
-///
-/// The single status client in the bot: the readiness waits above and the
-/// occupancy sampler all come through here, so a change to how a status is read
-/// (timeout, error classification) can't apply to one caller and not another.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be queried to locate the pod.
 pub(crate) async fn supervisor_status(
     client: &Client,
     http: &ControlClient,
@@ -509,10 +360,6 @@ pub(crate) async fn supervisor_status(
             }
         }
         Ok(response) => {
-            // Unreachable is the expected keep-polling state during a cold start
-            // (wait_for_ready / wait_for_control_reachable poll every few seconds
-            // for minutes), so a non-answer stays at debug — the terminal TimedOut
-            // outcome is what surfaces a server that genuinely never comes up.
             debug!(status = %response.status(), url, "supervisor status route returned an error");
             Ok(StatusPoll::Unreachable)
         }

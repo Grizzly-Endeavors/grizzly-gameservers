@@ -14,9 +14,6 @@ use crate::limits::{LimitRefusal, format_cores, human_size};
 const EMPTY_MESSAGE: &str = "No game servers are running right now.";
 const NO_ADDRESS: &str = "(not exposed yet)";
 
-/// Appended to a restore result when the promised pre-restore safety backup
-/// couldn't be taken, so the "Restored" message doesn't imply an undo point that
-/// isn't there. Leading space: it is concatenated onto an existing sentence.
 const RESTORE_NO_UNDO_CAVEAT: &str = " Heads up: I couldn't save a safety backup of the previous world first, so the \
      version it just replaced can't be brought back.";
 
@@ -38,7 +35,6 @@ fn join_within_embed_limit(lines: &[String]) -> String {
     for (shown, line) in lines.iter().enumerate() {
         let tail = format!("…and {} more", lines.len() - shown);
         let separator = usize::from(!out.is_empty());
-        // Reserve room for this line and, after it, a newline + the tail.
         let projected = out.len() + separator + line.len() + 1 + tail.len();
         if projected > EMBED_DESCRIPTION_LIMIT {
             if !out.is_empty() {
@@ -55,18 +51,11 @@ fn join_within_embed_limit(lines: &[String]) -> String {
     out
 }
 
-// Outcome palette. Green = running/ready, amber = still coming up, red =
-// failure or destructive, slate = neutral/no-op so a plain "ok, nothing to do"
-// doesn't read as alarming.
 const COLOUR_UP: Colour = Colour(0x3b_a5_5d);
 const COLOUR_PENDING: Colour = Colour(0xe6_b0_2e);
 const COLOUR_ERROR: Colour = Colour(0xcf_3a_3a);
 const COLOUR_NEUTRAL: Colour = Colour(0x5a_63_6e);
 
-/// The title/colour/body of an embed, computed from a command outcome before
-/// any serenity types are involved. Kept separate from [`CreateEmbed`] so the
-/// outcome→presentation mapping is unit-testable without introspecting the
-/// builder.
 struct EmbedSpec {
     title: String,
     colour: Colour,
@@ -122,10 +111,6 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_NEUTRAL,
             body: format!("A server named **{server}** already exists."),
         },
-        // Deliberately says nothing about who holds it or that anything is running
-        // there: server names are shared across every Discord server on the
-        // platform, and confirming a guess would leak another guild's server list
-        // one name at a time.
         CreateOutcome::NameUnavailable => EmbedSpec {
             title: "Name unavailable".to_owned(),
             colour: COLOUR_NEUTRAL,
@@ -144,20 +129,10 @@ fn create_spec(outcome: &CreateOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-/// A guild-cap refusal (ADR-022) as a standalone embed, for the surfaces whose
-/// outcome enums don't carry the refusal (the `/start` cold branch).
 pub(crate) fn limit_refusal_embed(refusal: LimitRefusal) -> CreateEmbed {
     limit_refusal_spec(refusal).into_embed()
 }
 
-/// "The hardware is full", said so that nobody retries into it.
-///
-/// Deliberately worded apart from the guild-cap refusal next door. A cap is the
-/// community's own allowance and somebody in the room can act on it; this is the
-/// whole service being out of room, which is mostly not theirs to fix. The one
-/// thing that *is* theirs — stopping a server they own — is named, and so is the
-/// fact that waiting won't help, because the message this replaced ("try again
-/// in a moment") had strangers retry-looping against a permanent wall.
 fn capacity_refusal_spec(refusal: CapacityRefusal) -> EmbedSpec {
     let body = match refusal {
         CapacityRefusal::Servers { current, ceiling } => format!(
@@ -209,9 +184,6 @@ fn capacity_refusal_spec(refusal: CapacityRefusal) -> EmbedSpec {
     }
 }
 
-/// A guild-cap refusal (ADR-022) as an embed, naming the figures and the way
-/// out. Shared by create, recover, and cold start, whose remedies are the same:
-/// free room or ask the operator for more.
 fn limit_refusal_spec(refusal: LimitRefusal) -> EmbedSpec {
     let body = match refusal {
         LimitRefusal::ServerCount { current, cap } => format!(
@@ -289,11 +261,6 @@ fn shutdown_spec(outcome: &ShutdownOutcome, server: &str) -> EmbedSpec {
                  (a little slower than `/stop`'s pause, since it has to fully boot back up)."
             ),
         },
-        // The shutdown was accepted but couldn't be confirmed, which in practice
-        // means the machine the server was running on stopped answering. Amber,
-        // not red: nothing is lost and it resolves itself. The body deliberately
-        // avoids "shut down" — claiming that is what made the last outage
-        // impossible to reason about from Discord.
         ShutdownOutcome::Stranded => EmbedSpec {
             title: format!("🟡 {server} is still shutting down"),
             colour: COLOUR_PENDING,
@@ -308,8 +275,6 @@ fn shutdown_spec(outcome: &ShutdownOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-/// Outcomes of the in-pod supervisor actions (`/stop`, `/start`, `/restart`).
-/// Each carries the action in the variant, so one spec covers all three.
 fn supervisor_spec(outcome: &SupervisorOutcome, server: &str) -> EmbedSpec {
     match outcome {
         SupervisorOutcome::Paused => EmbedSpec {
@@ -371,9 +336,6 @@ fn destroy_spec(outcome: &DestroyOutcome, server: &str) -> EmbedSpec {
             colour: COLOUR_NEUTRAL,
             body: format!("**{server}** and its world have been deleted."),
         },
-        // Refused, not failed: the world is intact and deleting it while the
-        // server may still be writing to it is the one outcome worth preventing.
-        // Amber, and the body must not read as "destroyed".
         DestroyOutcome::Blocked => EmbedSpec {
             title: "Didn't destroy it".to_owned(),
             colour: COLOUR_PENDING,
@@ -389,8 +351,6 @@ fn destroy_spec(outcome: &DestroyOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-/// Shared shape for "a server is now reachable" outcomes (create + start),
-/// which differ only in the verb and whether the port is live yet.
 fn started_spec(name: &str, address: &str, ready: bool, verb: &str) -> EmbedSpec {
     if ready {
         EmbedSpec {
@@ -445,9 +405,6 @@ fn archive_spec(outcome: &ArchiveOutcome) -> EmbedSpec {
                 human_size(*size_bytes)
             ),
         },
-        // Partial success: the archive is durable and recoverable, but freeing the
-        // old storage failed. Amber (not neutral), and the body must not imply the
-        // clean "storage freed" outcome — it says the archive is safe and retryable.
         ArchiveOutcome::ArchivedNotReleased { name, size_bytes } => EmbedSpec {
             title: format!("📦 Archived {name}"),
             colour: COLOUR_PENDING,
@@ -478,8 +435,6 @@ fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
             safety_backup,
         } => {
             let mut spec = restored_spec(server, *boot);
-            // The overwrite already happened; with no safety backup there is no
-            // undo point, so say so rather than leave a clean "Restored".
             if matches!(safety_backup, SafetyBackup::Absent) {
                 spec.body.push_str(RESTORE_NO_UNDO_CAVEAT);
             }
@@ -495,8 +450,6 @@ fn restore_spec(outcome: &RestoreOutcome, server: &str) -> EmbedSpec {
     }
 }
 
-/// The per-boot-state body of a completed restore, before [`restore_spec`]
-/// appends any missing-undo-point caveat.
 fn restored_spec(server: &str, boot: BootState) -> EmbedSpec {
     match boot {
         BootState::Ready => EmbedSpec {
@@ -601,7 +554,6 @@ fn recover_spec(outcome: &RecoverOutcome, name: &str) -> EmbedSpec {
     }
 }
 
-/// A list of a server's backups or a server's archives, newest first.
 fn artifact_list_spec(title: &str, artifacts: &[ArtifactSummary], empty: &str) -> EmbedSpec {
     if artifacts.is_empty() {
         return EmbedSpec {
@@ -628,7 +580,6 @@ fn artifact_list_spec(title: &str, artifacts: &[ArtifactSummary], empty: &str) -
     }
 }
 
-/// Shown when a backup command is invoked but S3 isn't configured at all.
 fn backups_disabled_spec() -> EmbedSpec {
     EmbedSpec {
         title: "Backups aren't set up".to_owned(),
@@ -638,7 +589,6 @@ fn backups_disabled_spec() -> EmbedSpec {
     }
 }
 
-/// Shown when archive/recover is invoked but the archive catalog (database) is off.
 fn backups_db_disabled_spec() -> EmbedSpec {
     EmbedSpec {
         title: "Archives aren't available".to_owned(),
@@ -733,7 +683,6 @@ pub(crate) fn archives_unavailable_embed() -> CreateEmbed {
     backups_db_disabled_spec().into_embed()
 }
 
-/// Red warning shown before an overwrite-restore, gating it behind a confirm.
 pub(crate) fn restore_confirm_embed(server: &str, label: &str) -> CreateEmbed {
     EmbedSpec {
         title: format!("Restore {server}?"),
@@ -747,7 +696,6 @@ pub(crate) fn restore_confirm_embed(server: &str, label: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// Red warning shown before archiving, which releases the server's storage.
 pub(crate) fn archive_confirm_embed(server: &str) -> CreateEmbed {
     EmbedSpec {
         title: format!("Archive {server}?"),
@@ -761,8 +709,6 @@ pub(crate) fn archive_confirm_embed(server: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// Red embed for "the operation broke" — the user-facing message must already
-/// be plain-language and actionable; raw error detail belongs in the logs.
 pub(crate) fn error_embed(message: &str) -> CreateEmbed {
     EmbedSpec {
         title: "Something went wrong".to_owned(),
@@ -772,8 +718,6 @@ pub(crate) fn error_embed(message: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// Amber "in progress" embed shown while a long operation runs, so the friend
-/// sees the bot is working rather than staring at a silent multi-minute wait.
 pub(crate) fn working_embed(title: &str, body: &str) -> CreateEmbed {
     EmbedSpec {
         title: format!("⏳ {title}"),
@@ -783,7 +727,6 @@ pub(crate) fn working_embed(title: &str, body: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// Neutral embed for interstitial states (prompts, cancellations, timeouts).
 pub(crate) fn neutral_embed(title: &str, body: &str) -> CreateEmbed {
     EmbedSpec {
         title: title.to_owned(),
@@ -793,9 +736,6 @@ pub(crate) fn neutral_embed(title: &str, body: &str) -> CreateEmbed {
     .into_embed()
 }
 
-/// The shared refusal shown when a guild-scoped command runs without a guild (a
-/// DM). One home so the "run this in a server" copy doesn't drift across
-/// `/servers`, `/archives`, `/recover`, `/config`, and the scope check.
 pub(crate) fn guild_required_embed() -> CreateEmbed {
     neutral_embed(
         "Run this in a server",
@@ -803,10 +743,6 @@ pub(crate) fn guild_required_embed() -> CreateEmbed {
     )
 }
 
-/// Red warning shown before deleting a server's archives. Deliberately blunter
-/// than the `/destroy` warning: destroying a server leaves its archive standing
-/// as the way back, so this is the point at which a world stops being
-/// recoverable at all.
 pub(crate) fn delete_archive_confirm_embed(
     name: &str,
     generations: usize,
@@ -829,7 +765,6 @@ pub(crate) fn delete_archive_confirm_embed(
     .into_embed()
 }
 
-/// Result card for an archive deletion.
 pub(crate) fn delete_archive_result_embed(outcome: &ArchiveDeleteOutcome) -> CreateEmbed {
     delete_archive_spec(outcome).into_embed()
 }
@@ -866,8 +801,6 @@ fn delete_archive_spec(outcome: &ArchiveDeleteOutcome) -> EmbedSpec {
     }
 }
 
-/// Red warning shown before a destructive `/destroy`, gating the deletion behind
-/// an explicit Confirm/Cancel button press.
 pub(crate) fn destroy_confirm_embed(server: &str) -> CreateEmbed {
     EmbedSpec {
         title: format!("Delete {server}?"),

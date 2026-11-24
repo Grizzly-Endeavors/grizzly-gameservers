@@ -1,11 +1,3 @@
-//! The panel's shared markup: the page shell, the small pieces every page
-//! reuses, and the two responses that aren't a page at all.
-//!
-//! Templates are `maud` macros rather than files in a template language, so a
-//! page referring to a field that stopped existing fails the build instead of
-//! at render time, and the whole panel is embedded in the binary — which the
-//! pod's read-only root filesystem requires regardless.
-
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use maud::{DOCTYPE, Markup, html};
@@ -13,10 +5,8 @@ use serde::Deserialize;
 
 use super::auth::{AdminIdentity, Denial};
 
-/// The panel's stylesheet, served from the binary at `/panel.css`.
 const STYLESHEET: &str = include_str!("panel.css");
 
-/// Which nav entry is the current page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Nav {
     Dashboard,
@@ -28,8 +18,6 @@ pub(crate) enum Nav {
 }
 
 impl Nav {
-    /// Nav order, which is also the funnel's order: someone signs up, their
-    /// guild is admitted, then they run servers.
     const ALL: &'static [Self] = &[
         Self::Dashboard,
         Self::Settings,
@@ -62,7 +50,6 @@ impl Nav {
     }
 }
 
-/// Wrap a page body in the shell: title, nav, and who is signed in.
 pub(crate) fn page(title: &str, active: Nav, identity: &AdminIdentity, body: &Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -91,7 +78,6 @@ pub(crate) fn page(title: &str, active: Nav, identity: &AdminIdentity, body: &Ma
     }
 }
 
-/// A labelled figure on the overview.
 pub(crate) fn tile(label: &str, figure: &str) -> Markup {
     html! {
         div .tile {
@@ -101,8 +87,6 @@ pub(crate) fn tile(label: &str, figure: &str) -> Markup {
     }
 }
 
-/// Severity of a badge or notice, so the colour is chosen by meaning rather than
-/// spelled at each call site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tone {
     Neutral,
@@ -128,8 +112,6 @@ pub(crate) fn badge(text: &str, tone: Tone) -> Markup {
     html! { span class=(tone.class()) { (text) } }
 }
 
-/// A standing message above a page's content — an empty allowlist, a database
-/// that isn't there, a setting recorded but not yet in force.
 pub(crate) fn notice(tone: Tone, body: &Markup) -> Markup {
     let class = match tone {
         Tone::Bad => "notice bad",
@@ -139,9 +121,6 @@ pub(crate) fn notice(tone: Tone, body: &Markup) -> Markup {
     html! { div class=(class) { (body) } }
 }
 
-/// Whether a subsystem is wired, as the overview shows it. Every optional
-/// subsystem degrades rather than fails, so "off" here is a configuration fact,
-/// not an error.
 pub(crate) fn availability(enabled: bool) -> Markup {
     if enabled {
         badge("on", Tone::Ok)
@@ -150,8 +129,6 @@ pub(crate) fn availability(enabled: bool) -> Markup {
     }
 }
 
-/// A table, or a line saying there's nothing to show. Saves every page from
-/// rendering a header row over no rows.
 pub(crate) fn table(headers: &[&str], rows: Vec<Markup>, empty: &str) -> Markup {
     html! {
         div .card {
@@ -169,17 +146,9 @@ pub(crate) fn table(headers: &[&str], rows: Vec<Markup>, empty: &str) -> Markup 
     }
 }
 
-/// The one-line result of the last action, carried across the redirect that
-/// follows every mutation.
-///
-/// A query parameter rather than a session or a cookie: the panel has no
-/// server-side session to hang one on, and a message that survives exactly one
-/// navigation is all this needs. Nothing here is trusted — it is escaped into
-/// the page like any other value.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub(crate) struct Flash {
     pub(crate) flash: Option<String>,
-    /// Present and `1` when the message is a failure.
     pub(crate) err: Option<u8>,
 }
 
@@ -198,12 +167,10 @@ impl Flash {
         }
     }
 
-    /// No message — used by a redirect whose destination speaks for itself.
     pub(crate) fn none() -> Self {
         Self::default()
     }
 
-    /// This flash as query parameters, ready to append to a path.
     fn query(&self) -> String {
         let Some(message) = self.flash.as_deref() else {
             return String::new();
@@ -212,7 +179,6 @@ impl Flash {
         format!("flash={}{failed}", percent_encode(message))
     }
 
-    /// The message as a notice, or nothing.
     pub(crate) fn render(&self) -> Markup {
         let Some(message) = self.flash.as_deref() else {
             return html! {};
@@ -226,8 +192,6 @@ impl Flash {
     }
 }
 
-/// Percent-encode a query-string value, encoding everything outside the
-/// unreserved set rather than guessing at what needs it.
 pub(crate) fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -242,7 +206,6 @@ pub(crate) fn percent_encode(value: &str) -> String {
     out
 }
 
-/// One nibble as an uppercase hex digit.
 fn hex_digit(nibble: u8) -> char {
     char::from(match nibble {
         0..=9 => b'0' + nibble,
@@ -250,11 +213,6 @@ fn hex_digit(nibble: u8) -> char {
     })
 }
 
-/// Answer a mutation with a redirect to a view.
-///
-/// Every mutation ends this way (POST → 303 → GET) so a reload can't repeat the
-/// action and the back button lands on a page rather than a resubmission
-/// prompt. `path` may already carry a query string.
 pub(crate) fn redirect(path: &str, flash: &Flash) -> Response {
     let query = flash.query();
     let location = if query.is_empty() {
@@ -267,7 +225,6 @@ pub(crate) fn redirect(path: &str, flash: &Flash) -> Response {
     (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
 }
 
-/// A rendered page.
 pub(crate) fn html_response(markup: Markup) -> Response {
     (
         StatusCode::OK,
@@ -277,8 +234,6 @@ pub(crate) fn html_response(markup: Markup) -> Response {
         .into_response()
 }
 
-/// The stylesheet. Static for the life of the process, so it is safe to cache
-/// hard — a redeploy changes the binary, and the browser gets a new connection.
 pub(crate) async fn stylesheet() -> Response {
     (
         StatusCode::OK,
@@ -291,9 +246,6 @@ pub(crate) async fn stylesheet() -> Response {
         .into_response()
 }
 
-/// The 403 page. Deliberately a page rather than a bare status: whoever is
-/// reading it has already signed in successfully, so the useful thing to tell
-/// them is which group they're missing and who can add them to it.
 pub(crate) fn denied(denial: &Denial) -> Response {
     let markup = html! {
         (DOCTYPE)
@@ -315,8 +267,6 @@ pub(crate) fn denied(denial: &Denial) -> Response {
         .into_response()
 }
 
-/// What the denial page actually says. Split from the response so the wording —
-/// the part a locked-out person reads — is testable.
 fn denial_body(denial: &Denial) -> Markup {
     match denial {
         Denial::Unidentified => html! {

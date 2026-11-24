@@ -47,8 +47,6 @@ fn a_write_from_another_site_is_refused() {
     }
 }
 
-/// `Referer` is the fallback for the navigations that historically omitted
-/// `Origin`; only its scheme-and-host half counts.
 #[test]
 fn referer_stands_in_for_a_missing_origin() {
     assert!(is_same_origin(
@@ -64,8 +62,6 @@ fn referer_stands_in_for_a_missing_origin() {
     ));
 }
 
-/// `Origin` wins when both are present: a page can influence `Referer` far more
-/// easily than it can forge `Origin`.
 #[test]
 fn origin_is_preferred_over_referer() {
     assert!(!is_same_origin(
@@ -77,8 +73,6 @@ fn origin_is_preferred_over_referer() {
     ));
 }
 
-/// A state-changing request with no provenance at all is exactly the shape this
-/// check exists to stop, so absence is a refusal rather than a pass.
 #[test]
 fn a_write_with_no_provenance_is_refused() {
     assert!(!is_same_origin(&headers(&[]), PANEL));

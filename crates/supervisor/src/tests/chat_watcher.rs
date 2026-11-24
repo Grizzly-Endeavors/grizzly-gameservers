@@ -42,11 +42,8 @@ fn ignores_non_chat_server_lines() {
 
 #[test]
 fn does_not_re_trigger_on_agent_tellraw_reply() {
-    // The agent replies via `tellraw @a`, which renders as plain text, never in the
-    // `<player> msg` shape — so its own answer can't feed the watcher another turn.
     let reply = "[12:35:00] [Server thread/INFO]: [Gary] you can sleep to skip night";
     assert_eq!(parse_chat_line(ChatFormat::Minecraft, reply), None);
-    // An RCON echo (were op-broadcast ever on) is likewise not `<player>` chat.
     let rcon_echo = "[12:35:00] [Server thread/INFO]: [Rcon] tellraw @a {\"text\":\"hi\"}";
     assert_eq!(parse_chat_line(ChatFormat::Minecraft, rcon_echo), None);
 }

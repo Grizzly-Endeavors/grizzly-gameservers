@@ -6,8 +6,6 @@ fn release(text: &str) -> PackageRelease {
 
 #[test]
 fn a_cache_path_is_the_release_string() {
-    // The filename *is* the index — there is no separate manifest to fall out of
-    // sync with what's on disk.
     let dir = std::path::Path::new("/data/.grizzly/thunderstore");
     assert_eq!(
         path_for(dir, &release("Author-Mod-1.2.3")),
@@ -27,7 +25,6 @@ fn a_stored_archive_reads_back() {
 
 #[test]
 fn a_partial_download_is_never_a_cache_hit() {
-    // An interrupted download must not look like a complete package.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(CACHE_DIR)).unwrap();
     std::fs::write(
@@ -45,7 +42,6 @@ fn a_partial_download_is_never_a_cache_hit() {
 
 #[test]
 fn an_unparseable_filename_is_ignored_rather_than_fatal() {
-    // The cache is derived state; a stray file in it must not stop a launch.
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(CACHE_DIR)).unwrap();
     std::fs::write(dir.path().join(CACHE_DIR).join("notes.txt"), b"hi").unwrap();

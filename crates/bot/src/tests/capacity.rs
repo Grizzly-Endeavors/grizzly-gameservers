@@ -1,7 +1,5 @@
 use super::*;
 
-/// A quota with room to spare on every dimension, so each test can tighten the
-/// one it cares about and leave the rest out of the way.
 fn roomy() -> NamespaceQuota {
     NamespaceQuota {
         pvcs: Some(Dimension { hard: 32, used: 2 }),
@@ -28,8 +26,6 @@ fn roomy() -> NamespaceQuota {
     }
 }
 
-/// A modest server: one PVC, 5 GiB of disk, half a core requested and two cores
-/// capped — roughly what the Minecraft catalog entry declares.
 fn modest() -> Admission {
     Admission {
         pvcs: 1,
@@ -75,8 +71,6 @@ fn the_pvc_ceiling_is_reported_as_a_server_ceiling() {
     );
 }
 
-/// A cold start brings no PVC with it, so a namespace out of PVCs must still
-/// let a stopped server come back — its claim is already counted.
 #[test]
 fn a_start_is_not_refused_by_the_pvc_ceiling() {
     let quota = NamespaceQuota {
@@ -131,13 +125,8 @@ fn exhausted_memory_limits_are_reported_as_a_limits_refusal() {
     ));
 }
 
-/// The reserve is the whole point of #82's third bullet: game pods are created
-/// continuously and the bot pod once, so without it a game server can take the
-/// room the next bot pod needs and stall the rollout.
 #[test]
 fn the_last_slice_is_held_back_for_the_bot_s_own_rollout() {
-    // Exactly one modest server's worth of memory limits free, before the
-    // reserve is taken out of it.
     let free = modest().mem_limit_bytes;
     let with_used = |used| NamespaceQuota {
         mem_limits: Some(Dimension {
@@ -154,13 +143,10 @@ fn the_last_slice_is_held_back_for_the_bot_s_own_rollout() {
         })
     ));
 
-    // With the reserve *also* free, the same server fits.
     let spare = 120 * GIB - free - BOT_ROLLOUT_RESERVE.mem_limit_bytes;
     assert_eq!(check_admission(&with_used(spare), modest()), Ok(()));
 }
 
-/// A quota lowered below what the namespace already holds is an operator action,
-/// not a bug — the arithmetic must report no room rather than negative room.
 #[test]
 fn usage_beyond_the_ceiling_reports_no_room_rather_than_negative_room() {
     let quota = NamespaceQuota {
@@ -180,9 +166,6 @@ fn usage_beyond_the_ceiling_reports_no_room_rather_than_negative_room() {
     );
 }
 
-/// The sidecar is invisible in every catalog template but real to the quota.
-/// A pod estimate that leaves it out passes this check and is still rejected at
-/// admission, which is the failure this whole module exists to prevent.
 #[test]
 fn the_injected_sidecar_counts_toward_the_estimate() {
     assert!(modest().cpu_limit_millicores > 2_000);

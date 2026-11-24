@@ -1,12 +1,3 @@
-//! The read-only in-game orchestrator: turns a player's `@Gary` chat question
-//! into one tool-calling session and broadcasts the answer back into the game.
-//!
-//! This mirrors the Discord shell's `handle_message`, but with no serenity: the
-//! input is untrusted player chat, so Gary gets only the read-only tools (never
-//! the mutating set that posts Discord confirmation buttons), scoped to the
-//! server's own guild. The reply travels back over the existing RCON
-//! `/announce` broadcast, so everyone in the world sees it.
-
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
@@ -36,23 +27,12 @@ use crate::notify::{Escalation, EscalationContext, summarize_attempts};
 use crate::prompts;
 use crate::prompts::{IngameAboutServer, IngameListServers, NameParams};
 
-/// Ceiling on the answer broadcast into chat. Game chat wraps long lines poorly,
-/// and the prompt already asks for brevity — this is a defensive cap so a runaway
-/// reply can't flood the world, not the primary length control.
 const MAX_REPLY_CHARS: usize = 600;
 
 type CompleteFuture<'a> = Pin<Box<dyn Future<Output = Result<Completion>> + Send + 'a>>;
 type DispatchFuture<'a> = Pin<Box<dyn Future<Output = String> + Send + 'a>>;
 type ProgressFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-/// The guild an in-game question is answered within, and the game it is about,
-/// both read off the server's own labels — a player has no Discord identity to
-/// derive either from.
-///
-/// `None` declines the question: without a guild there is no bound on what Gary
-/// may see, and answering with an unscoped view would leak other guilds' servers
-/// to whoever typed in chat. Every such case is logged, since the player just
-/// sees silence.
 async fn resolve_scope(deps: &IngameDeps, server: &str) -> Option<(String, Option<GameId>)> {
     let owner = match owner_of(&deps.client, &deps.namespace, server).await {
         Ok(Some(owner)) => owner,
@@ -75,20 +55,13 @@ async fn resolve_scope(deps: &IngameDeps, server: &str) -> Option<(String, Optio
     Some((guild.as_str().to_owned(), owner.game))
 }
 
-/// Answer one in-game `@Gary` question and broadcast the reply into the server.
-/// Runs the whole session — resolve the guild scope, run the read-only tool
-/// loop, then announce — so the caller only has to spawn it. Every failure is
-/// logged; a player just sees no reply rather than an error dump.
 pub(crate) async fn handle_ingame_question(
     deps: &IngameDeps,
     server: &str,
     player: &str,
     question: &str,
 ) {
-    // Resolved once for the whole turn, like the Discord shell: the model tag is
-    // an operator setting, and a turn must not change models between rounds.
     let Some(connection) = deps.ollama_now() else {
-        // The endpoint isn't started without Gary, so this is defense in depth.
         warn!(server, "in-game trigger arrived but Gary isn't configured");
         return;
     };
@@ -110,8 +83,6 @@ pub(crate) async fn handle_ingame_question(
     let mut messages = session.messages;
     messages.push(ChatMessage::user(framed_question(player, question)));
 
-    // The in-game surface has no Discord identity and no tier of its own: its
-    // tool set is a fixed read-only subset, so that's what the turn runs at.
     let identity = TurnIdentity {
         origin: TurnOrigin::Ingame,
         deployment: deps.environment,
@@ -134,14 +105,9 @@ pub(crate) async fn handle_ingame_question(
     let dispatch = move |call: ToolCall| {
         Box::pin(async move { dispatch_ingame(deps, scope_ref, &call).await }) as DispatchFuture<'_>
     };
-    // No interim narration in-game: a player wants the one answer, not a running
-    // commentary of each tool call broadcast to the whole world.
     let progress = move |_event: SessionEvent| Box::pin(async {}) as ProgressFuture<'_>;
 
-    // The in-game tool set is a fixed read-only pair with no escalation tool, so
-    // the only way out here is still the round budget.
     let never_escalates = || None;
-    // In-game chat carries no channel for `/gary-stop` to scope a stop to.
     let never_cancelled = CancellationToken::new();
     let outcome = run_session(
         &mut messages,
@@ -197,7 +163,6 @@ pub(crate) async fn handle_ingame_question(
     .await;
 }
 
-/// Who asked what, and where — the locators an in-game escalation carries.
 struct Asked<'a> {
     server: &'a str,
     player: &'a str,
@@ -205,9 +170,6 @@ struct Asked<'a> {
     guild: &'a str,
 }
 
-/// Record an in-game give-up and hand it to the operators. Recorded beside the
-/// DM rather than inside it, so an escalation lands in the product record whether
-/// or not there is an operator configured to hear about it.
 async fn escalate(
     deps: &IngameDeps,
     attribution: &Attribution,
@@ -241,9 +203,6 @@ async fn escalate(
     deps.notifier.notify(&escalation).await;
 }
 
-/// Wrap the raw player text so the model can't mistake it for its own
-/// instructions: it is presented as a quoted question from a named player, which
-/// the system prompt tells Gary to treat strictly as data.
 fn framed_question(player: &str, question: &str) -> String {
     if question.trim().is_empty() {
         prompts::IngameNoQuestion { player }.render()
@@ -256,14 +215,6 @@ fn framed_question(player: &str, question: &str) -> String {
     }
 }
 
-/// Session key for a `(guild, player)` pair. The guild is a numeric Discord id
-/// (falling back to a hash if it somehow isn't) and the player name is hashed,
-/// since the store holds raw ids rather than strings. The key *variant* is what
-/// keeps these apart from Discord's channel conversations — see [`SessionKey`].
-///
-/// In-game stays per-player where Discord is per-channel: a player has no access
-/// tier and a fixed read-only tool set, so there is nothing in an in-game
-/// conversation for a second person to join or approve.
 fn session_key(guild: &str, player: &str) -> SessionKey {
     SessionKey::IngamePlayer {
         guild: guild.parse::<u64>().unwrap_or_else(|_| hash(guild)),
@@ -286,9 +237,6 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
-/// The read-only tools an in-game asker gets — deliberately a strict subset of the
-/// Discord surface: lookups only, no file reads (a game's config can hold secrets
-/// like the RCON password) and nothing mutating.
 fn ingame_tools() -> Vec<ToolDef> {
     vec![
         IngameListServers::spec().into(),
@@ -296,9 +244,6 @@ fn ingame_tools() -> Vec<ToolDef> {
     ]
 }
 
-/// Run one read-only tool call within `scope` and render a terse text result.
-/// Unknown tools (and the mutating ones, which are never offered) get a plain
-/// refusal rather than failing the loop.
 async fn dispatch_ingame(deps: &IngameDeps, scope: &ServerScope, call: &ToolCall) -> String {
     match call.function.name.as_str() {
         IngameListServers::NAME => exec_list_servers(deps, scope).await,
@@ -338,7 +283,6 @@ async fn exec_about_server(deps: &IngameDeps, scope: &ServerScope, name: &str) -
     }
 }
 
-/// One server rendered as a single labeled line for the model to read.
 fn format_summary(server: &ServerSummary) -> String {
     let game = server.game.as_deref().unwrap_or("unknown game");
     let address = server.address.as_deref().unwrap_or("no address yet");
@@ -351,7 +295,6 @@ fn format_summary(server: &ServerSummary) -> String {
     .render()
 }
 
-/// The active servers rendered as a newline-separated list.
 fn format_server_list(servers: &[ServerSummary]) -> String {
     if servers.is_empty() {
         return prompts::ServerListEmpty::render();
@@ -363,8 +306,6 @@ fn format_server_list(servers: &[ServerSummary]) -> String {
         .join("\n")
 }
 
-/// A tool result the model reads, so it carries the hint to re-list rather than
-/// just reporting the server missing.
 fn no_such(server: &str) -> String {
     prompts::ServerNotFound { server }.render()
 }
@@ -373,9 +314,6 @@ fn cluster_error() -> String {
     prompts::ClusterUnreachable::render()
 }
 
-/// Gary's instructions for the in-game surface. Hardened against prompt injection
-/// (player chat is data, never instructions), scoped to read-only lookups, and
-/// tuned for short plain-text replies that read well in game chat.
 fn build_ingame_system_prompt(games: &str) -> String {
     let mut prompt = prompts::IngamePersona::render();
     let games_value = if games.is_empty() { "(none)" } else { games };

@@ -28,8 +28,6 @@ fn a_search_hit_parses_and_ignores_unmodelled_fields() {
 
 #[test]
 fn a_hits_loaders_are_recovered_from_its_categories() {
-    // A search hit has no loaders field at all, so they have to be split back
-    // out of categories — which also carry genuine tags like "worldgen".
     let hit: SearchHit = serde_json::from_str(TERRALITH_HIT).unwrap();
     assert_eq!(
         hit.loaders(),
@@ -89,9 +87,6 @@ fn an_unfiltered_search_just_shows_the_recent_versions() {
 
 #[test]
 fn the_version_searched_for_stays_visible_when_newer_ones_crowd_it_out() {
-    // The real case: a project supports 26.2 and also six newer snapshots, so
-    // the newest-six view hides the one version known to match — and a reader
-    // comparing that list against the server rules the project out wrongly.
     let versions = vec![
         "26.2".to_owned(),
         "26.3-snapshot-1".to_owned(),
@@ -118,8 +113,6 @@ fn a_version_already_in_the_recent_view_is_not_duplicated() {
 
 #[test]
 fn a_version_the_project_lacks_is_never_invented() {
-    // Prepending an unsupported version would claim compatibility the registry
-    // never reported — worse than hiding a supported one.
     let versions = vec!["26.1".to_owned(), "26.2".to_owned()];
     assert_eq!(versions_for_display(&versions, Some("1.7.10")), versions);
 }

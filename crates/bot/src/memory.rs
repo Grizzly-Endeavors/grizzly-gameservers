@@ -24,33 +24,14 @@ use tracing::{error, info, warn};
 use crate::config::DbConfig;
 use crate::store::connect_pool;
 
-/// The memory pool is touched only at startup and on the occasional `remember`/
-/// `forget`; the in-memory cache serves prompt builds, so a small pool suffices.
 const GARY_MEMORY_POOL_MAX_CONNECTIONS: u32 = 2;
 
-/// The scope for a fact that isn't tied to one game — general operational
-/// knowledge that applies across the catalog.
 pub(crate) const GENERAL_SCOPE: &str = "general";
 
-/// Cap on facts rendered into the system prompt (newest first). Bounds prompt
-/// growth if the store accumulates a lot of facts over time.
 const MAX_RENDERED: usize = 40;
 
-/// Longest fact that may be saved.
-///
-/// A remembered fact is the most durable thing Gary writes: it is injected into
-/// every later session's system prompt in his own voice, and `remember` is
-/// manager-tier while the text it saves can originate in a server's logs. A real
-/// operational note ("Palworld needs a soft stop before a config edit applies")
-/// is a sentence; anything approaching this length is not the thing this store
-/// exists for. The cap doesn't make a bad note safe — it bounds how much of one
-/// can be carried in a single write.
 const MAX_NOTE_CHARS: usize = 500;
 
-/// Schema for Gary's durable memory. `id` is a `BIGSERIAL` so `forget(id)` has a
-/// stable handle; `scope` is a catalog game id or [`GENERAL_SCOPE`]; `created_by`
-/// is the Discord user id as text (the snowflake-as-text convention used
-/// throughout, since snowflakes overflow `BIGINT`).
 const GARY_MEMORY_SCHEMA: &str = "\
     CREATE TABLE IF NOT EXISTS gary_memories (\
         id BIGSERIAL PRIMARY KEY, \
@@ -60,7 +41,6 @@ const GARY_MEMORY_SCHEMA: &str = "\
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()); \
     CREATE INDEX IF NOT EXISTS gary_memories_scope_idx ON gary_memories (scope)";
 
-/// One durable fact Gary saved.
 #[derive(Clone, Debug)]
 pub(crate) struct Memory {
     pub(crate) id: i64,
@@ -68,7 +48,6 @@ pub(crate) struct Memory {
     pub(crate) content: String,
 }
 
-/// A connection pool for Gary's memory, schema applied.
 struct MemoryStore {
     pool: PgPool,
 }
@@ -83,7 +62,6 @@ impl MemoryStore {
         Ok(Self { pool })
     }
 
-    /// Every saved fact, oldest first (ordered by id so the cache is stable).
     async fn load_all(&self) -> Result<Vec<Memory>> {
         let rows: Vec<(i64, String, String)> =
             sqlx::query_as("SELECT id, scope, content FROM gary_memories ORDER BY id")
@@ -109,8 +87,6 @@ impl MemoryStore {
         .with_context(|| format!("failed to save a memory for scope {scope}"))
     }
 
-    /// Delete the fact with `id`, returning how many rows were removed (0 if it
-    /// was already gone).
     async fn delete(&self, id: i64) -> Result<u64> {
         let result = sqlx::query("DELETE FROM gary_memories WHERE id = $1")
             .bind(id)
@@ -121,38 +97,24 @@ impl MemoryStore {
     }
 }
 
-/// What a `remember` did, for the tool to report back.
 pub(crate) enum RememberOutcome {
-    /// The fact was saved with this id.
     Saved(i64),
-    /// The fact was longer than [`MAX_NOTE_CHARS`] and was not saved.
     TooLong { max: usize },
-    /// Persistence is down, so nothing was saved.
     Unavailable,
 }
 
-/// What a `forget` did, for the tool or slash command to report back.
 pub(crate) enum ForgetOutcome {
-    /// The fact was deleted.
     Forgotten,
-    /// No fact had that id.
     NotFound,
-    /// Persistence is down, so nothing changed.
     Unavailable,
 }
 
-/// Gary's durable memory, backed by Postgres and cached in memory. When
-/// persistence is unavailable the façade stays usable but holds no facts and
-/// refuses writes (see module docs).
 pub(crate) struct GaryMemory {
     store: Option<MemoryStore>,
     cache: RwLock<Vec<Memory>>,
 }
 
 impl GaryMemory {
-    /// Connect to Postgres (if configured), load every saved fact, and return the
-    /// façade. Never fails: any problem is logged and leaves memory disabled so
-    /// the rest of the bot keeps working.
     pub(crate) async fn connect(config: Option<&DbConfig>) -> Self {
         let Some(config) = config else {
             warn!(
@@ -189,23 +151,12 @@ impl GaryMemory {
         }
     }
 
-    /// Save a fact under `scope` (already normalized by the caller). Returns
-    /// [`RememberOutcome::Unavailable`] (saving nothing) when persistence is down.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if the database write fails; the cache is left
-    /// untouched in that case so it never drifts from what was persisted.
     pub(crate) async fn remember(
         &self,
         scope: &str,
         content: &str,
         created_by: Option<&str>,
     ) -> Result<RememberOutcome> {
-        // Checked before the store is consulted, and here rather than at the tool,
-        // so every caller is bound by it and the answer doesn't depend on whether
-        // Postgres happens to be up — an over-long note is invalid either way. A
-        // length nothing enforces is not a length.
         if content.chars().count() > MAX_NOTE_CHARS {
             return Ok(RememberOutcome::TooLong {
                 max: MAX_NOTE_CHARS,
@@ -214,9 +165,6 @@ impl GaryMemory {
         let Some(store) = &self.store else {
             return Ok(RememberOutcome::Unavailable);
         };
-        // A saved fact is replayed into a later prompt as Gary's own voice, so a
-        // fence marker smuggled into one would be a marker inside trusted text —
-        // the one place the fencing convention can't defend itself.
         let content = crate::untrusted::scrub(content);
         let id = store.insert(scope, &content, created_by).await?;
         self.cache.write().await.push(Memory {
@@ -227,12 +175,6 @@ impl GaryMemory {
         Ok(RememberOutcome::Saved(id))
     }
 
-    /// Delete the fact with `id`. Returns [`ForgetOutcome::NotFound`] when no fact
-    /// has that id, or [`ForgetOutcome::Unavailable`] when persistence is down.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if the database write fails.
     pub(crate) async fn forget(&self, id: i64) -> Result<ForgetOutcome> {
         let Some(store) = &self.store else {
             return Ok(ForgetOutcome::Unavailable);
@@ -244,30 +186,20 @@ impl GaryMemory {
         Ok(ForgetOutcome::Forgotten)
     }
 
-    /// Every saved fact, for the admin review command. Cloned out so the caller
-    /// holds no lock.
     pub(crate) async fn all(&self) -> Vec<Memory> {
         self.cache.read().await.clone()
     }
 
-    /// The saved facts rendered for injection into Gary's system prompt (empty
-    /// when there are none or persistence is down).
     pub(crate) async fn render_for_prompt(&self) -> String {
         render_memories(&self.cache.read().await)
     }
 }
 
-/// Normalize and validate a scope Gary supplied: trimmed and lowercased, and
-/// either [`GENERAL_SCOPE`] or one of the known game ids. Returns `None` for an
-/// unknown scope so the caller can hand Gary the valid list to retry with.
 pub(crate) fn normalize_scope(raw: &str, game_ids: &[&str]) -> Option<String> {
     let normalized = raw.trim().to_lowercase();
     (normalized == GENERAL_SCOPE || game_ids.contains(&normalized.as_str())).then_some(normalized)
 }
 
-/// Render facts grouped by scope for the system prompt: newest facts first (up to
-/// [`MAX_RENDERED`]), then grouped by scope in name order with each fact carrying
-/// its id so Gary can `forget` it by number. Empty string when there are none.
 fn render_memories(memories: &[Memory]) -> String {
     if memories.is_empty() {
         return String::new();

@@ -44,7 +44,6 @@ fn a_game_declaring_neither_has_no_overlay() {
 
 #[test]
 fn a_file_without_an_allowlist_admits_nothing() {
-    // Matches the supervisor's own rule: half a catalog edit is not an overlay.
     let yaml = template(
         "            - name: SUPERVISOR_CHILD_ENV_FILE\n              value: \".grizzly/env\"",
     );
@@ -77,8 +76,6 @@ fn keys_are_trimmed_and_blanks_dropped() {
 
 #[test]
 fn catalog_order_is_preserved() {
-    // The prompt reads these back in order, so the catalog's ordering is the
-    // one Gary is shown rather than an arbitrary set ordering.
     let parsed = parse_env_overlay_from_template(&overlay(".grizzly/env", "Z,A,M"))
         .unwrap()
         .unwrap();

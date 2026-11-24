@@ -28,22 +28,13 @@ use super::types::GameServer;
 use crate::events::{parse_bytes, parse_cpu_millicores};
 use crate::sizing::Sizing;
 
-/// One side (requests or limits) of a container's declared resources.
 type Quantities = std::collections::BTreeMap<String, Quantity>;
 
-/// How long to watch for the kubelet to apply a resize before reporting it as
-/// still in progress. A CPU-only change lands almost immediately; a memory grow
-/// takes a cgroup write. Anything slower is either infeasible (which surfaces as
-/// its own condition) or a busy node, and both are better reported than waited on.
 const RESIZE_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Pod condition the kubelet sets while a requested resize can't be actioned yet.
 const RESIZE_PENDING_CONDITION: &str = "PodResizePending";
-/// Pod condition set while the kubelet is actioning an accepted resize.
 const RESIZE_IN_PROGRESS_CONDITION: &str = "PodResizeInProgress";
-/// `PodResizePending` reason meaning the node cannot satisfy the request as
-/// asked — distinct from `Deferred`, which means "not now, but maybe later".
 const INFEASIBLE_REASON: &str = "Infeasible";
 /// A pod condition only counts when it is actually asserted. Kubernetes may
 /// leave a resolved condition in place with `status: "False"` rather than
@@ -63,13 +54,9 @@ const REFUSED_STATUS: u16 = 422;
 const QUOTA_STATUS: u16 = 403;
 const QUOTA_MARKER: &str = "exceeded quota";
 
-/// What happened to a requested in-place resize.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ResizeOutcome {
-    /// The running container now declares the requested sizing.
     Applied,
-    /// The kubelet accepted it but hadn't finished within the settle window. The
-    /// change is still in flight, not lost.
     InProgress,
     /// The change can't be made on a *running* container. Three distinct causes
     /// land here because they have one story for the caller — the setting is
@@ -90,25 +77,11 @@ pub(crate) enum ResizeOutcome {
     /// Carries the cluster's own message either way, which names the real
     /// obstacle better than anything reconstructed here would.
     Infeasible(String),
-    /// No pod is running, so there is nothing to resize in place; the recorded
-    /// override applies at the next start.
     NoPod,
-    /// No such instance.
     NotFound,
-    /// The instance exists but isn't one of ours.
     NotManaged,
 }
 
-/// Apply `sizing` to `instance`'s running game container in place.
-///
-/// Only the game container is touched: it is named by the `GameServer`'s
-/// `spec.container`, and patching by name leaves the Agones SDK sidecar's own
-/// footprint alone.
-///
-/// # Errors
-///
-/// Returns an error if the cluster can't be reached or the patch is rejected
-/// outright (as opposed to accepted-then-declined, which is [`ResizeOutcome::Infeasible`]).
 pub(crate) async fn resize_instance(
     client: &Client,
     namespace: &str,
@@ -126,9 +99,6 @@ pub(crate) async fn resize_instance(
     if !is_managed(gameserver.metadata.labels.as_ref()) {
         return Ok(ResizeOutcome::NotManaged);
     }
-    // The catalog names the game container in `spec.container`; without it there
-    // is no way to tell the game apart from the injected sidecar, and resizing
-    // the wrong one is worse than not resizing.
     let container = gameserver
         .spec
         .container
@@ -168,9 +138,6 @@ pub(crate) async fn resize_instance(
         .await
     {
         Ok(_) => {}
-        // A refusal is not a failure to reach the cluster, and reporting it as
-        // one would send the caller looking for a network problem that isn't
-        // there. The API's own message says exactly what it objected to.
         Err(kube::Error::Api(response))
             if response.code == REFUSED_STATUS
                 || (response.code == QUOTA_STATUS && response.message.contains(QUOTA_MARKER)) =>
@@ -193,8 +160,6 @@ pub(crate) async fn resize_instance(
     watch_resize(&pods, &pod_name, &container, sizing).await
 }
 
-/// Poll until the container reports the requested sizing, the kubelet declares
-/// it infeasible, or the settle window closes.
 async fn watch_resize(
     pods: &Api<Pod>,
     pod_name: &str,
@@ -208,8 +173,6 @@ async fn watch_resize(
             .await
             .with_context(|| format!("failed to re-read pod {pod_name}"))?
         else {
-            // The pod went away mid-resize — a crash or an eviction, not a resize
-            // failure. The override is recorded, so the replacement gets it.
             warn!(pod = pod_name, "pod disappeared while resizing");
             return Ok(ResizeOutcome::NoPod);
         };
@@ -254,11 +217,6 @@ fn infeasible_message(pod: &Pod) -> Option<String> {
     )
 }
 
-/// Whether the running container has actually taken the new sizing.
-///
-/// Read from `status.containerStatuses[].resources` — what the container is
-/// *running* with — never from the spec, which reflects the request the moment
-/// the patch is accepted and would report success before anything happened.
 fn applied(pod: &Pod, container: &str, sizing: Sizing) -> bool {
     if in_progress(pod) {
         return false;
@@ -291,7 +249,6 @@ fn applied(pod: &Pod, container: &str, sizing: Sizing) -> bool {
         && memory(resources.limits.as_ref()) == Some(sizing.mem_limit_bytes)
 }
 
-/// Whether the kubelet says it is still working on a resize.
 fn in_progress(pod: &Pod) -> bool {
     pod.status
         .as_ref()
@@ -304,8 +261,6 @@ fn in_progress(pod: &Pod) -> bool {
         })
 }
 
-/// The name of the instance's live pod, skipping one on its way out — the same
-/// rule the supervisor client uses to avoid dialling a dead address.
 async fn running_pod_name(pods: &Api<Pod>, instance: &str) -> Result<Option<String>> {
     let selector = format!("{GAMESERVER_SELECTOR_KEY}={instance}");
     let list = pods
@@ -315,9 +270,6 @@ async fn running_pod_name(pods: &Api<Pod>, instance: &str) -> Result<Option<Stri
     Ok(list.items.into_iter().find_map(running_name))
 }
 
-/// The name of a pod that is genuinely live: `Running` and not already being
-/// evicted. A pod on a dead node keeps reporting `Running` forever, and resizing
-/// one that is on its way out would silently do nothing.
 fn running_name(pod: Pod) -> Option<String> {
     if deletion_state(&pod.metadata) == DeletionState::Terminating {
         return None;

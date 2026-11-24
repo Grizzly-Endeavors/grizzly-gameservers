@@ -43,7 +43,6 @@ fn a_categorical_score_posts_its_label_as_a_string() {
     assert_eq!(rendered.data_type, "CATEGORICAL");
 }
 
-/// The derived id is what makes a retry an upsert instead of a duplicate score.
 #[test]
 fn the_idempotency_id_combines_the_trace_and_the_score_name() {
     let rendered = body(ScoreValue::Boolean(true), "escalated");

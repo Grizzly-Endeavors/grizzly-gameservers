@@ -14,8 +14,6 @@ use tracing::{debug, info, warn};
 
 use crate::config::LangfuseConfig;
 
-/// Scores are tiny and rare (at most two per turn), so a queue this size only
-/// fills if Langfuse has been unreachable for a long while.
 const QUEUE_DEPTH: usize = 256;
 
 const POST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -76,21 +74,16 @@ impl From<&ScorePost> for ScoreBody {
     }
 }
 
-/// Queues scores for the background poster. Cloneable so the recorder can hold
-/// one per turn without an `Arc`.
 #[derive(Clone, Debug)]
 pub(crate) struct ScoreSender(mpsc::Sender<ScorePost>);
 
 impl ScoreSender {
-    /// Queue a score, dropping it if the poster is backed up. A turn never waits
-    /// on telemetry, so a full queue costs one score, not a stalled reply.
     pub(crate) fn send(&self, post: ScorePost) {
         if let Err(err) = self.0.try_send(post) {
             debug!(error = %err, "langfuse score queue is full; dropping a score");
         }
     }
 
-    /// A sender with no poster behind it, for tests that exercise span export.
     #[cfg(test)]
     pub(crate) fn discarding() -> Self {
         let (tx, _) = mpsc::channel(1);
@@ -98,9 +91,6 @@ impl ScoreSender {
     }
 }
 
-/// Build the sender and the poster that drains it. The caller spawns the poster
-/// into the shutdown-tracked task set, so queued scores are posted before the
-/// process exits.
 pub(crate) fn channel(
     http: reqwest::Client,
     cfg: &LangfuseConfig,
@@ -118,7 +108,6 @@ pub(crate) fn channel(
     (ScoreSender(tx), poster)
 }
 
-/// The background loop that posts queued scores.
 pub(crate) struct Poster {
     http: reqwest::Client,
     url: String,
@@ -129,9 +118,6 @@ pub(crate) struct Poster {
 }
 
 impl Poster {
-    /// Drain the queue until shutdown, then drain what's left so a redeploy —
-    /// which happens on every merge — doesn't lose the scores of turns that were
-    /// in flight.
     pub(crate) async fn run(mut self) {
         let mut failing = false;
         loop {
@@ -148,8 +134,6 @@ impl Poster {
         }
     }
 
-    /// Post one score, logging only when the healthy/failing state flips so an
-    /// unreachable Langfuse doesn't produce a line per score.
     async fn post(&self, post: &ScorePost, failing: bool) -> bool {
         let body = ScoreBody::from(post);
         let sent = self

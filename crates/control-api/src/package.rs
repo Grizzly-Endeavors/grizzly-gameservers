@@ -1,24 +1,6 @@
-//! Thunderstore package identifiers: a package's `Namespace-Name` pair, its
-//! three-part version, and the `Namespace-Name-Major.Minor.Patch` release
-//! strings both halves read and write. Pure — parsing and formatting only.
-//!
-//! Shared rather than supervisor-private because both halves now author the
-//! same strings. The supervisor parses them out of `.grizzly/mods` to decide
-//! what to install and renders them into `resolved`; the bot parses that same
-//! mod list to rewrite a pin and writes the file back. One grammar with two
-//! authors has to live in the crate that exists to be the contract, or the copy
-//! that drifts is the one that writes a file the other half refuses at launch.
-//!
-//! The grammar is deliberately narrower than semver: Thunderstore versions are
-//! exactly three numeric parts, and accepting anything else (a pre-release
-//! suffix, a two-part version) would let a malformed mod-list entry through to
-//! become a 404 at launch instead of a named parse error at the line that wrote
-//! it.
-
 use std::fmt;
 use std::str::FromStr;
 
-/// A package's identity within a community: `Namespace-Name`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PackageId {
     pub namespace: String,
@@ -31,10 +13,6 @@ impl fmt::Display for PackageId {
     }
 }
 
-/// Whether a component of an identifier is one Thunderstore would accept:
-/// non-empty ASCII alphanumerics and underscores. The dash is excluded on
-/// purpose — it is the separator, and allowing it in a component would make
-/// every identifier ambiguous.
 fn is_component(part: &str) -> bool {
     !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
@@ -54,12 +32,6 @@ impl FromStr for PackageId {
     }
 }
 
-/// A package version: exactly three numeric parts, ordered numerically.
-///
-/// The derived `Ord` compares major, then minor, then patch — which is why the
-/// fields are declared in that order and must stay that way. Numeric ordering is
-/// what makes "the highest version wins" mean what it says; a string comparison
-/// would put `1.10.0` below `1.9.0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PackageVersion {
     pub major: u64,
@@ -97,8 +69,6 @@ impl FromStr for PackageVersion {
     }
 }
 
-/// One exact package release: `Namespace-Name-Major.Minor.Patch`. The shape of
-/// every dependency string, every cache filename, and every line of `resolved`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PackageRelease {
     pub id: PackageId,
@@ -115,8 +85,6 @@ impl FromStr for PackageRelease {
     type Err = ParseError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        // Split from the right: the version is the last dash-separated field,
-        // and the namespace and name each contain no dash of their own.
         let (id, version) = text.rsplit_once('-').ok_or(ParseError::NotARelease)?;
         Ok(Self {
             id: id.parse().map_err(|_part| ParseError::NotARelease)?,
@@ -125,9 +93,6 @@ impl FromStr for PackageRelease {
     }
 }
 
-/// Why an identifier didn't parse. Each variant names the shape that was
-/// expected, because these strings reach a friend through a launch-failure log
-/// line and "invalid" alone would not tell them what to type instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
     NotAPackageId,

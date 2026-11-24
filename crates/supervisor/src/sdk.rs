@@ -18,33 +18,16 @@ impl SdkClient {
         Self { http, base_url }
     }
 
-    /// Signal the `GameServer` is ready to accept players (Agones `Ready()`).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the SDK request fails or returns a non-success status.
     pub async fn ready(&self) -> Result<()> {
         self.post_empty("/ready").await.context("agones SDK /ready")
     }
 
-    /// Send one health ping (Agones `Health()`); called on a cadence by the
-    /// runner's heartbeat task, including while the game is paused.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the SDK request fails or returns a non-success status.
     pub async fn health(&self) -> Result<()> {
         self.post_empty("/health")
             .await
             .context("agones SDK /health")
     }
 
-    /// Publish the process state as a `GameServer` label (Agones `SetLabel`),
-    /// landing as `agones.dev/sdk-grizzly-process=<value>` for the bot to read.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the SDK request fails or returns a non-success status.
     pub async fn set_process_label(&self, value: &str) -> Result<()> {
         let url = format!("{}/metadata/label", self.base_url);
         let body = json!({ "key": PROCESS_LABEL_SUFFIX, "value": value });

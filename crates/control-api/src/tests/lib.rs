@@ -271,9 +271,6 @@ fn ingame_trigger_request_round_trips() {
 
 #[test]
 fn occupancy_response_encodes_unknown_as_null() {
-    // `players: None` means *unknown*, never a definite zero, so it must survive
-    // as an explicit `null` — not an absent field and not `0` — or a caller could
-    // misread an unreachable console as an empty server.
     let unknown = OccupancyResponse { players: None };
     assert_eq!(
         serde_json::to_string(&unknown).unwrap(),

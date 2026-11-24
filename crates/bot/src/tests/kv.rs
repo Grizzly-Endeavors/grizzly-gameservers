@@ -11,8 +11,6 @@ async fn no_config_yields_a_disabled_client() {
 
 #[tokio::test]
 async fn disabled_client_errors_rather_than_panics() {
-    // Every operation on a disabled client returns an error (which run_when maps to
-    // a friendly "can't schedule" reply), never a panic.
     let client = ValkeyClient::connect(None).await;
     assert!(
         client

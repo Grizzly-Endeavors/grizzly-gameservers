@@ -46,7 +46,6 @@ fn mem_sample(name: &str, mem_bytes: Option<i64>, mem_limit_bytes: Option<i64>) 
     }
 }
 
-/// `n` ticks past an arbitrary start, so tests can march wall-clock forward.
 fn at(t0: Instant, ticks: u32) -> Instant {
     t0 + INTERVAL * ticks
 }
@@ -116,7 +115,6 @@ fn lone_crash_stays_silent_and_ages_out_of_the_window() {
             .tick(at(t0, 1), &[obs("mc-a", ok(1))], &[])
             .is_empty()
     );
-    // Three quiet ticks push the lone delta out of the window...
     for tick in 2..5 {
         assert!(
             detector
@@ -124,7 +122,6 @@ fn lone_crash_stays_silent_and_ages_out_of_the_window() {
                 .is_empty()
         );
     }
-    // ...so a later single crash still doesn't reach the threshold.
     assert!(
         detector
             .tick(at(t0, 5), &[obs("mc-a", ok(2))], &[])
@@ -137,13 +134,11 @@ fn counter_reset_rebaselines_silently() {
     let mut detector = detector();
     let t0 = Instant::now();
     detector.tick(t0, &[obs("mc-a", ok(5))], &[]);
-    // The pod was replaced: the counter fell to zero. No firing, ring cleared.
     assert!(
         detector
             .tick(at(t0, 1), &[obs("mc-a", ok(0))], &[])
             .is_empty()
     );
-    // One crash on the fresh pod is still just one crash.
     assert!(
         detector
             .tick(at(t0, 2), &[obs("mc-a", ok(1))], &[])
@@ -167,7 +162,6 @@ fn crashed_and_crash_loop_share_one_cooldown() {
     let mut detector = detector();
     let t0 = Instant::now();
     assert_eq!(detector.tick(t0, &[obs("mc-a", crashed(5))], &[]).len(), 1);
-    // A crash-loop delta right after the crashed fire is the same illness.
     let fired = detector.tick(at(t0, 1), &[obs("mc-a", ok(7))], &[]);
     assert!(fired.is_empty(), "crash kinds must share a cooldown");
 }
@@ -211,7 +205,6 @@ fn unreachable_streak_holds_through_unlearnable_ticks() {
     let t0 = Instant::now();
     detector.tick(t0, &[obs("mc-a", PollObservation::Unreachable)], &[]);
     detector.tick(at(t0, 1), &[obs("mc-a", PollObservation::Unreachable)], &[]);
-    // A failed cluster query says nothing either way; the streak holds at two.
     detector.tick(at(t0, 2), &[obs("mc-a", PollObservation::ReadFailed)], &[]);
     let fired = detector.tick(at(t0, 3), &[obs("mc-a", PollObservation::Unreachable)], &[]);
     assert_eq!(fired.len(), 1);
@@ -246,7 +239,6 @@ fn memory_streak_holds_on_a_missing_reading() {
     let t0 = Instant::now();
     detector.tick(t0, &[], &[mem_sample("mc-a", Some(950), Some(1000))]);
     detector.tick(at(t0, 1), &[], &[mem_sample("mc-a", Some(950), Some(1000))]);
-    // Metrics-server missed a beat: unknown is neither fine nor pressure.
     detector.tick(at(t0, 2), &[], &[mem_sample("mc-a", None, Some(1000))]);
     let fired = detector.tick(at(t0, 3), &[], &[mem_sample("mc-a", Some(950), Some(1000))]);
     assert_eq!(fired.len(), 1);
@@ -283,13 +275,11 @@ fn cooldown_suppresses_refires_then_permits_after_expiry() {
         detector.tick(at(t0, 1), &[obs("mc-a", ok(2))], &[]).len(),
         1
     );
-    // Still crashing ten minutes later: inside the cooldown, suppressed.
     assert!(
         detector
             .tick(at(t0, 3), &[obs("mc-a", ok(4))], &[])
             .is_empty()
     );
-    // Over an hour after the fire, the same signal wakes Gary again.
     let fired = detector.tick(t0 + Duration::from_mins(70), &[obs("mc-a", ok(6))], &[]);
     assert_eq!(fired.len(), 1);
 }
@@ -299,9 +289,7 @@ fn pruning_forgets_a_departed_instance_and_its_cooldowns() {
     let mut detector = detector();
     let t0 = Instant::now();
     assert_eq!(detector.tick(t0, &[obs("mc-a", crashed(5))], &[]).len(), 1);
-    // The instance vanishes from both listings (destroyed)...
     detector.tick(at(t0, 1), &[], &[]);
-    // ...so a namesake created later starts clean, cooldown included.
     let fired = detector.tick(at(t0, 2), &[obs("mc-a", crashed(5))], &[]);
     assert_eq!(fired.len(), 1);
 }
@@ -312,8 +300,6 @@ fn resource_only_presence_keeps_state_alive() {
     let t0 = Instant::now();
     detector.tick(t0, &[obs("mc-a", PollObservation::Unreachable)], &[]);
     detector.tick(at(t0, 1), &[obs("mc-a", PollObservation::Unreachable)], &[]);
-    // Present only in the resource listing this tick (e.g. briefly paused):
-    // not pruned, and the unreachable streak holds rather than resetting.
     detector.tick(at(t0, 2), &[], &[mem_sample("mc-a", Some(10), Some(1000))]);
     let fired = detector.tick(at(t0, 3), &[obs("mc-a", PollObservation::Unreachable)], &[]);
     assert_eq!(fired.len(), 1);
@@ -337,8 +323,6 @@ fn unhealthy_fires_once_on_the_transition_and_stays_quiet_while_wrecked() {
     assert_eq!(fired.first().unwrap().kind, IncidentKind::Crash);
     assert_eq!(fired.first().unwrap().facts, IncidentFacts::Unhealthy);
 
-    // The wreck is static: no re-announcement on later ticks, even hours later
-    // when the cooldown alone would have permitted a refire.
     for tick in [1_u32, 2, 30] {
         let refires = detector.tick(
             at(t0, tick),
@@ -363,8 +347,6 @@ fn unhealthy_rearms_after_a_recovery() {
             .len(),
         1
     );
-    // Recovered (fresh pod, healthy poll), then condemned again after the
-    // cooldown: a new wreck is a new announcement.
     detector.tick(at(t0, 1), &[obs("mc-a", ok(0))], &[]);
     let fired = detector.tick(
         t0 + Duration::from_mins(70),
@@ -378,8 +360,6 @@ fn unhealthy_rearms_after_a_recovery() {
 fn crashed_phase_then_unhealthy_is_one_announcement() {
     let mut detector = detector();
     let t0 = Instant::now();
-    // The usual escalation sequence: the phase is observed crashed while the
-    // pod still stands, then Agones condemns it a tick later.
     assert_eq!(detector.tick(t0, &[obs("mc-a", crashed(5))], &[]).len(), 1);
     let fired = detector.tick(
         at(t0, 1),

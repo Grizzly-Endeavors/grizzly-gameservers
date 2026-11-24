@@ -72,14 +72,11 @@ fn the_page_is_cut_to_the_search_limit() {
 
 #[test]
 fn the_page_asked_for_is_larger_than_what_is_shown() {
-    // Filtering happens after the fetch, so a page sized to the display limit
-    // would routinely come back short of it.
     const { assert!(PAGE_SIZE > SEARCH_LIMIT) }
 }
 
 #[test]
 fn categories_classify_case_insensitively_across_both_endpoints() {
-    // Slugs from a listing, display names from a package detail.
     assert_eq!(
         side_support_from_categories(["server-side", "mods"].into_iter()),
         SideSupport::ServerOnly

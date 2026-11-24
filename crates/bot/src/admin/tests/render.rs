@@ -1,8 +1,5 @@
 use super::*;
 
-/// The person reading this has signed in successfully and been turned away
-/// anyway, so the page has to name the group they're missing — otherwise the
-/// only way to find out is to ask.
 #[test]
 fn the_denial_page_names_the_group_and_the_user() {
     let rendered = denial_body(&Denial::NotAMember {
@@ -20,7 +17,6 @@ fn the_denial_page_names_the_group_and_the_user() {
 fn the_unidentified_page_does_not_blame_the_reader() {
     let rendered = denial_body(&Denial::Unidentified).into_string();
     assert!(rendered.contains("sign-in"), "{rendered}");
-    // No group name to show — there is no identity to compare against one.
     assert!(!rendered.contains("grizzly-admins"), "{rendered}");
 }
 
@@ -35,9 +31,6 @@ fn a_user_in_no_groups_is_told_so_plainly() {
     assert!(rendered.contains("not in any groups"), "{rendered}");
 }
 
-/// Names and group lists arrive from an identity provider, so they are not
-/// trusted markup — escaping them is what keeps a display name from becoming a
-/// script tag on the one page only admins see.
 #[test]
 fn identity_text_is_escaped_into_the_page() {
     let rendered = denial_body(&Denial::NotAMember {
@@ -72,7 +65,6 @@ fn availability_reads_as_a_configuration_fact_not_an_error() {
     assert!(availability(true).into_string().contains("on"));
     let off = availability(false).into_string();
     assert!(off.contains("off"), "{off}");
-    // Neutral, not red: an optional subsystem that isn't wired is a choice.
     assert!(!off.contains("badge bad"), "{off}");
 }
 
@@ -98,8 +90,6 @@ fn percent_encoding_leaves_the_unreserved_set_alone() {
     assert_eq!(percent_encode("a b&c=d"), "a%20b%26c%3Dd");
 }
 
-/// A flash message is arbitrary text — it carries a setting value or an error —
-/// so it has to survive the round trip through a query string intact.
 #[test]
 fn a_flash_message_survives_the_redirect_it_rides_on() {
     let response = redirect("/settings", &Flash::ok("gary.model is now qwen3 & friends"));
@@ -129,8 +119,6 @@ fn an_error_flash_is_marked_as_one() {
     assert!(location.contains("err=1"), "{location}");
 }
 
-/// A destination that already carries a query keeps it — the confirmation
-/// bounce relies on `?confirm=…` surviving the flash being appended.
 #[test]
 fn a_flash_appends_to_an_existing_query_string() {
     let response = redirect("/guilds?confirm=open", &Flash::ok("done"));
@@ -158,8 +146,6 @@ fn a_redirect_without_a_message_carries_no_query() {
     assert_eq!(location, "/guilds?confirm=admit&guild=1");
 }
 
-/// The message is operator-supplied text echoed back into the page, so it is
-/// escaped like anything else rather than trusted.
 #[test]
 fn a_flash_message_is_escaped_into_the_page() {
     let flash = Flash::error("<script>alert(1)</script>");

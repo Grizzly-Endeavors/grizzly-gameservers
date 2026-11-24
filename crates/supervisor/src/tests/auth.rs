@@ -8,8 +8,6 @@ fn an_unconfigured_api_accepts_anything() {
     assert!(auth.accepts(Some("Bearer whatever")));
 }
 
-/// A secret that synced blank must not become a credential every caller in the
-/// namespace can guess by sending nothing.
 #[test]
 fn a_blank_token_reads_as_unconfigured() {
     for blank in ["", "   ", "\n"] {
@@ -47,8 +45,6 @@ fn a_configured_api_requires_the_exact_token() {
     );
 }
 
-/// The token is trimmed on the way in, so a secret file with a trailing newline
-/// — the usual shape out of a mounted secret — still authenticates.
 #[test]
 fn a_configured_token_is_trimmed() {
     let auth = ControlAuth::new(Some("s3cret\n"));

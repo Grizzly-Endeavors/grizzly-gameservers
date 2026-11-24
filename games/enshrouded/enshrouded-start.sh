@@ -55,10 +55,6 @@ request_stop() {
 }
 trap request_stop TERM INT
 
-# `cmd & wait` rather than running in the foreground: bash runs a trap only
-# between commands, and `wait` is the one builtin a signal interrupts. A stop that
-# lands mid-update (steamcmd can run for minutes) is honoured at once instead of
-# after the download, and never goes on to launch the server.
 run_interruptibly() {
     "$@" &
     local pid=$!
@@ -79,8 +75,6 @@ pause() {
 }
 
 echo "$(timestamp) grizzly: updating the Enshrouded dedicated server"
-# A stale app manifest wedges steamcmd in a failed-update state that `validate`
-# alone doesn't clear; upstream deletes it before every update for the same reason.
 rm -f "$ENSHROUDED_PATH"/steamapps/appmanifest_*.acf
 run_interruptibly "$STEAMCMD_PATH/steamcmd.sh" \
     +@sSteamCmdForcePlatformType windows \
@@ -93,14 +87,6 @@ if [ "$stopping" -eq 1 ]; then
     exit 0
 fi
 
-# Seeded once, when the instance has no config yet. Enshrouded has no join
-# password of its own: each user group's password is both what a player types to
-# join and which permissions they get, and a group with an empty password admits
-# anyone who finds the server in the browser with that group's rights. Upstream's
-# example ships one such group with every right including kick/ban, so the seed
-# replaces it with two locked groups — Admin with every right, Friend without
-# kick/ban or access to other players' inventories — each on its own minted
-# password. Gary reads them out of this file for whoever should have them.
 if [ ! -f "$ENSHROUDED_CONFIG" ]; then
     echo "$(timestamp) grizzly: seeding $ENSHROUDED_CONFIG"
     mint_password() {
@@ -121,10 +107,6 @@ if [ ! -f "$ENSHROUDED_CONFIG" ]; then
         /home/steam/enshrouded_server_example.json > "$ENSHROUDED_CONFIG"
 fi
 
-# The keys the platform owns, re-asserted on every boot: where the server listens
-# must match the port the Service leases, and saves and logs must stay on the data
-# volume. Everything else in the file — name, groups and their passwords, slots,
-# game settings — belongs to the instance and is never touched here.
 scratch="$ENSHROUDED_CONFIG.next"
 jq --argjson port "$ENSHROUDED_QUERY_PORT" \
     '.queryPort = $port
@@ -136,35 +118,19 @@ mv "$scratch" "$ENSHROUDED_CONFIG"
 
 mkdir -p "$ENSHROUDED_PATH/savegame" "$ENSHROUDED_PATH/logs"
 log="$ENSHROUDED_PATH/logs/enshrouded_server.log"
-# A symlink left by the upstream entrypoint (an instance that once ran on it)
-# points at another process's stdout; the server can't write through it.
 [ -L "$log" ] && rm -f "$log"
-# `-n 0` so the previous launch's lines are never replayed: its "ready" marker
-# would otherwise report this launch ready before it is. `-F` follows the file by
-# name, so a server that truncates or replaces it at startup is still followed.
 tail -n 0 -F "$log" 2> /dev/null &
 log_follower=$!
-# The follower holds the supervisor's output pipe open; left running past this
-# script, it would outlive the launch it belongs to.
 trap 'kill "$log_follower" 2> /dev/null || true' EXIT
 
 export WINEDEBUG=-all
 proton="$STEAMCMD_PATH/compatibilitytools.d/GE-Proton$GE_PROTON_VERSION/proton"
-# The base sets UMU_ID, which GE-Proton 11 reads as "not a Steam game": `run` then
-# launches through umu.exe with the lsteamclient bridge disabled, and the server
-# hangs before writing a line. So the server is launched with `runinprefix`, which
-# hands the exe straight to wine with the bridge in place — but it never builds
-# the prefix, and the prefix lives in the container layer, so it is missing on
-# every fresh pod. `getcompatpath` runs the full session setup (building or
-# upgrading the prefix) and nothing else.
 unset UMU_ID
 echo "$(timestamp) grizzly: preparing the Proton prefix"
 run_interruptibly "$proton" getcompatpath "$ENSHROUDED_PATH" > /dev/null
 echo "$(timestamp) grizzly: starting the Enshrouded dedicated server"
 "$proton" runinprefix "$ENSHROUDED_PATH/enshrouded_server.exe" &
 
-# The launcher can take several seconds to spawn the server. A stop that arrives
-# in that gap found nothing to signal, so it is re-sent once the server exists.
 for _ in $(seq 1 120); do
     pgrep -x "$server_name" > /dev/null && break
     pause 1

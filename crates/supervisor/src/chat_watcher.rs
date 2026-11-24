@@ -1,15 +1,3 @@
-//! Watches the supervised game's captured output for players addressing the ops
-//! agent in chat and forwards each hit to the bot's agent endpoint, closing the
-//! in-game → agent reverse loop.
-//!
-//! The watcher is game-agnostic: the per-game template declares how that game
-//! renders chat lines ([`ChatFormat`], via `SUPERVISOR_CHAT_FORMAT`) and the
-//! trigger a player types (`SUPERVISOR_CHAT_TRIGGER`, default `@Gary`). Parsing
-//! only matches genuine player-chat lines (`<player> message`), so the agent's
-//! own `tellraw` replies — which never render in that shape — cannot re-trigger
-//! it. The reply itself travels back over the existing RCON `/announce` bridge;
-//! this module is only the inbound half.
-
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -22,14 +10,8 @@ use tracing::{debug, warn};
 
 use crate::config::ChatWatchConfig;
 
-/// Minimum spacing between triggers accepted from one player. Each trigger is an
-/// LLM round-trip on the bot, so this keeps a single player from flooding it;
-/// distinct players are unaffected.
 const PER_PLAYER_COOLDOWN: Duration = Duration::from_secs(5);
 
-/// How a given game renders chat lines in its stdout log stream. Selected per game
-/// via `SUPERVISOR_CHAT_FORMAT` so the watcher itself stays game-agnostic — the
-/// same split the outbound `send_command`/`announce` bridge already uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChatFormat {
     Minecraft,
@@ -46,16 +28,12 @@ impl FromStr for ChatFormat {
     }
 }
 
-/// A parsed player chat line: who spoke and the full message body (trigger not yet
-/// stripped).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChatLine {
     pub player: String,
     pub body: String,
 }
 
-/// Consume captured output lines, forwarding any that address the agent. Runs
-/// until the sender half (the log line pump) closes at supervisor shutdown.
 pub async fn run(mut lines: mpsc::Receiver<String>, cfg: ChatWatchConfig, http: reqwest::Client) {
     if cfg.agent_token.is_none() {
         warn!(
@@ -80,9 +58,6 @@ pub async fn run(mut lines: mpsc::Receiver<String>, cfg: ChatWatchConfig, http: 
     debug!("chat watcher stopping; log stream closed");
 }
 
-/// Whether `player` triggered the agent too recently to accept another. Prunes
-/// entries that have aged out first, so the map stays bounded to recently-active
-/// players rather than every name ever seen.
 fn is_cooling_down(last_trigger: &mut HashMap<String, Instant>, player: &str) -> bool {
     let now = Instant::now();
     last_trigger.retain(|_, seen| now.duration_since(*seen) < PER_PLAYER_COOLDOWN);
@@ -93,9 +68,6 @@ fn is_cooling_down(last_trigger: &mut HashMap<String, Instant>, player: &str) ->
     false
 }
 
-/// POST one trigger to the bot's agent endpoint, best-effort: the reply comes back
-/// asynchronously over RCON, so nothing here waits on Gary. A delivery failure is
-/// logged and dropped — a chat question is not worth stalling log capture over.
 async fn forward_trigger(
     http: &reqwest::Client,
     cfg: &ChatWatchConfig,
@@ -123,10 +95,6 @@ async fn forward_trigger(
     }
 }
 
-/// Parse one captured output line into a player chat message, or `None` if it is
-/// not player chat. Only genuine `<player> message` chat matches — server output,
-/// join/leave notices, RCON echoes, and the agent's own `tellraw` replies do not,
-/// which is what keeps the reverse loop from feeding itself.
 #[must_use]
 pub fn parse_chat_line(format: ChatFormat, line: &str) -> Option<ChatLine> {
     match format {
@@ -134,10 +102,6 @@ pub fn parse_chat_line(format: ChatFormat, line: &str) -> Option<ChatLine> {
     }
 }
 
-/// Minecraft renders player chat as `[HH:MM:SS] [Server thread/INFO]: <Player> msg`
-/// (optionally prefixed `[Not Secure] ` when chat signing is off). We locate the
-/// log-prefix terminator `]: `, then require the message to open with `<name>` —
-/// the shape only player chat produces.
 fn parse_minecraft_chat(line: &str) -> Option<ChatLine> {
     let after_prefix = line.split_once("]: ").map(|(_, rest)| rest)?;
     let message = after_prefix
@@ -154,10 +118,6 @@ fn parse_minecraft_chat(line: &str) -> Option<ChatLine> {
     })
 }
 
-/// If `body` addresses the agent (contains `trigger`, case-insensitively), return
-/// the question with the trigger token removed and surrounding whitespace
-/// trimmed; otherwise `None`. An empty remainder (a bare `@Gary`) is preserved so
-/// the agent can prompt for what the player needs.
 #[must_use]
 pub fn strip_trigger(trigger: &str, body: &str) -> Option<String> {
     let start = body

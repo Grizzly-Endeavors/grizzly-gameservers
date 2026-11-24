@@ -1,23 +1,3 @@
-//! In-pod process supervisor for game-server containers.
-//!
-//! Runs as the container entrypoint: launches the game server as a child
-//! process, owns its lifecycle (graceful stop, in-place restart, crash
-//! relaunch), keeps the Agones SDK health heartbeat alive even while the game is
-//! intentionally paused, and exposes an HTTP control API the Discord bot drives.
-//!
-//! It also owns the per-launch preparation the platform's config tiers rest on:
-//! the per-instance env overlay ([`child_env`]) and, for the games whose mods
-//! come from Thunderstore, reconciling the instance's declarative mod list into
-//! a staged install tree ([`thunderstore`]).
-//!
-//! The pure decision logic ([`config`], [`state`], [`autoupdate`], [`palworld`],
-//! [`child_env`], [`heartbeat`]) is separated from the IO shell ([`process`], [`readiness`],
-//! [`sdk`], [`control`], [`runner`], [`rcon`], [`archive`], [`chat_watcher`],
-//! [`fs`], [`logs`], [`shell`]) so the state machine is unit-testable without spawning
-//! processes or opening sockets. [`thunderstore`] keeps the same split
-//! internally: its resolution and layout rules are pure over a trait, its
-//! network and filesystem work is not.
-
 pub mod archive;
 pub mod auth;
 pub mod autoupdate;

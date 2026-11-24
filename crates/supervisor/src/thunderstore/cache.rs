@@ -1,37 +1,18 @@
-//! The on-disk zip cache: `<work dir>/cache/<Namespace-Name-1.2.3>.zip`.
-//!
-//! The cache is not a performance optimisation, it is the offline story. Every
-//! zip carries its own `manifest.json` with the same dependency strings the API
-//! reports, so a pinned mod list resolves and installs from cache alone — which
-//! is what lets a pod recreated during a Thunderstore outage still come back up
-//! with the mods it had. The filename is the release string precisely so the
-//! directory can be read back as a set of releases with no index file to fall
-//! out of sync.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::types::PackageRelease;
 
-/// Subdirectory of the working tree that holds the zips.
 pub const CACHE_DIR: &str = "cache";
 
-/// Suffix a download carries until it is complete. A `.part` file is never a
-/// cache hit, so an interrupted download can't be mistaken for a package.
 const PARTIAL_SUFFIX: &str = ".part";
 
-/// Where one release's zip lives.
 #[must_use]
 pub fn path_for(work_dir: &Path, release: &PackageRelease) -> PathBuf {
     work_dir.join(CACHE_DIR).join(format!("{release}.zip"))
 }
 
-/// Open a cached zip, or `None` when it isn't cached.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but can't be opened.
 pub fn open(work_dir: &Path, release: &PackageRelease) -> Result<Option<std::fs::File>> {
     let path = path_for(work_dir, release);
     match std::fs::File::open(&path) {
@@ -41,14 +22,6 @@ pub fn open(work_dir: &Path, release: &PackageRelease) -> Result<Option<std::fs:
     }
 }
 
-/// Write `bytes` into the cache atomically: a temporary `.part` file renamed
-/// into place, so a crash or a killed pod mid-download leaves no zip that looks
-/// complete.
-///
-/// # Errors
-///
-/// Returns an error if the cache directory can't be created or the file can't be
-/// written or renamed.
 pub fn store(work_dir: &Path, release: &PackageRelease, bytes: &[u8]) -> Result<()> {
     let final_path = path_for(work_dir, release);
     let dir = final_path
@@ -63,9 +36,6 @@ pub fn store(work_dir: &Path, release: &PackageRelease, bytes: &[u8]) -> Result<
     Ok(())
 }
 
-/// Every release currently cached. Unreadable or unparseable filenames are
-/// ignored rather than fatal: the cache is derived state, and a stray file in it
-/// must not stop a launch.
 #[must_use]
 pub fn cached_releases(work_dir: &Path) -> Vec<PackageRelease> {
     let Ok(entries) = std::fs::read_dir(work_dir.join(CACHE_DIR)) else {
@@ -80,14 +50,6 @@ pub fn cached_releases(work_dir: &Path) -> Vec<PackageRelease> {
         .collect()
 }
 
-/// Delete every cached zip outside `keep`, plus any leftover partial downloads.
-/// Returns how many files were removed.
-///
-/// # Errors
-///
-/// Returns an error if the cache directory exists but can't be read. A file that
-/// can't be deleted is left in place — the next launch will try again, and a
-/// stale zip costs disk, not correctness.
 pub fn collect(work_dir: &Path, keep: &[PackageRelease]) -> Result<usize> {
     let dir = work_dir.join(CACHE_DIR);
     let entries = match std::fs::read_dir(&dir) {

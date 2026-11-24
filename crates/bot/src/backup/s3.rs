@@ -26,12 +26,8 @@ const PART_SIZE: usize = 16 * 1024 * 1024;
 /// being signed and PUT part-by-part until the server rejects it opaquely.
 const S3_MAX_PARTS: usize = 10_000;
 
-/// Validity window for each presigned URL. Generous relative to a single part
-/// upload or list over the LAN, so a slow world never outruns its own signature.
 const SIGN_EXPIRY: Duration = Duration::from_hours(1);
 
-/// A configured handle to the backups bucket: the signer plus the shared reqwest
-/// client that runs the signed requests.
 pub(crate) struct S3Store {
     bucket: Bucket,
     credentials: Credentials,
@@ -39,13 +35,6 @@ pub(crate) struct S3Store {
 }
 
 impl S3Store {
-    /// Build the store from config. `http` should be a long-timeout client — the
-    /// same one used to stream the archive to/from the supervisor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the endpoint URL is invalid or the bucket can't be
-    /// constructed.
     pub(crate) fn new(config: &S3Config, http: reqwest::Client) -> Result<Self> {
         let endpoint = Url::parse(&config.endpoint)
             .with_context(|| format!("invalid s3 endpoint {}", config.endpoint))?;
@@ -64,13 +53,6 @@ impl S3Store {
         })
     }
 
-    /// Stream the body of `source` up to `key` as a multipart upload, returning
-    /// the number of bytes stored. Aborts the multipart upload on any failure so a
-    /// broken transfer doesn't leave orphaned parts accruing storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the source can't be read or any S3 step fails.
     pub(crate) async fn upload_stream(&self, key: &str, source: reqwest::Response) -> Result<u64> {
         let upload_id = self.create_multipart(key).await?;
         match self.stream_parts(key, &upload_id, source).await {
@@ -121,8 +103,6 @@ impl S3Store {
                 buf.reserve(PART_SIZE);
             }
         }
-        // Flush the tail; also covers a sub-part-size archive, which still needs
-        // at least one part before the upload can be completed.
         if !buf.is_empty() || etags.is_empty() {
             etags.push(self.upload_part(key, upload_id, etags.len(), buf).await?);
         }
@@ -201,12 +181,6 @@ impl S3Store {
         }
     }
 
-    /// Open a streaming GET of `key`, returning the checked response whose body
-    /// the caller pipes into the supervisor's restore route.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request fails or the object is missing.
     pub(crate) async fn download_stream(&self, key: &str) -> Result<reqwest::Response> {
         let action = self.bucket.get_object(Some(&self.credentials), key);
         let url = action.sign(SIGN_EXPIRY);
@@ -219,11 +193,6 @@ impl S3Store {
         success(response).await
     }
 
-    /// Upload the manifest sidecar for an artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the manifest can't be encoded or the upload fails.
     pub(crate) async fn put_manifest(&self, key: &str, manifest: &BackupManifest) -> Result<()> {
         let body = serde_json::to_vec(manifest).context("failed to encode backup manifest")?;
         let action = self.bucket.put_object(Some(&self.credentials), key);
@@ -238,11 +207,6 @@ impl S3Store {
         success(response).await.map(drop)
     }
 
-    /// Fetch and parse an artifact's manifest sidecar.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the fetch fails or the body isn't a valid manifest.
     pub(crate) async fn get_manifest(&self, key: &str) -> Result<BackupManifest> {
         let response = self.download_stream(key).await?;
         let bytes = response
@@ -295,11 +259,6 @@ impl S3Store {
         Ok(keys)
     }
 
-    /// Delete a single object, tolerating an already-absent key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the delete request fails at the transport level.
     pub(crate) async fn delete_object(&self, key: &str) -> Result<()> {
         let action = self.bucket.delete_object(Some(&self.credentials), key);
         let url = action.sign(SIGN_EXPIRY);
@@ -314,8 +273,6 @@ impl S3Store {
     }
 }
 
-/// Return `response` when it carries a 2xx, else an error with the status and
-/// (truncated) body for diagnosis.
 async fn success(response: reqwest::Response) -> Result<reqwest::Response> {
     let status = response.status();
     if status.is_success() {
@@ -323,15 +280,11 @@ async fn success(response: reqwest::Response) -> Result<reqwest::Response> {
     }
     let body = match response.text().await {
         Ok(body) => body,
-        // Don't let the body read fail silently while building the diagnostic —
-        // the 3am operator should see that a body existed but couldn't be read,
-        // not an empty tail that looks like no body at all.
         Err(err) => format!("(could not read error body: {err})"),
     };
     bail!("s3 request failed with status {status}: {}", body.trim());
 }
 
-/// Like [`success`] but returns the body text of a checked 2xx response.
 async fn success_text(response: reqwest::Response) -> Result<String> {
     let response = success(response).await?;
     response

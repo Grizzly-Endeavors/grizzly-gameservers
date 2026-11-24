@@ -1,8 +1,6 @@
 use super::*;
 use crate::agent::{ChatMessage, ToolCall};
 
-/// Build an assistant message that requests the named tools, mirroring the wire
-/// shape `summarize_attempts` walks (an assistant turn carrying `tool_calls`).
 fn assistant_calling(names: &[&str]) -> ChatMessage {
     let calls = names
         .iter()
@@ -42,8 +40,6 @@ fn summarize_attempts_lists_tool_calls_in_order() {
 
 #[test]
 fn summarize_attempts_scopes_to_the_latest_user_turn() {
-    // A continued conversation: the prior turn's tool calls must not leak into
-    // this ask's attempt summary — only calls after the last user message count.
     let messages = vec![
         ChatMessage::system("prompt"),
         ChatMessage::user("first ask"),
@@ -99,7 +95,6 @@ fn render_discord_dm_escalation_names_the_dm_not_a_guild() {
     });
     assert!(notice.contains("a direct message"));
     assert!(!notice.contains("guild `"));
-    // No tools were called before the give-up — say so rather than an empty list.
     assert!(notice.contains("he called no tools"));
 }
 
@@ -123,8 +118,6 @@ fn render_agent_requested_escalation_leads_with_garys_own_reason() {
         "the server Gary named must be findable without reading the prose"
     );
     assert!(notice.contains("read_logs → browse_files"));
-    // The whole point of this variant: it must not claim a budget was spent,
-    // because Gary stopped while he still had rounds left.
     assert!(
         !notice.contains("rounds"),
         "a deliberate handoff didn't exhaust anything: {notice}"
@@ -133,8 +126,6 @@ fn render_agent_requested_escalation_leads_with_garys_own_reason() {
 
 #[test]
 fn an_escalation_about_no_particular_server_omits_the_server_line() {
-    // Plenty of asks aren't about one server ("why is everything slow?"). A blank
-    // Server line would read as a lookup that came back empty.
     let notice = render_escalation(&Escalation::AgentRequested {
         context: EscalationContext::Discord {
             asker: "Alice".to_owned(),
@@ -173,8 +164,6 @@ fn the_two_turn_escalations_are_built_from_the_loops_own_reason() {
         "tune the difficulty".to_owned(),
         Vec::new(),
     );
-    // The budget shape is the only one that may state a round count, and it must
-    // be the real ceiling rather than something the caller happened to have.
     match exhausted {
         Escalation::RoundBudgetExhausted { rounds, .. } => {
             assert_eq!(rounds, crate::agent::DEFAULT_MAX_ROUNDS);
@@ -212,8 +201,6 @@ fn render_crash_rollback_escalation_names_the_server_and_path() {
     });
     assert!(notice.contains("mc-summer"));
     assert!(notice.contains("server.properties"));
-    // No asker/attempts/rounds exist for this variant — the wording must not
-    // imply a user request or a round budget that was never spent.
     assert!(!notice.contains("rounds"));
     assert!(!notice.contains("asked"));
 }

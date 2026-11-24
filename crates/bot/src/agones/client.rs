@@ -20,16 +20,6 @@ use crate::domain::{GameId, GuildId, InstanceName};
 use crate::events::declared_resources;
 use crate::limits::GuildUsage;
 
-/// List the Agones `GameServer`s in `namespace` visible under `scope`, joining
-/// each to its `NodePort` Service to resolve a connection address under
-/// `domain`. A guild scope filters both lists to that guild's servers via
-/// the [`GUILD_KEY`](super::labels::GUILD_KEY) label; the operator scope
-/// lists everything.
-///
-/// # Errors
-///
-/// Returns an error if the gameservers or services cannot be listed from the
-/// Kubernetes API.
 pub(crate) async fn list_active_servers(
     client: Client,
     namespace: &str,
@@ -58,22 +48,13 @@ pub(crate) async fn list_active_servers(
     let mut summaries = Vec::with_capacity(gs_list.items.len());
     let mut live: HashSet<&str> = HashSet::new();
     for gameserver in &gs_list.items {
-        // Only shim-provisioned instances are the bot's domain — skip Flux-managed
-        // singletons so the live half matches the stopped half and the backup
-        // targets, all of which are managed-only.
         if !is_managed(gameserver.metadata.labels.as_ref()) {
             continue;
         }
         let instance = gameserver.metadata.name.as_deref().unwrap_or("<unnamed>");
         live.insert(instance);
-        // The supervisor publishes a paused process as a GameServer label, which
-        // takes precedence over the (still Ready/Allocated) Agones state.
         let paused = label_value(gameserver.metadata.labels.as_ref(), PROCESS_LABEL_KEY)
             == Some(PROCESS_LABEL_STOPPED);
-        // A GameServer being torn down keeps reporting its last Agones state
-        // until the finalizer clears, so listing that state would show a server
-        // as Ready while it is on its way out — and, if its node is gone, keep
-        // showing it indefinitely.
         let state = if deletion_state(&gameserver.metadata) == DeletionState::Terminating {
             ServerState::Stopping
         } else if paused {
@@ -100,24 +81,8 @@ pub(crate) async fn list_active_servers(
     Ok(summaries)
 }
 
-/// The Agones state string that marks a `GameServer` whose health heartbeat
-/// stopped — for this bot's supervisors, crash escalation (ADR-010). The pod is
-/// torn down shortly after, but the `GameServer` object persists in this state.
 const UNHEALTHY_STATE: &str = "Unhealthy";
 
-/// A managed server whose `GameServer` object is live: who owns it, what it
-/// runs, whether its game process is up, and whether Agones has declared it
-/// unhealthy. The pod usually exists too, but an unhealthy instance may have
-/// already lost it.
-///
-/// The `running` flag carries different weight per consumer. The backup cycle
-/// uses it to decide whether to quiesce (flush) before snapshotting — a paused
-/// server's `/data` is already saved and its RCON is down, so quiescing would
-/// only log a spurious failure. The occupancy sampler uses it to gate the
-/// occupancy read and the sample row. Note that crash escalation also labels
-/// the process `stopped` (the supervisor's runner does this on giving up), so
-/// `running: false` alone cannot distinguish "paused on purpose" from
-/// "escalated crash" — that's what `unhealthy` is for.
 pub(crate) struct LiveInstance {
     pub(crate) instance: InstanceName,
     pub(crate) game: GameId,
@@ -126,17 +91,6 @@ pub(crate) struct LiveInstance {
     pub(crate) unhealthy: bool,
 }
 
-/// The managed `GameServer`s with a live pod, for the consumers that need to
-/// reach a supervisor: the scheduled backup cycle and the occupancy sampler.
-/// Shut-down instances (Service only, no pod) are absent — there is nothing in
-/// the cluster to talk to — and are recovered via archive, not backed up.
-///
-/// This is the one listing that surfaces the owning guild, which the labels
-/// carry but [`list_active_servers`]'s friend-facing summary does not.
-///
-/// # Errors
-///
-/// Returns an error if the gameservers can't be listed from the Kubernetes API.
 pub(crate) async fn list_live_instances(
     client: &Client,
     namespace: &str,
@@ -172,19 +126,6 @@ pub(crate) async fn list_live_instances(
     Ok(targets)
 }
 
-/// What `guild` currently holds, measured live off the cluster for guild-cap
-/// enforcement (ADR-022). The count spans every managed Service — the durable
-/// per-instance object, so running, paused, and stopped servers all count, since
-/// each holds a port lease and a PVC. The CPU/memory aggregate spans only pods
-/// that exist, summed with the same [`declared_resources`] arithmetic the
-/// resource sampler records. `exclude_instance` removes one instance's
-/// contribution from the *aggregate* (never the count) so a resize proposal
-/// replaces, rather than stacks onto, the target's current figures.
-///
-/// # Errors
-///
-/// Returns an error if the services or pods cannot be listed from the
-/// Kubernetes API.
 pub(crate) async fn guild_usage(
     client: &Client,
     namespace: &str,
@@ -212,9 +153,6 @@ pub(crate) async fn guild_usage(
         }
     }
 
-    // Pods are matched through the Agones selector label back to the guild's
-    // Service set rather than trusting a guild label on the pod itself — the
-    // Service is the object the guild stamp is read back from everywhere else.
     let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
     let pod_list = pods
         .list(&ListParams::default().labels(GAMESERVER_SELECTOR_KEY))
@@ -244,9 +182,6 @@ pub(crate) async fn guild_usage(
     })
 }
 
-/// A `/shutdown` deletes the `GameServer` but keeps its Service, so a managed Service
-/// with no live `GameServer` behind it is a stopped instance. Surface those so a
-/// friend can see — and `/start` — a world that is currently down.
 fn append_stopped_instances(
     services: &[Service],
     live: &HashSet<&str>,

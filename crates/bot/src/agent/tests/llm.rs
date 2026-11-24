@@ -96,8 +96,6 @@ fn parses_the_usage_and_finish_reason_the_provider_sends() {
     );
 }
 
-/// `prompt_tokens` counts the cache hits too, so the two are only usable side
-/// by side once the overlap is removed.
 #[test]
 fn a_cache_hit_is_readable_apart_from_the_prompt_it_is_part_of() {
     let raw = serde_json::json!({
@@ -117,8 +115,6 @@ fn a_cache_hit_is_readable_apart_from_the_prompt_it_is_part_of() {
     assert_eq!(usage.prompt, Some(4026), "the whole prompt stays readable");
 }
 
-/// A provider that sends no detail block has not said the prompt was uncached —
-/// it has said nothing, and the full count is all that can be claimed.
 #[test]
 fn no_cache_detail_leaves_the_whole_prompt_uncached() {
     let raw = serde_json::json!({

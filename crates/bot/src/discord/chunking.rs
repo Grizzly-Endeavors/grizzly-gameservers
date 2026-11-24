@@ -7,17 +7,8 @@
 /// never overflows.
 pub(crate) const DISCORD_MAX_CHARS: usize = 2000;
 
-/// Appended to close a code fence that's still open at a chunk boundary.
 const FENCE_CLOSE: &str = "\n```";
 
-/// Split text into chunks that fit within `max_chars`, preserving code fence
-/// integrity.
-///
-/// - Prefers splitting at newline or whitespace boundaries over mid-word
-/// - If a `` ``` `` code fence spans a chunk boundary, the fence is closed at the
-///   end of the current chunk and reopened at the start of the next
-/// - Returns a single-element vec if the text fits within the limit
-/// - Returns an empty vec for empty input
 pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     if text.is_empty() || max_chars == 0 {
         return Vec::new();
@@ -76,8 +67,6 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 
         chunks.push(chunk);
 
-        // find_split_point prefers a newline boundary, so drop that newline rather
-        // than let it open the next chunk as a blank line.
         pos += split_at;
         if text.get(pos..pos + 1) == Some("\n") {
             pos += 1;
@@ -89,7 +78,6 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     chunks
 }
 
-/// Update fence tracking state by scanning lines in `text`.
 fn update_fence_state(text: &str, in_fence: &mut bool, fence_header: &mut String) {
     for line in text.lines() {
         let trimmed = line.trim();
@@ -105,20 +93,17 @@ fn update_fence_state(text: &str, in_fence: &mut bool, fence_header: &mut String
     }
 }
 
-/// Find the best byte offset to split at, preferring newline > whitespace > hard cut.
 fn find_split_point(text: &str, max: usize) -> usize {
     if max >= text.len() {
         return text.len();
     }
 
-    // Clamp to a char boundary
     let mut end = max;
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
 
     if end == 0 {
-        // Find first char boundary > 0
         let mut first = 1;
         while first < text.len() && !text.is_char_boundary(first) {
             first += 1;
@@ -128,21 +113,18 @@ fn find_split_point(text: &str, max: usize) -> usize {
 
     let search_region = text.split_at(end).0;
 
-    // Prefer splitting at a newline
     if let Some(pos) = search_region.rfind('\n')
         && pos > 0
     {
         return pos;
     }
 
-    // Fall back to whitespace
     if let Some(pos) = search_region.rfind(char::is_whitespace)
         && pos > 0
     {
         return pos;
     }
 
-    // Hard cut at char boundary
     end
 }
 

@@ -55,8 +55,6 @@ fn env_value_trims_surrounding_whitespace() {
 
 #[test]
 fn an_empty_value_reads_as_absent() {
-    // A template that declares a variable as "" means "declared but off"; every
-    // per-game fact read through here treats that the same as undeclared.
     let parsed = AnnotatedTemplate::parse(&template(
         "            - name: A\n              value: \"   \"",
     ))
@@ -66,7 +64,6 @@ fn an_empty_value_reads_as_absent() {
 
 #[test]
 fn a_value_from_variable_is_never_returned() {
-    // It names a secret, and no per-game fact read through here is one.
     let parsed = AnnotatedTemplate::parse(&template(
         "            - name: TOKEN
               valueFrom:
@@ -110,8 +107,6 @@ fn every_container_is_searched() {
 
 #[test]
 fn unrelated_manifest_fields_do_not_perturb_the_parse() {
-    // The struct is deliberately partial; a catalog edit elsewhere in the
-    // manifest must not turn into a parse error.
     let parsed = AnnotatedTemplate::parse(
         "spec:
   health:

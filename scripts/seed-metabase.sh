@@ -1,31 +1,4 @@
 #!/usr/bin/env bash
-# Push scripts/queries/*.sql (against the grizzly_gameservers Postgres) and
-# scripts/queries/clickhouse/*.sql (against the langfuse ClickHouse) into
-# Metabase as saved questions and lay them out on a "Gameservers" dashboard.
-#
-# Why this exists: a dashboard built by clicking lives only inside Metabase's
-# database, where it can't be reviewed, grepped, or explained. The SQL in
-# scripts/queries/ stays the source of truth — each file carries the caveats
-# that make its result trustworthy — and this script is how it reaches the
-# browser. Re-run it after editing a query; an existing question is updated in
-# place rather than duplicated.
-#
-# Usage:
-#   just seed-metabase              (or: scripts/seed-metabase.sh)
-#   scripts/seed-metabase.sh --dry-run
-#
-# Auth: reads the Metabase API key from 1Password (platform-metabase/api_key),
-# or from MB_API_KEY if it is already set.
-#
-# Prerequisites: the data sources must already exist in Metabase — the
-# grizzly_gameservers Postgres for scripts/queries/*.sql, and the langfuse
-# ClickHouse for scripts/queries/clickhouse/*.sql. Registering them is
-# grizzly-platform's scripts/metabase-add-database.sh, not this script's job.
-# See grizzly-platform docs/integration/metabase.md.
-#
-# The subdirectory is the database marker: a file's location decides which
-# data source its question queries. `just db-query` only ever runs the
-# top-level (Postgres) files, so psql can never be pointed at ClickHouse SQL.
 
 set -euo pipefail
 
@@ -46,7 +19,6 @@ CH_DATA_SOURCE="langfuse"
 COLLECTION_NAME="Grizzly Gameservers"
 DASHBOARD_NAME="Gameservers"
 
-# Metabase's dashboard grid is 24 columns wide; two half-width cards per row.
 CARD_W=12
 CARD_H=8
 
@@ -66,16 +38,6 @@ command -v jq >/dev/null || die "jq not on PATH"
 command -v curl >/dev/null || die "curl not on PATH"
 [[ -d "${QUERY_DIR}" ]] || die "no query directory at ${QUERY_DIR}"
 
-# --- turn a psql script into portable SQL -----------------------------------
-
-# The query files are written for psql and two of them use `\set` plus :'name'
-# interpolation. Metabase's native editor speaks SQL only, so the assignments
-# are inlined here. Everything else (::date casts, CTEs, window functions) goes
-# through untouched.
-#
-# This is a substitution, not a rewrite: if a query ever needs a value chosen at
-# run time, it should become a Metabase template variable in the source file
-# rather than growing a second dialect here.
 render_query() {
   awk '
     /^\\set[ \t]+/ {
@@ -102,8 +64,6 @@ render_query() {
   ' "$1"
 }
 
-# The leading `--` comment block becomes the question description, so the
-# caveats travel with the number instead of staying behind in the repo.
 render_description() {
   awk '
     /^--/ { sub(/^-- ?/, ""); lines = lines $0 "\n"; next }
@@ -113,12 +73,9 @@ render_description() {
   ' "$1"
 }
 
-# active-users.sql -> "Active users"
 render_name() {
   basename "$1" .sql | tr '-' ' ' | awk '{ $1 = toupper(substr($1,1,1)) substr($1,2); print }'
 }
-
-# --- credentials ------------------------------------------------------------
 
 read_op_field() {
   local item="$1" field="$2" token
@@ -156,10 +113,6 @@ if [[ -z "${MB_API_KEY:-}" ]]; then
 fi
 [[ -n "${MB_API_KEY}" ]] || die "Metabase API key is empty"
 
-# --- reach metabase ---------------------------------------------------------
-
-# Port-forwarding the Service bypasses the Authentik forward-auth gate on the
-# public hostname, which would answer an API call with a sign-in redirect.
 command -v kubectl >/dev/null || die "kubectl not on PATH"
 kubectl -n "${NAMESPACE}" get "${SERVICE}" >/dev/null 2>&1 \
   || die "${SERVICE} not found in namespace ${NAMESPACE} — is Metabase deployed?"
@@ -186,8 +139,6 @@ api() {
     -H 'Content-Type: application/json' "$@"
 }
 
-# --- locate the data source and collection ----------------------------------
-
 DATABASES="$(api GET /api/database)"
 DB_ID="$(printf '%s' "${DATABASES}" | jq -r --arg n "${DATA_SOURCE}" '.data[]? | select(.name == $n) | .id')"
 [[ -n "${DB_ID}" ]] \
@@ -212,12 +163,8 @@ fi
 
 EXISTING_ITEMS="$(api GET "/api/collection/${COLLECTION_ID}/items?models=card")"
 
-# --- seed the questions -----------------------------------------------------
-
 CARD_IDS=()
 
-# Upsert one query file as a saved question against the given database id,
-# appending the resulting card id to CARD_IDS for the dashboard layout.
 seed_card() {
   local f="$1" db_id="$2"
   local NAME SQL DESCRIPTION PAYLOAD CARD_ID RESPONSE ACTION REASON
@@ -267,8 +214,6 @@ seed_card() {
 for f in "${QUERY_FILES[@]}"; do seed_card "${f}" "${DB_ID}"; done
 for f in "${CH_QUERY_FILES[@]}"; do seed_card "${f}" "${CH_DB_ID}"; done
 
-# --- assemble the dashboard -------------------------------------------------
-
 DASH_ITEMS="$(api GET "/api/collection/${COLLECTION_ID}/items?models=dashboard")"
 DASH_ID="$(printf '%s' "${DASH_ITEMS}" | jq -r --arg n "${DASHBOARD_NAME}" '.data[]? | select(.name == $n) | .id' | head -1)"
 if [[ -z "${DASH_ID}" ]]; then
@@ -279,10 +224,6 @@ if [[ -z "${DASH_ID}" ]]; then
   log "created dashboard '${DASHBOARD_NAME}' (${DASH_ID})"
 fi
 
-# The layout is rebuilt from scratch each run: dashcards carry negative ids to
-# mean "new", and any card omitted from this list is removed from the dashboard.
-# That keeps the dashboard a pure function of scripts/queries/ — and is why the
-# dashboard description tells anyone rearranging it to work in a copy.
 DASHCARDS="$(printf '%s\n' "${CARD_IDS[@]}" | jq -R 'tonumber' | jq -s \
   --argjson w "${CARD_W}" --argjson h "${CARD_H}" \
   'to_entries | map({

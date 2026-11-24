@@ -26,25 +26,12 @@ use serde::{Deserialize, Serialize};
 /// label lands on the `GameServer` as [`PROCESS_LABEL_KEY`].
 pub const PROCESS_LABEL_SUFFIX: &str = "grizzly-process";
 
-/// The full label key the bot reads off a `GameServer` to tell a paused server
-/// (process down, pod up) from a running one. Kept beside the suffix the
-/// supervisor writes so the two never drift.
 pub const PROCESS_LABEL_KEY: &str = "agones.dev/sdk-grizzly-process";
 
-/// Value of [`PROCESS_LABEL_KEY`] while the game process is running.
 pub const PROCESS_LABEL_RUNNING: &str = "running";
 
-/// Value of [`PROCESS_LABEL_KEY`] while the game process is intentionally stopped.
 pub const PROCESS_LABEL_STOPPED: &str = "stopped";
 
-/// Default TCP port the supervisor serves its control API on and the bot's control
-/// client dials. Pod-internal — never added to the `NodePort` Service — so only the
-/// bot (allowed by a scoped Cilium egress rule) can reach it. Deliberately outside
-/// the 7000–7099 `NodePort` band and clear of 9358 (the Agones SDK). Shared so both
-/// sides default to the same port; a mismatch is a silent Cilium drop, not an error.
-/// The `cluster/guardrails/bot-to-supervisor-egress.yaml` guardrail hardcodes this
-/// value too and must still be matched by hand (a YAML file can't import a Rust
-/// const — that half stays tracked under issue #42).
 pub const CONTROL_PORT: u16 = 9359;
 
 /// Default seconds the supervisor gives the game process to save its world after
@@ -63,33 +50,21 @@ pub const CONTROL_PORT: u16 = 9359;
 /// fails CI if one stops clearing the window.
 pub const DEFAULT_GRACEFUL_TIMEOUT_SECS: u64 = 90;
 
-/// A control action the bot can ask the supervisor to perform, identified by the
-/// HTTP method + path it arrives on. Not a wire *body* — it is the routing key,
-/// shared so the client builds the same paths the server matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlCommand {
-    /// Gracefully stop the game process; keep the pod alive.
     Stop,
-    /// Start the game process if it is stopped.
     Start,
-    /// Bounce the game process in place.
     Restart,
-    /// Report the current process phase.
     Status,
 }
 
-/// Why a request did not map to a [`ControlCommand`]. Maps to an HTTP status on
-/// the server side (404 / 405).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteError {
-    /// No route owns this path.
     NotFound,
-    /// The path exists but not for this method.
     MethodNotAllowed,
 }
 
 impl ControlCommand {
-    /// The HTTP method this command is issued with.
     #[must_use]
     pub const fn method(self) -> &'static str {
         match self {
@@ -98,7 +73,6 @@ impl ControlCommand {
         }
     }
 
-    /// The request path this command is issued on.
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {
@@ -109,12 +83,6 @@ impl ControlCommand {
         }
     }
 
-    /// Resolve a raw `(method, path)` to the command it addresses.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RouteError::NotFound`] when no route owns `path`, or
-    /// [`RouteError::MethodNotAllowed`] when the path exists but not for `method`.
     pub fn from_request(method: &str, path: &str) -> Result<Self, RouteError> {
         let command = match path {
             "/stop" => Self::Stop,
@@ -131,34 +99,22 @@ impl ControlCommand {
     }
 }
 
-/// The phase of the supervised game process, as reported by `GET /status` and
-/// mirrored in the bot's listing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessPhase {
-    /// Launched, not yet accepting connections.
     Starting,
-    /// Accepting connections.
     Running,
-    /// A graceful stop is in flight.
     Stopping,
-    /// Intentionally stopped; the pod (and supervisor) stay alive.
     Stopped,
-    /// Exited unexpectedly and not (yet) relaunched.
     Crashed,
 }
 
-/// Body of `GET /status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub process: ProcessPhase,
-    /// Whether the Agones SDK `/ready` has been signalled at least once.
     pub ready: bool,
-    /// PID of the live child process, absent while stopped/crashed.
     pub pid: Option<u32>,
-    /// Seconds since the current child was launched, `0` while stopped.
     pub uptime_seconds: u64,
-    /// Count of unexpected exits the supervisor has relaunched from.
     pub restarts: u32,
 }
 
@@ -171,8 +127,6 @@ pub struct OccupancyResponse {
     pub players: Option<u32>,
 }
 
-/// The outcome of a control action, distinguishing a state change from a no-op
-/// so the bot can phrase the friend-facing reply accurately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultKind {
@@ -183,7 +137,6 @@ pub enum ResultKind {
     Restarting,
 }
 
-/// Success body for the mutating control routes: `{"result": "..."}`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlOk {
     pub result: ResultKind,
@@ -196,21 +149,6 @@ impl ControlOk {
     }
 }
 
-/// Error body for any failed control route: `{"error": "..."}`.
-///
-/// The bot reads this message in one of three registers depending on the route,
-/// so the supervisor writes each body to match how it's consumed:
-///
-/// - **Relayed** — `/command` and the lifecycle routes (`/stop`, `/start`,
-///   `/restart`): the bot surfaces the message to the friend near-verbatim, so
-///   these bodies are **friend-facing**.
-/// - **Discarded + substituted** — `/archive` (both the archive-out `GET` and
-///   the whole-data restore-in `POST`): the bot logs the body but replaces it
-///   with its own generic copy for the friend, so these bodies are
-///   **diagnostic** — they only ever land in a log line.
-/// - **Unread** — `/announce`: the bot logs only the status code and never
-///   deserializes the body, so this body is **diagnostic** too (the supervisor's
-///   own log carries the real cause).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlError {
     pub error: String,
@@ -232,44 +170,28 @@ pub struct PathQuery {
     pub path: String,
 }
 
-/// What a directory entry is, so the agent can tell a file it can read from a
-/// directory it should descend into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     File,
     Dir,
-    /// A symlink, socket, device, or anything else the agent shouldn't touch.
     Other,
 }
 
-/// One entry in a [`ListResponse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirEntry {
     pub name: String,
     pub kind: EntryKind,
-    /// Size in bytes for files; `0` for directories.
     #[serde(rename = "size")]
     pub size_bytes: u64,
 }
 
-/// Body of `GET /fs/list`: the directory's entries, sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListResponse {
-    /// The data-root-relative path that was listed.
     pub path: String,
     pub entries: Vec<DirEntry>,
 }
 
-/// Query for `GET /fs/read`: which file, and which window of it to return.
-///
-/// `start_line` is 1-based and `line_count` bounds how many lines come back.
-/// Lines are the addressable unit because a caller can derive one from a window
-/// it has already seen or from a `grep` hit, which a byte offset never allowed.
-///
-/// Naming neither returns the whole file, capped by the supervisor's read cap.
-/// That is for a caller that will *parse* what it reads; anything being read for
-/// a person or a model should name a window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadQuery {
     pub path: String,
@@ -308,13 +230,6 @@ pub struct ReadResponse {
 /// what keeps `grep`-before-read worth doing on the files where it pays.
 pub const DEFAULT_READ_LINES: usize = 400;
 
-/// Body of `POST /fs/edit`: replace the one occurrence of `old` in `path` with
-/// `new`, snapshotting the prior version first exactly as a write does.
-///
-/// The replacement happens in the pod because that is where the file already is.
-/// Editing from the far side of the control API would mean shipping the whole
-/// file out and the whole file back to change one line, which bounds what can be
-/// edited by what fits in a read — a limit with nothing to do with editing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditRequest {
     pub path: String,
@@ -335,31 +250,23 @@ pub struct EditResponse {
     pub backed_up: bool,
 }
 
-/// Body of `POST /fs/write`: overwrite `path` with `content`. The supervisor
-/// snapshots the existing file first so the change can be reverted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteRequest {
     pub path: String,
     pub content: String,
 }
 
-/// Body of the `POST /fs/write` response. `backed_up` is `true` when a prior
-/// version was snapshotted (i.e. the file already existed), `false` for a
-/// freshly created file that has nothing to revert to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteResponse {
     pub path: String,
     pub backed_up: bool,
 }
 
-/// Body of `POST /fs/restore`: restore `path` from the snapshot the last write
-/// took.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreRequest {
     pub path: String,
 }
 
-/// Body of the `POST /fs/restore` response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreResponse {
     pub path: String,
@@ -374,8 +281,6 @@ pub struct CommandRequest {
     pub command: String,
 }
 
-/// Body of the `POST /command` response: the game's RCON reply text, which may be
-/// empty for commands that produce no output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandResponse {
     pub output: String,
@@ -391,13 +296,6 @@ pub struct ShellRequest {
     pub command: String,
 }
 
-/// Body of the `POST /shell` response.
-///
-/// `exit_code` is `None` when the command was killed by a signal, which includes
-/// the supervisor's own timeout kill — `timed_out` distinguishes that case.
-/// `truncated` is set when either stream exceeded the output cap; the retained
-/// bytes are the *first* ones, and the rest are drained and discarded so a noisy
-/// command can never fill the pod's memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellResponse {
     pub stdout: String,
@@ -416,60 +314,24 @@ pub struct AnnounceRequest {
     pub message: String,
 }
 
-/// Path of `GET /fs/list`: the entries of a directory under the data root
-/// ([`ListResponse`]). Shared so the bot's client and the supervisor's server
-/// build and match the same path.
 pub const FS_LIST_PATH: &str = "/fs/list";
 
-/// Path of `GET /fs/read`: the UTF-8 contents of a file under the data root
-/// ([`ReadResponse`]). Shared so the bot's client and the supervisor's server
-/// build and match the same path.
 pub const FS_READ_PATH: &str = "/fs/read";
 
-/// Path of `POST /fs/write`: overwrite a file under the data root, snapshotting
-/// the prior version first ([`WriteRequest`]/[`WriteResponse`]). Shared so the
-/// bot's client and the supervisor's server build and match the same path.
 pub const FS_WRITE_PATH: &str = "/fs/write";
 
-/// Path of `POST /fs/edit`: replace one occurrence of an anchor in a file under
-/// the data root, snapshotting the prior version first
-/// ([`EditRequest`]/[`EditResponse`]). Shared so the bot's client and the
-/// supervisor's server build and match the same path.
-///
 pub const FS_EDIT_PATH: &str = "/fs/edit";
 
-/// Path of `POST /fs/restore`: restore a file from the snapshot its last write
-/// took ([`RestoreRequest`]/[`RestoreResponse`]). Shared so the bot's client and
-/// the supervisor's server build and match the same path.
 pub const FS_RESTORE_PATH: &str = "/fs/restore";
 
-/// Path of `GET /logs`: the most recent captured stdout/stderr lines
-/// ([`LogsQuery`]/[`LogsResponse`]). Shared so the bot's client and the
-/// supervisor's server build and match the same path.
 pub const LOGS_PATH: &str = "/logs";
 
-/// Path of `POST /shell`: run one read-only shell command inside the game
-/// container ([`ShellRequest`]/[`ShellResponse`]). Shared so the bot's client and
-/// the supervisor's server build and match the same path.
 pub const SHELL_PATH: &str = "/shell";
 
-/// Path of `POST /command`: run one in-game console command over RCON
-/// ([`CommandRequest`]/[`CommandResponse`]). Only served for games whose per-game
-/// template enables RCON. Shared so the bot's client and the supervisor's server
-/// build and match the same path.
 pub const COMMAND_PATH: &str = "/command";
 
-/// Path of `POST /announce`: broadcast a message to everyone on the running
-/// server ([`AnnounceRequest`]). Only served for games whose per-game template
-/// enables RCON. Shared so the bot's client and the supervisor's server build and
-/// match the same path.
 pub const ANNOUNCE_PATH: &str = "/announce";
 
-/// Path of the whole-`/data` archive routes. `GET` streams a compressed tar of
-/// the data root out; `POST` extracts an uploaded stream back into it. Streamed
-/// (not JSON) because a world can be gigabytes — the small `fs` read/write caps
-/// deliberately do not apply here. Shared so the bot's client and the
-/// supervisor's server build and match the same path.
 pub const ARCHIVE_PATH: &str = "/archive";
 
 /// `GET /occupancy` reports the live connected-player count ([`OccupancyResponse`]).
@@ -500,35 +362,18 @@ pub struct ExtractQuery {
     pub purge: bool,
 }
 
-/// Query for `GET /logs`: how many trailing lines of captured output to return.
-/// Absent means the supervisor's default tail length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogsQuery {
-    // No #[serde(default)] needed: serde already defaults a missing Option field
-    // to None. (The bool queries above need it because a bare bool does not.)
     pub lines: Option<usize>,
 }
 
-/// Body of `GET /logs`: the most recent captured stdout/stderr lines, oldest
-/// first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogsResponse {
     pub lines: Vec<String>,
 }
 
-/// Path the supervisor's chat watcher POSTs an in-game `@Gary` trigger to on the
-/// bot's agent endpoint. This is the one route that flows supervisor → bot (every
-/// other route in this crate flows bot → supervisor), so the bot binds it and the
-/// supervisor is the client — the inverse of the control API. Shared here so both
-/// sides build and match the same path.
 pub const INGAME_TRIGGER_PATH: &str = "/ingame-trigger";
 
-/// Body of `POST /ingame-trigger`: a player addressed the ops agent from inside a
-/// running server's chat. `server` is the Agones `GameServer` name the bot maps
-/// back to a channel scope, `player` is the in-game name to attribute the reply
-/// to, and `message` is the question with the trigger prefix already stripped by
-/// the supervisor. The message is untrusted player input — the bot answers it
-/// read-only and treats it as data, never instructions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngameTriggerRequest {
     pub server: String,

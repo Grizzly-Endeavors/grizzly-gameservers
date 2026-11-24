@@ -99,9 +99,6 @@ fn read_file_truncates_past_the_cap() {
 
 #[test]
 fn read_file_truncation_keeps_valid_text_when_a_char_straddles_the_cap() {
-    // A genuinely-UTF-8 file whose multibyte char sits astride READ_CAP_BYTES must
-    // still read as (truncated) text, not be mislabeled binary. Place a 3-byte '€'
-    // so its first byte is the last inside the cap and the rest spills past it.
     let dir = seed();
     let mut content = "a".repeat(READ_CAP_BYTES - 1);
     content.push('€');
@@ -211,7 +208,6 @@ fn symlink_escape_is_rejected_on_read() {
     let dir = seed();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), "top secret").unwrap();
-    // A symlink that lives inside the root but points outside it.
     std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("link")).unwrap();
     assert_eq!(read_file(dir.path(), "link"), Err(FsError::OutsideRoot));
 }
@@ -222,8 +218,6 @@ fn symlink_escape_is_rejected_on_write() {
     let outside = tempfile::tempdir().unwrap();
     let secret = outside.path().join("secret");
     std::fs::write(&secret, "untouched").unwrap();
-    // A symlink that lives inside the root but points outside it — the write
-    // target itself, not just its parent directory.
     std::os::unix::fs::symlink(&secret, dir.path().join("link")).unwrap();
     assert_eq!(
         write_file(dir.path(), "link", "pwned"),
@@ -242,7 +236,6 @@ fn symlink_escape_is_rejected_on_restore() {
     let outside = tempfile::tempdir().unwrap();
     let secret = outside.path().join("secret");
     std::fs::write(&secret, "top secret").unwrap();
-    // The restore *target* is a symlink pointing outside the root.
     std::os::unix::fs::symlink(&secret, dir.path().join("link")).unwrap();
     std::fs::write(dir.path().join("link.grizzly.bak"), "backup content").unwrap();
     assert_eq!(restore_file(dir.path(), "link"), Err(FsError::OutsideRoot));
@@ -270,8 +263,6 @@ fn seeding_creates_the_file_and_its_parent_directory() {
 
 #[test]
 fn seeding_an_existing_file_never_truncates_it() {
-    // This runs before every launch, not just the first: truncating would erase
-    // a file the friend authored on the next restart.
     let dir = tempfile::tempdir().unwrap();
     let path = seed_empty_file(dir.path(), "reserved").unwrap();
     std::fs::write(&path, "authored content").unwrap();
@@ -294,9 +285,6 @@ fn seeding_refuses_a_path_outside_the_data_root() {
 
 #[test]
 fn a_seeded_file_is_snapshotted_on_its_very_first_edit() {
-    // The whole point of seeding: write_file only snapshots a file that already
-    // existed, and the bot's auto-rollback only arms for writes that took a
-    // snapshot. Without the seed the first mod list would be unrecoverable.
     let dir = tempfile::tempdir().unwrap();
     seed_empty_file(dir.path(), "reserved").unwrap();
     let backed_up = write_file(dir.path(), "reserved", "ValheimModding-Jotunn\n").unwrap();
@@ -333,8 +321,6 @@ fn a_window_covering_the_whole_file_is_not_truncated() {
 
 #[test]
 fn walking_the_window_forward_reaches_the_end_of_a_long_file() {
-    // The point of addressing in lines: every window names where the next one
-    // starts, with nothing for the caller to compute.
     let dir = tempfile::tempdir().unwrap();
     let mut body = String::new();
     for n in 1..=1000 {
@@ -360,8 +346,6 @@ fn walking_the_window_forward_reaches_the_end_of_a_long_file() {
 
 #[test]
 fn a_line_past_the_character_cap_is_cut_and_flagged() {
-    // One minified config would otherwise consume a whole window on its own, and
-    // a silently-cut value is one an edit could be written against.
     let dir = tempfile::tempdir().unwrap();
     let long = "x".repeat(READ_LINE_CHARS + 50);
     std::fs::write(dir.path().join("min.json"), format!("{long}\nshort\n")).unwrap();
@@ -394,8 +378,6 @@ fn a_start_past_the_end_reads_empty_rather_than_failing() {
 
 #[test]
 fn a_zero_start_line_reads_the_head_rather_than_erroring() {
-    // 1-based is the contract; an off-by-one caller can't see that, so clamping
-    // keeps it reading the file instead of an error it can't act on.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("notes.txt"), "a\nb\n").unwrap();
     let window = read_file_lines(dir.path(), "notes.txt", 0, 400).unwrap();
@@ -456,8 +438,6 @@ fn editing_a_missing_anchor_changes_nothing() {
 
 #[test]
 fn editing_a_file_larger_than_the_write_cap_is_refused() {
-    // The edit has to write the whole file back, so a file already past the cap
-    // can never be edited — said before reading it into memory to find out.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("huge.cfg"), "y".repeat(WRITE_CAP_BYTES + 1)).unwrap();
     assert_eq!(
@@ -468,8 +448,6 @@ fn editing_a_file_larger_than_the_write_cap_is_refused() {
 
 #[test]
 fn an_anchor_count_is_non_overlapping_left_to_right() {
-    // "aa" occurs twice non-overlapping in "aaaa" (not three times), matching the
-    // reader's mental model when they copy a snippet to anchor a change.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "aaaa").unwrap();
     assert_eq!(

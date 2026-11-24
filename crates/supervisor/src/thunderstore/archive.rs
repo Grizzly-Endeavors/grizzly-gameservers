@@ -1,15 +1,3 @@
-//! Package zips: what a file inside one is allowed to be, and where it goes.
-//!
-//! Two jobs, kept together because neither is meaningful without the other:
-//! rejecting an archive that would write outside the tree it is being extracted
-//! into, and deciding the loader-relative path each surviving entry lands at.
-//!
-//! Package layouts vary wildly — some ship `plugins/Thing.dll`, some
-//! `BepInEx/plugins/Thing.dll`, some a bare `Thing.dll` at the root — because
-//! r2modman normalises them on install rather than the authors agreeing. The
-//! normalisation rule is [`plan_layout`], and it is pure so the whole zoo is
-//! covered by fixtures rather than by a live server.
-
 use std::io::{Read, Seek};
 use std::path::{Component, Path, PathBuf};
 
@@ -17,25 +5,13 @@ use anyhow::{Context, Result, bail};
 
 use super::types::{PackageId, PackageRelease, ZipManifest};
 
-/// Largest a single package zip may be, compressed. Generous for a texture pack,
-/// small enough that a mistake can't fill the PVC.
 pub const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Largest one entry may expand to, and the ceiling on a whole archive's
-/// expanded size. Both are checked while streaming, so a zip bomb is stopped
-/// part-way rather than after it has landed on disk.
 pub const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Most files one package may contain.
 pub const MAX_ENTRIES: usize = 20_000;
 
-/// The caps [`extract`] enforces while streaming an archive.
-///
-/// Carried as a value rather than read from the consts at each check so the
-/// enforcement itself is testable: a fixture proving a 256 MiB entry is refused
-/// would have to *be* 256 MiB, which is not a test anyone will run. The
-/// production caps are [`Caps::DEFAULT`], and `extract` uses them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Caps {
     pub entries: usize,
@@ -44,7 +20,6 @@ pub struct Caps {
 }
 
 impl Caps {
-    /// What a real launch enforces.
     pub const DEFAULT: Self = Self {
         entries: MAX_ENTRIES,
         entry_bytes: MAX_ENTRY_BYTES,
@@ -52,21 +27,14 @@ impl Caps {
     };
 }
 
-/// Root files that describe the package rather than belonging to the game.
 const METADATA_FILES: [&str; 4] = ["manifest.json", "readme.md", "changelog.md", "icon.png"];
 
-/// Which per-game rule maps a package's files onto the loader's directories.
-/// A closed enum: an unknown value in the image's environment is a hard error,
-/// because the alternative is a game silently installing every mod into the
-/// wrong place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageLayout {
-    /// `BepInEx` — the r2modman rule the Thunderstore communities are built on.
     BepInEx,
 }
 
 impl PackageLayout {
-    /// Parse the layout named in the image's environment.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -75,15 +43,6 @@ impl PackageLayout {
         }
     }
 
-    /// The directories a staged tree always contains, whether or not any package
-    /// puts anything in them.
-    ///
-    /// Load-bearing: the image's mirror step reads this tree as the *complete*
-    /// desired state and deletes anything in the live loader that isn't in it.
-    /// A tree that simply omitted the directories nobody installed into would
-    /// make "no mods" indistinguishable from "no mod list at all" — and the
-    /// mirror would skip, leaving the previous set installed. Removing the last
-    /// mod has to leave an empty tree, not an absent one.
     #[must_use]
     pub fn skeleton(self) -> &'static [&'static str] {
         match self {
@@ -97,24 +56,8 @@ impl PackageLayout {
     }
 }
 
-/// The directories a `BepInEx` package may address by name, each of which gets a
-/// per-package subdirectory so removing a mod is removing one directory.
 const PER_PACKAGE_DIRS: [&str; 3] = ["plugins", "patchers", "monomod"];
 
-/// Where one file inside a package lands, relative to the loader root, or `None`
-/// when it is not installed at all.
-///
-/// The rule, applied to the path with an optional leading `BepInEx/` stripped:
-///
-/// - `plugins`, `patchers`, `monomod` → `BepInEx/<dir>/<Namespace-Name>/<rest>`
-/// - `config` → `BepInEx/config/<rest>`, flat, because plugins look their config
-///   up by a fixed filename and a per-package subdirectory would hide it
-/// - `core` → skipped: that is the loader itself, and a package that is not the
-///   image's own loader pack must never overwrite it
-/// - the four root metadata files → skipped
-/// - anything else (a bare DLL, an asset folder) → `BepInEx/plugins/<Namespace-Name>/<path>`
-///
-/// Directory names are matched case-insensitively; packages spell them both ways.
 #[must_use]
 pub fn plan_layout(layout: PackageLayout, id: &PackageId, path: &Path) -> Option<PathBuf> {
     let PackageLayout::BepInEx = layout;
@@ -122,8 +65,6 @@ pub fn plan_layout(layout: PackageLayout, id: &PackageId, path: &Path) -> Option
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => part.to_str(),
-            // Everything else was already refused by `safe_entry_name`; a
-            // caller passing one anyway gets it dropped rather than honoured.
             Component::Prefix(_)
             | Component::RootDir
             | Component::CurDir
@@ -134,12 +75,9 @@ pub fn plan_layout(layout: PackageLayout, id: &PackageId, path: &Path) -> Option
         return None;
     };
 
-    // A package may or may not wrap its tree in a BepInEx/ directory; both are
-    // common, and after stripping it the two shapes are the same package.
     let (head, tail) = if first.eq_ignore_ascii_case("BepInEx") {
         match rest {
             [head, tail @ ..] => (*head, tail),
-            // A bare `BepInEx/` entry with nothing under it addresses nothing.
             [] => return None,
         }
     } else {
@@ -223,14 +161,6 @@ fn safe_entry_name(name: &str) -> Result<String> {
     Ok(normalized)
 }
 
-/// Read and validate the `manifest.json` at the root of a package zip.
-///
-/// # Errors
-///
-/// Returns an error if the archive can't be read, has no root `manifest.json`,
-/// or its manifest names a different package or version than `expected`. The
-/// cross-check is what stops a mislabeled or swapped cache file installing under
-/// the name the mod list asked for.
 pub fn read_manifest<R: Read + Seek>(reader: R, expected: &PackageRelease) -> Result<ZipManifest> {
     let mut zip = zip::ZipArchive::new(reader).context("failed to open the package archive")?;
     let mut file = zip
@@ -269,16 +199,6 @@ fn strip_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
-/// Extract one package into `dest`, laying its files out per `layout`.
-///
-/// `dest` is the staged loader root; every produced path is under it by
-/// construction, because [`plan_layout`] builds from a fixed prefix and
-/// [`safe_entry_name`] has already refused anything that could climb.
-///
-/// # Errors
-///
-/// Returns an error if the archive is unreadable, oversized, contains a symlink
-/// or an unsafe entry name, or a file can't be written.
 pub fn extract<R: Read + Seek>(
     reader: R,
     release: &PackageRelease,
@@ -288,12 +208,6 @@ pub fn extract<R: Read + Seek>(
     extract_within(reader, release, layout, dest, Caps::DEFAULT)
 }
 
-/// [`extract`] with the caps supplied, so the size guards can be exercised
-/// against fixtures of a sane size. Production always passes [`Caps::DEFAULT`].
-///
-/// # Errors
-///
-/// As [`extract`].
 pub fn extract_within<R: Read + Seek>(
     reader: R,
     release: &PackageRelease,
@@ -315,19 +229,12 @@ pub fn extract_within<R: Read + Seek>(
         let mut entry = zip
             .by_index(index)
             .with_context(|| format!("failed to read entry {index} of {release}"))?;
-        // The archive's own name, not `enclosed_name()`: that helper *sanitises*
-        // a path, so an entry declaring `/etc/passwd` would arrive here already
-        // rewritten to `etc/passwd` and sail through the check below. What has
-        // to be judged is what the archive actually claims.
         let name = entry
             .name()
             .with_context(|| {
                 format!("an entry name in the archive for {release} is not valid text")
             })?
             .into_owned();
-        // The normalised form is what everything downstream must use: planning
-        // the layout on the raw name would treat a Windows-packed `a\\b.dll` as
-        // one filename and write a file with a backslash in its name.
         let entry_path =
             safe_entry_name(&name).with_context(|| format!("in the archive for {release}"))?;
         if entry.is_symlink() {

@@ -20,7 +20,6 @@ fn a_trailing_slash_on_the_host_is_dropped() {
 
 #[test]
 fn credentials_are_base64_encoded_as_a_basic_header() {
-    // "pk-lf-test:sk-lf-test" in base64.
     assert_eq!(
         basic_auth_header("pk-lf-test", "sk-lf-test"),
         "Basic cGstbGYtdGVzdDpzay1sZi10ZXN0"

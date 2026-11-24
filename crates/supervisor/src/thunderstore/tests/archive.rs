@@ -19,8 +19,6 @@ fn plan(path: &str) -> Option<String> {
         .map(|planned| planned.to_string_lossy().replace('\\', "/"))
 }
 
-/// Build a package zip in memory. Stored rather than deflated so the fixtures
-/// stay readable as bytes and no compressor is exercised by accident.
 fn zip_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -35,12 +33,8 @@ fn manifest(name: &str, version: &str) -> Vec<u8> {
     format!(r#"{{"name":"{name}","version_number":"{version}","dependencies":[]}}"#).into_bytes()
 }
 
-// ---- layout ----
-
 #[test]
 fn a_plugins_directory_gets_a_per_package_subdirectory() {
-    // Per-package so removing a mod is removing one directory, which is what
-    // makes "delete the line" actually delete the files.
     assert_eq!(
         plan("plugins/Jotunn.dll").as_deref(),
         Some("BepInEx/plugins/Author-Mod/Jotunn.dll")
@@ -49,7 +43,6 @@ fn a_plugins_directory_gets_a_per_package_subdirectory() {
 
 #[test]
 fn a_leading_bepinex_directory_is_stripped_first() {
-    // The two common package shapes are the same package.
     assert_eq!(
         plan("BepInEx/plugins/Jotunn.dll"),
         plan("plugins/Jotunn.dll")
@@ -87,8 +80,6 @@ fn a_bare_dll_at_the_root_becomes_a_plugin() {
 
 #[test]
 fn an_unrecognised_folder_is_kept_whole_under_the_package() {
-    // Asset folders are addressed relative to the plugin, so the tree has to
-    // survive intact rather than being flattened.
     assert_eq!(
         plan("assets/textures/thing.png").as_deref(),
         Some("BepInEx/plugins/Author-Mod/assets/textures/thing.png")
@@ -97,8 +88,6 @@ fn an_unrecognised_folder_is_kept_whole_under_the_package() {
 
 #[test]
 fn the_loader_core_is_never_overwritten() {
-    // Only the image's own provided pack may write here; anything else doing so
-    // breaks the loader that everything else depends on.
     assert_eq!(plan("core/BepInEx.Preloader.dll"), None);
     assert_eq!(plan("BepInEx/core/BepInEx.Preloader.dll"), None);
 }
@@ -112,8 +101,6 @@ fn package_metadata_is_not_installed() {
 
 #[test]
 fn metadata_names_deeper_in_the_tree_are_still_installed() {
-    // Only the *root* files are metadata; a mod shipping its own readme inside
-    // an asset folder is shipping a file it expects to find there.
     assert_eq!(
         plan("assets/README.md").as_deref(),
         Some("BepInEx/plugins/Author-Mod/assets/README.md")
@@ -122,7 +109,6 @@ fn metadata_names_deeper_in_the_tree_are_still_installed() {
 
 #[test]
 fn directory_names_match_case_insensitively() {
-    // Packages spell these both ways and neither is wrong upstream.
     assert_eq!(
         plan("Plugins/Thing.dll").as_deref(),
         Some("BepInEx/plugins/Author-Mod/Thing.dll")
@@ -149,8 +135,6 @@ fn the_layout_name_is_a_closed_vocabulary() {
     assert_eq!(PackageLayout::parse("ue4ss"), None);
 }
 
-// ---- manifest cross-check ----
-
 #[test]
 fn a_manifest_matching_the_filename_is_accepted() {
     let bytes = zip_with(&[("manifest.json", &manifest("Mod", "1.0.0"))]);
@@ -173,8 +157,6 @@ fn a_manifest_with_a_utf8_byte_order_mark_is_accepted() {
 
 #[test]
 fn a_zip_holding_a_different_package_is_refused() {
-    // A swapped or mislabeled cache file would otherwise install under the name
-    // the mod list asked for.
     let bytes = zip_with(&[("manifest.json", &manifest("Other", "1.0.0"))]);
     let err = read_manifest(Cursor::new(bytes), &release("Author-Mod-1.0.0")).unwrap_err();
     assert!(format!("{err:#}").contains("Other"), "{err:#}");
@@ -193,8 +175,6 @@ fn a_zip_with_no_manifest_is_refused() {
     let err = read_manifest(Cursor::new(bytes), &release("Author-Mod-1.0.0")).unwrap_err();
     assert!(format!("{err:#}").contains("manifest.json"), "{err:#}");
 }
-
-// ---- extraction ----
 
 fn extract_to(bytes: Vec<u8>, dest: &Path) -> anyhow::Result<usize> {
     extract(
@@ -231,8 +211,6 @@ fn extraction_lays_a_package_out_and_drops_its_metadata() {
 
 #[test]
 fn an_entry_climbing_out_of_the_archive_is_refused() {
-    // Refused whole rather than sanitised: an archive doing this has no reason
-    // to, and its other files are no more trustworthy.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -255,10 +233,6 @@ fn an_absolute_entry_is_refused() {
 
 #[test]
 fn a_backslash_entry_that_climbs_is_still_refused() {
-    // Backslashes are separators, so this is `../evil.dll` and has to be caught
-    // as the traversal it is. Normalising first is what makes that possible: on
-    // Unix `Path::new("..\\evil.dll")` is one component literally named
-    // `..\evil.dll`, which `ParentDir` would never match.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -285,10 +259,6 @@ fn a_windows_packed_entry_installs_rather_than_being_refused() {
 
 #[test]
 fn the_real_serverside_qol_shape_routes_to_both_loader_dirs() {
-    // ArgusMagnus-ServersideQoL-2.0.0 as actually published: a mixed archive
-    // whose metadata uses no separator and whose nested entries use backslashes,
-    // spanning two per-package loader directories. This is the package that
-    // exposed the defect, so its exact shape is the regression test.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -310,8 +280,6 @@ fn the_real_serverside_qol_shape_routes_to_both_loader_dirs() {
 
 #[test]
 fn a_backslash_never_becomes_part_of_a_filename() {
-    // Planning the layout on the raw name would treat `a\b.dll` as one filename
-    // and write a file with a backslash in it, which nothing would ever load.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -326,7 +294,6 @@ fn a_backslash_never_becomes_part_of_a_filename() {
 
 #[test]
 fn a_symlink_entry_is_refused() {
-    // A symlink is the other way out of the tree, and it survives the name check.
     let dir = tempfile::tempdir().unwrap();
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -359,8 +326,6 @@ fn a_package_with_too_many_files_is_refused() {
 
 #[test]
 fn the_loader_core_is_skipped_during_extraction_rather_than_failing() {
-    // A package that ships a core/ directory is not malicious, it is just wrong
-    // about what it owns — install the rest of it.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -374,8 +339,6 @@ fn the_loader_core_is_skipped_during_extraction_rather_than_failing() {
 
 #[test]
 fn an_oversized_entry_is_refused_before_it_lands() {
-    // Exercised against small caps rather than the production 256 MiB, which no
-    // fixture can honestly reach — the guard is the same code either way.
     let dir = tempfile::tempdir().unwrap();
     let bytes = zip_with(&[
         ("manifest.json", &manifest("Mod", "1.0.0")),
@@ -398,9 +361,6 @@ fn an_oversized_entry_is_refused_before_it_lands() {
 
 #[test]
 fn an_archive_that_expands_past_the_total_is_refused_part_way() {
-    // The zip-bomb guard: no single entry is over the per-entry cap, but their
-    // sum is, and the check has to fire while streaming rather than after the
-    // whole thing has landed on disk.
     let dir = tempfile::tempdir().unwrap();
     let chunk = vec![0_u8; 1024];
     let bytes = zip_with(&[
@@ -427,8 +387,6 @@ fn an_archive_that_expands_past_the_total_is_refused_part_way() {
 
 #[test]
 fn the_production_caps_are_the_ones_a_real_launch_enforces() {
-    // The parameterised form exists for the tests above; a drift between it and
-    // the consts would make those tests prove nothing about production.
     assert_eq!(
         Caps::DEFAULT,
         Caps {

@@ -140,9 +140,6 @@ fn a_thunderstore_game_carries_the_packages_its_image_supplies() {
 
 #[test]
 fn a_provided_entry_that_is_not_a_package_pair_is_an_error() {
-    // A misspelled entry stops matching the package it names, and the only
-    // symptom is the loader pack quietly reappearing in mod lists — so it has to
-    // fail here rather than degrade.
     let map = annotations(&[
         (MOD_REGISTRY_ANNOTATION, "thunderstore"),
         (THUNDERSTORE_COMMUNITY_ANNOTATION, "valheim"),

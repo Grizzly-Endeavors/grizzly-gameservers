@@ -9,24 +9,11 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // Answered before anything reads the environment or opens a socket, so the
-    // image smoke check can run it against a fully-configured game image.
-    //
-    // The rule guards against trusting argv for a security decision. Neither
-    // mode grants anything: argv[0] is skipped outright, --version prints a
-    // build identity and exits, and the sandbox marker only ever *narrows* what
-    // the resulting process may do — a forged argv gets a Landlock-confined
-    // shell, never an unconfined one. args_os rather than args because the
-    // latter panics on non-UTF-8 input, which is a worse failure than ignoring
-    // an argument we don't recognise anyway.
-    // nosemgrep: rust.lang.security.args-os
     match cli::classify_args(std::env::args_os().skip(1)) {
         Invocation::ReportVersion => {
             println!("{}", cli::VERSION);
             return ExitCode::SUCCESS;
         }
-        // Fails closed: an un-sandboxable kernel produces no shell at all,
-        // rather than one that quietly has write access to the game's config.
         Invocation::RunSandboxedShell(command) => {
             if let Err(err) = shell::exec_sandboxed(&command) {
                 eprintln!("error: {err:#}");
@@ -55,9 +42,6 @@ async fn start() -> Result<()> {
     runner::run(config).await
 }
 
-/// Load a local `.env` for development. A missing file is expected in-container
-/// (env comes from the pod spec); any other parse error is surfaced as a warning
-/// rather than swallowed.
 fn load_dotenv() {
     if let Err(err) = dotenvy::dotenv()
         && !err.not_found()

@@ -1,16 +1,3 @@
-//! The IO half of resolution: the Thunderstore HTTP client, and the layered
-//! source that puts it in front of (or behind) the on-disk cache.
-//!
-//! The layering is not uniform, and the asymmetry is the whole point:
-//!
-//! - An **exact** version is looked up in the cache first. A cached zip carries
-//!   the same dependency strings the API would report, so a fully pinned mod
-//!   list resolves with no network at all — which is what makes a pod recreated
-//!   during a Thunderstore outage come back with the mods it had.
-//! - The **latest** version can only come from the API. When it is unreachable,
-//!   the highest cached version stands in and the launch warns, because coming
-//!   back up one version behind beats not coming back up.
-
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -26,8 +13,6 @@ use super::types::{PackageId, PackageRelease, PackageVersion};
 
 const API_BASE: &str = "https://thunderstore.io/api/experimental/package";
 
-/// Per-request ceiling for a metadata lookup. Downloads get their own, longer
-/// budget — a 200 MB texture pack is a slow request, not a stuck one.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(3);
 
@@ -36,7 +21,6 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(3);
 /// ever become a problem.
 const AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// The subset of a package-version response this crate reads.
 #[derive(Debug, Deserialize)]
 struct VersionBody {
     version_number: String,
@@ -44,7 +28,6 @@ struct VersionBody {
     dependencies: Vec<String>,
 }
 
-/// The package response, whose `latest` is a [`VersionBody`].
 #[derive(Debug, Deserialize)]
 struct PackageBody {
     latest: VersionBody,
@@ -58,11 +41,6 @@ pub struct ThunderstoreApi {
 }
 
 impl ThunderstoreApi {
-    /// Build a client for the read API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP client can't be built.
     pub fn new() -> Result<Self> {
         Ok(Self {
             http: Client::builder()
@@ -72,7 +50,6 @@ impl ThunderstoreApi {
         })
     }
 
-    /// The package endpoint, whose body wraps the newest version.
     async fn get_version_of_package(&self, url: &str) -> Result<VersionBody, SourceError> {
         let response = self
             .http
@@ -112,14 +89,6 @@ impl ThunderstoreApi {
         }
     }
 
-    /// Download one release's zip, bounded by [`MAX_ARCHIVE_BYTES`] on both the
-    /// declared length and the bytes actually delivered — a lying or absent
-    /// `Content-Length` must not be the only thing standing between a bad
-    /// package and a full PVC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the download fails, is refused, or exceeds the cap.
     pub async fn download(&self, release: &PackageRelease) -> Result<Vec<u8>> {
         let url = format!(
             "https://thunderstore.io/package/download/{}/{}/{}/",
@@ -154,9 +123,6 @@ impl ThunderstoreApi {
     }
 }
 
-/// The registry answering for itself, with no cache in front of it. Wrapped by
-/// [`LayeredSource`] in production; implemented here so the caching layer can be
-/// tested over a fake registry instead of the real one.
 impl PackageSource for ThunderstoreApi {
     async fn latest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
         let url = format!("{API_BASE}/{}/{}/", id.namespace, id.name);
@@ -184,13 +150,9 @@ impl PackageSource for ThunderstoreApi {
     }
 }
 
-/// The [`PackageSource`] the reconciler resolves through: a registry layered
-/// over the on-disk cache, per the module docs.
 pub struct LayeredSource<'a, S: PackageSource + Sync> {
     registry: &'a S,
     work_dir: PathBuf,
-    /// Degradations worth reporting, collected because the trait's methods take
-    /// `&self` and the caller wants them once resolution is over.
     notes: Mutex<Vec<String>>,
 }
 
@@ -204,7 +166,6 @@ impl<'a, S: PackageSource + Sync> LayeredSource<'a, S> {
         }
     }
 
-    /// Everything that had to be degraded during resolution, in order.
     #[must_use]
     pub fn take_notes(&self) -> Vec<String> {
         let mut notes = self
@@ -221,8 +182,6 @@ impl<'a, S: PackageSource + Sync> LayeredSource<'a, S> {
             .push(message);
     }
 
-    /// Read one release's dependencies out of its cached zip, or `None` when it
-    /// isn't cached or the zip doesn't hold up.
     fn cached(&self, release: &PackageRelease) -> Option<SourceVersion> {
         let file = cache::open(&self.work_dir, release).ok()??;
         let manifest = super::archive::read_manifest(file, release).ok()?;
@@ -232,8 +191,6 @@ impl<'a, S: PackageSource + Sync> LayeredSource<'a, S> {
         })
     }
 
-    /// The highest cached version of `id`, used when the API can't answer a
-    /// "newest" question.
     fn highest_cached(&self, id: &PackageId) -> Option<PackageVersion> {
         cache::cached_releases(&self.work_dir)
             .into_iter()
@@ -243,13 +200,6 @@ impl<'a, S: PackageSource + Sync> LayeredSource<'a, S> {
     }
 }
 
-/// Turn Thunderstore's `Namespace-Name-1.2.3` dependency strings into releases,
-/// dropping any this crate can't parse.
-///
-/// Dropping rather than failing is deliberate: an unparseable dependency string
-/// is upstream's problem with one entry, and refusing the whole launch over it
-/// would make a third party able to break a running server by publishing a
-/// malformed manifest.
 fn parse_dependencies(raw: &[String]) -> Vec<PackageRelease> {
     raw.iter()
         .filter_map(|entry| entry.parse::<PackageRelease>().ok())
@@ -260,9 +210,6 @@ impl<S: PackageSource + Sync> PackageSource for LayeredSource<'_, S> {
     async fn latest(&self, id: &PackageId) -> Result<SourceVersion, SourceError> {
         match self.registry.latest(id).await {
             Ok(found) => Ok(found),
-            // A package the registry says doesn't exist is a mistake in the mod
-            // list, not an outage — falling back to a cached copy would install
-            // something nobody can look up.
             Err(SourceError::NotFound) => Err(SourceError::NotFound),
             Err(SourceError::Unavailable(detail)) => {
                 let Some(version) = self.highest_cached(id) else {
