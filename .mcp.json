@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "discord": {
+      "type": "stdio",
+      "command": "discord-mcp-launch",
+      "args": [],
+      "env": {}
+    }
+  }
+}
